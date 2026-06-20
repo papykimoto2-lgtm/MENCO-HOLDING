@@ -1647,6 +1647,13 @@
             return p && p.sousCategorie === 'Poule pondeuse';
         }
 
+        /** Retrouve le produit "Œufs" associé à la sous-catégorie de la bande (poule pondeuse). */
+        function getProduitOeufs(bande) {
+            const p = getProduit(bande.produitId);
+            if (!p) return null;
+            return data.produits.find(o => o.sousCategorie === p.sousCategorie && /œuf|oeuf/i.test(o.nom)) || null;
+        }
+
         function isPouletChair(bande) {
             const p = getProduit(bande.produitId);
             return p && p.sousCategorie === 'Poulet de chair';
@@ -3044,6 +3051,10 @@
                     <div class="form-group">
                         <label>🥚 Œufs collectés</label>
                         <input type="number" id="alimOeufs" step="1" value="0" min="0">
+                    </div>
+                    <div class="form-group">
+                        <label>Dépôt (stock œufs)</label>
+                        <select id="alimOeufsDepot">${data.depots.map(d => `<option value="${d.id}">${d.nom}</option>`).join('')}</select>
                     </div>` : ''}
                     ${isChair ? `
                     <div class="form-group">
@@ -3138,6 +3149,20 @@
             if (isPondeuse(bande)) {
                 const oeufsEl = document.getElementById('alimOeufs');
                 entry.collecteOeufs = oeufsEl ? (parseInt(oeufsEl.value) || 0) : 0;
+                if (entry.collecteOeufs > 0) {
+                    const depotEl = document.getElementById('alimOeufsDepot');
+                    const depotId = depotEl ? parseInt(depotEl.value) : (data.depots[0] && data.depots[0].id);
+                    const produitOeufs = getProduitOeufs(bande);
+                    if (produitOeufs && depotId) {
+                        let stock = getStock(produitOeufs.id, depotId);
+                        if (!stock) {
+                            stock = { produitId: produitOeufs.id, depotId, quantite: 0, seuil: 20 };
+                            data.stocks.push(stock);
+                        }
+                        stock.quantite += entry.collecteOeufs;
+                        entry.depotOeufsId = depotId;
+                    }
+                }
                 const refEl = document.getElementById('alimDateReforme');
                 if (refEl && refEl.value) bande.dateReforme = refEl.value;
             }
@@ -3152,6 +3177,7 @@
             saveData();
             ouvrirModalAlimentation(bandeId);
             renderBandes();
+            if (loadedTabs.tabStocks) { renderStocks(); verifierAlertesStock(); }
         }
 
         function supprimerAlimentation(bandeId, alimentId) {
