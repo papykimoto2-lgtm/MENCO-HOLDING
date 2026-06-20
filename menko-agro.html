@@ -591,6 +591,28 @@
                 <div id="dashboardAlertes"></div>
             </div>
             <div class="card">
+                <h2>🌱 Production végétale</h2>
+                <div class="table-wrap">
+                    <table><thead><tr><th>Culture</th><th>Productions actives</th><th>Quantité produite</th><th>Coût réel</th><th>Coût/unité</th></tr></thead><tbody id="dashboardProdVegetale"></tbody></table>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>🐄 Production animale</h2>
+                <div class="table-wrap">
+                    <table><thead><tr><th>Espèce</th><th>Bandes actives</th><th>Effectif actuel</th><th>Mortalité cumulée</th><th>Poids moyen</th><th>Œufs collectés</th></tr></thead><tbody id="dashboardProdAnimale"></tbody></table>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>🗺️ Rentabilité des cultures par parcelle</h2>
+                <p style="font-size:0.75rem;color:#888;margin-bottom:0.6rem;">Revenu estimé = quantité produite × prix de vente catalogue (le stock étant fongible, les ventes réelles ne sont pas traçables par parcelle).</p>
+                <div class="table-wrap">
+                    <table><thead><tr><th>Parcelle</th><th>Superficie</th><th>Qté produite</th><th>Coût réel</th><th>Revenu estimé</th><th>Marge estimée</th><th>Marge/ha</th></tr></thead><tbody id="dashboardRentabiliteParcelles"></tbody></table>
+                </div>
+            </div>
+
+            <div class="card">
                 <h2>Dernières ventes</h2>
                 <div class="table-wrap">
                     <table><thead><tr><th>Date</th><th>Client</th><th>Produit</th><th>Total</th></tr></thead><tbody id="dashboardDernieresVentes"></tbody></table>
@@ -3235,6 +3257,83 @@
                 const produit = getProduit(v.produitId);
                 return `<tr><td>${formatDateSimple(v.date)}</td><td>${client?client.nom:'?'}</td><td>${produit?produit.nom:'?'}</td><td>${(v.quantite*v.prixUnitaire).toFixed(0)}</td></tr>`;
             }).join('') || '<tr><td colspan="4" style="color:#888;">Aucune vente.</td></tr>';
+
+            renderDashboardProductionVegetale();
+            renderDashboardProductionAnimale();
+            renderDashboardRentabiliteParcelles();
+        }
+
+        function renderDashboardProductionVegetale() {
+            const tbody = document.getElementById('dashboardProdVegetale');
+            if (!tbody) return;
+            const produitsVegetaux = data.produits.filter(p => p.categorie === 'agricole');
+            const rows = produitsVegetaux.map(p => {
+                const prods = data.productions.filter(pr => pr.produitId === p.id);
+                if (prods.length === 0) return null;
+                const actives = prods.filter(pr => !pr.dateFin).length;
+                const qte = prods.reduce((s, pr) => s + (pr.quantiteProduite || 0), 0);
+                const cout = prods.reduce((s, pr) => s + pr.etapes.reduce((s2, e) => s2 + e.reelDirect + e.reelIndirect, 0), 0);
+                const coutUnite = qte ? (cout / qte) : 0;
+                return `<tr><td><strong>${p.nom}</strong></td><td>${actives}</td><td>${qte}</td><td>${cout.toFixed(0)}</td><td>${coutUnite.toFixed(0)}</td></tr>`;
+            }).filter(Boolean);
+            tbody.innerHTML = rows.join('') || '<tr><td colspan="5" style="color:#888;">Aucune production végétale enregistrée.</td></tr>';
+        }
+
+        function renderDashboardProductionAnimale() {
+            const tbody = document.getElementById('dashboardProdAnimale');
+            if (!tbody) return;
+            const produitsAnimaux = data.produits.filter(p => p.categorie === 'elevage' && !/œuf|oeuf/i.test(p.nom));
+            const rows = produitsAnimaux.map(p => {
+                const bandes = data.bandes.filter(b => b.produitId === p.id);
+                if (bandes.length === 0) return null;
+                const actives = bandes.filter(b => !b.dateFin).length;
+                const effectifInitial = bandes.reduce((s, b) => s + b.quantiteInitiale, 0);
+                const mortaliteCumulee = bandes.reduce((s, b) => s + (b.suivis || []).reduce((s2, su) => s2 + (su.mortalite || 0), 0), 0);
+                const sortiesCumulees = bandes.reduce((s, b) => s + (b.sorties || []).reduce((s2, so) => s2 + so.quantite, 0), 0);
+                const effectifActuel = effectifInitial - mortaliteCumulee - sortiesCumulees;
+                const tauxMortalite = effectifInitial ? (mortaliteCumulee / effectifInitial * 100) : 0;
+                const derniersSuivis = bandes.map(b => (b.suivis || []).slice(-1)[0]).filter(Boolean);
+                const poidsMoyen = derniersSuivis.length ? (derniersSuivis.reduce((s, su) => s + (su.poidsMoyen || 0), 0) / derniersSuivis.length) : 0;
+                const oeufsCumules = /poule pondeuse/i.test(p.sousCategorie || '')
+                    ? bandes.reduce((s, b) => s + (b.alimentationsJ || []).reduce((s2, a) => s2 + (a.collecteOeufs || 0), 0), 0)
+                    : null;
+                return `<tr><td><strong>${p.nom}</strong></td><td>${actives}</td><td>${effectifActuel}</td>` +
+                    `<td>${mortaliteCumulee} (${tauxMortalite.toFixed(1)}%)</td><td>${poidsMoyen ? poidsMoyen.toFixed(2)+' kg' : '-'}</td>` +
+                    `<td>${oeufsCumules !== null ? oeufsCumules : '-'}</td></tr>`;
+            }).filter(Boolean);
+            tbody.innerHTML = rows.join('') || '<tr><td colspan="6" style="color:#888;">Aucune bande d\'élevage enregistrée.</td></tr>';
+        }
+
+        function renderDashboardRentabiliteParcelles() {
+            const tbody = document.getElementById('dashboardRentabiliteParcelles');
+            if (!tbody) return;
+            if (data.parcelles.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="color:#888;">Aucune parcelle enregistrée.</td></tr>';
+                return;
+            }
+            const rows = data.parcelles.map(parc => {
+                const prods = data.productions.filter(pr => pr.parcelleId === parc.id);
+                const camps = data.campagnes.filter(c => c.parcelleId === parc.id);
+                const qte = prods.reduce((s, pr) => s + (pr.quantiteProduite || 0), 0);
+                const coutProduction = prods.reduce((s, pr) => s + pr.etapes.reduce((s2, e) => s2 + e.reelDirect + e.reelIndirect, 0), 0);
+                const coutCampagnes = camps.reduce((s, c) => s + c.operations.reduce((s2, o) => s2 + (o.cout || 0), 0), 0);
+                const coutTotal = coutProduction + coutCampagnes;
+                // Revenu estimé via prix de vente catalogue, pondéré par produit
+                const revenuEstime = prods.reduce((s, pr) => {
+                    const p = getProduit(pr.produitId);
+                    return s + (pr.quantiteProduite || 0) * (p ? p.prixVente : 0);
+                }, 0);
+                const marge = revenuEstime - coutTotal;
+                const margeHa = parc.superficieHa ? (marge / parc.superficieHa) : 0;
+                if (prods.length === 0 && camps.length === 0) {
+                    return `<tr><td><strong>${parc.reference}</strong></td><td>${parc.superficieHa} ha</td><td colspan="5" style="color:#888;">Aucune production rattachée</td></tr>`;
+                }
+                return `<tr><td><strong>${parc.reference}</strong></td><td>${parc.superficieHa} ha</td><td>${qte}</td>` +
+                    `<td>${coutTotal.toFixed(0)}</td><td>${revenuEstime.toFixed(0)}</td>` +
+                    `<td style="color:${marge>=0?'#2a7a4a':'#b33c3c'};font-weight:600;">${marge.toFixed(0)}</td>` +
+                    `<td>${margeHa.toFixed(0)}</td></tr>`;
+            });
+            tbody.innerHTML = rows.join('');
         }
 
         // ============================================================
