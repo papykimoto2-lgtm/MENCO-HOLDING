@@ -509,6 +509,7 @@
             <button data-tab="tabFournisseurs">🏭 Fournisseurs</button>
             <button data-tab="tabClients">👤 Clients</button>
             <button data-tab="tabVentes">💰 Ventes</button>
+            <button data-tab="tabCompta">🧾 Comptabilité</button>
         </nav>
 
         <div class="date-time" id="headerDateTime">Chargement...</div>
@@ -696,6 +697,56 @@
             </div>
         </section>
 
+        <!-- ==================== COMPTABILITÉ ==================== -->
+        <section id="tabCompta" class="tab-pane">
+
+            <div class="card">
+                <h2>Solde des comptes clés</h2>
+                <div class="form-row" id="comptaSoldesRapides" style="gap:1.5rem;"></div>
+            </div>
+
+            <div class="card">
+                <h2>Nouvelle écriture</h2>
+                <div class="form-row">
+                    <div class="form-group"><label>Date</label><input type="date" id="ecDate" value=""></div>
+                    <div class="form-group"><label>Pièce</label><input type="text" id="ecPiece" placeholder="N° pièce"></div>
+                    <div class="form-group" style="flex:2 1 260px;"><label>Libellé</label><input type="text" id="ecLibelle" placeholder="Objet de l'écriture"></div>
+                </div>
+                <div id="ecLignes"></div>
+                <button class="btn btn-outline btn-sm" onclick="ajouterLigneEcriture()">+ Ligne</button>
+                <div style="margin:0.8rem 0; font-weight:600;">
+                    Débit : <span id="ecTotalDebit">0</span> &nbsp;|&nbsp; Crédit : <span id="ecTotalCredit">0</span>
+                    &nbsp;|&nbsp; <span id="ecEquilibre" style="color:#b33c3c;">Non équilibré</span>
+                </div>
+                <button class="btn btn-success" onclick="validerEcritureManuelle()">Enregistrer l'écriture</button>
+            </div>
+
+            <div class="card">
+                <h2>Journal des écritures</h2>
+                <div class="table-wrap">
+                    <table><thead><tr><th>Date</th><th>Pièce</th><th>Libellé</th><th>Compte</th><th>Débit</th><th>Crédit</th><th></th></tr></thead><tbody id="listeJournal"></tbody></table>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Grand livre</h2>
+                <div class="form-row">
+                    <div class="form-group"><label>Compte</label><select id="glCompte" onchange="renderGrandLivre()"></select></div>
+                </div>
+                <div class="table-wrap">
+                    <table><thead><tr><th>Date</th><th>Pièce</th><th>Libellé</th><th>Débit</th><th>Crédit</th><th>Solde</th></tr></thead><tbody id="listeGrandLivre"></tbody></table>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Balance générale</h2>
+                <div class="table-wrap">
+                    <table><thead><tr><th>Compte</th><th>Libellé</th><th>Total Débit</th><th>Total Crédit</th><th>Solde</th></tr></thead><tbody id="listeBalance"></tbody></table>
+                </div>
+            </div>
+
+        </section>
+
     </main>
     </div>
 
@@ -810,9 +861,30 @@
                         dateAbattage: null
                     }
                 ],
+                // ── COMPTABILITÉ SYSCOHADA (livres propres à Menko Agro) ──
+                planComptable: [
+                    { compte:'101', libelle:'Capital', classe:1 },
+                    { compte:'401', libelle:'Fournisseurs', classe:4 },
+                    { compte:'411', libelle:'Clients', classe:4 },
+                    { compte:'4456', libelle:'TVA déductible', classe:4 },
+                    { compte:'4434', libelle:'TVA facturée', classe:4 },
+                    { compte:'512', libelle:'Banque', classe:5 },
+                    { compte:'571', libelle:'Caisse', classe:5 },
+                    { compte:'601', libelle:'Achats matières premières & intrants', classe:6 },
+                    { compte:'603', libelle:'Achats animaux & alimentation bétail', classe:6 },
+                    { compte:'6224', libelle:'Transports sur achats/ventes', classe:6 },
+                    { compte:'628', libelle:'Frais vétérinaires & prophylaxie', classe:6 },
+                    { compte:'641', libelle:'Charges de personnel', classe:6 },
+                    { compte:'6811', libelle:'Dotations aux amortissements', classe:6 },
+                    { compte:'701', libelle:'Ventes — Productions agricoles', classe:7 },
+                    { compte:'702', libelle:'Ventes — Productions animales', classe:7 },
+                    { compte:'758', libelle:'Autres produits divers', classe:7 }
+                ],
+                ecritures: [],
                 nextId: { produit: 7, depot: 3, fournisseur: 2, client: 3, commandeFourn: 1, receptionFourn: 1,
                     factureFourn: 1, commandeClient: 1, livraisonClient: 3, factureClient: 1, vente: 3,
-                    production: 2, recolte: 3, bande: 2, suiviElevage: 3, sortieAnimaux: 2, prophylaxie: 3, alimentJ: 1 }
+                    production: 2, recolte: 3, bande: 2, suiviElevage: 3, sortieAnimaux: 2, prophylaxie: 3, alimentJ: 1,
+                    ecriture: 1 }
             };
         }
 
@@ -825,7 +897,8 @@
             tabStocks: false,
             tabFournisseurs: false,
             tabClients: false,
-            tabVentes: false
+            tabVentes: false,
+            tabCompta: false
         };
 
         // ============================================================
@@ -893,6 +966,9 @@
             });
             if (!data.nextId.prophylaxie) data.nextId.prophylaxie = 1;
             if (!data.nextId.alimentJ) data.nextId.alimentJ = 1;
+            if (!data.planComptable) data.planComptable = getDefaultData().planComptable;
+            if (!data.ecritures) data.ecritures = [];
+            if (!data.nextId.ecriture) data.nextId.ecriture = 1;
         }
 
         async function loadData() {
@@ -1012,6 +1088,9 @@
                         remplirSelectProduits('venteProduit');
                         remplirSelectClients('venteClient');
                         renderVentes();
+                        break;
+                    case 'tabCompta':
+                        renderCompta();
                         break;
                 }
                 // Supprimer l'indicateur
@@ -2310,6 +2389,7 @@
             const montant = parseFloat(document.getElementById('factFournMontant').value);
             if (!fournisseurId || !date || isNaN(montant) || montant < 0) { alert('Veuillez remplir correctement.'); return; }
             data.facturesFournisseur.push({ id: data.nextId.factureFourn++, fournisseurId, date, montant });
+            genererEcritureAchatFourn({ id: data.nextId.factureFourn - 1, date, montant }, getFournisseur(fournisseurId));
             saveData();
             fermerModal();
             renderFacturesFourn();
@@ -2621,6 +2701,224 @@
             });
         }
 
+        // ============================================================
+        //  COMPTABILITÉ SYSCOHADA — livre propre Menko Agro
+        // ============================================================
+        function getCompte(code) { return data.planComptable.find(c => c.compte === code); }
+
+        function libelleCompte(code) {
+            const c = getCompte(code);
+            return c ? (c.compte + ' — ' + c.libelle) : code;
+        }
+
+        /** Ajoute une écriture équilibrée au journal. lignes: [{compte, libelle, debit, credit}] */
+        function ajouterEcriture(date, piece, libelle, lignes, source) {
+            const totDebit = lignes.reduce((s, l) => s + (Number(l.debit) || 0), 0);
+            const totCredit = lignes.reduce((s, l) => s + (Number(l.credit) || 0), 0);
+            if (Math.abs(totDebit - totCredit) > 0.5) {
+                console.warn('Écriture non équilibrée ignorée :', libelle, totDebit, totCredit);
+                return null;
+            }
+            const ecriture = { id: data.nextId.ecriture++, date, piece: piece || '', libelle, lignes, source: source || null };
+            data.ecritures.push(ecriture);
+            saveData();
+            return ecriture;
+        }
+
+        /** Écriture automatique : vente comptant (encaissée en caisse) */
+        function genererEcritureVente(vente, produit) {
+            const total = vente.quantite * vente.prixUnitaire;
+            if (!total) return;
+            const compteVente = (produit && produit.categorie === 'elevage') ? '702' : '701';
+            ajouterEcriture(
+                vente.date.slice(0, 10), 'V' + vente.id,
+                'Vente ' + (produit ? produit.nom : ''),
+                [
+                    { compte: '571', libelle: 'Encaissement vente', debit: total, credit: 0 },
+                    { compte: compteVente, libelle: 'Vente ' + (produit ? produit.nom : ''), debit: 0, credit: total }
+                ],
+                { type: 'vente', id: vente.id }
+            );
+        }
+
+        /** Écriture automatique : facture fournisseur (achat à crédit) */
+        function genererEcritureAchatFourn(facture, fournisseur) {
+            if (!facture.montant) return;
+            ajouterEcriture(
+                facture.date, 'F' + facture.id,
+                'Achat — ' + (fournisseur ? fournisseur.nom : 'Fournisseur'),
+                [
+                    { compte: '601', libelle: 'Achat ' + (fournisseur ? fournisseur.nom : ''), debit: facture.montant, credit: 0 },
+                    { compte: '401', libelle: 'Fournisseur ' + (fournisseur ? fournisseur.nom : ''), debit: 0, credit: facture.montant }
+                ],
+                { type: 'factureFourn', id: facture.id }
+            );
+        }
+
+        function renderJournal() {
+            const tbody = document.getElementById('listeJournal');
+            if (!tbody) return;
+            tbody.innerHTML = '';
+            data.ecritures.slice().reverse().forEach(ec => {
+                ec.lignes.forEach((l, i) => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td>${i === 0 ? formatDateSimple(ec.date) : ''}</td>` +
+                        `<td>${i === 0 ? ec.piece : ''}</td>` +
+                        `<td>${i === 0 ? ec.libelle : ''}</td>` +
+                        `<td>${libelleCompte(l.compte)}</td>` +
+                        `<td>${l.debit ? l.debit.toFixed(0) : ''}</td>` +
+                        `<td>${l.credit ? l.credit.toFixed(0) : ''}</td>` +
+                        `<td>${i === 0 ? '<button class="btn btn-sm btn-danger" onclick="supprimerEcriture(' + ec.id + ')">🗑️</button>' : ''}</td>`;
+                    tbody.appendChild(tr);
+                });
+            });
+        }
+
+        function supprimerEcriture(id) {
+            if (!confirm('Supprimer cette écriture ? (les écritures automatiques ne se régénèrent pas)')) return;
+            data.ecritures = data.ecritures.filter(e => e.id !== id);
+            saveData();
+            renderCompta();
+        }
+
+        function remplirSelectComptes(selectId) {
+            const sel = document.getElementById(selectId);
+            if (!sel) return;
+            const current = sel.value;
+            sel.innerHTML = '';
+            data.planComptable.forEach(c => {
+                const opt = document.createElement('option');
+                opt.value = c.compte;
+                opt.textContent = c.compte + ' — ' + c.libelle;
+                sel.appendChild(opt);
+            });
+            if (current) sel.value = current;
+        }
+
+        function renderGrandLivre() {
+            const compte = document.getElementById('glCompte').value;
+            const tbody = document.getElementById('listeGrandLivre');
+            tbody.innerHTML = '';
+            let solde = 0;
+            data.ecritures
+                .slice()
+                .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+                .forEach(ec => {
+                    ec.lignes.filter(l => l.compte === compte).forEach(l => {
+                        solde += (Number(l.debit) || 0) - (Number(l.credit) || 0);
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `<td>${formatDateSimple(ec.date)}</td><td>${ec.piece}</td><td>${ec.libelle}</td>` +
+                            `<td>${l.debit ? l.debit.toFixed(0) : ''}</td><td>${l.credit ? l.credit.toFixed(0) : ''}</td>` +
+                            `<td><strong>${solde.toFixed(0)}</strong></td>`;
+                        tbody.appendChild(tr);
+                    });
+                });
+        }
+
+        function renderBalance() {
+            const tbody = document.getElementById('listeBalance');
+            tbody.innerHTML = '';
+            data.planComptable.forEach(c => {
+                let td = 0, tc = 0;
+                data.ecritures.forEach(ec => {
+                    ec.lignes.filter(l => l.compte === c.compte).forEach(l => {
+                        td += Number(l.debit) || 0;
+                        tc += Number(l.credit) || 0;
+                    });
+                });
+                if (!td && !tc) return;
+                const solde = td - tc;
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${c.compte}</td><td>${c.libelle}</td><td>${td.toFixed(0)}</td><td>${tc.toFixed(0)}</td>` +
+                    `<td><strong>${solde.toFixed(0)}</strong> ${solde >= 0 ? '(D)' : '(C)'}</td>`;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function soldeCompte(compte) {
+            let td = 0, tc = 0;
+            data.ecritures.forEach(ec => ec.lignes.filter(l => l.compte === compte).forEach(l => {
+                td += Number(l.debit) || 0; tc += Number(l.credit) || 0;
+            }));
+            return td - tc;
+        }
+
+        function renderSoldesRapides() {
+            const zone = document.getElementById('comptaSoldesRapides');
+            const caisse = soldeCompte('571');
+            const clients = soldeCompte('411');
+            const fournisseurs = -soldeCompte('401');
+            const ventes = soldeCompte('701') * -1 + soldeCompte('702') * -1;
+            zone.innerHTML = [
+                ['Caisse', caisse], ['Clients', clients], ['Fournisseurs', fournisseurs], ['Total ventes', ventes]
+            ].map(([lib, val]) => `<div class="form-group"><label>${lib}</label><div style="font-size:1.2rem;font-weight:700;color:#1e3d2f;">${val.toFixed(0)} FCFA</div></div>`).join('');
+        }
+
+        let nbLignesEcriture = 0;
+        function ajouterLigneEcriture() {
+            nbLignesEcriture++;
+            const id = nbLignesEcriture;
+            const zone = document.getElementById('ecLignes');
+            const row = document.createElement('div');
+            row.className = 'form-row';
+            row.id = 'ecLigne' + id;
+            row.innerHTML =
+                `<div class="form-group" style="flex:2 1 220px;"><label>Compte</label><select id="ecCompte${id}" class="ecCompteSel"></select></div>` +
+                `<div class="form-group"><label>Débit</label><input type="number" id="ecDebit${id}" step="0.01" oninput="majTotauxEcriture()"></div>` +
+                `<div class="form-group"><label>Crédit</label><input type="number" id="ecCredit${id}" step="0.01" oninput="majTotauxEcriture()"></div>` +
+                `<button class="btn btn-sm btn-danger" style="align-self:flex-end;" onclick="document.getElementById('ecLigne${id}').remove();majTotauxEcriture();">✕</button>`;
+            zone.appendChild(row);
+            remplirSelectComptes('ecCompte' + id);
+            majTotauxEcriture();
+        }
+
+        function majTotauxEcriture() {
+            let td = 0, tc = 0;
+            document.querySelectorAll('[id^="ecDebit"]').forEach(el => td += parseFloat(el.value) || 0);
+            document.querySelectorAll('[id^="ecCredit"]').forEach(el => tc += parseFloat(el.value) || 0);
+            document.getElementById('ecTotalDebit').textContent = td.toFixed(0);
+            document.getElementById('ecTotalCredit').textContent = tc.toFixed(0);
+            const eq = document.getElementById('ecEquilibre');
+            const ok = Math.abs(td - tc) < 0.5 && td > 0;
+            eq.textContent = ok ? '✓ Équilibré' : 'Non équilibré';
+            eq.style.color = ok ? '#2a7a4a' : '#b33c3c';
+        }
+
+        function validerEcritureManuelle() {
+            const date = document.getElementById('ecDate').value;
+            const piece = document.getElementById('ecPiece').value.trim();
+            const libelle = document.getElementById('ecLibelle').value.trim();
+            if (!date || !libelle) { alert('Date et libellé requis.'); return; }
+            const lignes = [];
+            document.querySelectorAll('.ecCompteSel').forEach(sel => {
+                const id = sel.id.replace('ecCompte', '');
+                const debit = parseFloat(document.getElementById('ecDebit' + id).value) || 0;
+                const credit = parseFloat(document.getElementById('ecCredit' + id).value) || 0;
+                if (debit || credit) lignes.push({ compte: sel.value, libelle, debit, credit });
+            });
+            if (lignes.length < 2) { alert('Au moins 2 lignes requises.'); return; }
+            const ec = ajouterEcriture(date, piece, libelle, lignes, { type: 'manuel' });
+            if (!ec) { alert('Écriture non équilibrée : total débit ≠ total crédit.'); return; }
+            document.getElementById('ecPiece').value = '';
+            document.getElementById('ecLibelle').value = '';
+            document.getElementById('ecLignes').innerHTML = '';
+            nbLignesEcriture = 0;
+            ajouterLigneEcriture(); ajouterLigneEcriture();
+            renderCompta();
+        }
+
+        function renderCompta() {
+            document.getElementById('ecDate').value = new Date().toISOString().slice(0, 10);
+            if (!document.getElementById('ecLignes').children.length) {
+                ajouterLigneEcriture(); ajouterLigneEcriture();
+            }
+            remplirSelectComptes('glCompte');
+            renderSoldesRapides();
+            renderJournal();
+            renderGrandLivre();
+            renderBalance();
+        }
+
         function enregistrerVente() {
             const clientId = parseInt(document.getElementById('venteClient').value);
             const produitId = parseInt(document.getElementById('venteProduit').value);
@@ -2633,7 +2931,9 @@
             const stock = getStock(produitId, depotId);
             if (!stock || stock.quantite < qte) { alert('Stock insuffisant.'); return; }
             stock.quantite -= qte;
-            data.ventes.push({ id: data.nextId.vente++, clientId, produitId, quantite: qte, prixUnitaire: prix, date: nowISO() });
+            const vente = { id: data.nextId.vente++, clientId, produitId, quantite: qte, prixUnitaire: prix, date: nowISO() };
+            data.ventes.push(vente);
+            genererEcritureVente(vente, getProduit(produitId));
             saveData();
             renderVentes();
             if (loadedTabs.tabStocks) { renderStocks();
