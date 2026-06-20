@@ -4336,11 +4336,13 @@
                 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(parcellesLeafletMap);
             }
             // Nettoyer les marqueurs existants
-            parcellesLeafletMap.eachLayer(layer => { if (layer instanceof L.Marker) parcellesLeafletMap.removeLayer(layer); });
+            parcellesMarkers = {};
+            parcellesLeafletMap.eachLayer(layer => { if (layer instanceof L.CircleMarker) parcellesLeafletMap.removeLayer(layer); });
             const pts = [];
             data.parcelles.filter(p => p.lat != null && p.lng != null).forEach(p => {
                 const color = STATUT_PARCELLE_COLOR[p.statut] || '#555';
                 const marker = L.circleMarker([p.lat, p.lng], { radius: 9, color, fillColor: color, fillOpacity: 0.85 }).addTo(parcellesLeafletMap);
+                parcellesMarkers[p.id] = marker;
                 const zone = getZoneParcelle(p);
                 marker.bindPopup(`<strong>${p.reference}</strong><br>${p.superficieHa} ha — ${STATUT_PARCELLE_LABEL[p.statut] || p.statut}${zone ? '<br><em>'+zone.nom+'</em><br><span style="font-size:11px;">Cultures conseillées : '+zone.cultures.join(', ')+'</span>' : ''}`);
                 pts.push([p.lat, p.lng]);
@@ -4364,6 +4366,46 @@
             });
         }
 
+        // ============================================================
+        //  FOCUS PARCELLE SUR LA CARTE
+        // ============================================================
+        let parcellesMarkers = {};
+
+        function voirParcelleCarteMap(id) {
+            const p = data.parcelles.find(function(pc) { return pc.id === id; });
+            if (!p || p.lat === null || p.lat === undefined) {
+                alert("Cette parcelle n\'a pas de coordonnées GPS. Utilisez ✏️ pour en ajouter.");
+                return;
+            }
+            // Scroll vers la carte
+            const mapEl = document.getElementById("parcellesMap");
+            if (mapEl) { mapEl.scrollIntoView({ behavior: "smooth", block: "center" }); }
+
+            // Initialiser la carte si pas encore fait
+            if (!parcellesLeafletMap) { renderParcellesMap(); }
+
+            // Centrer + zoomer sur la parcelle
+            parcellesLeafletMap.setView([p.lat, p.lng], 15, { animate: true });
+
+            // Ouvrir la popup du marqueur correspondant
+            const marker = parcellesMarkers[id];
+            if (marker) {
+                setTimeout(function() { marker.openPopup(); }, 400);
+            }
+
+            // Mettre en valeur la ligne du tableau
+            document.querySelectorAll("#listeParcelles tr").forEach(function(tr) {
+                tr.style.background = "";
+            });
+            const allRows = document.querySelectorAll("#listeParcelles tr");
+            const idx = data.parcelles.findIndex(function(pc) { return pc.id === id; });
+            if (allRows[idx]) {
+                allRows[idx].style.background = "#eaf3ee";
+                allRows[idx].style.transition = "background 0.3s";
+                setTimeout(function() { allRows[idx].style.background = ""; }, 2500);
+            }
+        }
+
         function renderParcelles() {
             remplirSelectParcelles('prodParcelle');
             const tbody = document.getElementById('listeParcelles');
@@ -4383,7 +4425,7 @@
                     `<td>${productionsLiees.length}</td>` +
                     `<td>${bandesLiees.length}</td>` +
                     `<td>${rendement ? rendement.toFixed(1) : '-'}</td>` +
-                    `<td style="white-space:nowrap;"><button class="btn btn-sm btn-outline" onclick="editerParcelle(${p.id})" style="margin-right:0.3rem;">✏️</button><button class="btn btn-sm btn-danger" onclick="supprimerParcelle(${p.id})">🗑️</button></td>`;
+                    `<td style="white-space:nowrap;">${p.lat !== null && p.lat !== undefined ? '<button class="btn btn-sm" style="background:#2980b9;color:#fff;margin-right:0.3rem;" onclick="voirParcelleCarteMap(' + p.id + ')">📍</button>' : ''}<button class="btn btn-sm btn-outline" onclick="editerParcelle(${p.id})" style="margin-right:0.3rem;">✏️</button><button class="btn btn-sm btn-danger" onclick="supprimerParcelle(${p.id})">🗑️</button></td>`;
                 tbody.appendChild(tr);
             });
             renderParcellesMap();
