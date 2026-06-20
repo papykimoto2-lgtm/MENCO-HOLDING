@@ -506,6 +506,7 @@
         <nav class="nav-tabs" id="navTabs">
             <button class="active" data-tab="tabProduits">🌱 Produits</button>
             <button data-tab="tabParcelles">🗺️ Parcelles</button>
+            <button data-tab="tabCampagnes">🌦️ Campagnes</button>
             <button data-tab="tabProduction">⚙️ Production</button>
             <button data-tab="tabElevage">🐄 Élevage</button>
             <button data-tab="tabStocks">📦 Stocks</button>
@@ -603,6 +604,46 @@
         </section>
 
         <!-- ==================== PRODUCTION ==================== -->
+        <!-- ==================== CAMPAGNES & SAISONNALITÉ ==================== -->
+        <section id="tabCampagnes" class="tab-pane">
+
+            <div class="card" id="alertesCampagnesCard">
+                <h2>⏰ Alertes — opérations à venir (3 mois)</h2>
+                <div id="alertesCampagnes"></div>
+            </div>
+
+            <div class="card">
+                <h2>Nouvelle campagne</h2>
+                <div class="form-row">
+                    <div class="form-group" style="flex:2;"><label>Nom *</label><input type="text" id="campNom" placeholder="Ex: Campagne Maïs Taabo — Saison 1"></div>
+                    <div class="form-group"><label>Parcelle</label><select id="campParcelle"></select></div>
+                    <div class="form-group"><label>Culture / Produit *</label><select id="campProduit"></select></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>Saison</label><input type="text" id="campSaison" placeholder="2026 - Saison 1"></div>
+                    <div class="form-group"><label>Date début *</label><input type="date" id="campDateDebut"></div>
+                    <div class="form-group"><label>Date fin prévue</label><input type="date" id="campDateFin"></div>
+                    <button class="btn btn-success" onclick="validerCampagne()">➕ Créer la campagne</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Calendrier cultural de référence — saisonnalité</h2>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Culture</th><th>Cycle (jours)</th><th>Mois de semis recommandés</th><th>Mois de récolte recommandés</th></tr></thead>
+                        <tbody id="calendrierCultural"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Campagnes en cours</h2>
+                <div id="listeCampagnes"></div>
+            </div>
+
+        </section>
+
         <section id="tabProduction" class="tab-pane">
             <div class="card">
                 <h2>Gestion des productions, récoltes et livraisons</h2>
@@ -852,6 +893,19 @@
                     { id: 1, reference: 'Parcelle Taabo A', superficieHa: 5, lat: 6.0667, lng: -5.1167,
                         typeSol: 'Argilo-sableux', statut: 'culture', titreFoncier: '', notes: '' }
                 ],
+                campagnes: [
+                    {
+                        id: 1, nom: 'Campagne Maïs Taabo — Saison 1', parcelleId: 1, produitId: 1,
+                        saison: '2026 - Saison 1', dateDebut: '2026-03-01', dateFin: '2026-07-15', statut: 'en_cours',
+                        operations: [
+                            { id: 1, type: 'Préparation sol', datePrevue: '2026-03-01', dateRealisee: '2026-03-02', cout: 25000, notes: '' },
+                            { id: 2, type: 'Semis/Plantation', datePrevue: '2026-03-10', dateRealisee: '2026-03-10', cout: 40000, notes: '' },
+                            { id: 3, type: 'Fertilisation', datePrevue: '2026-04-05', dateRealisee: null, cout: 30000, notes: 'NPK 1ère application' },
+                            { id: 4, type: 'Traitement phytosanitaire', datePrevue: '2026-04-20', dateRealisee: null, cout: 15000, notes: '' },
+                            { id: 5, type: 'Récolte', datePrevue: '2026-07-10', dateRealisee: null, cout: 0, notes: '' }
+                        ]
+                    }
+                ],
                 commandesFournisseur: [],
                 receptionsFournisseur: [],
                 facturesFournisseur: [],
@@ -939,7 +993,7 @@
                 nextId: { produit: 7, depot: 3, fournisseur: 2, client: 3, commandeFourn: 1, receptionFourn: 1,
                     factureFourn: 1, commandeClient: 1, livraisonClient: 3, factureClient: 1, vente: 3,
                     production: 2, recolte: 3, bande: 2, suiviElevage: 3, sortieAnimaux: 2, prophylaxie: 3, alimentJ: 1,
-                    ecriture: 1, parcelle: 2 }
+                    ecriture: 1, parcelle: 2, campagne: 2, operationCampagne: 6 }
             };
         }
 
@@ -954,7 +1008,8 @@
             tabClients: false,
             tabVentes: false,
             tabCompta: false,
-            tabParcelles: false
+            tabParcelles: false,
+            tabCampagnes: false
         };
 
         // ============================================================
@@ -1027,6 +1082,9 @@
             if (!data.nextId.ecriture) data.nextId.ecriture = 1;
             if (!data.parcelles) data.parcelles = [];
             if (!data.nextId.parcelle) data.nextId.parcelle = 1;
+            if (!data.campagnes) data.campagnes = [];
+            if (!data.nextId.campagne) data.nextId.campagne = 1;
+            if (!data.nextId.operationCampagne) data.nextId.operationCampagne = 1;
         }
 
         async function loadData() {
@@ -1153,6 +1211,9 @@
                         break;
                     case 'tabParcelles':
                         renderParcelles();
+                        break;
+                    case 'tabCampagnes':
+                        renderCampagnes();
                         break;
                 }
                 // Supprimer l'indicateur
@@ -2775,6 +2836,217 @@
                     `<td>${formatDate(v.date)}</td><td>${client?client.nom:'Inconnu'}</td><td>${produit?produit.nom:'Inconnu'}</td><td>${v.quantite}</td><td>${v.prixUnitaire?.toFixed(0)||0}</td><td><strong>${(v.quantite*v.prixUnitaire).toFixed(0)}</strong></td>`;
                 tbody.appendChild(tr);
             });
+        }
+
+        // ============================================================
+        //  CAMPAGNES & SAISONNALITÉ
+        // ============================================================
+        const CALENDRIER_CULTURAL = {
+            'Maïs':    { cycleJours: 90,  semis: [3, 4, 9, 10],     recolte: [6, 7, 12, 1] },
+            'Manioc':  { cycleJours: 270, semis: [3, 4, 5, 9, 10],  recolte: [12, 1, 2, 3] },
+            'Tomate':  { cycleJours: 90,  semis: [9, 10, 11, 1, 2], recolte: [12, 1, 2, 3, 4] }
+        };
+        const NOMS_MOIS = ['', 'Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc'];
+        const TYPES_OPERATION = ['Préparation sol', 'Semis/Plantation', 'Fertilisation', 'Traitement phytosanitaire', 'Désherbage', 'Irrigation', 'Récolte', 'Autre'];
+        const STATUT_CAMPAGNE_LABEL = { planifiee: 'Planifiée', en_cours: 'En cours', terminee: 'Terminée' };
+        const STATUT_CAMPAGNE_COLOR = { planifiee: '#7f8c8d', en_cours: '#2980b9', terminee: '#2a7a4a' };
+        const TYPE_OP_COLOR = {
+            'Préparation sol': '#a67c52', 'Semis/Plantation': '#2a7a4a', 'Fertilisation': '#d4a017',
+            'Traitement phytosanitaire': '#c0392b', 'Désherbage': '#8e44ad', 'Irrigation': '#2980b9',
+            'Récolte': '#16a085', 'Autre': '#7f8c8d'
+        };
+
+        function getCampagne(id) { return data.campagnes.find(c => c.id === id); }
+
+        function remplirSelectCampagneOptions() {
+            remplirSelectParcelles('campParcelle');
+            const sel = document.getElementById('campProduit');
+            sel.innerHTML = '';
+            data.produits.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.id; opt.textContent = p.nom;
+                sel.appendChild(opt);
+            });
+        }
+
+        function validerCampagne() {
+            const nom = document.getElementById('campNom').value.trim();
+            const parcelleId = parseInt(document.getElementById('campParcelle').value) || null;
+            const produitId = parseInt(document.getElementById('campProduit').value);
+            const saison = document.getElementById('campSaison').value.trim();
+            const dateDebut = document.getElementById('campDateDebut').value;
+            const dateFin = document.getElementById('campDateFin').value || null;
+            if (!nom || !produitId || !dateDebut) { alert('Nom, culture et date de début sont obligatoires.'); return; }
+
+            data.campagnes.push({
+                id: data.nextId.campagne++, nom, parcelleId, produitId, saison, dateDebut, dateFin,
+                statut: 'planifiee', operations: []
+            });
+            saveData();
+            document.getElementById('campNom').value = '';
+            document.getElementById('campSaison').value = '';
+            document.getElementById('campDateDebut').value = '';
+            document.getElementById('campDateFin').value = '';
+            renderCampagnes();
+        }
+
+        function supprimerCampagne(id) {
+            if (!confirm('Supprimer cette campagne et toutes ses opérations ?')) return;
+            data.campagnes = data.campagnes.filter(c => c.id !== id);
+            saveData();
+            renderCampagnes();
+        }
+
+        function ouvrirModalOperation(campagneId) {
+            const camp = getCampagne(campagneId);
+            if (!camp) return;
+            const overlay = document.getElementById('modalOverlay');
+            const body = document.getElementById('modalBody');
+            const optsType = TYPES_OPERATION.map(t => `<option value="${t}">${t}</option>`).join('');
+            body.innerHTML = `
+                <h2>Nouvelle opération — ${camp.nom}</h2>
+                <div class="form-row">
+                    <div class="form-group"><label>Type *</label><select id="opType">${optsType}</select></div>
+                    <div class="form-group"><label>Date prévue *</label><input type="date" id="opDatePrevue" value="${new Date().toISOString().slice(0,10)}"></div>
+                    <div class="form-group"><label>Coût estimé (FCFA)</label><input type="number" id="opCout" step="0.01" value="0"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:3;"><label>Notes</label><input type="text" id="opNotes" placeholder="Produit utilisé, dose, intervenant…"></div>
+                </div>
+                <button class="btn" onclick="validerOperation(${campagneId})">Ajouter l'opération</button>
+            `;
+            overlay.classList.add('active');
+        }
+
+        function validerOperation(campagneId) {
+            const camp = getCampagne(campagneId);
+            if (!camp) return;
+            const type = document.getElementById('opType').value;
+            const datePrevue = document.getElementById('opDatePrevue').value;
+            const cout = parseFloat(document.getElementById('opCout').value) || 0;
+            const notes = document.getElementById('opNotes').value.trim();
+            if (!datePrevue) { alert('Date prévue requise.'); return; }
+            camp.operations.push({ id: data.nextId.operationCampagne++, type, datePrevue, dateRealisee: null, cout, notes });
+            saveData();
+            fermerModal();
+            renderCampagnes();
+        }
+
+        function marquerOperationRealisee(campagneId, opId) {
+            const camp = getCampagne(campagneId);
+            if (!camp) return;
+            const op = camp.operations.find(o => o.id === opId);
+            if (!op) return;
+            op.dateRealisee = new Date().toISOString().slice(0, 10);
+            saveData();
+            renderCampagnes();
+        }
+
+        function supprimerOperation(campagneId, opId) {
+            const camp = getCampagne(campagneId);
+            if (!camp) return;
+            if (!confirm('Supprimer cette opération ?')) return;
+            camp.operations = camp.operations.filter(o => o.id !== opId);
+            saveData();
+            renderCampagnes();
+        }
+
+        function changerStatutCampagne(campagneId, statut) {
+            const camp = getCampagne(campagneId);
+            if (!camp) return;
+            camp.statut = statut;
+            saveData();
+            renderCampagnes();
+        }
+
+        /** Mini-Gantt CSS : positionne chaque opération sur la timeline de la campagne */
+        function renderGanttHtml(camp) {
+            const debut = new Date(camp.dateDebut).getTime();
+            const fin = camp.dateFin ? new Date(camp.dateFin).getTime() : (debut + 120 * 86400000);
+            const duree = Math.max(fin - debut, 86400000);
+            const rows = camp.operations.slice().sort((a, b) => a.datePrevue.localeCompare(b.datePrevue)).map(op => {
+                const t = new Date(op.datePrevue).getTime();
+                let pct = ((t - debut) / duree) * 100;
+                pct = Math.min(Math.max(pct, 0), 97);
+                const color = TYPE_OP_COLOR[op.type] || '#7f8c8d';
+                const done = !!op.dateRealisee;
+                return `<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:4px;font-size:0.78rem;">
+                    <span style="width:160px;flex-shrink:0;${done ? 'text-decoration:line-through;color:#999;' : ''}">${op.type}</span>
+                    <div style="position:relative;flex:1;height:14px;background:#eef2f0;border-radius:4px;">
+                        <div title="${formatDateSimple(op.datePrevue)}" style="position:absolute;left:${pct}%;width:10px;height:14px;border-radius:3px;background:${color};opacity:${done ? 0.4 : 1};"></div>
+                    </div>
+                    <span style="width:90px;flex-shrink:0;color:#666;">${formatDateSimple(op.datePrevue)}</span>
+                    <span>${done ? '✅' : `<button class="btn btn-sm btn-success" onclick="marquerOperationRealisee(${camp.id},${op.id})">✔</button>`}</span>
+                    <button class="btn btn-sm btn-danger" onclick="supprimerOperation(${camp.id},${op.id})">🗑️</button>
+                </div>`;
+            }).join('');
+            return rows || '<p style="color:#888;font-size:0.85rem;">Aucune opération planifiée.</p>';
+        }
+
+        function renderCampagnes() {
+            remplirSelectCampagneOptions();
+
+            // Calendrier cultural de référence
+            const tbody = document.getElementById('calendrierCultural');
+            tbody.innerHTML = Object.keys(CALENDRIER_CULTURAL).map(nom => {
+                const c = CALENDRIER_CULTURAL[nom];
+                return `<tr><td><strong>${nom}</strong></td><td>${c.cycleJours} j</td>` +
+                    `<td>${c.semis.map(m => NOMS_MOIS[m]).join(', ')}</td>` +
+                    `<td>${c.recolte.map(m => NOMS_MOIS[m]).join(', ')}</td></tr>`;
+            }).join('');
+
+            // Alertes 3 mois
+            const horizon = Date.now() + 90 * 86400000;
+            const aujourdHui = new Date().toISOString().slice(0, 10);
+            let alertes = [];
+            data.campagnes.forEach(camp => {
+                camp.operations.forEach(op => {
+                    if (op.dateRealisee) return;
+                    const t = new Date(op.datePrevue).getTime();
+                    if (t <= horizon) {
+                        alertes.push({ campagne: camp, op, retard: op.datePrevue < aujourdHui });
+                    }
+                });
+            });
+            alertes.sort((a, b) => a.op.datePrevue.localeCompare(b.op.datePrevue));
+            const alertesZone = document.getElementById('alertesCampagnes');
+            alertesZone.innerHTML = alertes.length === 0 ? '<p style="color:#888;">Aucune opération à venir dans les 3 prochains mois.</p>' :
+                alertes.map(a => `<div class="alert-box" style="${a.retard ? 'background:#fdecea;border-left:4px solid #c0392b;' : 'background:#fff8e1;border-left:4px solid #d4a017;'}">
+                    <strong>${a.retard ? '⚠️ En retard' : '⏳ À venir'}</strong>
+                    <span>${a.op.type} — ${a.campagne.nom} — prévue le ${formatDateSimple(a.op.datePrevue)}</span>
+                </div>`).join('');
+
+            // Liste des campagnes
+            const zone = document.getElementById('listeCampagnes');
+            if (data.campagnes.length === 0) {
+                zone.innerHTML = '<p style="color:#888;">Aucune campagne créée.</p>';
+                return;
+            }
+            zone.innerHTML = data.campagnes.map(camp => {
+                const produit = getProduit(camp.produitId);
+                const parcelle = camp.parcelleId ? getParcelle(camp.parcelleId) : null;
+                const totalCout = camp.operations.reduce((s, o) => s + (Number(o.cout) || 0), 0);
+                const nbDone = camp.operations.filter(o => o.dateRealisee).length;
+                return `<div class="production-step">
+                    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;">
+                        <span style="font-weight:600;">🌦️ ${camp.nom}</span>
+                        <select onchange="changerStatutCampagne(${camp.id}, this.value)" style="width:auto;padding:0.2rem 0.5rem;">
+                            ${Object.keys(STATUT_CAMPAGNE_LABEL).map(s => `<option value="${s}" ${camp.statut===s?'selected':''}>${STATUT_CAMPAGNE_LABEL[s]}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div style="display:flex;flex-wrap:wrap;gap:0.6rem;margin:0.4rem 0;">
+                        <span class="badge">🌱 ${produit ? produit.nom : '?'}</span>
+                        <span class="badge">🗺️ ${parcelle ? parcelle.reference : 'Aucune parcelle'}</span>
+                        <span class="badge">📅 ${camp.saison || '-'}</span>
+                        <span class="badge">${formatDateSimple(camp.dateDebut)}${camp.dateFin ? ' → ' + formatDateSimple(camp.dateFin) : ''}</span>
+                        <span class="badge">💰 ${totalCout.toFixed(0)} FCFA</span>
+                        <span class="badge">✅ ${nbDone}/${camp.operations.length} opérations réalisées</span>
+                    </div>
+                    <div style="margin:0.6rem 0;">${renderGanttHtml(camp)}</div>
+                    <button class="btn btn-sm btn-outline" onclick="ouvrirModalOperation(${camp.id})">+ Opération</button>
+                    <button class="btn btn-sm btn-danger" onclick="supprimerCampagne(${camp.id})">🗑️ Supprimer la campagne</button>
+                </div>`;
+            }).join('');
         }
 
         // ============================================================
