@@ -575,7 +575,7 @@
             <div class="card">
                 <h2>Liste des parcelles</h2>
                 <div class="table-wrap">
-                    <table><thead><tr><th>Référence</th><th>Superficie (ha)</th><th>Statut</th><th>Type sol</th><th>Productions liées</th><th>Bandes liées</th><th>Rendement/ha</th><th></th></tr></thead><tbody id="listeParcelles"></tbody></table>
+                    <table><thead><tr><th>Référence</th><th>Zone agroécologique</th><th>Superficie (ha)</th><th>Statut</th><th>Type sol</th><th>Productions liées</th><th>Bandes liées</th><th>Rendement/ha</th><th></th></tr></thead><tbody id="listeParcelles"></tbody></table>
                 </div>
             </div>
         </section>
@@ -667,9 +667,10 @@
                 <h2>Nouvelle campagne</h2>
                 <div class="form-row">
                     <div class="form-group" style="flex:2;"><label>Nom *</label><input type="text" id="campNom" placeholder="Ex: Campagne Maïs Taabo — Saison 1"></div>
-                    <div class="form-group"><label>Parcelle</label><select id="campParcelle"></select></div>
-                    <div class="form-group"><label>Culture / Produit *</label><select id="campProduit"></select></div>
+                    <div class="form-group"><label>Parcelle</label><select id="campParcelle" onchange="majInfoZoneCampagne()"></select></div>
+                    <div class="form-group"><label>Culture / Produit *</label><select id="campProduit" onchange="majInfoZoneCampagne()"></select></div>
                 </div>
+                <div id="campInfoZone" style="display:none;margin-bottom:0.8rem;"></div>
                 <div class="form-row">
                     <div class="form-group"><label>Saison</label><input type="text" id="campSaison" placeholder="2026 - Saison 1"></div>
                     <div class="form-group"><label>Date début *</label><input type="date" id="campDateDebut"></div>
@@ -679,13 +680,13 @@
             </div>
 
             <div class="card">
-                <h2>Calendrier cultural de référence — saisonnalité</h2>
-                <div class="table-wrap">
-                    <table>
-                        <thead><tr><th>Culture</th><th>Cycle (jours)</th><th>Mois de semis recommandés</th><th>Mois de récolte recommandés</th></tr></thead>
-                        <tbody id="calendrierCultural"></tbody>
-                    </table>
-                </div>
+                <h2>🗺️ Zones agroécologiques de Côte d'Ivoire</h2>
+                <div id="zonesAgroecologiquesInfo" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem;"></div>
+            </div>
+
+            <div class="card">
+                <h2>Calendrier cultural — saisonnalité par culture</h2>
+                <div id="calendrierVisuel" style="overflow-x:auto;"></div>
             </div>
 
             <div class="card">
@@ -1251,6 +1252,12 @@
             if (!data.nextId.ecriture) data.nextId.ecriture = 1;
             if (!data.parcelles) data.parcelles = [];
             if (!data.nextId.parcelle) data.nextId.parcelle = 1;
+            data.parcelles.forEach(p => {
+                if (p.zoneId === undefined) {
+                    const z = getZoneAgroecologique(p.lat);
+                    p.zoneId = z ? z.id : null;
+                }
+            });
             if (!data.campagnes) data.campagnes = [];
             if (!data.nextId.campagne) data.nextId.campagne = 1;
             if (!data.nextId.operationCampagne) data.nextId.operationCampagne = 1;
@@ -3776,12 +3783,52 @@
         }
 
         // ============================================================
-        //  CAMPAGNES & SAISONNALITÉ
+        //  CAMPAGNES & SAISONNALITÉ — intelligence agro-climatique CI
         // ============================================================
+
+        /** Zones agroécologiques de Côte d'Ivoire (approximation par latitude) */
+        const ZONES_AGROECOLOGIQUES_CI = [
+            { id: 'nord', nom: 'Zone soudanienne (Nord)', latMin: 8.5, latMax: 99,
+              climat: 'Tropical sec — saison des pluies unique', saisonPluies: 'Mai/Juin → Octobre',
+              cultures: ['Coton', 'Anacarde', 'Igname', 'Maïs', 'Mil/Sorgho', 'Riz pluvial'] },
+            { id: 'centre', nom: 'Zone de transition forêt-savane (Centre)', latMin: 6.5, latMax: 8.5,
+              climat: 'Tropical de transition — bimodal atténué', saisonPluies: 'Mars-Juin & Sept-Nov',
+              cultures: ['Anacarde', 'Igname', 'Manioc', 'Maïs', 'Riz pluvial', 'Coton', 'Banane plantain'] },
+            { id: 'sud', nom: 'Zone forestière humide (Sud / Sud-Ouest)', latMin: -99, latMax: 6.5,
+              climat: 'Équatorial humide — bimodal', saisonPluies: 'Mars-Juillet (grande saison) & Sept-Nov (petite saison)',
+              cultures: ['Cacao', 'Hévéa', 'Palmier à huile', 'Banane plantain', 'Manioc', 'Riz pluvial', 'Ananas', 'Tomate'] }
+        ];
+
+        function getZoneAgroecologique(lat) {
+            if (lat === null || lat === undefined || isNaN(lat)) return null;
+            return ZONES_AGROECOLOGIQUES_CI.find(z => lat >= z.latMin && lat < z.latMax) || null;
+        }
+
+        function getZoneById(zoneId) {
+            return ZONES_AGROECOLOGIQUES_CI.find(z => z.id === zoneId) || null;
+        }
+
+        function getZoneParcelle(parcelle) {
+            if (!parcelle) return null;
+            if (parcelle.zoneId) return getZoneById(parcelle.zoneId);
+            return getZoneAgroecologique(parcelle.lat);
+        }
+
+        /** Calendrier cultural de référence — cultures majeures de Côte d'Ivoire */
         const CALENDRIER_CULTURAL = {
-            'Maïs':    { cycleJours: 90,  semis: [3, 4, 9, 10],     recolte: [6, 7, 12, 1] },
-            'Manioc':  { cycleJours: 270, semis: [3, 4, 5, 9, 10],  recolte: [12, 1, 2, 3] },
-            'Tomate':  { cycleJours: 90,  semis: [9, 10, 11, 1, 2], recolte: [12, 1, 2, 3, 4] }
+            'Maïs':            { cycleJours: 90,  semis: [3, 4, 9, 10],    recolte: [6, 7, 12, 1],         zones: ['nord', 'centre', 'sud'] },
+            'Manioc':          { cycleJours: 270, semis: [3, 4, 5, 9, 10], recolte: [12, 1, 2, 3],         zones: ['centre', 'sud'] },
+            'Tomate':          { cycleJours: 90,  semis: [9, 10, 11, 1, 2],recolte: [12, 1, 2, 3, 4],      zones: ['sud', 'centre'] },
+            'Riz pluvial':     { cycleJours: 120, semis: [4, 5, 6],        recolte: [9, 10, 11],           zones: ['nord', 'centre', 'sud'] },
+            'Igname':          { cycleJours: 240, semis: [2, 3, 4],        recolte: [10, 11, 12],          zones: ['nord', 'centre'] },
+            'Coton':           { cycleJours: 180, semis: [5, 6],           recolte: [11, 12, 1],           zones: ['nord'] },
+            'Mil/Sorgho':      { cycleJours: 100, semis: [5, 6],           recolte: [9, 10],               zones: ['nord'] },
+            'Anacarde (cajou)':{ cycleJours: 365, semis: [4, 5],           recolte: [2, 3, 4],             zones: ['nord', 'centre'], pluriannuelle: true },
+            'Cacao':           { cycleJours: 365, semis: [4, 5, 6],        recolte: [10, 11, 12, 1, 2],    zones: ['sud'], pluriannuelle: true },
+            'Hévéa':           { cycleJours: 365, semis: [4, 5],           recolte: [1,2,3,4,5,6,7,8,9,10,11,12], zones: ['sud'], pluriannuelle: true },
+            'Palmier à huile': { cycleJours: 365, semis: [4, 5],           recolte: [1,2,3,4,5,6,7,8,9,10,11,12], zones: ['sud'], pluriannuelle: true },
+            'Banane plantain': { cycleJours: 270, semis: [3, 4, 9, 10],    recolte: [11, 12, 1, 5, 6, 7],  zones: ['sud', 'centre'] },
+            'Ananas':          { cycleJours: 450, semis: [3, 4],           recolte: [10, 11, 12],          zones: ['sud'] }
         };
         const NOMS_MOIS = ['', 'Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc'];
         const TYPES_OPERATION = ['Préparation sol', 'Semis/Plantation', 'Fertilisation', 'Traitement phytosanitaire', 'Désherbage', 'Irrigation', 'Récolte', 'Autre'];
@@ -3951,17 +3998,91 @@
             return rows || '<p style="color:#888;font-size:0.85rem;">Aucune opération planifiée.</p>';
         }
 
+        function majInfoZoneCampagne() {
+            const zoneDiv = document.getElementById('campInfoZone');
+            if (!zoneDiv) return;
+            const parcelleId = parseInt(document.getElementById('campParcelle').value) || null;
+            const produitId = parseInt(document.getElementById('campProduit').value) || null;
+            if (!parcelleId || !produitId) { zoneDiv.style.display = 'none'; return; }
+            const parcelle = getParcelle(parcelleId);
+            const produit = getProduit(produitId);
+            const zone = getZoneParcelle(parcelle);
+            const cal = produit ? CALENDRIER_CULTURAL[produit.nom] : null;
+            const moisActuel = new Date().getMonth() + 1;
+            let html;
+            if (!zone) {
+                html = `<div class="alert-box" style="background:#f4f4f4;border-left:4px solid #999;">📍 Parcelle non géolocalisée — adéquation agro-climatique impossible à évaluer. Ajoutez ses coordonnées GPS dans l'onglet Parcelles.</div>`;
+            } else if (!cal) {
+                html = `<div class="alert-box" style="background:#eaf3ee;border-left:4px solid #2a7a4a;"><strong>${zone.nom}</strong> — ${zone.saisonPluies}<br><span style="color:#888;">Pas de référence de calendrier pour cette culture.</span></div>`;
+            } else {
+                const adapte = cal.zones.includes(zone.id);
+                const bonnePeriode = cal.semis.includes(moisActuel);
+                html = `<div class="alert-box" style="background:${adapte ? '#eaf3ee' : '#fdecea'};border-left:4px solid ${adapte ? '#2a7a4a' : '#c0392b'};">
+                    <div><strong>${zone.nom}</strong> — ${zone.saisonPluies}</div>
+                    <div>${adapte ? '✅' : '⚠️'} ${produit.nom} ${adapte ? 'est une culture adaptée à cette zone.' : "n'est pas habituellement cultivé dans cette zone."}</div>
+                    <div>${bonnePeriode ? '✅ Période actuelle dans la fenêtre de semis recommandée' : '⚠️ Hors fenêtre de semis recommandée'} (${cal.semis.map(m => NOMS_MOIS[m]).join(', ')}).</div>
+                </div>`;
+            }
+            zoneDiv.innerHTML = html;
+            zoneDiv.style.display = 'block';
+        }
+
+        function renderZonesAgroecologiques() {
+            const zone = document.getElementById('zonesAgroecologiquesInfo');
+            if (!zone) return;
+            zone.innerHTML = ZONES_AGROECOLOGIQUES_CI.map(z => {
+                const nbParcelles = data.parcelles.filter(p => (p.zoneId || getZoneAgroecologique(p.lat)?.id) === z.id).length;
+                return `<div class="card" style="margin-bottom:0;padding:1rem;">
+                    <div style="font-weight:700;color:#1e3d2f;margin-bottom:0.3rem;">${z.nom}</div>
+                    <div style="font-size:0.78rem;color:#666;margin-bottom:0.3rem;">${z.climat}</div>
+                    <div style="font-size:0.78rem;margin-bottom:0.3rem;"><strong>Saison des pluies :</strong> ${z.saisonPluies}</div>
+                    <div style="font-size:0.78rem;margin-bottom:0.4rem;"><strong>Cultures conseillées :</strong> ${z.cultures.join(', ')}</div>
+                    <span class="badge">🗺️ ${nbParcelles} parcelle(s) dans cette zone</span>
+                </div>`;
+            }).join('');
+        }
+
+        /** Calendrier cultural visuel : grille 12 mois × cultures, mois actuel mis en évidence */
+        function renderCalendrierVisuel() {
+            const container = document.getElementById('calendrierVisuel');
+            if (!container) return;
+            const moisActuel = new Date().getMonth() + 1;
+            let html = '<table style="border-collapse:collapse;width:100%;font-size:0.75rem;">';
+            html += '<thead><tr><th style="text-align:left;padding:4px 8px;">Culture</th><th style="padding:4px;">Zones</th>' +
+                Array.from({ length: 12 }, (_, i) => i + 1).map(m =>
+                    `<th style="padding:4px;text-align:center;${m === moisActuel ? 'background:#1e3d2f;color:#fff;border-radius:4px;' : ''}">${NOMS_MOIS[m]}</th>`
+                ).join('') + '</tr></thead><tbody>';
+            Object.keys(CALENDRIER_CULTURAL).forEach(nom => {
+                const c = CALENDRIER_CULTURAL[nom];
+                html += `<tr><td style="padding:4px 8px;font-weight:600;white-space:nowrap;">${nom}${c.pluriannuelle ? ' <span title="Culture pérenne" style="color:#888;">🌳</span>' : ''}</td>`;
+                html += `<td style="padding:4px;text-align:center;font-size:0.68rem;color:#666;">${c.zones.map(zid => ({nord:'N',centre:'C',sud:'S'})[zid]).join('/')}</td>`;
+                for (let m = 1; m <= 12; m++) {
+                    const isSemis = c.semis.includes(m);
+                    const isRecolte = c.recolte.includes(m);
+                    let bg = 'transparent', label = '';
+                    if (isSemis && isRecolte) { bg = 'linear-gradient(135deg,#2a7a4a 50%,#d4a017 50%)'; label = 'S+R'; }
+                    else if (isSemis) { bg = '#2a7a4a'; label = 'S'; }
+                    else if (isRecolte) { bg = '#d4a017'; label = 'R'; }
+                    html += `<td style="padding:2px;text-align:center;">
+                        <div style="width:26px;height:18px;margin:0 auto;border-radius:3px;background:${bg};${m === moisActuel ? 'box-shadow:0 0 0 2px #1e3d2f;' : ''}color:#fff;font-size:0.6rem;line-height:18px;font-weight:700;">${label}</div>
+                    </td>`;
+                }
+                html += '</tr>';
+            });
+            html += '</tbody></table>';
+            html += `<div style="display:flex;gap:1rem;flex-wrap:wrap;margin-top:0.6rem;font-size:0.72rem;color:#666;">
+                <span><span style="display:inline-block;width:10px;height:10px;background:#2a7a4a;border-radius:2px;"></span> Semis</span>
+                <span><span style="display:inline-block;width:10px;height:10px;background:#d4a017;border-radius:2px;"></span> Récolte</span>
+                <span>N = Nord · C = Centre · S = Sud</span>
+            </div>`;
+            container.innerHTML = html;
+        }
+
         function renderCampagnes() {
             remplirSelectCampagneOptions();
-
-            // Calendrier cultural de référence
-            const tbody = document.getElementById('calendrierCultural');
-            tbody.innerHTML = Object.keys(CALENDRIER_CULTURAL).map(nom => {
-                const c = CALENDRIER_CULTURAL[nom];
-                return `<tr><td><strong>${nom}</strong></td><td>${c.cycleJours} j</td>` +
-                    `<td>${c.semis.map(m => NOMS_MOIS[m]).join(', ')}</td>` +
-                    `<td>${c.recolte.map(m => NOMS_MOIS[m]).join(', ')}</td></tr>`;
-            }).join('');
+            majInfoZoneCampagne();
+            renderZonesAgroecologiques();
+            renderCalendrierVisuel();
 
             // Alertes 3 mois
             const horizon = Date.now() + 90 * 86400000;
@@ -4005,6 +4126,7 @@
                     <div style="display:flex;flex-wrap:wrap;gap:0.6rem;margin:0.4rem 0;">
                         <span class="badge">🌱 ${produit ? produit.nom : '?'}</span>
                         <span class="badge">🗺️ ${parcelle ? parcelle.reference : 'Aucune parcelle'}</span>
+                        ${parcelle && getZoneParcelle(parcelle) ? `<span class="badge" style="background:#e3eef7;color:#1a5276;">📍 ${getZoneParcelle(parcelle).nom}</span>` : ''}
                         <span class="badge">📅 ${camp.saison || '-'}</span>
                         <span class="badge">${formatDateSimple(camp.dateDebut)}${camp.dateFin ? ' → ' + formatDateSimple(camp.dateFin) : ''}</span>
                         <span class="badge">💰 ${totalCout.toFixed(0)} FCFA</span>
@@ -4053,9 +4175,11 @@
                 alert('Référence et superficie sont obligatoires.');
                 return;
             }
+            const latVal = isNaN(lat) ? null : lat;
+            const zone = getZoneAgroecologique(latVal);
             data.parcelles.push({
                 id: data.nextId.parcelle++, reference, superficieHa, typeSol, statut,
-                lat: isNaN(lat) ? null : lat, lng: isNaN(lng) ? null : lng, titreFoncier, notes
+                lat: latVal, lng: isNaN(lng) ? null : lng, titreFoncier, notes, zoneId: zone ? zone.id : null
             });
             saveData();
             document.getElementById('parcRef').value = '';
@@ -4091,7 +4215,8 @@
             data.parcelles.filter(p => p.lat != null && p.lng != null).forEach(p => {
                 const color = STATUT_PARCELLE_COLOR[p.statut] || '#555';
                 const marker = L.circleMarker([p.lat, p.lng], { radius: 9, color, fillColor: color, fillOpacity: 0.85 }).addTo(parcellesLeafletMap);
-                marker.bindPopup(`<strong>${p.reference}</strong><br>${p.superficieHa} ha — ${STATUT_PARCELLE_LABEL[p.statut] || p.statut}`);
+                const zone = getZoneParcelle(p);
+                marker.bindPopup(`<strong>${p.reference}</strong><br>${p.superficieHa} ha — ${STATUT_PARCELLE_LABEL[p.statut] || p.statut}${zone ? '<br><em>'+zone.nom+'</em><br><span style="font-size:11px;">Cultures conseillées : '+zone.cultures.join(', ')+'</span>' : ''}`);
                 pts.push([p.lat, p.lng]);
             });
             if (pts.length > 0) parcellesLeafletMap.fitBounds(pts, { maxZoom: 13, padding: [20, 20] });
@@ -4107,8 +4232,10 @@
                 const bandesLiees = data.bandes.filter(b => b.parcelleId === p.id);
                 const totalProduit = productionsLiees.reduce((s, pr) => s + (pr.quantiteProduite || 0), 0);
                 const rendement = p.superficieHa ? (totalProduit / p.superficieHa) : 0;
+                const zone = getZoneParcelle(p);
                 const tr = document.createElement('tr');
                 tr.innerHTML = `<td><strong>${p.reference}</strong>${p.titreFoncier ? '<br><span style="font-size:0.75rem;color:#888;">' + p.titreFoncier + '</span>' : ''}</td>` +
+                    `<td>${zone ? `<span title="${zone.cultures.join(', ')}">${zone.nom}</span>` : '<em style="color:#aaa;">Non géolocalisée</em>'}</td>` +
                     `<td>${p.superficieHa}</td>` +
                     `<td><span style="color:${STATUT_PARCELLE_COLOR[p.statut] || '#555'};font-weight:600;">● ${STATUT_PARCELLE_LABEL[p.statut] || p.statut}</span></td>` +
                     `<td>${p.typeSol || '-'}</td>` +
