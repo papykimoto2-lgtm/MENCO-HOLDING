@@ -503,8 +503,17 @@
         <div class="brand"><h1><span>MENKO</span> AGRO</h1></div>
         <a class="hub-link" href="index.html">⌂ Menko Holding</a>
 
+        <div style="position:relative;margin:0.7rem 1.2rem 0.2rem;">
+            <button id="btnNotifications" onclick="toggleNotifications()" style="width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#dfeee6;padding:0.5rem 0.7rem;border-radius:6px;cursor:pointer;font-size:0.82rem;display:flex;align-items:center;justify-content:space-between;">
+                <span>🔔 Notifications</span>
+                <span id="badgeNotifications" style="display:none;background:#c0392b;color:#fff;border-radius:10px;padding:1px 7px;font-size:0.72rem;font-weight:700;">0</span>
+            </button>
+            <div id="panelNotifications" style="display:none;position:absolute;top:105%;left:0;right:-10px;max-height:360px;overflow-y:auto;background:#fff;color:#2c3e50;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.3);z-index:500;font-size:0.8rem;"></div>
+        </div>
+
         <nav class="nav-tabs" id="navTabs">
-            <button class="active" data-tab="tabProduits">① 🌱 Produits</button>
+            <button class="active" data-tab="tabDashboard">📊 Tableau de bord</button>
+            <button data-tab="tabProduits">① 🌱 Produits</button>
             <button data-tab="tabParcelles">② 🗺️ Parcelles</button>
             <button data-tab="tabFournisseurs">③ 🏭 Fournisseurs</button>
             <button data-tab="tabStocks">④ 📦 Stocks</button>
@@ -571,7 +580,25 @@
             </div>
         </section>
 
-        <section id="tabProduits" class="tab-pane active">
+        <!-- ==================== TABLEAU DE BORD ==================== -->
+        <section id="tabDashboard" class="tab-pane active">
+            <div class="card">
+                <h2>📊 Vue d'ensemble — Menko Agro</h2>
+                <div id="dashboardKpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:1rem;"></div>
+            </div>
+            <div class="card">
+                <h2>🔔 Alertes & notifications</h2>
+                <div id="dashboardAlertes"></div>
+            </div>
+            <div class="card">
+                <h2>Dernières ventes</h2>
+                <div class="table-wrap">
+                    <table><thead><tr><th>Date</th><th>Client</th><th>Produit</th><th>Total</th></tr></thead><tbody id="dashboardDernieresVentes"></tbody></table>
+                </div>
+            </div>
+        </section>
+
+        <section id="tabProduits" class="tab-pane">
             <div class="card">
                 <div class="flex-between">
                     <h2>Gestion des produits</h2>
@@ -1105,6 +1132,7 @@
                 ],
                 reglementsClients: [],
                 reglementsFournisseurs: [],
+                notificationsLues: [],
                 nextId: { produit: 9, depot: 3, fournisseur: 2, client: 3, commandeFourn: 1, receptionFourn: 1,
                     factureFourn: 1, commandeClient: 1, livraisonClient: 3, factureClient: 1, vente: 3,
                     production: 2, recolte: 3, bande: 2, suiviElevage: 3, sortieAnimaux: 2, prophylaxie: 3, alimentJ: 1,
@@ -1127,7 +1155,8 @@
             tabParcelles: false,
             tabCampagnes: false,
             tabMarketing: false,
-            tabEquipements: false
+            tabEquipements: false,
+            tabDashboard: false
         };
 
         // ============================================================
@@ -1215,6 +1244,7 @@
             if (!data.reglementsFournisseurs) data.reglementsFournisseurs = [];
             if (!data.nextId.reglementClient) data.nextId.reglementClient = 1;
             if (!data.nextId.reglementFournisseur) data.nextId.reglementFournisseur = 1;
+            if (!data.notificationsLues) data.notificationsLues = [];
             if (!getCompte('585')) data.planComptable.push({ compte:'585', libelle:'Mobile Money (Wave/Orange/MTN)', classe:5 });
             if (!getCompte('31')) data.planComptable.push({ compte:'31', libelle:'Stocks de marchandises & matières premières', classe:3 });
             if (!getCompte('624')) data.planComptable.push({ compte:'624', libelle:'Entretien, réparations & maintenance matériel', classe:6 });
@@ -1291,6 +1321,7 @@
             document.getElementById(tabId).classList.add('active');
             document.querySelectorAll('.nav-tabs button').forEach(btn => btn.classList.remove('active'));
             document.querySelector(`.nav-tabs button[data-tab="${tabId}"]`).classList.add('active');
+            if (typeof renderNotifications === 'function') renderNotifications();
 
             // Si déjà chargé, ne rien faire
             if (loadedTabs[tabId]) return;
@@ -1349,6 +1380,9 @@
                     case 'tabEquipements':
                         renderEquipements();
                         break;
+                    case 'tabDashboard':
+                        renderDashboard();
+                        break;
                     case 'tabParcelles':
                         renderParcelles();
                         break;
@@ -1371,6 +1405,14 @@
         });
 
         // Sous-onglets (fournisseurs et clients)
+        document.addEventListener('click', function(e) {
+            const panel = document.getElementById('panelNotifications');
+            const btn = document.getElementById('btnNotifications');
+            if (panel && panel.style.display === 'block' && !panel.contains(e.target) && e.target !== btn && !btn.contains(e.target)) {
+                panel.style.display = 'none';
+            }
+        });
+
         document.addEventListener('click', function(e) {
             if (e.target.closest('.sub-tabs')) {
                 const container = e.target.closest('.sub-tabs');
@@ -3022,6 +3064,180 @@
         }
 
         // ============================================================
+        //  NOTIFICATIONS INTERNES — dérivées en temps réel de l'état
+        // ============================================================
+        function genererNotifications() {
+            const notifs = [];
+            const today = new Date().toISOString().slice(0, 10);
+
+            // Stock bas
+            data.stocks.filter(s => s.quantite <= s.seuil).forEach(s => {
+                const p = getProduit(s.produitId);
+                const d = getDepot(s.depotId);
+                notifs.push({
+                    key: 'stock_' + s.produitId + '_' + s.depotId,
+                    icone: '📦', message: `Stock bas : ${p ? p.nom : '?'} (${s.quantite}) — ${d ? d.nom : '?'}`,
+                    tab: 'tabStocks', urgence: 'warning'
+                });
+            });
+
+            // Factures clients impayées (> 15 jours)
+            data.facturesClient.forEach(f => {
+                const { solde } = getSoldeFacture(f, 'client');
+                if (solde > 0.5 && (Date.now() - new Date(f.date).getTime()) > 15 * 86400000) {
+                    const c = getClient(f.clientId);
+                    notifs.push({
+                        key: 'factclient_' + f.id, icone: '💸',
+                        message: `Facture client #${f.id} impayée (${c ? c.nom : '?'}) — solde ${solde.toFixed(0)} FCFA`,
+                        tab: 'tabClients', urgence: 'danger'
+                    });
+                }
+            });
+
+            // Factures fournisseurs impayées (> 15 jours)
+            data.facturesFournisseur.forEach(f => {
+                const { solde } = getSoldeFacture(f, 'fournisseur');
+                if (solde > 0.5 && (Date.now() - new Date(f.date).getTime()) > 15 * 86400000) {
+                    const fo = getFournisseur(f.fournisseurId);
+                    notifs.push({
+                        key: 'factfourn_' + f.id, icone: '💳',
+                        message: `Facture fournisseur #${f.id} à régler (${fo ? fo.nom : '?'}) — solde ${solde.toFixed(0)} FCFA`,
+                        tab: 'tabFournisseurs', urgence: 'danger'
+                    });
+                }
+            });
+
+            // Opérations de campagne en retard
+            data.campagnes.forEach(camp => {
+                camp.operations.forEach(op => {
+                    if (!op.dateRealisee && op.datePrevue < today) {
+                        notifs.push({
+                            key: 'opcamp_' + op.id, icone: '⏰',
+                            message: `Opération en retard : ${op.type} — ${camp.nom}`,
+                            tab: 'tabCampagnes', urgence: 'danger'
+                        });
+                    }
+                });
+            });
+
+            // Équipements en panne
+            data.equipements.filter(e => e.statut === 'panne').forEach(e => {
+                notifs.push({
+                    key: 'equip_' + e.id, icone: '🚜',
+                    message: `Équipement en panne : ${e.nom}`,
+                    tab: 'tabEquipements', urgence: 'danger'
+                });
+            });
+
+            return notifs;
+        }
+
+        function marquerNotificationLue(key) {
+            if (!data.notificationsLues.includes(key)) {
+                data.notificationsLues.push(key);
+                saveData();
+            }
+            renderNotifications();
+        }
+
+        function toutMarquerLu() {
+            const notifs = genererNotifications();
+            notifs.forEach(n => { if (!data.notificationsLues.includes(n.key)) data.notificationsLues.push(n.key); });
+            saveData();
+            renderNotifications();
+        }
+
+        function toggleNotifications() {
+            const panel = document.getElementById('panelNotifications');
+            panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function allerVersNotification(key, tab) {
+            marquerNotificationLue(key);
+            document.getElementById('panelNotifications').style.display = 'none';
+            switchTab(tab);
+        }
+
+        function renderNotifications() {
+            const notifs = genererNotifications();
+            const nonLues = notifs.filter(n => !data.notificationsLues.includes(n.key));
+            const badge = document.getElementById('badgeNotifications');
+            if (badge) {
+                if (nonLues.length > 0) { badge.style.display = 'inline-block'; badge.textContent = nonLues.length; }
+                else badge.style.display = 'none';
+            }
+            const panel = document.getElementById('panelNotifications');
+            if (panel) {
+                if (notifs.length === 0) {
+                    panel.innerHTML = '<div style="padding:1rem;color:#888;">Aucune notification.</div>';
+                } else {
+                    panel.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;padding:0.6rem 0.8rem;border-bottom:1px solid #eee;">
+                        <strong>Notifications</strong>
+                        <button class="btn btn-sm btn-outline" onclick="toutMarquerLu()" style="font-size:0.7rem;">Tout marquer lu</button>
+                    </div>` +
+                    notifs.map(n => {
+                        const lu = data.notificationsLues.includes(n.key);
+                        const couleur = n.urgence === 'danger' ? '#c0392b' : '#d4a017';
+                        return `<div onclick="allerVersNotification('${n.key}','${n.tab}')" style="padding:0.6rem 0.8rem;border-bottom:1px solid #f0f0f0;cursor:pointer;opacity:${lu ? 0.5 : 1};display:flex;gap:0.5rem;align-items:flex-start;">
+                            <span>${n.icone}</span>
+                            <span style="flex:1;${lu ? '' : 'font-weight:600;'}color:${lu?'#666':couleur};">${n.message}</span>
+                        </div>`;
+                    }).join('');
+                }
+            }
+            return notifs;
+        }
+
+        // ============================================================
+        //  TABLEAU DE BORD
+        // ============================================================
+        function renderDashboard() {
+            const notifs = renderNotifications();
+
+            // KPI : CA du mois en cours (ventes cash + règlements clients)
+            const debutMois = new Date(); debutMois.setDate(1); debutMois.setHours(0,0,0,0);
+            const ventesMois = data.ventes.filter(v => new Date(v.date) >= debutMois);
+            const caVentes = ventesMois.reduce((s, v) => s + v.quantite * v.prixUnitaire, 0);
+            const margeVentes = ventesMois.reduce((s, v) => s + (v.quantite * v.prixUnitaire - (v.coutRevient || 0)), 0);
+
+            const stockValeur = data.lotsStock.filter(l => l.quantiteRestante > 0).reduce((s, l) => s + l.quantiteRestante * l.coutUnitaire, 0);
+
+            const impayeesClient = data.facturesClient.reduce((s, f) => s + getSoldeFacture(f, 'client').solde, 0);
+            const impayeesFourn = data.facturesFournisseur.reduce((s, f) => s + getSoldeFacture(f, 'fournisseur').solde, 0);
+
+            const campagnesEnCours = data.campagnes.filter(c => c.statut === 'en_cours').length;
+
+            const kpis = [
+                ['💰 CA du mois', caVentes.toFixed(0) + ' FCFA', '#1e3d2f'],
+                ['📈 Marge du mois', margeVentes.toFixed(0) + ' FCFA', margeVentes >= 0 ? '#2a7a4a' : '#b33c3c'],
+                ['📦 Stock valorisé', stockValeur.toFixed(0) + ' FCFA', '#2980b9'],
+                ['💸 Créances clients', impayeesClient.toFixed(0) + ' FCFA', '#c0392b'],
+                ['💳 Dettes fournisseurs', impayeesFourn.toFixed(0) + ' FCFA', '#d4a017'],
+                ['👤 Clients', data.clients.length, '#1e3d2f'],
+                ['🗺️ Parcelles', data.parcelles.length, '#1e3d2f'],
+                ['🌦️ Campagnes en cours', campagnesEnCours, '#2980b9'],
+                ['🔔 Alertes actives', notifs.length, notifs.length > 0 ? '#c0392b' : '#2a7a4a']
+            ];
+            document.getElementById('dashboardKpis').innerHTML = kpis.map(([lib, val, color]) =>
+                `<div class="card" style="margin-bottom:0;padding:1rem;"><div style="font-size:0.78rem;color:#888;margin-bottom:0.3rem;">${lib}</div><div style="font-size:1.3rem;font-weight:700;color:${color};">${val}</div></div>`
+            ).join('');
+
+            const alertesZone = document.getElementById('dashboardAlertes');
+            alertesZone.innerHTML = notifs.length === 0
+                ? '<p style="color:#888;">Aucune alerte. Tout est en ordre.</p>'
+                : notifs.slice(0, 10).map(n => `<div class="alert-box" style="${n.urgence==='danger'?'background:#fdecea;border-left:4px solid #c0392b;':'background:#fff8e1;border-left:4px solid #d4a017;'}cursor:pointer;" onclick="allerVersNotification('${n.key}','${n.tab}')">
+                    <span>${n.icone}</span><span>${n.message}</span>
+                </div>`).join('');
+
+            const tbody = document.getElementById('dashboardDernieresVentes');
+            tbody.innerHTML = data.ventes.slice(-8).reverse().map(v => {
+                const client = getClient(v.clientId);
+                const produit = getProduit(v.produitId);
+                return `<tr><td>${formatDateSimple(v.date)}</td><td>${client?client.nom:'?'}</td><td>${produit?produit.nom:'?'}</td><td>${(v.quantite*v.prixUnitaire).toFixed(0)}</td></tr>`;
+            }).join('') || '<tr><td colspan="4" style="color:#888;">Aucune vente.</td></tr>';
+        }
+
+        // ============================================================
         //  RÈGLEMENTS & COMPTE TIERS — clients et fournisseurs
         // ============================================================
         const MODES_PAIEMENT = ['Espèces', 'Mobile Money Wave', 'Mobile Money Orange', 'Mobile Money MTN', 'Virement bancaire', 'Chèque', 'Autre'];
@@ -4523,12 +4739,12 @@
         //  INITIALISATION
         // ============================================================
         document.addEventListener('DOMContentLoaded', function () {
-            loadData().then(() => switchTab('tabProduits'));
+            loadData().then(() => switchTab('tabDashboard'));
         });
 
         // Fallback si DOMContentLoaded déjà passé
         if (document.readyState !== 'loading') {
-            loadData().then(() => switchTab('tabProduits'));
+            loadData().then(() => switchTab('tabDashboard'));
         }
 
     </script>
