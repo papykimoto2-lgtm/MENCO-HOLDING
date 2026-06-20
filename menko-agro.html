@@ -553,8 +553,12 @@
                 <div class="form-row">
                     <div class="form-group"><label>Latitude</label><input type="number" id="parcLat" step="0.000001" placeholder="6.0667"></div>
                     <div class="form-group"><label>Longitude</label><input type="number" id="parcLng" step="0.000001" placeholder="-5.1167"></div>
+                    <div class="form-group" style="flex:0 0 auto; display:flex; align-items:flex-end;">
+                        <button class="btn btn-outline" type="button" onclick="geolocalisermoi('parcLat','parcLng','geoStatusNew')" title="Utiliser ma position GPS actuelle" style="white-space:nowrap;">📍 Ma position</button>
+                    </div>
                     <div class="form-group" style="flex:2;"><label>Titre foncier</label><input type="text" id="parcTitre" placeholder="N° titre / bail / attestation"></div>
                 </div>
+                <div id="geoStatusNew" style="font-size:0.8rem;color:#2a7a4a;margin-bottom:0.5rem;display:none;"></div>
                 <div class="form-row">
                     <div class="form-group" style="flex:3;"><label>Notes</label><textarea id="parcNotes"></textarea></div>
                 </div>
@@ -4192,6 +4196,128 @@
             renderParcelles();
         }
 
+        // ============================================================
+        //  GÉOLOCALISATION GPS
+        // ============================================================
+        function geolocalisermoi(latId, lngId, statusId) {
+            const statusEl = document.getElementById(statusId);
+            if (!navigator.geolocation) {
+                if (statusEl) { statusEl.style.display="block"; statusEl.style.color="#b33c3c"; statusEl.textContent = "La géolocalisation n\'est pas disponible sur ce navigateur."; }
+                return;
+            }
+            if (statusEl) { statusEl.style.display="block"; statusEl.style.color="#2a7a4a"; statusEl.textContent = "⏳ Récupération de votre position..."; }
+            navigator.geolocation.getCurrentPosition(
+                function(pos) {
+                    const lat = pos.coords.latitude.toFixed(6);
+                    const lng = pos.coords.longitude.toFixed(6);
+                    const latEl = document.getElementById(latId);
+                    const lngEl = document.getElementById(lngId);
+                    if (latEl) latEl.value = lat;
+                    if (lngEl) lngEl.value = lng;
+                    if (statusEl) { statusEl.textContent = "✅ Position récupérée : " + lat + ", " + lng; }
+                    if (parcellesLeafletMap) { parcellesLeafletMap.setView([parseFloat(lat), parseFloat(lng)], 14); }
+                },
+                function(err) {
+                    if (statusEl) { statusEl.style.color="#b33c3c"; statusEl.textContent = "Erreur GPS : " + err.message; }
+                },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+            );
+        }
+
+        // ============================================================
+        //  ÉDITION D'UNE PARCELLE
+        // ============================================================
+        function editerParcelle(id) {
+            const p = data.parcelles.find(function(pc) { return pc.id === id; });
+            if (!p) return;
+            const overlay = document.getElementById("modalOverlay");
+            const body = document.getElementById("modalBody");
+            const optsStatut = Object.entries(STATUT_PARCELLE_LABEL).map(function(entry) {
+                const v = entry[0], l = entry[1];
+                return "<option value=\"" + v + "\"" + (p.statut === v ? " selected" : "") + ">" + l + "</option>";
+            }).join("");
+            const latVal = (p.lat !== null && p.lat !== undefined) ? p.lat : "";
+            const lngVal = (p.lng !== null && p.lng !== undefined) ? p.lng : "";
+            body.innerHTML = "<h2>✏️ Modifier la parcelle — " + p.reference + "</h2>" +
+                "<div class=\"form-row\">" +
+                  "<div class=\"form-group\"><label>Référence *</label><input type=\"text\" id=\"editParcRef\" value=\"" + p.reference + "\"></div>" +
+                  "<div class=\"form-group\"><label>Superficie (ha) *</label><input type=\"number\" id=\"editParcSuperficie\" step=\"0.01\" value=\"" + p.superficieHa + "\"></div>" +
+                  "<div class=\"form-group\"><label>Type de sol</label><input type=\"text\" id=\"editParcTypeSol\" value=\"" + (p.typeSol || "") + "\"></div>" +
+                  "<div class=\"form-group\"><label>Statut</label><select id=\"editParcStatut\">" + optsStatut + "</select></div>" +
+                "</div>" +
+                "<div class=\"form-row\">" +
+                  "<div class=\"form-group\"><label>Latitude</label><input type=\"number\" id=\"editParcLat\" step=\"0.000001\" value=\"" + latVal + "\" placeholder=\"6.0667\"></div>" +
+                  "<div class=\"form-group\"><label>Longitude</label><input type=\"number\" id=\"editParcLng\" step=\"0.000001\" value=\"" + lngVal + "\" placeholder=\"-5.1167\"></div>" +
+                  "<div class=\"form-group\" style=\"flex:0 0 auto;display:flex;align-items:flex-end;\">" +
+                    "<button class=\"btn btn-outline\" type=\"button\" onclick=\"geolocalisermoi(\'editParcLat\',\'editParcLng\',\'geoStatusEdit\')\" style=\"white-space:nowrap;\">📍 Ma position</button>" +
+                  "</div>" +
+                  "<div class=\"form-group\" style=\"flex:2;\"><label>Titre foncier</label><input type=\"text\" id=\"editParcTitre\" value=\"" + (p.titreFoncier || "") + "\"></div>" +
+                "</div>" +
+                "<div id=\"geoStatusEdit\" style=\"font-size:0.8rem;color:#2a7a4a;margin-bottom:0.5rem;display:none;\"></div>" +
+                "<div id=\"editParcelleMap\" style=\"height:280px;border-radius:8px;margin-bottom:1rem;border:1px solid #ccd7d2;\"></div>" +
+                "<p style=\"font-size:0.78rem;color:#888;margin-bottom:0.8rem;\">💡 Cliquez sur la carte pour définir la position de la parcelle.</p>" +
+                "<div class=\"form-row\">" +
+                  "<div class=\"form-group\" style=\"flex:3;\"><label>Notes</label><textarea id=\"editParcNotes\">" + (p.notes || "") + "</textarea></div>" +
+                "</div>" +
+                "<div class=\"form-row\">" +
+                  "<button class=\"btn btn-success\" onclick=\"sauvegarderEditionParcelle(" + id + ")\">💾 Enregistrer</button>" +
+                  "<button class=\"btn btn-outline\" onclick=\"fermerModal()\">Annuler</button>" +
+                "</div>";
+            overlay.classList.add("active");
+            setTimeout(function() {
+                const initLat = p.lat || 6.0667;
+                const initLng = p.lng || -5.1167;
+                const zoom = p.lat ? 13 : 7;
+                const miniMap = L.map("editParcelleMap").setView([initLat, initLng], zoom);
+                L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OSM" }).addTo(miniMap);
+                let marker = null;
+                if (p.lat && p.lng) {
+                    marker = L.marker([p.lat, p.lng]).addTo(miniMap).bindPopup(p.reference).openPopup();
+                }
+                miniMap.on("click", function(e) {
+                    const latV = e.latlng.lat.toFixed(6);
+                    const lngV = e.latlng.lng.toFixed(6);
+                    document.getElementById("editParcLat").value = latV;
+                    document.getElementById("editParcLng").value = lngV;
+                    if (marker) miniMap.removeLayer(marker);
+                    marker = L.marker([e.latlng.lat, e.latlng.lng]).addTo(miniMap).bindPopup("📍 Position sélectionnée").openPopup();
+                    const st = document.getElementById("geoStatusEdit");
+                    st.style.display = "block"; st.style.color = "#2a7a4a";
+                    st.textContent = "📍 Position définie : " + latV + ", " + lngV;
+                });
+                setTimeout(function() { miniMap.invalidateSize(); }, 200);
+            }, 150);
+        }
+
+        function sauvegarderEditionParcelle(id) {
+            const p = data.parcelles.find(function(pc) { return pc.id === id; });
+            if (!p) return;
+            const reference = document.getElementById("editParcRef").value.trim();
+            const superficieHa = parseFloat(document.getElementById("editParcSuperficie").value);
+            if (!reference || isNaN(superficieHa) || superficieHa <= 0) {
+                alert("Référence et superficie sont obligatoires.");
+                return;
+            }
+            const lat = parseFloat(document.getElementById("editParcLat").value);
+            const lng = parseFloat(document.getElementById("editParcLng").value);
+            const latVal = isNaN(lat) ? null : lat;
+            const lngVal = isNaN(lng) ? null : lng;
+            const zone = getZoneAgroecologique(latVal);
+            p.reference = reference;
+            p.superficieHa = superficieHa;
+            p.typeSol = document.getElementById("editParcTypeSol").value.trim();
+            p.statut = document.getElementById("editParcStatut").value;
+            p.lat = latVal;
+            p.lng = lngVal;
+            p.titreFoncier = document.getElementById("editParcTitre").value.trim();
+            p.notes = document.getElementById("editParcNotes").value.trim();
+            p.zoneId = zone ? zone.id : null;
+            saveData();
+            fermerModal();
+            parcellesLeafletMap = null;
+            renderParcelles();
+        }
+
         function supprimerParcelle(id) {
             if (!confirm('Supprimer cette parcelle ? (les productions/bandes liées restent mais perdent le lien)')) return;
             data.parcelles = data.parcelles.filter(p => p.id !== id);
@@ -4221,6 +4347,21 @@
             });
             if (pts.length > 0) parcellesLeafletMap.fitBounds(pts, { maxZoom: 13, padding: [20, 20] });
             setTimeout(() => parcellesLeafletMap.invalidateSize(), 150);
+            // Clic sur la carte principale -> pré-remplit le formulaire de création
+            parcellesLeafletMap.off("click").on("click", function(e) {
+                const latV = e.latlng.lat.toFixed(6);
+                const lngV = e.latlng.lng.toFixed(6);
+                const latEl = document.getElementById("parcLat");
+                const lngEl = document.getElementById("parcLng");
+                if (latEl) latEl.value = latV;
+                if (lngEl) lngEl.value = lngV;
+                const st = document.getElementById("geoStatusNew");
+                if (st) {
+                    st.style.display = "block";
+                    st.style.color = "#2980b9";
+                    st.textContent = "📍 Clic carte : " + latV + ", " + lngV + " — complétez le formulaire et cliquez Créer.";
+                }
+            });
         }
 
         function renderParcelles() {
@@ -4242,7 +4383,7 @@
                     `<td>${productionsLiees.length}</td>` +
                     `<td>${bandesLiees.length}</td>` +
                     `<td>${rendement ? rendement.toFixed(1) : '-'}</td>` +
-                    `<td><button class="btn btn-sm btn-danger" onclick="supprimerParcelle(${p.id})">🗑️</button></td>`;
+                    `<td style="white-space:nowrap;"><button class="btn btn-sm btn-outline" onclick="editerParcelle(${p.id})" style="margin-right:0.3rem;">✏️</button><button class="btn btn-sm btn-danger" onclick="supprimerParcelle(${p.id})">🗑️</button></td>`;
                 tbody.appendChild(tr);
             });
             renderParcellesMap();
