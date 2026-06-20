@@ -716,7 +716,7 @@
                     </div>
                     <div id="fournFacture" class="sub-pane">
                         <button class="btn btn-sm btn-success" onclick="ouvrirModalFactureFournisseur()">+ Facture</button>
-                        <div class="table-wrap"><table><thead><tr><th>N°</th><th>Fournisseur</th><th>Date</th><th>Montant</th><th>Actions</th></tr></thead><tbody id="listeFacturesFourn"></tbody></table></div>
+                        <div class="table-wrap"><table><thead><tr><th>N°</th><th>Fournisseur</th><th>Date</th><th>Montant</th><th>Réglé</th><th>Solde</th><th>Statut</th><th>Actions</th></tr></thead><tbody id="listeFacturesFourn"></tbody></table></div>
                     </div>
                 </div>
             </div>
@@ -757,7 +757,7 @@
                     </div>
                     <div id="clientFacture" class="sub-pane">
                         <button class="btn btn-sm btn-success" onclick="ouvrirModalFactureClient()">+ Facture</button>
-                        <div class="table-wrap"><table><thead><tr><th>N°</th><th>Client</th><th>Date</th><th>Montant</th><th>Actions</th></tr></thead><tbody id="listeFacturesClient"></tbody></table></div>
+                        <div class="table-wrap"><table><thead><tr><th>N°</th><th>Client</th><th>Date</th><th>Montant</th><th>Réglé</th><th>Solde</th><th>Statut</th><th>Actions</th></tr></thead><tbody id="listeFacturesClient"></tbody></table></div>
                     </div>
                 </div>
                 <div class="card mt-1">
@@ -1082,6 +1082,7 @@
                     { compte:'4456', libelle:'TVA déductible', classe:4 },
                     { compte:'4434', libelle:'TVA facturée', classe:4 },
                     { compte:'512', libelle:'Banque', classe:5 },
+                    { compte:'585', libelle:'Mobile Money (Wave/Orange/MTN)', classe:5 },
                     { compte:'571', libelle:'Caisse', classe:5 },
                     { compte:'601', libelle:'Achats matières premières & intrants', classe:6 },
                     { compte:'603', libelle:'Achats animaux & alimentation bétail', classe:6 },
@@ -1102,11 +1103,13 @@
                         coutAcquisition: 1800000, statut: 'disponible', heuresUsage: 0, coutHoraire: 5000,
                         parcelleId: null, maintenances: [] }
                 ],
+                reglementsClients: [],
+                reglementsFournisseurs: [],
                 nextId: { produit: 9, depot: 3, fournisseur: 2, client: 3, commandeFourn: 1, receptionFourn: 1,
                     factureFourn: 1, commandeClient: 1, livraisonClient: 3, factureClient: 1, vente: 3,
                     production: 2, recolte: 3, bande: 2, suiviElevage: 3, sortieAnimaux: 2, prophylaxie: 3, alimentJ: 1,
                     ecriture: 1, parcelle: 2, campagne: 2, operationCampagne: 6, lotStock: 1, actionMarketing: 1,
-                    equipement: 2, maintenance: 1 }
+                    equipement: 2, maintenance: 1, reglementClient: 1, reglementFournisseur: 1 }
             };
         }
 
@@ -1208,6 +1211,11 @@
             if (!data.nextId.equipement) data.nextId.equipement = 1;
             if (!data.nextId.maintenance) data.nextId.maintenance = 1;
             data.equipements.forEach(e => { if (!e.maintenances) e.maintenances = []; });
+            if (!data.reglementsClients) data.reglementsClients = [];
+            if (!data.reglementsFournisseurs) data.reglementsFournisseurs = [];
+            if (!data.nextId.reglementClient) data.nextId.reglementClient = 1;
+            if (!data.nextId.reglementFournisseur) data.nextId.reglementFournisseur = 1;
+            if (!getCompte('585')) data.planComptable.push({ compte:'585', libelle:'Mobile Money (Wave/Orange/MTN)', classe:5 });
             if (!getCompte('31')) data.planComptable.push({ compte:'31', libelle:'Stocks de marchandises & matières premières', classe:3 });
             if (!getCompte('624')) data.planComptable.push({ compte:'624', libelle:'Entretien, réparations & maintenance matériel', classe:6 });
         }
@@ -2459,7 +2467,7 @@
             data.fournisseurs.forEach(f => {
                 const tr = document.createElement('tr');
                 tr.innerHTML =
-                    `<td><strong>${f.nom}</strong></td><td>${f.contact || '-'}</td><td>${f.email || '-'}</td><td>${f.telephone || '-'}</td><td><button class="btn btn-sm btn-outline" onclick="editerFournisseur(${f.id})">✏️</button><button class="btn btn-sm btn-danger" onclick="supprimerFournisseur(${f.id})">🗑️</button></td>`;
+                    `<td><strong>${f.nom}</strong></td><td>${f.contact || '-'}</td><td>${f.email || '-'}</td><td>${f.telephone || '-'}</td><td><button class="btn btn-sm" style="background:#1a5276;color:#fff;" onclick="ouvrirCompteTiers(${f.id},'fournisseur')">🗂️ Compte</button><button class="btn btn-sm btn-outline" onclick="editerFournisseur(${f.id})">✏️</button><button class="btn btn-sm btn-danger" onclick="supprimerFournisseur(${f.id})">🗑️</button></td>`;
                 tbody.appendChild(tr);
             });
         }
@@ -2656,9 +2664,13 @@
             tbody.innerHTML = '';
             data.facturesFournisseur.forEach(f => {
                 const fourn = getFournisseur(f.fournisseurId);
+                const st = statutFactureHtml(f, 'fournisseur');
                 const tr = document.createElement('tr');
                 tr.innerHTML =
-                    `<td>#${f.id}</td><td>${fourn?fourn.nom:'Inconnu'}</td><td>${formatDateSimple(f.date)}</td><td>${f.montant?.toFixed(0)||0}</td><td><button class="btn btn-sm btn-outline" onclick="voirFactureFourn(${f.id})">👁️</button><button class="btn btn-sm btn-danger" onclick="supprimerFactureFourn(${f.id})">🗑️</button></td>`;
+                    `<td>#${f.id}</td><td>${fourn?fourn.nom:'Inconnu'}</td><td>${formatDateSimple(f.date)}</td><td>${f.montant?.toFixed(0)||0}</td>` +
+                    `<td>${st.regle.toFixed(0)}</td><td>${st.solde.toFixed(0)}</td>` +
+                    `<td><span style="color:${st.color};font-weight:600;">● ${st.label}</span></td>` +
+                    `<td>${st.solde>0?`<button class="btn btn-sm btn-success" onclick="ouvrirModalReglement(${f.id},'fournisseur')">💳 Régler</button>`:''}<button class="btn btn-sm btn-outline" onclick="voirFactureFourn(${f.id})">👁️</button><button class="btn btn-sm btn-danger" onclick="supprimerFactureFourn(${f.id})">🗑️</button></td>`;
                 tbody.appendChild(tr);
             });
         }
@@ -2703,7 +2715,7 @@
             data.clients.forEach(c => {
                 const tr = document.createElement('tr');
                 tr.innerHTML =
-                    `<td><strong>${c.nom}</strong></td><td>${c.telephone||'-'}</td><td>${c.email||'-'}</td><td><button class="btn btn-sm btn-outline" onclick="editerClient(${c.id})">✏️</button><button class="btn btn-sm btn-danger" onclick="supprimerClient(${c.id})">🗑️</button></td>`;
+                    `<td><strong>${c.nom}</strong></td><td>${c.telephone||'-'}</td><td>${c.email||'-'}</td><td><button class="btn btn-sm" style="background:#1a5276;color:#fff;" onclick="ouvrirCompteTiers(${c.id},'client')">🗂️ Compte</button><button class="btn btn-sm btn-outline" onclick="editerClient(${c.id})">✏️</button><button class="btn btn-sm btn-danger" onclick="supprimerClient(${c.id})">🗑️</button></td>`;
                 tbody.appendChild(tr);
             });
         }
@@ -2923,9 +2935,13 @@
             tbody.innerHTML = '';
             data.facturesClient.forEach(f => {
                 const client = getClient(f.clientId);
+                const st = statutFactureHtml(f, 'client');
                 const tr = document.createElement('tr');
                 tr.innerHTML =
-                    `<td>#${f.id}</td><td>${client?client.nom:'Inconnu'}</td><td>${formatDateSimple(f.date)}</td><td>${f.montant?.toFixed(0)||0}</td><td><button class="btn btn-sm btn-outline" onclick="voirFactureClient(${f.id})">👁️</button><button class="btn btn-sm btn-danger" onclick="supprimerFactureClient(${f.id})">🗑️</button></td>`;
+                    `<td>#${f.id}</td><td>${client?client.nom:'Inconnu'}</td><td>${formatDateSimple(f.date)}</td><td>${f.montant?.toFixed(0)||0}</td>` +
+                    `<td>${st.regle.toFixed(0)}</td><td>${st.solde.toFixed(0)}</td>` +
+                    `<td><span style="color:${st.color};font-weight:600;">● ${st.label}</span></td>` +
+                    `<td>${st.solde>0?`<button class="btn btn-sm btn-success" onclick="ouvrirModalReglement(${f.id},'client')">💳 Régler</button>`:''}<button class="btn btn-sm btn-outline" onclick="voirFactureClient(${f.id})">👁️</button><button class="btn btn-sm btn-danger" onclick="supprimerFactureClient(${f.id})">🗑️</button></td>`;
                 tbody.appendChild(tr);
             });
         }
@@ -2937,12 +2953,27 @@
                 `<h2>Facture client</h2><div class="form-row"><div class="form-group"><label>Client *</label><select id="factClientClient">${optsClients}</select></div><div class="form-group"><label>Date</label><input type="date" id="factClientDate" value="${new Date().toISOString().slice(0,10)}"></div><div class="form-group"><label>Montant</label><input type="number" id="factClientMontant" step="0.01"></div></div><button class="btn" onclick="validerFactureClient()">Enregistrer</button>`;
             overlay.classList.add('active');
         }
+        /** Écriture automatique : facture client (vente à crédit) */
+        function genererEcritureFactureClient(facture, client) {
+            if (!facture.montant) return;
+            ajouterEcriture(
+                facture.date, 'FC' + facture.id,
+                'Facture client — ' + (client ? client.nom : 'Client'),
+                [
+                    { compte: '411', libelle: 'Client ' + (client ? client.nom : ''), debit: facture.montant, credit: 0 },
+                    { compte: '701', libelle: 'Vente à crédit', debit: 0, credit: facture.montant }
+                ],
+                { type: 'factureClient', id: facture.id }
+            );
+        }
+
         function validerFactureClient() {
             const clientId = parseInt(document.getElementById('factClientClient').value);
             const date = document.getElementById('factClientDate').value;
             const montant = parseFloat(document.getElementById('factClientMontant').value);
             if (!clientId || !date || isNaN(montant) || montant < 0) { alert('Veuillez remplir correctement.'); return; }
             data.facturesClient.push({ id: data.nextId.factureClient++, clientId, date, montant });
+            genererEcritureFactureClient({ id: data.nextId.factureClient - 1, date, montant }, getClient(clientId));
             saveData();
             fermerModal();
             renderFacturesClient();
@@ -2988,6 +3019,133 @@
                     `<td>${formatDate(v.date)}</td><td>${client?client.nom:'Inconnu'}</td><td>${produit?produit.nom:'Inconnu'}</td><td>${v.quantite}</td><td>${v.prixUnitaire?.toFixed(0)||0}</td><td><strong>${total.toFixed(0)}</strong></td><td style="color:${marge>=0?'#2a7a4a':'#b33c3c'};">${marge.toFixed(0)}</td>`;
                 tbody.appendChild(tr);
             });
+        }
+
+        // ============================================================
+        //  RÈGLEMENTS & COMPTE TIERS — clients et fournisseurs
+        // ============================================================
+        const MODES_PAIEMENT = ['Espèces', 'Mobile Money Wave', 'Mobile Money Orange', 'Mobile Money MTN', 'Virement bancaire', 'Chèque', 'Autre'];
+
+        function compteTresorerieForMode(mode) {
+            if (mode === 'Virement bancaire' || mode === 'Chèque') return '512';
+            if (mode && mode.indexOf('Mobile Money') === 0) return '585';
+            return '571';
+        }
+
+        function getReglementsFacture(factureId, type) {
+            const liste = type === 'client' ? data.reglementsClients : data.reglementsFournisseurs;
+            return liste.filter(r => r.factureId === factureId);
+        }
+
+        function getSoldeFacture(facture, type) {
+            const regle = getReglementsFacture(facture.id, type).reduce((s, r) => s + r.montant, 0);
+            return { regle, solde: (facture.montant || 0) - regle };
+        }
+
+        function statutFactureHtml(facture, type) {
+            const { regle, solde } = getSoldeFacture(facture, type);
+            if (solde <= 0.5) return { label: 'Soldée', color: '#2a7a4a', regle, solde: 0 };
+            if (regle > 0) return { label: 'Partielle', color: '#d4a017', regle, solde };
+            return { label: 'Impayée', color: '#c0392b', regle, solde };
+        }
+
+        function ouvrirModalReglement(factureId, type) {
+            const facture = type === 'client'
+                ? data.facturesClient.find(f => f.id === factureId)
+                : data.facturesFournisseur.find(f => f.id === factureId);
+            if (!facture) return;
+            const { solde } = getSoldeFacture(facture, type);
+            const tiersNom = type === 'client' ? (getClient(facture.clientId)?.nom || '?') : (getFournisseur(facture.fournisseurId)?.nom || '?');
+            const overlay = document.getElementById('modalOverlay');
+            const body = document.getElementById('modalBody');
+            const optsMode = MODES_PAIEMENT.map(m => `<option value="${m}">${m}</option>`).join('');
+            body.innerHTML = `
+                <h2>Règlement — Facture #${facture.id} (${tiersNom})</h2>
+                <div style="margin-bottom:0.6rem;">Solde restant dû : <strong>${solde.toFixed(0)} FCFA</strong></div>
+                <div class="form-row">
+                    <div class="form-group"><label>Date *</label><input type="date" id="regDate" value="${new Date().toISOString().slice(0,10)}"></div>
+                    <div class="form-group"><label>Montant *</label><input type="number" id="regMontant" step="0.01" value="${solde.toFixed(2)}" max="${solde}"></div>
+                    <div class="form-group"><label>Mode de paiement</label><select id="regMode">${optsMode}</select></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:2;"><label>Référence (n° transaction, chèque…)</label><input type="text" id="regRef"></div>
+                </div>
+                <button class="btn btn-success" onclick="validerReglement(${factureId}, '${type}')">Enregistrer le règlement</button>
+            `;
+            overlay.classList.add('active');
+        }
+
+        function validerReglement(factureId, type) {
+            const facture = type === 'client'
+                ? data.facturesClient.find(f => f.id === factureId)
+                : data.facturesFournisseur.find(f => f.id === factureId);
+            if (!facture) return;
+            const date = document.getElementById('regDate').value;
+            const montant = parseFloat(document.getElementById('regMontant').value);
+            const mode = document.getElementById('regMode').value;
+            const reference = document.getElementById('regRef').value.trim();
+            const { solde } = getSoldeFacture(facture, type);
+            if (!date || isNaN(montant) || montant <= 0) { alert('Date et montant valides requis.'); return; }
+            if (montant > solde + 0.5) { alert('Le montant dépasse le solde restant dû (' + solde.toFixed(0) + ' FCFA).'); return; }
+
+            const compteTreso = compteTresorerieForMode(mode);
+            if (type === 'client') {
+                const reg = { id: data.nextId.reglementClient++, factureId, clientId: facture.clientId, date, montant, modePaiement: mode, reference };
+                data.reglementsClients.push(reg);
+                ajouterEcriture(date, 'R' + reg.id, 'Règlement client — ' + (getClient(facture.clientId)?.nom || ''), [
+                    { compte: compteTreso, libelle: 'Encaissement ' + mode, debit: montant, credit: 0 },
+                    { compte: '411', libelle: 'Règlement facture #' + facture.id, debit: 0, credit: montant }
+                ], { type: 'reglementClient', id: reg.id });
+            } else {
+                const reg = { id: data.nextId.reglementFournisseur++, factureId, fournisseurId: facture.fournisseurId, date, montant, modePaiement: mode, reference };
+                data.reglementsFournisseurs.push(reg);
+                ajouterEcriture(date, 'R' + reg.id, 'Règlement fournisseur — ' + (getFournisseur(facture.fournisseurId)?.nom || ''), [
+                    { compte: '401', libelle: 'Règlement facture #' + facture.id, debit: montant, credit: 0 },
+                    { compte: compteTreso, libelle: 'Décaissement ' + mode, debit: 0, credit: montant }
+                ], { type: 'reglementFournisseur', id: reg.id });
+            }
+            saveData();
+            fermerModal();
+            if (type === 'client') renderFacturesClient(); else renderFacturesFourn();
+        }
+
+        /** Compte tiers : historique factures + règlements + solde cumulé pour un client ou fournisseur */
+        function ouvrirCompteTiers(tiersId, type) {
+            const tiers = type === 'client' ? getClient(tiersId) : getFournisseur(tiersId);
+            if (!tiers) return;
+            const factures = type === 'client'
+                ? data.facturesClient.filter(f => f.clientId === tiersId)
+                : data.facturesFournisseur.filter(f => f.fournisseurId === tiersId);
+            const overlay = document.getElementById('modalOverlay');
+            const body = document.getElementById('modalBody');
+            let totalFacture = 0, totalRegle = 0;
+            const lignes = factures.map(f => {
+                const { regle, solde } = getSoldeFacture(f, type);
+                totalFacture += f.montant; totalRegle += regle;
+                const st = statutFactureHtml(f, type);
+                const regs = getReglementsFacture(f.id, type);
+                return `<tr>
+                    <td>#${f.id}</td><td>${formatDateSimple(f.date)}</td><td>${f.montant.toFixed(0)}</td>
+                    <td>${regle.toFixed(0)}</td><td>${solde.toFixed(0)}</td>
+                    <td><span style="color:${st.color};font-weight:600;">● ${st.label}</span></td>
+                    <td>${solde > 0 ? `<button class="btn btn-sm btn-success" onclick="fermerModal();ouvrirModalReglement(${f.id},'${type}')">💳 Régler</button>` : ''}</td>
+                </tr>${regs.length ? `<tr><td colspan="7" style="font-size:0.78rem;color:#666;padding-left:1.5rem;">↳ ${regs.map(r => formatDateSimple(r.date)+' — '+r.montant.toFixed(0)+' FCFA — '+r.modePaiement+(r.reference?' ('+r.reference+')':'')).join(' | ')}</td></tr>` : ''}`;
+            }).join('');
+            body.innerHTML = `
+                <h2>Compte tiers — ${tiers.nom}</h2>
+                <div style="display:flex;gap:1.5rem;flex-wrap:wrap;margin-bottom:0.8rem;">
+                    <span class="badge">Total facturé : <strong>${totalFacture.toFixed(0)} FCFA</strong></span>
+                    <span class="badge">Total réglé : <strong>${totalRegle.toFixed(0)} FCFA</strong></span>
+                    <span class="badge" style="background:${(totalFacture-totalRegle)>0?'#fdecea':'#eaf3ee'};">Solde dû : <strong>${(totalFacture-totalRegle).toFixed(0)} FCFA</strong></span>
+                </div>
+                <div class="table-wrap">
+                    <table><thead><tr><th>Facture</th><th>Date</th><th>Montant</th><th>Réglé</th><th>Solde</th><th>Statut</th><th></th></tr></thead><tbody>
+                    ${lignes || '<tr><td colspan="7" style="color:#888;">Aucune facture.</td></tr>'}
+                    </tbody></table>
+                </div>
+                <button class="btn btn-outline" onclick="fermerModal()">Fermer</button>
+            `;
+            overlay.classList.add('active');
         }
 
         // ============================================================
