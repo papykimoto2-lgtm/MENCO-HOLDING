@@ -5689,6 +5689,22 @@ button:focus-visible, input:focus-visible, select:focus-visible {
               </table>
             </div>
           </div>
+          <div class="card" style="margin-top:12px;">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+              <span style="font-weight:700;font-size:14px;">📄 Documents de cession</span>
+              <select class="filter-select" id="filter-fin-docs" onchange="finRenderDocsRegistre()" style="margin-left:auto;">
+                <option value="">Tous les documents</option>
+                <option value="delivre">✔ Délivrés / validés</option>
+                <option value="attente">⏳ En attente</option>
+              </select>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Financier</th><th>Opération</th><th>Document</th><th>État</th><th></th></tr></thead>
+                <tbody id="tbody-fin-docs"></tbody>
+              </table>
+            </div>
+          </div>
         </div>
 
         <div class="tab-pane" id="tab-foncier-mutations">
@@ -46540,6 +46556,7 @@ function finRender() {
   });
   var tb = document.getElementById('tbody-financiers');
   if (tb) tb.innerHTML = html || '<tr><td colspan="9" style="text-align:center;color:var(--dim);padding:24px;">Aucun financier enregistré</td></tr>';
+  finRenderDocsRegistre();
 }
 
 /* ── Ouvrir modal financier ── */
@@ -46952,6 +46969,43 @@ function finRenderDocsZone(f) {
     + (hasRole('admin') ? ' <button class="btn btn-secondary btn-sm" style="margin-left:8px;" onclick="finAnnulerValidationDG(\''+f.id+'\')">Annuler validation</button>' : '')
     + '</div>'
     + '<div class="table-wrap"><table><thead><tr><th>Document</th><th>État</th><th style="text-align:right;">Action</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+
+/* ── Registre consolidé des documents de cession ── */
+function finRenderDocsRegistre(){
+  var tb=document.getElementById('tbody-fin-docs'); if(!tb) return;
+  var flt=(document.getElementById('filter-fin-docs')||{}).value||'';
+  var ops=DATA['af_operations']||[];
+  var rows='';
+  finGetAll().forEach(function(f){
+    var op=ops.find(function(o){ return o.id===f.operation_id; });
+    FIN_DOCS.forEach(function(d){
+      var cat, etatHtml, act='';
+      if(!finPeutAttester(f)){
+        cat='attente';
+        etatHtml='<span class="badge" style="background:#F3F4F6;color:#6B7280;border:1px solid #E5E7EB;padding:2px 8px;border-radius:12px;font-size:11px;">⏳ Solde non acquitté</span>';
+        act='<button class="btn btn-secondary btn-sm" onclick="finOpenVersements(\''+f.id+'\')">Versements</button>';
+      } else if(!f.dg_valide){
+        cat='attente';
+        etatHtml='<span class="badge" style="background:#FFF7ED;color:#92400E;border:1px solid #FDE68A;padding:2px 8px;border-radius:12px;font-size:11px;">⏳ Validation DG requise</span>';
+        act='<button class="btn btn-primary btn-sm" onclick="finOpenVersements(\''+f.id+'\')">Valider</button>';
+      } else {
+        var e=finDocEtat(f,d.key);
+        if(e.etat==='delivre'){
+          cat='delivre';
+          etatHtml='<span class="badge" style="background:#ECFDF5;color:#065F46;border:1px solid #A7F3D0;padding:2px 8px;border-radius:12px;font-size:11px;">✔ Délivré'+(e.date?(' · '+e.date):'')+'</span>';
+          act='<button class="btn btn-secondary btn-sm" onclick="finImprimerDoc(\''+f.id+'\',\''+d.key+'\')">🖨 Réimprimer</button>';
+        } else {
+          cat='attente';
+          etatHtml='<span class="badge" style="background:#EFF6FF;color:#1E40AF;border:1px solid #BFDBFE;padding:2px 8px;border-radius:12px;font-size:11px;">À délivrer</span>';
+          act='<button class="btn btn-primary btn-sm" onclick="finDelivrerDoc(\''+f.id+'\',\''+d.key+'\')">📄 Délivrer</button>';
+        }
+      }
+      if(flt && flt!==cat) return;
+      rows+='<tr><td><strong>'+f.nom+'</strong></td><td>'+(op?op.nom:'—')+'</td><td>'+d.label+'</td><td>'+etatHtml+'</td><td style="text-align:right;">'+act+'</td></tr>';
+    });
+  });
+  tb.innerHTML=rows||'<tr><td colspan="5" style="text-align:center;color:var(--dim);padding:18px;">Aucun document</td></tr>';
 }
 
 /* ── Gabarit commun documents ── */
