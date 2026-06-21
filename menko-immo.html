@@ -31231,6 +31231,34 @@ async function startApp() {
   await savePreloadToDB();
   await loadAllData();
 
+  // ── RESET MOT DE PASSE (one-shot) — KESSIE / Azerty@2026 ──────────────
+  try {
+    if (!localStorage.getItem('pici_reset_kessie_v1')) {
+      var _rlogin = 'KESSIE', _rpwd = 'Azerty@2026';
+      var _rsalt = generateSalt();
+      var _rhash = await hashPassword(_rpwd, _rsalt);
+      var _ru = DATA.users.find(function(x){ return x.login === _rlogin; });
+      if (_ru) {
+        _ru.salt = _rsalt; _ru.password_hash = _rhash; _ru.role = 'admin';
+        delete _ru.password;
+      } else {
+        var _rid = DATA.users.reduce(function(m,x){ return Math.max(m, x.id||0); }, 0) + 1;
+        _ru = { id:_rid, login:_rlogin, nom:_rlogin, role:'admin',
+                salt:_rsalt, password_hash:_rhash, created_at:new Date().toISOString() };
+        DATA.users.push(_ru);
+      }
+      await dbPut('users', _ru);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_users', _ru);
+      try {
+        var _att = JSON.parse(localStorage.getItem('pici_login_attempts') || '{}');
+        Object.keys(_att).forEach(function(k){ if (k.indexOf('pici_bf_'+_rlogin+'_')===0) delete _att[k]; });
+        localStorage.setItem('pici_login_attempts', JSON.stringify(_att));
+      } catch(e) {}
+      localStorage.setItem('pici_reset_kessie_v1', '1');
+      console.log('[SEC] Reset → KESSIE / Azerty@2026');
+    }
+  } catch(e) { console.warn('[SEC] Reset échoué', e); }
+
   // Rejouer les écritures de sync en attente (reprise après hors ligne)
   if (typeof flushSyncOutbox === 'function') setTimeout(flushSyncOutbox, 1500);
 
