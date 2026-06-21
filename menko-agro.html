@@ -637,7 +637,8 @@
                 <div id="dashboardKpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:1rem;"></div>
             </div>
             <div class="card">
-                <h2>🔔 Alertes & notifications</h2>
+                <h2>🔔 Centre d'alertes intelligentes</h2>
+                <div id="dashboardAlertesCategories" style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.8rem;"></div>
                 <div id="dashboardAlertes"></div>
             </div>
             <div class="card">
@@ -3291,8 +3292,8 @@
             const notifs = [];
             const today = new Date().toISOString().slice(0, 10);
 
-            // Stock bas
-            data.stocks.filter(s => s.quantite <= s.seuil).forEach(s => {
+            // Stock bas (mais pas encore en rupture)
+            data.stocks.filter(s => s.quantite > 0 && s.quantite <= s.seuil).forEach(s => {
                 const p = getProduit(s.produitId);
                 const d = getDepot(s.depotId);
                 notifs.push({
@@ -3328,13 +3329,14 @@
                 }
             });
 
-            // Opérations de campagne en retard
+            // Opérations de campagne en retard (hors récolte, traitée plus bas)
             data.campagnes.forEach(camp => {
                 camp.operations.forEach(op => {
-                    if (!op.dateRealisee && op.datePrevue < today) {
+                    if (!op.dateRealisee && op.datePrevue < today && op.type !== 'Récolte') {
+                        const resp = op.responsableId ? getOuvrier(op.responsableId) : null;
                         notifs.push({
                             key: 'opcamp_' + op.id, icone: '⏰',
-                            message: `Opération en retard : ${op.type} — ${camp.nom}`,
+                            message: `Opération en retard : ${op.notes && op.notes.length < 20 ? op.notes : op.type} — ${camp.nom}${resp ? ' (resp. ' + resp.nom + ')' : ''}`,
                             tab: 'tabCampagnes', urgence: 'danger'
                         });
                     }
@@ -3370,7 +3372,125 @@
                 }
             });
 
+            // ════════════════════════════════════════════════
+            //  ALERTES INTELLIGENTES (dérivées de l'état métier)
+            // ════════════════════════════════════════════════
+            const MS_JOUR = 86400000;
+
+            // 1) RUPTURE DE STOCK — quantité épuisée
+            data.stocks.filter(s => s.quantite <= 0).forEach(s => {
+                const p = getProduit(s.produitId), d = getDepot(s.depotId);
+                notifs.push({
+                    key: 'rupture_' + s.produitId + '_' + s.depotId, icone: '🚱',
+                    message: `Rupture de stock : ${p ? p.nom : '?'} épuisé — ${d ? d.nom : '?'}`,
+                    tab: 'tabStocks', urgence: 'danger'
+                });
+            });
+
+            // 2) CAMPAGNE EN RETARD — clôture prévue dépassée
+            data.campagnes.filter(c => c.statut !== 'terminee' && c.dateFin && c.dateFin < today).forEach(c => {
+                const jours = Math.floor((Date.now() - new Date(c.dateFin).getTime()) / MS_JOUR);
+                notifs.push({
+                    key: 'campretard_' + c.id, icone: '📅',
+                    message: `Campagne en retard : ${c.nom} — clôture dépassée de ${jours} j`,
+                    tab: 'tabCampagnes', urgence: 'danger'
+                });
+            });
+
+            // 3) RETARD DE RÉCOLTE — opération Récolte non réalisée et échue
+            data.campagnes.filter(c => c.statut !== 'terminee').forEach(c => {
+                (c.operations || []).filter(o => o.type === 'Récolte' && !o.dateRealisee && o.datePrevue < today).forEach(o => {
+                    const jours = Math.floor((Date.now() - new Date(o.datePrevue).getTime()) / MS_JOUR);
+                    notifs.push({
+                        key: 'recolte_' + o.id, icone: '🌾',
+                        message: `Retard de récolte : ${c.nom} — prévue le ${formatDateSimple(o.datePrevue)} (${jours} j de retard)`,
+                        tab: 'tabCampagnes', urgence: jours > 14 ? 'danger' : 'warning'
+                    });
+                });
+            });
+
+            // 4) MALADIE PROBABLE — prophylaxie en retard ou mortalité en hausse continue
+            (data.bandes || []).forEach(b => {
+                const totalSorties = (b.sorties || []).reduce((s, x) => s + x.quantite, 0);
+                const effectif = b.quantiteInitiale - totalSorties;
+                if (effectif <= 0 || b.dateFin) return;
+                const produit = getProduit(b.produitId);
+                const nomB = (produit ? produit.nom : 'Bande') + ' #' + b.id;
+                (b.prophylaxies || []).filter(p => !p.dateRealisee && p.datePrevue < today).forEach(p => {
+                    notifs.push({
+                        key: 'maladie_proph_' + b.id + '_' + p.id, icone: '🦠',
+                        message: `Maladie probable : ${p.type} non réalisée (${nomB}) — couverture sanitaire en retard`,
+                        tab: 'tabElevage', urgence: 'danger'
+                    });
+                });
+                const s3 = (b.suivis || []).slice(-3);
+                if (s3.length >= 3 && s3[2].mortalite > s3[1].mortalite && s3[1].mortalite > s3[0].mortalite && s3[2].mortalite > 0) {
+                    notifs.push({
+                        key: 'maladie_trend_' + b.id, icone: '🦠',
+                        message: `Maladie probable : mortalité en hausse continue (${nomB}) — inspecter le lot`,
+                        tab: 'tabElevage', urgence: 'warning'
+                    });
+                }
+            });
+
+            // 5) MORTALITÉ ANORMALE — taux cumulé > 5 %
+            (data.bandes || []).forEach(b => {
+                if (!b.quantiteInitiale || b.quantiteInitiale <= 0) return;
+                const mortsSuivis = (b.suivis || []).reduce((s, x) => s + (x.mortalite || 0), 0);
+                const mortsSorties = (b.sorties || []).filter(x => x.type === 'mort').reduce((s, x) => s + x.quantite, 0);
+                const totalMorts = Math.max(mortsSuivis, mortsSorties);
+                const taux = totalMorts / b.quantiteInitiale * 100;
+                if (taux >= 5) {
+                    const produit = getProduit(b.produitId);
+                    notifs.push({
+                        key: 'mortalite_' + b.id, icone: '☠️',
+                        message: `Mortalité anormale : ${taux.toFixed(1)}% (${(produit ? produit.nom : 'Bande')} #${b.id}) — seuil 5% dépassé`,
+                        tab: 'tabElevage', urgence: taux >= 10 ? 'danger' : 'warning'
+                    });
+                }
+            });
+
+            // 6) BAISSE DE RENDEMENT — dernière production vs historique parcelle/culture
+            const grpRdt = {};
+            (data.productions || []).filter(p => p.parcelleId && p.quantiteProduite > 0).forEach(p => {
+                const parc = getParcelle(p.parcelleId);
+                if (!parc || !parc.superficieHa) return;
+                const k = p.parcelleId + '_' + p.produitId;
+                (grpRdt[k] = grpRdt[k] || []).push({ pid: p.parcelleId, prod: p.produitId, dateDebut: p.dateDebut || '', rdt: p.quantiteProduite / parc.superficieHa });
+            });
+            Object.keys(grpRdt).forEach(k => {
+                const arr = grpRdt[k].sort((a, b) => a.dateDebut.localeCompare(b.dateDebut));
+                if (arr.length < 2) return;
+                const last = arr[arr.length - 1];
+                const prev = arr.slice(0, -1);
+                const moyPrev = prev.reduce((s, x) => s + x.rdt, 0) / prev.length;
+                if (moyPrev > 0 && last.rdt < 0.75 * moyPrev) {
+                    const parc = getParcelle(last.pid), produit = getProduit(last.prod);
+                    const baisse = ((1 - last.rdt / moyPrev) * 100).toFixed(0);
+                    notifs.push({
+                        key: 'rendement_' + k, icone: '📉',
+                        message: `Baisse de rendement : ${produit ? produit.nom : '?'} sur ${parc ? parc.reference : '?'} — −${baisse}% vs historique (${last.rdt.toFixed(0)} contre ${moyPrev.toFixed(0)} u/ha)`,
+                        tab: 'tabParcelles', urgence: baisse >= 40 ? 'danger' : 'warning'
+                    });
+                }
+            });
+
             return notifs;
+        }
+
+        // Classe une notification dans une catégorie d'alerte intelligente.
+        function categoriserNotif(n) {
+            const k = n.key || '';
+            if (k.startsWith('maladie_')) return { id: 'maladie', label: 'Maladie probable', icone: '🦠' };
+            if (k.startsWith('mortalite_')) return { id: 'mortalite', label: 'Mortalité anormale', icone: '☠️' };
+            if (k.startsWith('recolte_')) return { id: 'recolte', label: 'Retard de récolte', icone: '🌾' };
+            if (k.startsWith('rendement_')) return { id: 'rendement', label: 'Baisse de rendement', icone: '📉' };
+            if (k.startsWith('rupture_') || k.startsWith('stock_')) return { id: 'stock', label: 'Stock / rupture', icone: '📦' };
+            if (k.startsWith('equip_')) return { id: 'materiel', label: 'Matériel en panne', icone: '🚜' };
+            if (k.startsWith('factclient_') || k.startsWith('factfourn_')) return { id: 'finance', label: 'Facture impayée', icone: '💸' };
+            if (k.startsWith('campretard_') || k.startsWith('opcamp_')) return { id: 'campagne', label: 'Campagne en retard', icone: '📅' };
+            if (k.startsWith('foncier_')) return { id: 'foncier', label: 'Foncier', icone: '🏛️' };
+            return { id: 'autre', label: 'Autre', icone: '🔔' };
         }
 
         function marquerNotificationLue(key) {
@@ -3464,6 +3584,21 @@
             ).join('');
 
             const alertesZone = document.getElementById('dashboardAlertes');
+            // Synthèse par catégorie
+            const catZone = document.getElementById('dashboardAlertesCategories');
+            if (catZone) {
+                const grp = {};
+                notifs.forEach(n => {
+                    const c = categoriserNotif(n);
+                    if (!grp[c.id]) grp[c.id] = { label: c.label, icone: c.icone, n: 0, danger: 0 };
+                    grp[c.id].n++;
+                    if (n.urgence === 'danger') grp[c.id].danger++;
+                });
+                const cats = Object.values(grp).sort((a, b) => b.danger - a.danger || b.n - a.n);
+                catZone.innerHTML = cats.length === 0
+                    ? '<span style="color:#2a7a4a;font-size:0.85rem;">✅ Aucune alerte active</span>'
+                    : cats.map(c => `<span style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.3rem 0.6rem;border-radius:16px;font-size:0.8rem;background:${c.danger ? '#fdecea' : '#fff8e1'};color:${c.danger ? '#c0392b' : '#9a7d0a'};border:1px solid ${c.danger ? '#f5c6cb' : '#f0e0a0'};">${c.icone} ${c.label} <strong>${c.n}</strong></span>`).join('');
+            }
             alertesZone.innerHTML = notifs.length === 0
                 ? '<p style="color:#888;">Aucune alerte. Tout est en ordre.</p>'
                 : notifs.slice(0, 10).map(n => `<div class="alert-box" style="${n.urgence==='danger'?'background:#fdecea;border-left:4px solid #c0392b;':'background:#fff8e1;border-left:4px solid #d4a017;'}cursor:pointer;" onclick="allerVersNotification('${n.key}','${n.tab}')">
