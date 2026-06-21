@@ -5589,8 +5589,9 @@ button:focus-visible, input:focus-visible, select:focus-visible {
             <div class="form-grid" style="grid-template-columns:1fr 1fr;">
               <div class="form-group"><label>Date convention</label><input type="date" id="fin-date-conv" class="form-control"></div>
               <div class="form-group"><label>Montant d'engagement (FCFA) *</label><input type="number" id="fin-montant-engagement" class="form-control" value="0" oninput="finSyncModal()"></div>
-              <div class="form-group"><label>Lots attribués (part financier)</label><input type="number" id="fin-nb-lots" class="form-control" value="0" min="0"></div>
-              <div class="form-group"><label>Désignation des lots</label><input type="text" id="fin-designation-lots" class="form-control" placeholder="Ex : Lots 12, 13, 14 — Îlot B"></div>
+              <div class="form-group"><label>Lots attribués (part financier)</label><input type="number" id="fin-nb-lots" class="form-control" value="0" min="0" oninput="finEstimSuperficie()"></div>
+              <div class="form-group"><label>Superficie cédée (m²)</label><input type="number" id="fin-superficie" class="form-control" value="0" min="0" placeholder="Auto = lots × surface moyenne"></div>
+              <div class="form-group span-2"><label>Désignation des lots</label><input type="text" id="fin-designation-lots" class="form-control" placeholder="Ex : Lots 12, 13, 14 — Îlot B"></div>
             </div>
             <div class="form-section-title" style="margin-top:14px;">③ Situation financière</div>
             <div id="fin-modal-synth" class="card" style="background:var(--card2);padding:12px;font-size:13px;"></div>
@@ -44185,6 +44186,16 @@ function afRenderJaugeCessible(cessibleLots, tauxCessible){
   cessibleLots = parseInt(cessibleLots)||0;
   var attribues = afLotsFinanciersAttribues(_afOp.id);
   var dispo = cessibleLots - attribues;
+  // Superficie cédée vs cessible
+  var moyLot = (parseInt(_afOp.nb_lots)>0) ? ((parseFloat(_afOp.superficie)||0)/parseInt(_afOp.nb_lots)) : 0;
+  var cessibleSup = Math.round((parseFloat(_afOp.superficie)||0) * (parseFloat(tauxCessible)||0)/100);
+  var attribuesSup = Math.round((DATA.af_financiers||[]).reduce(function(s,f){
+    if(f.operation_id!==_afOp.id) return s;
+    var sup=parseFloat(f.superficie_cedee)||0;
+    if(!sup) sup=(parseInt(f.nb_lots)||0)*moyLot;
+    return s+sup;
+  },0));
+  var dispoSup = cessibleSup - attribuesSup;
   var pct = cessibleLots>0 ? (attribues/cessibleLots*100) : (attribues>0?999:0);
   var pctClamp = Math.max(0, Math.min(100, pct));
   var depasse = attribues > cessibleLots;
@@ -44218,7 +44229,8 @@ function afRenderJaugeCessible(cessibleLots, tauxCessible){
     +'<div style="flex:1;min-width:180px;font-size:13px;line-height:1.9;">'
     +'Lots cessibles (part financiers) : <strong>'+cessibleLots+'</strong><br>'
     +'Lots déjà cédés aux financiers : <strong>'+attribues+'</strong><br>'
-    +'Solde cessible : <strong style="color:'+color+';">'+dispo+'</strong> lot(s)'
+    +'Solde cessible : <strong style="color:'+color+';">'+dispo+'</strong> lot(s)<br>'
+    +'<span style="color:#6B7280;">Superficie cédée : <strong>'+fmtF(attribuesSup)+' m²</strong> / '+fmtF(cessibleSup)+' m² cessibles · solde <strong>'+fmtF(Math.max(0,dispoSup))+' m²</strong></span>'
     +'</div></div>'+msg+'</div>';
 }
 
@@ -46546,6 +46558,7 @@ function finOpen(id) {
   set('fin-date-conv', f?f.date_conv:'');
   set('fin-montant-engagement', f?f.montant_engagement:0);
   set('fin-nb-lots', f?f.nb_lots:0);
+  set('fin-superficie', f?f.superficie_cedee:0);
   set('fin-designation-lots', f?f.designation_lots:'');
   set('fin-notes', f?f.notes:'');
   finSyncModal();
@@ -46568,6 +46581,17 @@ function finSyncModal() {
     +'<div style="background:var(--bord);border-radius:6px;height:10px;overflow:hidden;"><div style="height:10px;border-radius:6px;background:'+couleur+';width:'+pct+'%;"></div></div>'
     +'<span style="font-size:11px;color:'+couleur+';">'+pct+'%</span></div>'
     +'</div>';
+}
+
+function finEstimSuperficie(){
+  var supEl=document.getElementById('fin-superficie'), lotsEl=document.getElementById('fin-nb-lots');
+  if(!supEl||!lotsEl) return;
+  if((parseFloat(supEl.value)||0)!==0) return; // ne pas écraser une saisie manuelle
+  var opId=(document.getElementById('fin-operation')||{}).value;
+  var op=(DATA.af_operations||[]).find(function(x){ return x.id===opId; });
+  if(!op||!op.nb_lots) return;
+  var moy=(parseFloat(op.superficie)||0)/(parseInt(op.nb_lots)||1);
+  supEl.value=Math.round((parseInt(lotsEl.value)||0)*moy);
 }
 
 async function finSave() {
@@ -46598,6 +46622,7 @@ async function finSave() {
   f.date_conv = document.getElementById('fin-date-conv').value;
   f.montant_engagement = parseFloat(document.getElementById('fin-montant-engagement').value)||0;
   f.nb_lots = parseInt(document.getElementById('fin-nb-lots').value)||0;
+  f.superficie_cedee = parseFloat(document.getElementById('fin-superficie').value)||0;
   f.designation_lots = document.getElementById('fin-designation-lots').value.trim();
   f.notes = document.getElementById('fin-notes').value.trim();
   await dbPut('af_financiers', f);
@@ -46964,7 +46989,7 @@ function finImprimerContratReservation(fid) {
     + '<div class="art"><b>ENTRE LES SOUSSIGNÉS :</b></div>'
     + '<div class="art">La société <b>'+societe+'</b>'+(params.rccm?(', RCCM '+params.rccm):'')+(params.adresse?(', sise à '+params.adresse):'')+', ci-après dénommée « l\'Opérateur », d\'une part ;</div>'
     + '<div class="art">Et <b>'+f.nom+'</b>'+(f.contact?(', '+f.contact):'')+', ci-après dénommé « le Réservataire », d\'autre part.</div>'
-    + '<div class="section"><div class="section-title">Article 1 — Objet</div><div class="art">Le présent contrat a pour objet la réservation provisoire, au profit du Réservataire, de <b>'+(f.nb_lots||0)+' lot(s)</b>'+(f.designation_lots?(' ('+f.designation_lots+')'):'')+' prélevé(s) sur la part cessible de l\'Opérateur dans l\'opération <b>'+(op?op.nom:'—')+'</b>.</div></div>'
+    + '<div class="section"><div class="section-title">Article 1 — Objet</div><div class="art">Le présent contrat a pour objet la réservation provisoire, au profit du Réservataire, de <b>'+(f.nb_lots||0)+' lot(s)</b>'+(f.superficie_cedee?(' d\'une superficie totale de <b>'+fmtF(f.superficie_cedee)+' m²</b>'):'')+(f.designation_lots?(' ('+f.designation_lots+')'):'')+' prélevé(s) sur la part cessible de l\'Opérateur dans l\'opération <b>'+(op?op.nom:'—')+'</b>.</div></div>'
     + '<div class="section"><div class="section-title">Article 2 — Apport financier</div>'
     + '<div class="montant-box"><div style="font-size:11px;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Engagement intégralement libéré</div><div style="font-size:26px;font-weight:900;color:#1E40AF;">'+fmtF(verse)+' FCFA</div></div>'
     + '<div class="art">Le Réservataire a soldé son engagement de <b>'+fmtF(f.montant_engagement||0)+' FCFA</b>, dûment constaté par la comptabilité de l\'Opérateur'+(f.date_conv?(', au titre de la convention du '+f.date_conv):'')+'.</div></div>'
@@ -46985,7 +47010,7 @@ function finImprimerAttestationReservation(fid) {
     + '<div class="titre-doc">Attestation de Réservation Provisoire</div>'
     + '<div class="sous-titre">Délivrée en contrepartie d\'un apport de financement</div>'
     + '<div class="ref">Réf. : ARP-'+f.id.slice(-6).toUpperCase()+' &nbsp;|&nbsp; Date : '+dDoc+'</div>'
-    + '<div class="mention">La société <b>'+societe+'</b>, agissant en qualité d\'opérateur immobilier, atteste que <b>'+f.nom+'</b>'+(f.contact?(' ('+f.contact+')'):'')+' bénéficie de la <b>réservation provisoire</b> de <b>'+(f.nb_lots||0)+' lot(s)</b>'+(f.designation_lots?(' ('+f.designation_lots+')'):'')+' dans l\'opération <b>'+(op?op.nom:'—')+'</b>.</div>'
+    + '<div class="mention">La société <b>'+societe+'</b>, agissant en qualité d\'opérateur immobilier, atteste que <b>'+f.nom+'</b>'+(f.contact?(' ('+f.contact+')'):'')+' bénéficie de la <b>réservation provisoire</b> de <b>'+(f.nb_lots||0)+' lot(s)</b>'+(f.superficie_cedee?(' (superficie : <b>'+fmtF(f.superficie_cedee)+' m²</b>)'):'')+(f.designation_lots?(' ('+f.designation_lots+')'):'')+' dans l\'opération <b>'+(op?op.nom:'—')+'</b>.</div>'
     + '<div class="mention">Cette réservation fait suite au règlement intégral de l\'engagement financier, d\'un montant de <b>'+fmtF(verse)+' FCFA</b>, et à la validation de la Direction Générale'+(f.dg_valide_par?(' ('+f.dg_valide_par+')'):'')+' en date du <b>'+(f.dg_valide_date||dDoc)+'</b>.</div>'
     + '<div class="mention">La présente attestation, de nature <b>provisoire</b>, ne vaut pas titre de propriété. Elle sera régularisée par la délivrance de l\'attestation de cession définitive et des actes y afférents.</div>'
     + '<div class="signatures"><div class="sig-box"></div><div class="sig-box"><div class="sig-line"></div><div style="font-size:12px;font-weight:700;">Pour '+societe+'</div><div style="font-size:11px;color:#555;">Le Directeur Général — signature & cachet</div></div></div>'
