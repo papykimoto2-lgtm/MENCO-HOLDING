@@ -549,6 +549,7 @@
             <div class="nav-group">▸ Pilotage &amp; finance</div>
             <button data-tab="tabCompta">⑭ 🧾 Comptabilité</button>
             <button data-tab="tabBI">⑮ 📈 Business Intelligence</button>
+            <button data-tab="tabParametres">⑯ ⚙️ Paramétrage</button>
         </nav>
 
         <div class="date-time" id="headerDateTime">Chargement...</div>
@@ -958,11 +959,11 @@
                     <div class="form-group"><label>Action commerciale</label><select id="venteAction"><option value="">-- Aucune --</option></select></div>
                     <button class="btn btn-success" onclick="enregistrerVente()">Enregistrer</button>
                 </div>
-                <button class="btn btn-outline" onclick="genererReçu()">🖨️ Reçu PDF</button>
+                <button class="btn btn-outline" onclick="imprimerRecuVente()">🖨️ Reçu PDF (dernière vente)</button>
                 <div id="apercuRecu" style="display:none; background:#f9fbfa; border:1px dashed #b0c9bd; border-radius:8px; padding:1rem; margin-top:1rem; white-space:pre-wrap; font-family:monospace;"></div>
                 <h3 class="mt-1">Historique</h3>
                 <div class="table-wrap">
-                    <table><thead><tr><th>Date</th><th>Client</th><th>Produit</th><th>Qté</th><th>Prix unit.</th><th>Total</th><th>Marge</th></tr></thead><tbody id="listeVentes"></tbody></table>
+                    <table><thead><tr><th>Date</th><th>Client</th><th>Produit</th><th>Qté</th><th>Prix unit.</th><th>Total</th><th>Marge</th><th>Reçu</th></tr></thead><tbody id="listeVentes"></tbody></table>
                 </div>
             </div>
         </section>
@@ -1064,6 +1065,41 @@
                 <div class="card" style="margin:0;"><h2>⚖️ Coût par hectare</h2><div id="chartCoutHa"></div></div>
                 <div class="card" style="margin:0;"><h2>📊 Évolution de la valeur du stock</h2><div id="chartStock"></div></div>
                 <div class="card" style="margin:0;"><h2>☠️ Évolution des mortalités</h2><div id="chartMortalite"></div></div>
+            </div>
+        </section>
+
+        <!-- ==================== PARAMÉTRAGE ==================== -->
+        <section id="tabParametres" class="tab-pane">
+            <div class="card">
+                <div class="flex-between"><h2 style="margin:0;">👥 Utilisateurs & accès</h2><button class="btn btn-success btn-sm" onclick="ouvrirModalUtilisateur()">➕ Nouvel utilisateur</button></div>
+                <p style="font-size:0.78rem;color:#666;margin:0.3rem 0;">Chaque utilisateur reçoit un rôle qui détermine les modules visibles. La connexion est gérée par le hub Menko Holding ; le rôle est appliqué ici selon l'identifiant de session.</p>
+                <div class="table-wrap"><table><thead><tr><th>Nom</th><th>Identifiant</th><th>Rôle</th><th>Modules accessibles</th><th>Statut</th><th></th></tr></thead><tbody id="listeUtilisateurs"></tbody></table></div>
+                <div id="utilisateurCourantInfo" style="font-size:0.8rem;color:#16623a;margin-top:0.5rem;"></div>
+            </div>
+
+            <div class="card">
+                <h2>🔐 Rôles & permissions</h2>
+                <p style="font-size:0.78rem;color:#666;margin:0.3rem 0;">Coche les modules accessibles par rôle. Le tableau de bord est toujours visible.</p>
+                <div class="table-wrap"><div id="matricePermissions"></div></div>
+            </div>
+
+            <div class="card">
+                <h2>🏢 Informations de l'entreprise (documents PDF)</h2>
+                <p style="font-size:0.78rem;color:#666;margin:0.3rem 0;">Ces informations apparaissent en en-tête des bons de livraison, bons de sortie, factures et reçus.</p>
+                <div class="form-row">
+                    <div class="form-group" style="flex:2;"><label>Nom / Raison sociale</label><input type="text" id="entNom"></div>
+                    <div class="form-group" style="flex:2;"><label>Activité</label><input type="text" id="entActivite"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:2;"><label>Adresse</label><input type="text" id="entAdresse"></div>
+                    <div class="form-group"><label>Téléphone</label><input type="text" id="entTel"></div>
+                    <div class="form-group"><label>Email</label><input type="text" id="entEmail"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>RCCM</label><input type="text" id="entRccm"></div>
+                    <div class="form-group"><label>NCC</label><input type="text" id="entNcc"></div>
+                    <button class="btn btn-success" onclick="sauvegarderEntreprise()">💾 Enregistrer</button>
+                </div>
             </div>
         </section>
 
@@ -1435,6 +1471,7 @@
             tabTracabilite: false,
             tabMainOeuvre: false,
             tabBI: false,
+            tabParametres: false,
             tabParcelles: false,
             tabCampagnes: false,
             tabMarketing: false,
@@ -1531,6 +1568,25 @@
             if (!data.transformations) data.transformations = [];
             if (!data.mouvementsManuels) data.mouvementsManuels = [];
             if (!data.nextId.mouvementManuel) data.nextId.mouvementManuel = 1;
+            // ── PARAMÉTRAGE : utilisateurs, rôles, entreprise ──
+            const TOUS_ONGLETS = ['tabProduits','tabParcelles','tabMainOeuvre','tabEquipements','tabFournisseurs','tabCampagnes','tabProduction','tabElevage','tabStocks','tabTracabilite','tabClients','tabVentes','tabMarketing','tabCompta','tabBI','tabParametres'];
+            if (!data.roles) {
+                data.roles = {
+                    admin:        { label: 'Administrateur', tabs: TOUS_ONGLETS.slice() },
+                    gestionnaire: { label: 'Gestionnaire', tabs: TOUS_ONGLETS.filter(t => t !== 'tabParametres') },
+                    production:   { label: 'Responsable production', tabs: ['tabParcelles','tabCampagnes','tabProduction','tabElevage','tabMainOeuvre','tabEquipements','tabStocks','tabTracabilite'] },
+                    commercial:   { label: 'Commercial', tabs: ['tabClients','tabVentes','tabMarketing','tabTracabilite'] },
+                    magasinier:   { label: 'Magasinier', tabs: ['tabStocks','tabProduits','tabFournisseurs','tabTracabilite'] },
+                    comptable:    { label: 'Comptable', tabs: ['tabCompta','tabVentes','tabFournisseurs','tabBI'] },
+                    lecture:      { label: 'Lecture seule', tabs: ['tabBI','tabTracabilite'] }
+                };
+            }
+            if (!data.utilisateurs) {
+                data.utilisateurs = [{ id: 1, nom: 'Administrateur', identifiant: 'admin', role: 'admin', actif: true }];
+            }
+            if (!data.nextId.utilisateur) data.nextId.utilisateur = (data.utilisateurs.reduce((m, u) => Math.max(m, u.id), 0) + 1);
+            if (!data.entreprise) data.entreprise = Object.assign({}, ENTREPRISE);
+            ENTREPRISE = Object.assign(ENTREPRISE, data.entreprise);
             if (!data.nextId.transformation) data.nextId.transformation = 1;
             if (!data.nextId.numeroLot) data.nextId.numeroLot = 1;
             data.lotsStock.forEach(l => {
@@ -1732,6 +1788,9 @@
                         break;
                     case 'tabBI':
                         renderBI();
+                        break;
+                    case 'tabParametres':
+                        renderParametres();
                         break;
                     case 'tabMarketing':
                         renderMarketing();
@@ -3676,7 +3735,7 @@
                 const client = getClient(l.clientId);
                 const tr = document.createElement('tr');
                 tr.innerHTML =
-                    `<td>#${l.id}</td><td>${cmd?'#'+cmd.id:'Sans commande'}${l.productionId ? ' (Prod #'+l.productionId+')' : ''}</td><td>${formatDateSimple(l.date)}</td><td><button class="btn btn-sm btn-outline" onclick="voirLivraisonClient(${l.id})">👁️</button><button class="btn btn-sm btn-danger" onclick="supprimerLivraisonClient(${l.id})">🗑️</button></td>`;
+                    `<td>#${l.id}</td><td>${cmd?'#'+cmd.id:'Sans commande'}${l.productionId ? ' (Prod #'+l.productionId+')' : ''}</td><td>${formatDateSimple(l.date)}</td><td style="white-space:nowrap;"><button class="btn btn-sm" style="background:#1e3d2f;color:#fff;" onclick="imprimerBonLivraison(${l.id})" title="Bon de livraison PDF">🖨️ BL</button> <button class="btn btn-sm btn-outline" onclick="imprimerBonSortie(${l.id})" title="Bon de sortie PDF">📦 BS</button> <button class="btn btn-sm btn-outline" onclick="voirLivraisonClient(${l.id})">👁️</button><button class="btn btn-sm btn-danger" onclick="supprimerLivraisonClient(${l.id})">🗑️</button></td>`;
                 tbody.appendChild(tr);
             });
         }
@@ -3767,7 +3826,7 @@
                     `<td>#${f.id}</td><td>${client?client.nom:'Inconnu'}</td><td>${formatDateSimple(f.date)}</td><td>${f.montant?.toFixed(0)||0}</td>` +
                     `<td>${st.regle.toFixed(0)}</td><td>${st.solde.toFixed(0)}</td>` +
                     `<td><span style="color:${st.color};font-weight:600;">● ${st.label}</span></td>` +
-                    `<td>${st.solde>0?`<button class="btn btn-sm btn-success" onclick="ouvrirModalReglement(${f.id},'client')">💳 Régler</button>`:''}<button class="btn btn-sm btn-outline" onclick="voirFactureClient(${f.id})">👁️</button><button class="btn btn-sm btn-danger" onclick="supprimerFactureClient(${f.id})">🗑️</button></td>`;
+                    `<td>${st.solde>0?`<button class="btn btn-sm btn-success" onclick="ouvrirModalReglement(${f.id},'client')">💳 Régler</button>`:''}<button class="btn btn-sm" style="background:#1e3d2f;color:#fff;" onclick="imprimerFacture(${f.id})" title="Facture PDF">🖨️ Facture</button> <button class="btn btn-sm btn-outline" onclick="voirFactureClient(${f.id})">👁️</button><button class="btn btn-sm btn-danger" onclick="supprimerFactureClient(${f.id})">🗑️</button></td>`;
                 tbody.appendChild(tr);
             });
         }
@@ -3842,7 +3901,7 @@
                 const marge = total - (v.coutRevient || 0);
                 const tr = document.createElement('tr');
                 tr.innerHTML =
-                    `<td>${formatDate(v.date)}</td><td>${client?client.nom:'Inconnu'}</td><td>${produit?produit.nom:'Inconnu'}</td><td>${v.quantite}</td><td>${v.prixUnitaire?.toFixed(0)||0}</td><td><strong>${total.toFixed(0)}</strong></td><td style="color:${marge>=0?'#2a7a4a':'#b33c3c'};">${marge.toFixed(0)}</td>`;
+                    `<td>${formatDate(v.date)}</td><td>${client?client.nom:'Inconnu'}</td><td>${produit?produit.nom:'Inconnu'}</td><td>${v.quantite}</td><td>${v.prixUnitaire?.toFixed(0)||0}</td><td><strong>${total.toFixed(0)}</strong></td><td style="color:${marge>=0?'#2a7a4a':'#b33c3c'};">${marge.toFixed(0)}</td><td><button class="btn btn-sm btn-outline" onclick="imprimerRecuVente(${v.id})" title="Reçu PDF">🖨️</button></td>`;
                 tbody.appendChild(tr);
             });
         }
@@ -7228,6 +7287,164 @@
             return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;">${g}</svg>`;
         }
 
+        // ============================================================
+        //  PARAMÉTRAGE — utilisateurs, rôles, droits d'accès, entreprise
+        // ============================================================
+        const TABS_META = {
+            tabProduits: '🌱 Produits', tabParcelles: '🗺️ Parcelles', tabMainOeuvre: '👷 Main d\'œuvre',
+            tabEquipements: '🚜 Équipements', tabFournisseurs: '🏭 Fournisseurs', tabCampagnes: '🌦️ Campagnes',
+            tabProduction: '⚙️ Production', tabElevage: '🐄 Élevage', tabStocks: '📦 Stocks',
+            tabTracabilite: '🔗 Traçabilité', tabClients: '👤 Clients', tabVentes: '💰 Ventes',
+            tabMarketing: '📣 Marketing', tabCompta: '🧾 Comptabilité', tabBI: '📈 BI', tabParametres: '⚙️ Paramétrage'
+        };
+
+        function sessionUtilisateur() {
+            try { return JSON.parse(sessionStorage.getItem('menko_session') || '{}'); } catch (e) { return {}; }
+        }
+
+        function roleUtilisateurCourant() {
+            const u = sessionUtilisateur();
+            if (u.role && data.roles[u.role]) return u.role;
+            const match = data.utilisateurs.find(x => (u.identifiant && x.identifiant === u.identifiant) || (u.nom && x.nom === u.nom));
+            if (match && data.roles[match.role]) return match.role;
+            return 'admin'; // par défaut : accès complet (ne jamais verrouiller hors configuration explicite)
+        }
+
+        function appliquerDroitsAcces() {
+            const role = roleUtilisateurCourant();
+            const def = data.roles[role];
+            const autorises = def ? def.tabs : null;
+            document.querySelectorAll('.nav-tabs button[data-tab]').forEach(btn => {
+                const t = btn.dataset.tab;
+                const ok = t === 'tabDashboard' || !autorises || autorises.includes(t);
+                btn.style.display = ok ? '' : 'none';
+            });
+        }
+
+        function renderParametres() {
+            // Infos entreprise
+            const e = data.entreprise || ENTREPRISE;
+            const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
+            set('entNom', e.nom); set('entActivite', e.activite); set('entAdresse', e.adresse);
+            set('entTel', e.tel); set('entEmail', e.email); set('entRccm', e.rccm); set('entNcc', e.ncc);
+            renderUtilisateurs();
+            renderMatricePermissions();
+            const u = sessionUtilisateur();
+            const role = roleUtilisateurCourant();
+            const info = document.getElementById('utilisateurCourantInfo');
+            if (info) info.innerHTML = `Session active : <strong>${u.nom || 'Administrateur'}</strong> — rôle appliqué : <strong>${data.roles[role] ? data.roles[role].label : role}</strong>.`;
+        }
+
+        function renderUtilisateurs() {
+            const tb = document.getElementById('listeUtilisateurs');
+            if (!tb) return;
+            tb.innerHTML = data.utilisateurs.length ? data.utilisateurs.map(u => {
+                const r = data.roles[u.role];
+                const nbTabs = r ? r.tabs.length : 0;
+                return `<tr${u.actif === false ? ' style="opacity:0.5;"' : ''}><td><strong>${u.nom}</strong></td><td>${u.identifiant || '—'}</td><td><span class="badge" style="background:#f0ebf7;color:#5b2c83;">${r ? r.label : u.role}</span></td><td>${nbTabs} module(s)</td><td>${u.actif === false ? '⛔ Inactif' : '✅ Actif'}</td>` +
+                    `<td style="white-space:nowrap;"><button class="btn btn-sm btn-outline" onclick="ouvrirModalUtilisateur(${u.id})">✏️</button> <button class="btn btn-sm btn-danger" onclick="supprimerUtilisateur(${u.id})">🗑️</button></td></tr>`;
+            }).join('') : '<tr><td colspan="6" style="color:#888;">Aucun utilisateur.</td></tr>';
+        }
+
+        function ouvrirModalUtilisateur(id) {
+            const u = id ? data.utilisateurs.find(x => x.id === id) : null;
+            const overlay = document.getElementById('modalOverlay');
+            const body = document.getElementById('modalBody');
+            const optsRoles = Object.entries(data.roles).map(([k, v]) => `<option value="${k}"${u && u.role === k ? ' selected' : ''}>${v.label}</option>`).join('');
+            body.innerHTML =
+                `<h2>${u ? '✏️ Modifier' : '➕ Nouvel'} utilisateur — accès</h2>` +
+                `<div class="form-row">
+                    <div class="form-group" style="flex:2;"><label>Nom complet *</label><input type="text" id="usrNom" value="${u ? (u.nom || '').replace(/"/g, '&quot;') : ''}"></div>
+                    <div class="form-group"><label>Identifiant de connexion *</label><input type="text" id="usrIdentifiant" value="${u ? (u.identifiant || '') : ''}" placeholder="ex: kkoffi"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:2;"><label>🔐 Rôle (accès aux modules)</label><select id="usrRole" onchange="majApercuRoleUtilisateur()">${optsRoles}</select></div>
+                    <div class="form-group"><label>Statut</label><select id="usrActif"><option value="oui"${!u || u.actif !== false ? ' selected' : ''}>Actif</option><option value="non"${u && u.actif === false ? ' selected' : ''}>Inactif</option></select></div>
+                </div>
+                <div id="usrApercuRole" style="font-size:0.8rem;color:#16623a;background:#f3f9f5;border-radius:6px;padding:0.5rem 0.7rem;margin-bottom:0.8rem;"></div>
+                <p style="font-size:0.74rem;color:#888;">L'identifiant doit correspondre à celui utilisé pour se connecter au hub Menko Holding. Les modules autorisés par rôle se modifient dans « Rôles & permissions ».</p>
+                <div class="form-row">
+                    <button class="btn btn-success" onclick="validerUtilisateur(${id || 'null'})">💾 Enregistrer</button>
+                    <button class="btn btn-outline" onclick="fermerModal()">Annuler</button>
+                </div>`;
+            overlay.classList.add('active');
+            majApercuRoleUtilisateur();
+        }
+
+        function majApercuRoleUtilisateur() {
+            const sel = document.getElementById('usrRole');
+            const ap = document.getElementById('usrApercuRole');
+            if (!sel || !ap) return;
+            const r = data.roles[sel.value];
+            ap.innerHTML = r ? 'Accès : ' + (r.tabs.length ? r.tabs.map(t => TABS_META[t] || t).join(', ') : 'Tableau de bord uniquement') : '';
+        }
+
+        function validerUtilisateur(id) {
+            const nom = document.getElementById('usrNom').value.trim();
+            const identifiant = document.getElementById('usrIdentifiant').value.trim();
+            if (!nom || !identifiant) { alert('Nom et identifiant sont obligatoires.'); return; }
+            const role = document.getElementById('usrRole').value;
+            const actif = document.getElementById('usrActif').value === 'oui';
+            if (id) { Object.assign(data.utilisateurs.find(x => x.id === id), { nom, identifiant, role, actif }); }
+            else { data.utilisateurs.push({ id: data.nextId.utilisateur++, nom, identifiant, role, actif }); }
+            saveData();
+            fermerModal();
+            renderParametres();
+            appliquerDroitsAcces();
+        }
+
+        function supprimerUtilisateur(id) {
+            const u = data.utilisateurs.find(x => x.id === id);
+            if (u && u.identifiant === 'admin') { alert('Le compte administrateur par défaut ne peut pas être supprimé.'); return; }
+            if (!confirm('Supprimer cet utilisateur ?')) return;
+            data.utilisateurs = data.utilisateurs.filter(x => x.id !== id);
+            saveData();
+            renderParametres();
+        }
+
+        function renderMatricePermissions() {
+            const c = document.getElementById('matricePermissions');
+            if (!c) return;
+            const tabs = Object.keys(TABS_META);
+            const roles = Object.entries(data.roles);
+            let html = '<table style="font-size:0.8rem;"><thead><tr><th style="text-align:left;">Module</th>' +
+                roles.map(([k, v]) => `<th style="text-align:center;">${v.label}</th>`).join('') + '</tr></thead><tbody>';
+            tabs.forEach(t => {
+                html += `<tr><td style="text-align:left;">${TABS_META[t]}</td>` + roles.map(([k, v]) => {
+                    const checked = v.tabs.includes(t) ? 'checked' : '';
+                    const dis = k === 'admin' ? 'disabled title="L\'administrateur a toujours accès à tout"' : '';
+                    return `<td style="text-align:center;"><input type="checkbox" ${checked} ${dis} onchange="toggleRoleTab('${k}','${t}',this.checked)"></td>`;
+                }).join('') + '</tr>';
+            });
+            html += '</tbody></table>';
+            c.innerHTML = html;
+        }
+
+        function toggleRoleTab(role, tab, checked) {
+            const r = data.roles[role];
+            if (!r) return;
+            if (checked) { if (!r.tabs.includes(tab)) r.tabs.push(tab); }
+            else { r.tabs = r.tabs.filter(t => t !== tab); }
+            saveData();
+            renderUtilisateurs();
+            appliquerDroitsAcces();
+        }
+
+        function sauvegarderEntreprise() {
+            data.entreprise = {
+                nom: document.getElementById('entNom').value.trim(),
+                activite: document.getElementById('entActivite').value.trim(),
+                adresse: document.getElementById('entAdresse').value.trim(),
+                tel: document.getElementById('entTel').value.trim(),
+                email: document.getElementById('entEmail').value.trim(),
+                rccm: document.getElementById('entRccm').value.trim(),
+                ncc: document.getElementById('entNcc').value.trim()
+            };
+            ENTREPRISE = Object.assign(ENTREPRISE, data.entreprise);
+            saveData();
+            alert('✅ Informations enregistrées. Elles apparaîtront sur les prochains documents PDF.');
+        }
+
         function renderBI() {
             const mois = derniers12Mois();
             const labels = mois.map(m => m.label);
@@ -7523,6 +7740,165 @@
             a.href = url; a.download = 'tracabilite-lots-menko-agro.csv';
             document.body.appendChild(a); a.click(); document.body.removeChild(a);
             URL.revokeObjectURL(url);
+        }
+
+        // ============================================================
+        //  DOCUMENTS PDF — bon de livraison, bon de sortie, facture, reçu
+        // ============================================================
+        let ENTREPRISE = {
+            nom: 'MENKO AGRO', activite: 'Production & distribution agricole',
+            adresse: 'Abidjan, Côte d\'Ivoire', tel: '', email: '', rccm: '', ncc: ''
+        };
+
+        function numeroDoc(prefixe, id, dateISO) {
+            const an = (dateISO ? new Date(dateISO) : new Date()).getFullYear();
+            return prefixe + '-' + an + '-' + String(id).padStart(4, '0');
+        }
+        function montantFr(n) { return Math.round(n || 0).toLocaleString('fr-FR') + ' FCFA'; }
+
+        function docEntete(doc, titre, numero, dateISO) {
+            doc.setFillColor(30, 61, 47);
+            doc.rect(0, 0, 210, 28, 'F');
+            doc.setTextColor(255, 255, 255);
+            doc.setFont('helvetica', 'bold'); doc.setFontSize(17);
+            doc.text(ENTREPRISE.nom, 14, 13);
+            doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5);
+            doc.text(ENTREPRISE.activite, 14, 19);
+            const contact = [ENTREPRISE.adresse, ENTREPRISE.tel, ENTREPRISE.email].filter(Boolean).join('  •  ');
+            doc.text(contact, 14, 24);
+            doc.setTextColor(30, 61, 47);
+            doc.setFont('helvetica', 'bold'); doc.setFontSize(15);
+            doc.text(titre, 196, 40, { align: 'right' });
+            doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+            doc.text('N° ' + numero, 196, 47, { align: 'right' });
+            doc.text('Date : ' + formatDateSimple(dateISO), 196, 52, { align: 'right' });
+            doc.setDrawColor(200, 210, 205); doc.line(14, 56, 196, 56);
+            return 64;
+        }
+
+        function docBlocTiers(doc, y, libelle, tiers) {
+            doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(120, 120, 120);
+            doc.text(libelle, 14, y);
+            doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(30, 30, 30);
+            doc.text(tiers && tiers.nom ? tiers.nom : '—', 14, y + 6);
+            doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(90, 90, 90);
+            const infos = [tiers && tiers.telephone, tiers && tiers.email, tiers && tiers.adresse].filter(Boolean).join('  •  ');
+            if (infos) doc.text(infos, 14, y + 11);
+            return y + 18;
+        }
+
+        function docTable(doc, y, cols, rows) {
+            const total = 182, x0 = 14;
+            doc.setFillColor(238, 242, 240);
+            doc.rect(x0, y, total, 8, 'F');
+            doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(40, 40, 40);
+            let cx = x0;
+            cols.forEach(c => { doc.text(c.label, c.align === 'right' ? cx + c.w - 2 : cx + 2, y + 5.5, { align: c.align || 'left' }); cx += c.w; });
+            y += 8;
+            doc.setFont('helvetica', 'normal'); doc.setTextColor(55, 55, 55);
+            rows.forEach(r => {
+                if (y > 262) { doc.addPage(); y = 20; }
+                cx = x0;
+                cols.forEach((c, i) => { doc.text(String(r[i]), c.align === 'right' ? cx + c.w - 2 : cx + 2, y + 5.5, { align: c.align || 'left' }); cx += c.w; });
+                doc.setDrawColor(225, 230, 227); doc.line(x0, y + 8, x0 + total, y + 8);
+                y += 8;
+            });
+            return y + 4;
+        }
+
+        function docSignatures(doc, y, gauche, droite) {
+            if (y > 250) { doc.addPage(); y = 30; }
+            doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(90, 90, 90);
+            doc.text(gauche, 45, y, { align: 'center' });
+            doc.text(droite, 165, y, { align: 'center' });
+            doc.setDrawColor(180, 180, 180);
+            doc.line(20, y + 18, 90, y + 18);
+            doc.line(130, y + 18, 196, y + 18);
+        }
+
+        function docPied(doc) {
+            const h = doc.internal.pageSize.getHeight();
+            doc.setFont('helvetica', 'italic'); doc.setFontSize(7.5); doc.setTextColor(150, 150, 150);
+            const mentions = [ENTREPRISE.rccm ? 'RCCM ' + ENTREPRISE.rccm : '', ENTREPRISE.ncc ? 'NCC ' + ENTREPRISE.ncc : '', 'Édité le ' + new Date().toLocaleString('fr-FR')].filter(Boolean).join('  —  ');
+            doc.text(mentions, 105, h - 8, { align: 'center' });
+        }
+
+        function imprimerBonLivraison(id) {
+            const liv = data.livraisonsClient.find(l => l.id === id);
+            if (!liv) return;
+            const { jsPDF } = window.jspdf; const doc = new jsPDF();
+            let y = docEntete(doc, 'BON DE LIVRAISON', numeroDoc('BL', liv.id, liv.date), liv.date);
+            y = docBlocTiers(doc, y, 'LIVRÉ À', getClient(liv.clientId));
+            const cmd = liv.commandeId ? data.commandesClient.find(c => c.id === liv.commandeId) : null;
+            if (cmd) { doc.setFontSize(9); doc.setTextColor(90, 90, 90); doc.text('Commande liée : #' + cmd.id, 14, y); y += 6; }
+            const rows = liv.lignes.map(l => [getProduit(l.produitId) ? getProduit(l.produitId).nom : '?', String(l.qte)]);
+            const totalQte = liv.lignes.reduce((s, l) => s + l.qte, 0);
+            y = docTable(doc, y, [{ label: 'Désignation', w: 142 }, { label: 'Quantité', w: 40, align: 'right' }], rows);
+            doc.setFont('helvetica', 'bold'); doc.setFontSize(10);
+            doc.text('Total unités livrées : ' + totalQte, 196, y, { align: 'right' }); y += 14;
+            docSignatures(doc, y, 'Le livreur', 'Le client (lu et approuvé)');
+            docPied(doc);
+            doc.save('bon_livraison_' + numeroDoc('BL', liv.id, liv.date) + '.pdf');
+        }
+
+        function imprimerBonSortie(id) {
+            const liv = data.livraisonsClient.find(l => l.id === id);
+            if (!liv) return;
+            const { jsPDF } = window.jspdf; const doc = new jsPDF();
+            let y = docEntete(doc, 'BON DE SORTIE', numeroDoc('BS', liv.id, liv.date), liv.date);
+            const dep = data.depots[0] ? data.depots[0].nom : '—';
+            doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(120, 120, 120);
+            doc.text('SORTIE DE MAGASIN', 14, y);
+            doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(40, 40, 40);
+            doc.text('Dépôt : ' + dep + '     •     Destinataire : ' + (getClient(liv.clientId) ? getClient(liv.clientId).nom : '—'), 14, y + 6);
+            y += 16;
+            const rows = liv.lignes.map(l => { const p = getProduit(l.produitId); const pu = p ? (p.coutUnitaire || p.prixAchat || 0) : 0; return [p ? p.nom : '?', String(l.qte), montantFr(pu * l.qte)]; });
+            y = docTable(doc, y, [{ label: 'Article', w: 112 }, { label: 'Qté sortie', w: 35, align: 'right' }, { label: 'Valeur', w: 35, align: 'right' }], rows);
+            y += 8;
+            docSignatures(doc, y, 'Magasinier', 'Réceptionnaire');
+            docPied(doc);
+            doc.save('bon_sortie_' + numeroDoc('BS', liv.id, liv.date) + '.pdf');
+        }
+
+        function imprimerFacture(id) {
+            const f = data.facturesClient.find(x => x.id === id);
+            if (!f) return;
+            const { jsPDF } = window.jspdf; const doc = new jsPDF();
+            const st = getSoldeFacture(f, 'client');
+            let y = docEntete(doc, 'FACTURE', numeroDoc('FAC', f.id, f.date), f.date);
+            y = docBlocTiers(doc, y, 'FACTURÉ À', getClient(f.clientId));
+            const rows = (Array.isArray(f.lignes) && f.lignes.length)
+                ? f.lignes.map(l => { const p = getProduit(l.produitId); return [p ? p.nom : (l.designation || 'Article'), String(l.qte || 1), montantFr(l.pu || 0), montantFr((l.pu || 0) * (l.qte || 1))]; })
+                : [['Vente de produits agricoles', '1', montantFr(f.montant), montantFr(f.montant)]];
+            y = docTable(doc, y, [{ label: 'Désignation', w: 92 }, { label: 'Qté', w: 22, align: 'right' }, { label: 'P.U.', w: 34, align: 'right' }, { label: 'Montant', w: 34, align: 'right' }], rows);
+            doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(30, 61, 47);
+            doc.text('TOTAL : ' + montantFr(f.montant), 196, y + 2, { align: 'right' });
+            doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(60, 60, 60);
+            doc.text('Réglé : ' + montantFr(st.regle), 196, y + 9, { align: 'right' });
+            doc.setFont('helvetica', 'bold');
+            if (st.solde > 0.5) { doc.setTextColor(192, 57, 43); doc.text('Reste à payer : ' + montantFr(st.solde), 196, y + 15, { align: 'right' }); }
+            else { doc.setTextColor(42, 122, 58); doc.text('SOLDÉE', 196, y + 15, { align: 'right' }); }
+            y += 26;
+            docSignatures(doc, y, ENTREPRISE.nom, 'Le client');
+            docPied(doc);
+            doc.save('facture_' + numeroDoc('FAC', f.id, f.date) + '.pdf');
+        }
+
+        function imprimerRecuVente(venteId) {
+            const v = venteId ? data.ventes.find(x => x.id === venteId) : data.ventes[data.ventes.length - 1];
+            if (!v) { alert('Aucune vente.'); return; }
+            const { jsPDF } = window.jspdf; const doc = new jsPDF();
+            const total = v.quantite * v.prixUnitaire;
+            let y = docEntete(doc, 'REÇU', numeroDoc('REC', v.id, v.date), v.date);
+            y = docBlocTiers(doc, y, 'REÇU DE', getClient(v.clientId));
+            const p = getProduit(v.produitId);
+            y = docTable(doc, y, [{ label: 'Désignation', w: 92 }, { label: 'Qté', w: 22, align: 'right' }, { label: 'P.U.', w: 34, align: 'right' }, { label: 'Montant', w: 34, align: 'right' }],
+                [[p ? p.nom : '?', String(v.quantite), montantFr(v.prixUnitaire), montantFr(total)]]);
+            doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(30, 61, 47);
+            doc.text('TOTAL REÇU : ' + montantFr(total), 196, y + 3, { align: 'right' }); y += 16;
+            docSignatures(doc, y, 'Le caissier', 'Le client');
+            docPied(doc);
+            doc.save('recu_' + numeroDoc('REC', v.id, v.date) + '.pdf');
         }
 
         function genererReçu() {
@@ -7941,12 +8317,12 @@
         //  INITIALISATION
         // ============================================================
         document.addEventListener('DOMContentLoaded', function () {
-            loadData().then(() => switchTab('tabDashboard'));
+            loadData().then(() => { appliquerDroitsAcces(); switchTab('tabDashboard'); });
         });
 
         // Fallback si DOMContentLoaded déjà passé
         if (document.readyState !== 'loading') {
-            loadData().then(() => switchTab('tabDashboard'));
+            loadData().then(() => { appliquerDroitsAcces(); switchTab('tabDashboard'); });
         }
 
     </script>
