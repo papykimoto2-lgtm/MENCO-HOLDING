@@ -555,6 +555,28 @@ function _holdUsers(db){
     rq.onerror=function(e){ reject(e.target.error); };
   });
 }
+function _holdSaveUser(db,user){
+  return new Promise(function(resolve,reject){
+    var tx=db.transaction('users','readwrite');
+    tx.objectStore('users').put(user);
+    tx.oncomplete=function(){ resolve(user); };
+    tx.onerror=function(e){ reject(e.target.error); };
+  });
+}
+function _holdDeleteUserById(db,id){
+  return new Promise(function(resolve,reject){
+    var tx=db.transaction('users','readwrite');
+    tx.objectStore('users').delete(id);
+    tx.oncomplete=function(){ resolve(); };
+    tx.onerror=function(e){ reject(e.target.error); };
+  });
+}
+function _genSalt(){
+  var arr=new Uint8Array(16);
+  if (typeof crypto!=='undefined' && crypto.getRandomValues) crypto.getRandomValues(arr);
+  else for (var i=0;i<16;i++) arr[i]=Math.floor(Math.random()*256);
+  return Array.from(arr).map(function(b){return b.toString(16).padStart(2,'0');}).join('');
+}
 function _agroBadge(u){
   var b=document.createElement('div');
   b.style.cssText='position:fixed;top:8px;right:8px;z-index:99999;background:#1A1A2E;color:#fff;font-size:11px;padding:5px 10px;border-radius:6px;font-family:Arial,sans-serif;display:flex;align-items:center;gap:8px;';
@@ -7465,16 +7487,21 @@ function _agroAccessWindow(){
                 `<h2>${u ? '✏️ Modifier' : '➕ Nouvel'} utilisateur — accès</h2>` +
                 `<div class="form-row">
                     <div class="form-group" style="flex:2;"><label>Nom complet *</label><input type="text" id="usrNom" value="${u ? (u.nom || '').replace(/"/g, '&quot;') : ''}"></div>
-                    <div class="form-group"><label>Identifiant de connexion *</label><input type="text" id="usrIdentifiant" value="${u ? (u.identifiant || '') : ''}" placeholder="ex: kkoffi"></div>
+                    <div class="form-group"><label>Identifiant de connexion *</label><input type="text" id="usrIdentifiant" autocomplete="username" value="${u ? (u.identifiant || '') : ''}" placeholder="ex: kkoffi"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>${u ? '🔑 Nouveau mot de passe' : '🔑 Mot de passe *'}</label><input type="password" id="usrPass" autocomplete="new-password" placeholder="${u ? 'Laisser vide pour ne pas changer' : 'Min. 6 caractères'}"></div>
+                    <div class="form-group"><label>${u ? 'Confirmer le nouveau' : 'Confirmer *'}</label><input type="password" id="usrPass2" autocomplete="new-password" placeholder="${u ? 'Laisser vide pour ne pas changer' : 'Répéter le mot de passe'}"></div>
                 </div>
                 <div class="form-row">
                     <div class="form-group" style="flex:2;"><label>🔐 Rôle (accès aux modules)</label><select id="usrRole" onchange="majApercuRoleUtilisateur()">${optsRoles}</select></div>
                     <div class="form-group"><label>Statut</label><select id="usrActif"><option value="oui"${!u || u.actif !== false ? ' selected' : ''}>Actif</option><option value="non"${u && u.actif === false ? ' selected' : ''}>Inactif</option></select></div>
                 </div>
                 <div id="usrApercuRole" style="font-size:0.8rem;color:#16623a;background:#f3f9f5;border-radius:6px;padding:0.5rem 0.7rem;margin-bottom:0.8rem;"></div>
-                <p style="font-size:0.74rem;color:#888;">L'identifiant doit correspondre à celui utilisé pour se connecter au hub Menko Holding. Les modules autorisés par rôle se modifient dans « Rôles & permissions ».</p>
+                <div id="usrErr" style="display:none;font-size:0.78rem;color:#b42318;background:#fdecea;border-radius:6px;padding:0.5rem 0.7rem;margin-bottom:0.8rem;"></div>
+                <p style="font-size:0.74rem;color:#888;">Le mot de passe est enregistré (haché, salé) dans la base de connexion Menko Holding partagée par toutes les applications du groupe. Les modules autorisés par rôle se modifient dans « Rôles & permissions ».</p>
                 <div class="form-row">
-                    <button class="btn btn-success" onclick="validerUtilisateur(${id || 'null'})">💾 Enregistrer</button>
+                    <button class="btn btn-success" id="usrBtnSave" onclick="validerUtilisateur(${id || 'null'})">💾 Enregistrer</button>
                     <button class="btn btn-outline" onclick="fermerModal()">Annuler</button>
                 </div>`;
             overlay.classList.add('active');
@@ -7489,26 +7516,77 @@ function _agroAccessWindow(){
             ap.innerHTML = r ? 'Accès : ' + (r.tabs.length ? r.tabs.map(t => TABS_META[t] || t).join(', ') : 'Tableau de bord uniquement') : '';
         }
 
-        function validerUtilisateur(id) {
+        function _usrErr(m){ var e=document.getElementById('usrErr'); if(e){ e.textContent=m; e.style.display='block'; } }
+
+        async function validerUtilisateur(id) {
+            const errEl = document.getElementById('usrErr'); if (errEl) errEl.style.display = 'none';
             const nom = document.getElementById('usrNom').value.trim();
             const identifiant = document.getElementById('usrIdentifiant').value.trim();
-            if (!nom || !identifiant) { alert('Nom et identifiant sont obligatoires.'); return; }
+            const pass = document.getElementById('usrPass').value;
+            const pass2 = document.getElementById('usrPass2').value;
             const role = document.getElementById('usrRole').value;
             const actif = document.getElementById('usrActif').value === 'oui';
-            if (id) { Object.assign(data.utilisateurs.find(x => x.id === id), { nom, identifiant, role, actif }); }
-            else { data.utilisateurs.push({ id: data.nextId.utilisateur++, nom, identifiant, role, actif }); }
-            saveData();
-            fermerModal();
-            renderParametres();
-            appliquerDroitsAcces();
+            if (!nom || !identifiant) { _usrErr('Nom et identifiant sont obligatoires.'); return; }
+            if (!id && !pass) { _usrErr('Le mot de passe est obligatoire pour un nouvel utilisateur.'); return; }
+            if (pass && pass.length < 6) { _usrErr('Le mot de passe doit contenir au moins 6 caractères.'); return; }
+            if (pass !== pass2) { _usrErr('Les deux mots de passe ne correspondent pas.'); return; }
+
+            const btn = document.getElementById('usrBtnSave');
+            if (btn) { btn.disabled = true; btn.textContent = '⏳ Enregistrement...'; }
+            try {
+                const ancien = id ? data.utilisateurs.find(x => x.id === id) : null;
+                const ancienIdentifiant = ancien ? ancien.identifiant : null;
+
+                const db = await openHoldDB();
+                const holdUsers = await _holdUsers(db);
+                const doublon = holdUsers.find(h => (h.login || '').toLowerCase() === identifiant.toLowerCase() && (!ancienIdentifiant || (h.login || '').toLowerCase() !== ancienIdentifiant.toLowerCase()));
+                if (doublon) { _usrErr('Cet identifiant est déjà utilisé par un autre compte.'); if (btn) { btn.disabled = false; btn.textContent = '💾 Enregistrer'; } return; }
+
+                let compteHub = ancienIdentifiant ? holdUsers.find(h => (h.login || '').toLowerCase() === ancienIdentifiant.toLowerCase()) : null;
+                if (!compteHub) compteHub = holdUsers.find(h => (h.login || '').toLowerCase() === identifiant.toLowerCase());
+
+                if (pass) {
+                    const salt = _genSalt();
+                    const hash = await hashPassword(pass, salt);
+                    if (compteHub) {
+                        compteHub.nom = nom; compteHub.login = identifiant; compteHub.role = role; compteHub.salt = salt; compteHub.password_hash = hash;
+                    } else {
+                        compteHub = { id: 'u_' + Date.now() + '_' + Math.floor(Math.random() * 1e6), nom: nom, login: identifiant, role: role, salt: salt, password_hash: hash };
+                    }
+                    await _holdSaveUser(db, compteHub);
+                } else if (compteHub) {
+                    // pas de changement de mot de passe : on resynchronise juste nom/rôle/identifiant
+                    compteHub.nom = nom; compteHub.login = identifiant; compteHub.role = role;
+                    await _holdSaveUser(db, compteHub);
+                }
+
+                if (id) { Object.assign(data.utilisateurs.find(x => x.id === id), { nom, identifiant, role, actif }); }
+                else { data.utilisateurs.push({ id: data.nextId.utilisateur++, nom, identifiant, role, actif }); }
+                saveData();
+                fermerModal();
+                renderParametres();
+                appliquerDroitsAcces();
+            } catch (e) {
+                _usrErr('Erreur lors de l\'enregistrement du compte de connexion.');
+                if (btn) { btn.disabled = false; btn.textContent = '💾 Enregistrer'; }
+            }
         }
 
-        function supprimerUtilisateur(id) {
+        async function supprimerUtilisateur(id) {
             const u = data.utilisateurs.find(x => x.id === id);
             if (u && u.identifiant === 'admin') { alert('Le compte administrateur par défaut ne peut pas être supprimé.'); return; }
             if (!confirm('Supprimer cet utilisateur ?')) return;
+            const supprimerAcces = u && u.identifiant ? confirm('Supprimer aussi son accès de connexion (compte hub Menko Holding) ?\nIl ne pourra plus se connecter à aucune application du groupe.') : false;
             data.utilisateurs = data.utilisateurs.filter(x => x.id !== id);
             saveData();
+            if (supprimerAcces) {
+                try {
+                    const db = await openHoldDB();
+                    const holdUsers = await _holdUsers(db);
+                    const compteHub = holdUsers.find(h => (h.login || '').toLowerCase() === u.identifiant.toLowerCase());
+                    if (compteHub) await _holdDeleteUserById(db, compteHub.id);
+                } catch (e) { /* suppression locale déjà effectuée, on ignore l'échec d'accès au hub */ }
+            }
             renderParametres();
         }
 
