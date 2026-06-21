@@ -479,6 +479,8 @@
             color: #1e3d2f;
             font-weight: 500;
         }
+        .parc-label { background:rgba(255,255,255,0.82); border:none; box-shadow:none; font-weight:600; font-size:11px; color:#1e3d2f; padding:1px 4px; }
+        .parc-label::before { display:none; }
     </style>
 </head>
 <body>
@@ -549,6 +551,16 @@
                             <option value="batiment">Bâtiment élevage</option>
                         </select>
                     </div>
+                    <div class="form-group"><label>Type de zone (SIG)</label>
+                        <select id="parcTypeZone">
+                            <option value="cultivee">🌾 Zone cultivée</option>
+                            <option value="irriguee">💧 Zone irriguée</option>
+                            <option value="forestiere">🌳 Zone forestière</option>
+                            <option value="jachere">🟤 Jachère</option>
+                            <option value="batie">🏚️ Zone bâtie</option>
+                            <option value="autre">⬜ Autre</option>
+                        </select>
+                    </div>
                 </div>
                 <div class="form-row">
                     <div class="form-group"><label>Latitude</label><input type="number" id="parcLat" step="0.000001" placeholder="6.0667"></div>
@@ -566,14 +578,24 @@
             </div>
 
             <div class="card">
-                <h2>Carte des parcelles</h2>
-                <div id="parcellesMap" style="height:380px;border-radius:8px;"></div>
-                <div style="margin-top:0.6rem;display:flex;gap:1rem;flex-wrap:wrap;font-size:0.8rem;">
-                    <span><span style="display:inline-block;width:10px;height:10px;background:#2a7a4a;border-radius:50%;"></span> Culture</span>
-                    <span><span style="display:inline-block;width:10px;height:10px;background:#d4a017;border-radius:50%;"></span> Jachère</span>
-                    <span><span style="display:inline-block;width:10px;height:10px;background:#2980b9;border-radius:50%;"></span> Pâturage</span>
-                    <span><span style="display:inline-block;width:10px;height:10px;background:#8e44ad;border-radius:50%;"></span> Bâtiment</span>
+                <div class="flex-between" style="flex-wrap:wrap;gap:0.5rem;">
+                    <h2 style="margin:0;">🗺️ SIG agricole — Carte des parcelles</h2>
+                    <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+                        <button class="btn btn-sm btn-outline" onclick="exporterKMLParcelles()" title="Exporter toutes les parcelles au format KML (Google Earth, QGIS)">📤 Export KML</button>
+                        <label class="btn btn-sm btn-outline" style="cursor:pointer;margin:0;" title="Importer un fichier GPS (KML, GPX, CSV)">📥 Import GPS<input type="file" accept=".kml,.gpx,.csv,.txt" style="display:none;" onchange="importerFichierGPS(this.files[0]); this.value='';"></label>
+                        <button class="btn btn-sm" style="background:#6c3483;color:#fff;" onclick="ouvrirModalDrone()" title="Géoréférencer une orthophoto de drone">🛰️ Drone mapping</button>
+                    </div>
                 </div>
+                <div id="parcellesMap" style="height:440px;border-radius:8px;margin-top:0.7rem;"></div>
+                <div style="margin-top:0.6rem;display:flex;gap:1rem;flex-wrap:wrap;font-size:0.78rem;">
+                    <strong style="color:#555;">Type de zone :</strong>
+                    <span><span style="display:inline-block;width:14px;height:10px;background:#2a7a4a;border-radius:2px;opacity:0.5;"></span> Cultivée</span>
+                    <span><span style="display:inline-block;width:14px;height:10px;background:#2980b9;border-radius:2px;opacity:0.5;"></span> Irriguée</span>
+                    <span><span style="display:inline-block;width:14px;height:10px;background:#145a32;border-radius:2px;opacity:0.5;"></span> Forestière</span>
+                    <span><span style="display:inline-block;width:14px;height:10px;background:#d4a017;border-radius:2px;opacity:0.5;"></span> Jachère</span>
+                    <span><span style="display:inline-block;width:14px;height:10px;background:#8e44ad;border-radius:2px;opacity:0.5;"></span> Bâtie</span>
+                </div>
+                <p style="font-size:0.76rem;color:#888;margin-top:0.5rem;">💡 Basculez en vue satellite via le sélecteur en haut à droite de la carte, puis tracez les limites réelles d'une parcelle : ✏️ Modifier → 📍 Démarrer le bornage. Superficie calculée automatiquement.</p>
             </div>
 
             <div class="card">
@@ -1316,7 +1338,11 @@
             data.parcelles.forEach(p => {
                 if (!p.bornage) p.bornage = [];
                 if (!p.photos) p.photos = [];
+                if (p.typeZone === undefined) p.typeZone = 'cultivee';
             });
+            // ── SIG AVANCÉ : couches drone ──
+            if (!data.droneOverlays) data.droneOverlays = [];
+            if (!data.nextId.droneOverlay) data.nextId.droneOverlay = 1;
             data.contratsFonciers.forEach(c => {
                 if (!c.documents) c.documents = [];
                 if (c.statut === undefined) c.statut = 'actif';
@@ -4224,12 +4250,15 @@
 
         const STATUT_PARCELLE_LABEL = { culture: 'En culture', jachere: 'Jachère', paturage: 'Pâturage', batiment: 'Bâtiment élevage' };
         const STATUT_PARCELLE_COLOR = { culture: '#2a7a4a', jachere: '#d4a017', paturage: '#2980b9', batiment: '#8e44ad' };
+        const TYPE_ZONE_LABEL = { cultivee: '🌾 Zone cultivée', irriguee: '💧 Zone irriguée', forestiere: '🌳 Zone forestière', jachere: '🟤 Jachère', batie: '🏚️ Zone bâtie', autre: '⬜ Autre' };
+        const TYPE_ZONE_COLOR = { cultivee: '#2a7a4a', irriguee: '#2980b9', forestiere: '#145a32', jachere: '#d4a017', batie: '#8e44ad', autre: '#7f8c8d' };
 
         function validerParcelle() {
             const reference = document.getElementById('parcRef').value.trim();
             const superficieHa = parseFloat(document.getElementById('parcSuperficie').value);
             const typeSol = document.getElementById('parcTypeSol').value.trim();
             const statut = document.getElementById('parcStatut').value;
+            const typeZone = document.getElementById('parcTypeZone').value;
             const lat = parseFloat(document.getElementById('parcLat').value);
             const lng = parseFloat(document.getElementById('parcLng').value);
             const titreFoncier = document.getElementById('parcTitre').value.trim();
@@ -4244,7 +4273,7 @@
             data.parcelles.push({
                 id: data.nextId.parcelle++, reference, superficieHa, typeSol, statut,
                 lat: latVal, lng: isNaN(lng) ? null : lng, titreFoncier, notes, zoneId: zone ? zone.id : null,
-                bornage: [], photos: []
+                typeZone, bornage: [], photos: []
             });
             saveData();
             document.getElementById('parcRef').value = '';
@@ -4307,6 +4336,11 @@
                   "<div class=\"form-group\"><label>Statut</label><select id=\"editParcStatut\">" + optsStatut + "</select></div>" +
                 "</div>" +
                 "<div class=\"form-row\">" +
+                  "<div class=\"form-group\"><label>Type de zone (SIG)</label><select id=\"editParcTypeZone\">" +
+                    Object.entries(TYPE_ZONE_LABEL).map(function(e){ return "<option value=\"" + e[0] + "\"" + ((p.typeZone||'cultivee') === e[0] ? " selected" : "") + ">" + e[1] + "</option>"; }).join("") +
+                  "</select></div>" +
+                "</div>" +
+                "<div class=\"form-row\">" +
                   "<div class=\"form-group\"><label>Latitude</label><input type=\"number\" id=\"editParcLat\" step=\"0.000001\" value=\"" + latVal + "\" placeholder=\"6.0667\"></div>" +
                   "<div class=\"form-group\"><label>Longitude</label><input type=\"number\" id=\"editParcLng\" step=\"0.000001\" value=\"" + lngVal + "\" placeholder=\"-5.1167\"></div>" +
                   "<div class=\"form-group\" style=\"flex:0 0 auto;display:flex;align-items:flex-end;\">" +
@@ -4320,6 +4354,7 @@
                 "<div class=\"flex-between\" style=\"margin-bottom:0.6rem;\">" +
                   "<strong style=\"font-size:0.85rem;\">📐 Bornage GPS (" + p.bornage.length + " point(s))" + (p.bornage.length >= 3 ? " — surface bornée : " + surfaceBornageHa(p.bornage).toFixed(2) + " ha" : "") + "</strong>" +
                   "<span>" +
+                    (p.bornage.length >= 3 ? "<button class=\"btn btn-sm\" style=\"background:#2a7a4a;color:#fff;\" type=\"button\" onclick=\"appliquerSurfaceBornage(" + id + ")\" title=\"Reporter la surface calculée dans le champ Superficie\">📥 Reporter " + surfaceBornageHa(p.bornage).toFixed(2) + " ha</button> " : "") +
                     "<button class=\"btn btn-sm " + (bornageModeActif ? "btn-danger" : "btn-outline") + "\" type=\"button\" onclick=\"toggleModeBornage(" + id + ")\">" + (bornageModeActif ? "⏹ Arrêter le bornage" : "📍 Démarrer le bornage") + "</button> " +
                     "<button class=\"btn btn-sm btn-outline\" type=\"button\" onclick=\"viderBornage(" + id + ")\">🗑️ Vider les points</button>" +
                   "</span>" +
@@ -4344,7 +4379,9 @@
                 const zoom = (p.lat || p.bornage[0]) ? 13 : 7;
                 const miniMap = L.map("editParcelleMap").setView([initLat, initLng], zoom);
                 editParcelleMiniMap = miniMap;
-                L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OSM" }).addTo(miniMap);
+                const _osm = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OSM", maxZoom: 19 }).addTo(miniMap);
+                const _sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { attribution: "© Esri", maxZoom: 19 });
+                L.control.layers({ "🗺️ Plan": _osm, "🛰️ Satellite": _sat }, null, { collapsed: false }).addTo(miniMap);
                 let marker = null;
                 if (p.lat && p.lng) {
                     marker = L.marker([p.lat, p.lng]).addTo(miniMap).bindPopup(p.reference).openPopup();
@@ -4492,6 +4529,8 @@
             p.superficieHa = superficieHa;
             p.typeSol = document.getElementById("editParcTypeSol").value.trim();
             p.statut = document.getElementById("editParcStatut").value;
+            const tzEl = document.getElementById("editParcTypeZone");
+            if (tzEl) p.typeZone = tzEl.value;
             p.lat = latVal;
             p.lng = lngVal;
             p.titreFoncier = document.getElementById("editParcTitre").value.trim();
@@ -4499,7 +4538,6 @@
             p.zoneId = zone ? zone.id : null;
             saveData();
             fermerModal();
-            parcellesLeafletMap = null;
             renderParcelles();
         }
 
@@ -4518,42 +4556,80 @@
         }
 
         let parcellesLeafletMap = null;
+        let parcellesLayerControl = null;
+        let parcellesPolygonsGroup = null;
+        let parcellesMarkersGroup = null;
+        let droneOverlaysGroup = null;
         function renderParcellesMap() {
             const container = document.getElementById('parcellesMap');
             if (!container || typeof L === 'undefined') return;
             if (!parcellesLeafletMap) {
                 parcellesLeafletMap = L.map('parcellesMap').setView([6.0667, -5.1167], 8);
-                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(parcellesLeafletMap);
+                // ── Couches de fond ──
+                const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap', maxZoom: 19 });
+                const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: '© Esri, Maxar, Earthstar', maxZoom: 19 });
+                const labels = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 });
+                const hybride = L.layerGroup([satellite, labels]);
+                osm.addTo(parcellesLeafletMap);
+                parcellesPolygonsGroup = L.featureGroup().addTo(parcellesLeafletMap);
+                parcellesMarkersGroup = L.featureGroup().addTo(parcellesLeafletMap);
+                droneOverlaysGroup = L.featureGroup().addTo(parcellesLeafletMap);
+                parcellesLayerControl = L.control.layers(
+                    { '🗺️ Plan (OSM)': osm, '🛰️ Satellite': satellite, '🛰️ Satellite + noms': hybride },
+                    { '🔲 Limites parcelles': parcellesPolygonsGroup, '📍 Repères': parcellesMarkersGroup, '🚁 Couches drone': droneOverlaysGroup },
+                    { collapsed: false }
+                ).addTo(parcellesLeafletMap);
+                parcellesLeafletMap.on("click", function(e) {
+                    const latV = e.latlng.lat.toFixed(6);
+                    const lngV = e.latlng.lng.toFixed(6);
+                    const latEl = document.getElementById("parcLat");
+                    const lngEl = document.getElementById("parcLng");
+                    if (latEl) latEl.value = latV;
+                    if (lngEl) lngEl.value = lngV;
+                    const st = document.getElementById("geoStatusNew");
+                    if (st) {
+                        st.style.display = "block";
+                        st.style.color = "#2980b9";
+                        st.textContent = "📍 Clic carte : " + latV + ", " + lngV + " — complétez le formulaire et cliquez Créer.";
+                    }
+                });
             }
-            // Nettoyer les marqueurs existants
+            // Nettoyer les couches dynamiques
             parcellesMarkers = {};
-            parcellesLeafletMap.eachLayer(layer => { if (layer instanceof L.CircleMarker) parcellesLeafletMap.removeLayer(layer); });
-            const pts = [];
-            data.parcelles.filter(p => p.lat != null && p.lng != null).forEach(p => {
-                const color = STATUT_PARCELLE_COLOR[p.statut] || '#555';
-                const marker = L.circleMarker([p.lat, p.lng], { radius: 9, color, fillColor: color, fillOpacity: 0.85 }).addTo(parcellesLeafletMap);
-                parcellesMarkers[p.id] = marker;
-                const zone = getZoneParcelle(p);
-                marker.bindPopup(`<strong>${p.reference}</strong><br>${p.superficieHa} ha — ${STATUT_PARCELLE_LABEL[p.statut] || p.statut}${zone ? '<br><em>'+zone.nom+'</em><br><span style="font-size:11px;">Cultures conseillées : '+zone.cultures.join(', ')+'</span>' : ''}`);
-                pts.push([p.lat, p.lng]);
-            });
-            if (pts.length > 0) parcellesLeafletMap.fitBounds(pts, { maxZoom: 13, padding: [20, 20] });
-            setTimeout(() => parcellesLeafletMap.invalidateSize(), 150);
-            // Clic sur la carte principale -> pré-remplit le formulaire de création
-            parcellesLeafletMap.off("click").on("click", function(e) {
-                const latV = e.latlng.lat.toFixed(6);
-                const lngV = e.latlng.lng.toFixed(6);
-                const latEl = document.getElementById("parcLat");
-                const lngEl = document.getElementById("parcLng");
-                if (latEl) latEl.value = latV;
-                if (lngEl) lngEl.value = lngV;
-                const st = document.getElementById("geoStatusNew");
-                if (st) {
-                    st.style.display = "block";
-                    st.style.color = "#2980b9";
-                    st.textContent = "📍 Clic carte : " + latV + ", " + lngV + " — complétez le formulaire et cliquez Créer.";
+            parcellesPolygonsGroup.clearLayers();
+            parcellesMarkersGroup.clearLayers();
+            droneOverlaysGroup.clearLayers();
+            const bounds = [];
+            // ── Polygones de bornage (limites réelles) ──
+            data.parcelles.forEach(p => {
+                if (p.bornage && p.bornage.length >= 3) {
+                    const couleur = TYPE_ZONE_COLOR[p.typeZone] || STATUT_PARCELLE_COLOR[p.statut] || '#2a7a4a';
+                    const pts = p.bornage.map(pt => [pt.lat, pt.lng]);
+                    const surface = surfaceBornageHa(p.bornage);
+                    const poly = L.polygon(pts, { color: couleur, weight: 2, fillColor: couleur, fillOpacity: 0.35 }).addTo(parcellesPolygonsGroup);
+                    poly.bindTooltip(p.reference + ' — ' + surface.toFixed(2) + ' ha', { permanent: true, direction: 'center', className: 'parc-label' });
+                    poly.bindPopup('<strong>' + p.reference + '</strong><br>' + (TYPE_ZONE_LABEL[p.typeZone] || '') + '<br>Surface bornée : <strong>' + surface.toFixed(2) + ' ha</strong><br>Déclarée : ' + p.superficieHa + ' ha');
+                    pts.forEach(pt => bounds.push(pt));
                 }
             });
+            // ── Repères ponctuels (parcelles non bornées) ──
+            data.parcelles.filter(p => p.lat != null && p.lng != null).forEach(p => {
+                const color = TYPE_ZONE_COLOR[p.typeZone] || STATUT_PARCELLE_COLOR[p.statut] || '#555';
+                const marker = L.circleMarker([p.lat, p.lng], { radius: 9, color, fillColor: color, fillOpacity: 0.85 }).addTo(parcellesMarkersGroup);
+                parcellesMarkers[p.id] = marker;
+                const zone = getZoneParcelle(p);
+                marker.bindPopup(`<strong>${p.reference}</strong><br>${p.superficieHa} ha — ${STATUT_PARCELLE_LABEL[p.statut] || p.statut}<br>${TYPE_ZONE_LABEL[p.typeZone] || ''}${zone ? '<br><em>'+zone.nom+'</em><br><span style="font-size:11px;">Cultures conseillées : '+zone.cultures.join(', ')+'</span>' : ''}`);
+                bounds.push([p.lat, p.lng]);
+            });
+            // ── Couches drone géoréférencées ──
+            (data.droneOverlays || []).forEach(ov => {
+                if (!ov.bounds) return;
+                const img = L.imageOverlay(ov.dataBase64, ov.bounds, { opacity: ov.opacity != null ? ov.opacity : 0.85 }).addTo(droneOverlaysGroup);
+                img.bindPopup('🚁 ' + ov.nom);
+                bounds.push(ov.bounds[0]); bounds.push(ov.bounds[1]);
+            });
+            if (bounds.length > 0) parcellesLeafletMap.fitBounds(bounds, { maxZoom: 15, padding: [25, 25] });
+            setTimeout(() => parcellesLeafletMap.invalidateSize(), 150);
         }
 
         // ============================================================
@@ -4594,6 +4670,226 @@
                 allRows[idx].style.transition = "background 0.3s";
                 setTimeout(function() { allRows[idx].style.background = ""; }, 2500);
             }
+        }
+
+        // ============================================================
+        //  SIG AVANCÉ — surface auto, export KML, import GPS, drone
+        // ============================================================
+        function appliquerSurfaceBornage(id) {
+            const p = data.parcelles.find(pc => pc.id === id);
+            if (!p || p.bornage.length < 3) return;
+            const s = surfaceBornageHa(p.bornage);
+            const champ = document.getElementById("editParcSuperficie");
+            if (champ) champ.value = s.toFixed(2);
+            p.superficieHa = parseFloat(s.toFixed(2));
+            // Centroïde -> lat/lng si absent
+            if (p.lat == null || p.lng == null) {
+                const cLat = p.bornage.reduce((a, b) => a + b.lat, 0) / p.bornage.length;
+                const cLng = p.bornage.reduce((a, b) => a + b.lng, 0) / p.bornage.length;
+                document.getElementById("editParcLat").value = cLat.toFixed(6);
+                document.getElementById("editParcLng").value = cLng.toFixed(6);
+            }
+        }
+
+        // ── EXPORT KML ──
+        function escapeXml(s) {
+            return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+        function kmlColorFromHex(hex, alphaHex) {
+            const h = hex.replace('#', '');
+            const r = h.substring(0, 2), g = h.substring(2, 4), b = h.substring(4, 6);
+            return (alphaHex || 'aa') + b + g + r; // KML = aabbggrr
+        }
+        function genererKMLPlacemark(p) {
+            const couleur = TYPE_ZONE_COLOR[p.typeZone] || '#2a7a4a';
+            const styleLine = kmlColorFromHex(couleur, 'ff');
+            const stylePoly = kmlColorFromHex(couleur, '88');
+            const desc = (TYPE_ZONE_LABEL[p.typeZone] || '') + ' — ' + p.superficieHa + ' ha — ' + (STATUT_PARCELLE_LABEL[p.statut] || p.statut);
+            let geom = '';
+            if (p.bornage && p.bornage.length >= 3) {
+                const coords = p.bornage.map(pt => pt.lng + ',' + pt.lat + ',0').join(' ') + ' ' + p.bornage[0].lng + ',' + p.bornage[0].lat + ',0';
+                geom = '<Polygon><outerBoundaryIs><LinearRing><coordinates>' + coords + '</coordinates></LinearRing></outerBoundaryIs></Polygon>';
+            } else if (p.lat != null && p.lng != null) {
+                geom = '<Point><coordinates>' + p.lng + ',' + p.lat + ',0</coordinates></Point>';
+            } else {
+                return '';
+            }
+            return '<Placemark><name>' + escapeXml(p.reference) + '</name><description>' + escapeXml(desc) + '</description>' +
+                '<Style><LineStyle><color>' + styleLine + '</color><width>2</width></LineStyle>' +
+                '<PolyStyle><color>' + stylePoly + '</color></PolyStyle></Style>' + geom + '</Placemark>';
+        }
+        function exporterKMLParcelles() {
+            const placemarks = data.parcelles.map(genererKMLPlacemark).filter(Boolean);
+            if (!placemarks.length) { alert("Aucune parcelle géolocalisée ou bornée à exporter."); return; }
+            const kml = '<?xml version="1.0" encoding="UTF-8"?>\n' +
+                '<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>Menko Agro — Parcelles</name>\n' +
+                placemarks.join('\n') + '\n</Document></kml>';
+            const blob = new Blob([kml], { type: 'application/vnd.google-earth.kml+xml' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = 'parcelles-menko-agro.kml';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // ── IMPORT GPS (KML / GPX / CSV) ──
+        function importerFichierGPS(file) {
+            if (!file) return;
+            const ext = file.name.split('.').pop().toLowerCase();
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const txt = e.target.result;
+                let points = [];
+                let nomImport = file.name.replace(/\.[^.]+$/, '');
+                try {
+                    if (ext === 'kml') {
+                        const doc = new DOMParser().parseFromString(txt, 'text/xml');
+                        const nameEl = doc.querySelector('Placemark > name');
+                        if (nameEl) nomImport = nameEl.textContent.trim();
+                        const coordEl = doc.querySelector('coordinates');
+                        if (coordEl) {
+                            points = coordEl.textContent.trim().split(/\s+/).map(tok => {
+                                const parts = tok.split(',');
+                                return { lng: parseFloat(parts[0]), lat: parseFloat(parts[1]) };
+                            }).filter(pt => !isNaN(pt.lat) && !isNaN(pt.lng));
+                        }
+                    } else if (ext === 'gpx') {
+                        const doc = new DOMParser().parseFromString(txt, 'text/xml');
+                        let nodes = doc.querySelectorAll('trkpt');
+                        if (!nodes.length) nodes = doc.querySelectorAll('rtept');
+                        if (!nodes.length) nodes = doc.querySelectorAll('wpt');
+                        points = Array.from(nodes).map(n => ({ lat: parseFloat(n.getAttribute('lat')), lng: parseFloat(n.getAttribute('lon')) })).filter(pt => !isNaN(pt.lat) && !isNaN(pt.lng));
+                    } else { // CSV / TXT : lat,lng par ligne
+                        points = txt.split(/\r?\n/).map(l => l.trim()).filter(Boolean).map(l => {
+                            const parts = l.split(/[;,\t]/).map(x => parseFloat(x.trim()));
+                            return { lat: parts[0], lng: parts[1] };
+                        }).filter(pt => !isNaN(pt.lat) && !isNaN(pt.lng) && Math.abs(pt.lat) <= 90 && Math.abs(pt.lng) <= 180);
+                    }
+                } catch (err) {
+                    alert("Fichier illisible : " + err.message); return;
+                }
+                if (points.length < 1) { alert("Aucune coordonnée valide trouvée dans le fichier."); return; }
+                // Dédoublonner point de fermeture identique au premier
+                if (points.length >= 2) {
+                    const a = points[0], b = points[points.length - 1];
+                    if (a.lat === b.lat && a.lng === b.lng) points.pop();
+                }
+                const estPolygone = points.length >= 3;
+                const cLat = points.reduce((a, b) => a + b.lat, 0) / points.length;
+                const cLng = points.reduce((a, b) => a + b.lng, 0) / points.length;
+                const zone = getZoneAgroecologique(cLat);
+                const nouvelle = {
+                    id: data.nextId.parcelle++,
+                    reference: nomImport || ('Parcelle importée ' + new Date().toLocaleDateString('fr-FR')),
+                    superficieHa: estPolygone ? parseFloat(surfaceBornageHa(points).toFixed(2)) : 0,
+                    typeSol: '', statut: 'culture', typeZone: 'cultivee',
+                    lat: cLat, lng: cLng, titreFoncier: '', notes: 'Importé depuis ' + file.name,
+                    zoneId: zone ? zone.id : null,
+                    bornage: estPolygone ? points.map(pt => ({ lat: pt.lat, lng: pt.lng })) : [],
+                    photos: []
+                };
+                data.parcelles.push(nouvelle);
+                saveData();
+                renderParcelles();
+                alert("✅ Import réussi : « " + nouvelle.reference + " »\n" + points.length + " point(s)" + (estPolygone ? " — " + nouvelle.superficieHa + " ha calculés" : " (repère ponctuel)"));
+            };
+            reader.readAsText(file);
+        }
+
+        // ── DRONE MAPPING (orthophoto géoréférencée) ──
+        let droneImgTemp = null;
+        let droneBoundsTemp = { sw: null, ne: null };
+        function ouvrirModalDrone() {
+            droneImgTemp = null;
+            droneBoundsTemp = { sw: null, ne: null };
+            const overlay = document.getElementById("modalOverlay");
+            const body = document.getElementById("modalBody");
+            body.innerHTML =
+                "<h2>🚁 Drone mapping — orthophoto géoréférencée</h2>" +
+                "<p style=\"font-size:0.82rem;color:#666;\">Superposez une image aérienne (drone) sur la carte. Renseignez les coins Sud-Ouest et Nord-Est, ou cliquez sur la carte pour les capturer.</p>" +
+                "<div class=\"form-row\">" +
+                  "<div class=\"form-group\" style=\"flex:2;\"><label>Nom de la couche *</label><input type=\"text\" id=\"droneNom\" placeholder=\"Ex: Vol drone Taabo 06/2026\"></div>" +
+                  "<div class=\"form-group\"><label>Image (PNG/JPG) *</label><input type=\"file\" accept=\"image/*\" onchange=\"chargerImageDrone(this.files[0])\"></div>" +
+                "</div>" +
+                "<div class=\"form-row\">" +
+                  "<div class=\"form-group\"><label>SO Latitude</label><input type=\"number\" step=\"0.000001\" id=\"droneSwLat\"></div>" +
+                  "<div class=\"form-group\"><label>SO Longitude</label><input type=\"number\" step=\"0.000001\" id=\"droneSwLng\"></div>" +
+                  "<div class=\"form-group\"><label>NE Latitude</label><input type=\"number\" step=\"0.000001\" id=\"droneNeLat\"></div>" +
+                  "<div class=\"form-group\"><label>NE Longitude</label><input type=\"number\" step=\"0.000001\" id=\"droneNeLng\"></div>" +
+                "</div>" +
+                "<div class=\"form-row\">" +
+                  "<div class=\"form-group\"><label>Opacité</label><input type=\"range\" id=\"droneOpacite\" min=\"0.2\" max=\"1\" step=\"0.05\" value=\"0.85\"></div>" +
+                  "<div class=\"form-group\"><label>Parcelle liée</label><select id=\"droneParcelle\"><option value=\"\">-- Aucune --</option>" +
+                    data.parcelles.map(p => "<option value=\"" + p.id + "\">" + escapeXml(p.reference) + "</option>").join("") + "</select></div>" +
+                "</div>" +
+                "<p style=\"font-size:0.78rem;color:#2980b9;\" id=\"droneClicInfo\">💡 Clic 1 sur la carte = coin Sud-Ouest, clic 2 = coin Nord-Est.</p>" +
+                "<div id=\"droneMap\" style=\"height:300px;border-radius:8px;margin-bottom:1rem;border:1px solid #ccd7d2;\"></div>" +
+                "<div class=\"flex-between\"><strong style=\"font-size:0.85rem;\">Couches existantes (" + (data.droneOverlays || []).length + ")</strong></div>" +
+                "<div id=\"listeDroneOverlays\" style=\"font-size:0.8rem;margin:0.5rem 0 1rem;\">" + renderListeDroneOverlays() + "</div>" +
+                "<div class=\"form-row\">" +
+                  "<button class=\"btn btn-success\" onclick=\"ajouterOverlayDrone()\">💾 Ajouter la couche</button>" +
+                  "<button class=\"btn btn-outline\" onclick=\"fermerModal()\">Fermer</button>" +
+                "</div>";
+            overlay.classList.add("active");
+            setTimeout(function() {
+                const m = L.map("droneMap").setView([6.0667, -5.1167], 8);
+                const sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { attribution: "© Esri", maxZoom: 19 }).addTo(m);
+                let clic = 0;
+                m.on("click", function(e) {
+                    const lat = e.latlng.lat.toFixed(6), lng = e.latlng.lng.toFixed(6);
+                    if (clic % 2 === 0) {
+                        document.getElementById("droneSwLat").value = lat;
+                        document.getElementById("droneSwLng").value = lng;
+                    } else {
+                        document.getElementById("droneNeLat").value = lat;
+                        document.getElementById("droneNeLng").value = lng;
+                    }
+                    clic++;
+                });
+                setTimeout(function() { m.invalidateSize(); }, 200);
+            }, 150);
+        }
+        function chargerImageDrone(file) {
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) { droneImgTemp = e.target.result; };
+            reader.readAsDataURL(file);
+        }
+        function ajouterOverlayDrone() {
+            const nom = document.getElementById("droneNom").value.trim();
+            const swLat = parseFloat(document.getElementById("droneSwLat").value);
+            const swLng = parseFloat(document.getElementById("droneSwLng").value);
+            const neLat = parseFloat(document.getElementById("droneNeLat").value);
+            const neLng = parseFloat(document.getElementById("droneNeLng").value);
+            const opacity = parseFloat(document.getElementById("droneOpacite").value);
+            const parcelleId = parseInt(document.getElementById("droneParcelle").value) || null;
+            if (!nom || !droneImgTemp) { alert("Nom et image obligatoires."); return; }
+            if ([swLat, swLng, neLat, neLng].some(isNaN)) { alert("Les 4 coordonnées des coins sont obligatoires."); return; }
+            data.droneOverlays.push({
+                id: data.nextId.droneOverlay++, nom, dataBase64: droneImgTemp,
+                bounds: [[swLat, swLng], [neLat, neLng]], opacity, parcelleId,
+                dateAjout: new Date().toISOString().slice(0, 10)
+            });
+            saveData();
+            renderParcellesMap();
+            ouvrirModalDrone();
+        }
+        function renderListeDroneOverlays() {
+            if (!data.droneOverlays || !data.droneOverlays.length) return '<em style="color:#aaa;">Aucune couche drone.</em>';
+            return data.droneOverlays.map(function(ov) {
+                const parc = ov.parcelleId ? getParcelle(ov.parcelleId) : null;
+                return '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid #eee;">' +
+                    '<span>🚁 <strong>' + escapeXml(ov.nom) + '</strong> — ' + ov.dateAjout + (parc ? ' — ' + escapeXml(parc.reference) : '') + '</span>' +
+                    '<button class="btn btn-sm btn-danger" type="button" style="padding:0 0.4rem;" onclick="supprimerOverlayDrone(' + ov.id + ')">✕</button>' +
+                    '</div>';
+            }).join('');
+        }
+        function supprimerOverlayDrone(id) {
+            if (!confirm("Supprimer cette couche drone ?")) return;
+            data.droneOverlays = data.droneOverlays.filter(o => o.id !== id);
+            saveData();
+            renderParcellesMap();
+            ouvrirModalDrone();
         }
 
         function renderParcelles() {
