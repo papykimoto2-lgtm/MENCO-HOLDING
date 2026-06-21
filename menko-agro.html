@@ -702,13 +702,23 @@
                     <div class="form-row">
                         <div class="form-group"><label>Nom *</label><input type="text" id="prodNom"></div>
                         <div class="form-group"><label>Catégorie *</label>
-                            <select id="prodCategorie"><option value="agricole">Agricole</option><option value="elevage">Élevage</option><option value="intrant">Intrant (engrais, semences…)</option></select>
+                            <select id="prodCategorie" onchange="toggleVarietesRowVisibilite()"><option value="agricole">Agricole</option><option value="elevage">Élevage</option><option value="intrant">Intrant (engrais, semences…)</option></select>
                         </div>
                         <div class="form-group"><label>Sous-catégorie</label><input type="text" id="prodSousCategorie"></div>
                         <div class="form-group"><label>Prix vente (FCFA) *</label><input type="number" id="prodPrix" step="0.01"></div>
                     </div>
                     <div class="form-row">
                         <div class="form-group" style="flex:2;"><label>Description</label><textarea id="prodDescription"></textarea></div>
+                    </div>
+                    <div class="form-row" id="prodVarietesRow">
+                        <div class="form-group" style="flex:2;">
+                            <label>Variétés de cette culture <span style="font-weight:400;color:#888;">(facultatif — alimente les suggestions dans Campagnes &amp; Production)</span></label>
+                            <div style="display:flex;gap:0.4rem;">
+                                <input type="text" id="prodVarieteInput" placeholder="Ex: EV 8728, Bondofa…" onkeydown="if(event.key==='Enter'){event.preventDefault();ajouterVarieteProduit();}">
+                                <button type="button" class="btn btn-sm btn-outline" onclick="ajouterVarieteProduit()">+ Ajouter</button>
+                            </div>
+                            <div id="prodVarietesListe" style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-top:0.5rem;"></div>
+                        </div>
                     </div>
                     <div class="form-row">
                         <button class="btn" id="btnSaveProduit" onclick="sauvegarderProduit()">Enregistrer</button>
@@ -1466,6 +1476,9 @@
                 if (!p.livraisons) p.livraisons = [];
                 if (p.campagneId === undefined) p.campagneId = null;
             });
+            data.produits.forEach(p => {
+                if (!Array.isArray(p.varietes)) p.varietes = [];
+            });
             data.bandes.forEach(b => {
                 if (!b.sorties) b.sorties = [];
                 if (!b.suivis) b.suivis = [];
@@ -1758,8 +1771,9 @@
             tbody.innerHTML = '';
             data.produits.forEach(p => {
                 const tr = document.createElement('tr');
+                const nbVarietes = (p.varietes || []).length;
                 tr.innerHTML = `
-                    <td><strong>${p.nom}</strong></td>
+                    <td><strong>${p.nom}</strong>${nbVarietes > 0 ? `<br><span style="font-size:0.7rem;color:#16623a;" title="${p.varietes.join(', ')}">🌾 ${nbVarietes} variété(s)</span>` : ''}</td>
                     <td><span class="badge">${p.categorie}</span></td>
                     <td>${p.sousCategorie || '-'}</td>
                     <td>${p.prixVente?.toFixed(0) || 0}</td>
@@ -1773,6 +1787,39 @@
             });
         }
 
+        // ── Gestion des variétés dans le formulaire Produit (liste temporaire le temps de l'édition) ──
+        let formProduitVarietesTemp = [];
+
+        function renderVarietesProduitForm() {
+            const zone = document.getElementById('prodVarietesListe');
+            if (!zone) return;
+            zone.innerHTML = formProduitVarietesTemp.length === 0
+                ? '<span style="color:#999;font-size:0.78rem;">Aucune variété ajoutée pour le moment.</span>'
+                : formProduitVarietesTemp.map((v, idx) => `<span class="badge" style="background:#e8f4fd;color:#1a5276;">🌾 ${v} <span style="cursor:pointer;font-weight:700;margin-left:4px;" onclick="retirerVarieteProduit(${idx})" title="Retirer">✕</span></span>`).join('');
+        }
+
+        function ajouterVarieteProduit() {
+            const input = document.getElementById('prodVarieteInput');
+            const v = input.value.trim();
+            if (!v) return;
+            if (formProduitVarietesTemp.some(x => x.toLowerCase() === v.toLowerCase())) { input.value = ''; return; }
+            formProduitVarietesTemp.push(v);
+            input.value = '';
+            renderVarietesProduitForm();
+            input.focus();
+        }
+
+        function retirerVarieteProduit(idx) {
+            formProduitVarietesTemp.splice(idx, 1);
+            renderVarietesProduitForm();
+        }
+
+        function toggleVarietesRowVisibilite() {
+            const row = document.getElementById('prodVarietesRow');
+            const cat = document.getElementById('prodCategorie').value;
+            if (row) row.style.display = (cat === 'intrant') ? 'none' : 'flex';
+        }
+
         function ouvrirFormProduit() {
             document.getElementById('formProduit').style.display = 'block';
             document.getElementById('formProduitTitle').textContent = 'Ajouter un produit';
@@ -1783,6 +1830,9 @@
             document.getElementById('prodPrix').value = '';
             document.getElementById('prodDescription').value = '';
             document.getElementById('btnSaveProduit').textContent = 'Enregistrer';
+            formProduitVarietesTemp = [];
+            renderVarietesProduitForm();
+            toggleVarietesRowVisibilite();
         }
 
         function fermerFormProduit() {
@@ -1801,6 +1851,9 @@
             document.getElementById('prodPrix').value = p.prixVente || '';
             document.getElementById('prodDescription').value = p.description || '';
             document.getElementById('btnSaveProduit').textContent = 'Mettre à jour';
+            formProduitVarietesTemp = (p.varietes || []).slice();
+            renderVarietesProduitForm();
+            toggleVarietesRowVisibilite();
         }
 
         function sauvegarderProduit() {
@@ -1810,6 +1863,7 @@
             const sousCategorie = document.getElementById('prodSousCategorie').value.trim();
             const prix = parseFloat(document.getElementById('prodPrix').value);
             const description = document.getElementById('prodDescription').value.trim();
+            const varietes = formProduitVarietesTemp.slice();
             if (!nom || isNaN(prix) || prix < 0) { alert('Veuillez remplir tous les champs obligatoires.'); return; }
             if (id) {
                 const p = getProduit(parseInt(id));
@@ -1817,12 +1871,14 @@
                     p.categorie = categorie;
                     p.sousCategorie = sousCategorie;
                     p.prixVente = prix;
-                    p.description = description; }
+                    p.description = description;
+                    p.varietes = varietes; }
             } else {
                 const newProd = { id: data.nextId.produit++, nom, categorie, sousCategorie, prixVente: prix,
-                    prixAchat: prix * 0.8, description };
+                    prixAchat: prix * 0.8, description, varietes };
                 data.produits.push(newProd);
             }
+            formProduitVarietesTemp = [];
             fermerFormProduit();
             saveData();
             renderProduits();
@@ -2049,9 +2105,11 @@
         }
 
         /** Met à jour la datalist variétés et types de semences dans le formulaire Production */
-        function majVarietesProd() {
-            const sel = document.getElementById('selectProdProduction');
-            const produit = sel ? data.produits.find(p => p.id === parseInt(sel.value)) : null;
+        /** Liste de variétés à suggérer pour un produit : priorité aux variétés saisies sur la fiche produit
+         *  (créées via l'onglet Produits), complétées par les variétés de référence du calendrier cultural
+         *  ivoirien si elles ne sont pas déjà présentes. */
+        function varietesPourProduit(produit) {
+            const custom = (produit && Array.isArray(produit.varietes)) ? produit.varietes : [];
             const nomCulture = produit ? produit.nom : '';
             let ficheRef = null;
             for (const k in CALENDRIER_CULTURAL) {
@@ -2059,11 +2117,19 @@
                     ficheRef = CALENDRIER_CULTURAL[k]; break;
                 }
             }
+            const refVarietes = (ficheRef && ficheRef.varietes) ? ficheRef.varietes : [];
+            const varietes = custom.slice();
+            refVarietes.forEach(v => { if (!varietes.some(x => x.toLowerCase() === v.toLowerCase())) varietes.push(v); });
+            return { varietes, ficheRef };
+        }
+
+        function majVarietesProd() {
+            const sel = document.getElementById('selectProdProduction');
+            const produit = sel ? data.produits.find(p => p.id === parseInt(sel.value)) : null;
+            const { varietes, ficheRef } = varietesPourProduit(produit);
             const dl = document.getElementById('prodVarieteList');
             if (dl) {
-                dl.innerHTML = ficheRef && ficheRef.varietes
-                    ? ficheRef.varietes.map(v => '<option value="' + v + '">').join('')
-                    : '';
+                dl.innerHTML = varietes.map(v => '<option value="' + v + '">').join('');
             }
             const selSem = document.getElementById('prodTypeSemences');
             if (selSem) {
@@ -4614,20 +4680,11 @@
         function majVarietesEtSemences() {
             const sel = document.getElementById('campProduit');
             const produit = sel ? data.produits.find(p => p.id === parseInt(sel.value)) : null;
-            const nomCulture = produit ? produit.nom : '';
-            // Trouver la fiche calendrier correspondante (correspondance partielle)
-            let ficheRef = null;
-            for (const k in CALENDRIER_CULTURAL) {
-                if (nomCulture.toLowerCase().includes(k.toLowerCase().split(' ')[0]) || k.toLowerCase().includes(nomCulture.toLowerCase().split(' ')[0])) {
-                    ficheRef = CALENDRIER_CULTURAL[k]; break;
-                }
-            }
+            const { varietes, ficheRef } = varietesPourProduit(produit);
             // Datalist variétés
             const dl = document.getElementById('campVarieteList');
             if (dl) {
-                dl.innerHTML = ficheRef && ficheRef.varietes
-                    ? ficheRef.varietes.map(v => '<option value= + v + >').join('')
-                    : '';
+                dl.innerHTML = varietes.map(v => '<option value="' + v + '">').join('');
             }
             // Select type de semences
             const selSem = document.getElementById('campTypeSemences');
