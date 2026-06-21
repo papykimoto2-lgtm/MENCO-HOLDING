@@ -1971,6 +1971,20 @@
         }
 
         /** Ouvre une modale pour démarrer une production liée à une campagne (bouton sur la fiche campagne). */
+        /** Ouvre le module Production en pointant le filtre sur un produit donné, de façon fiable
+         *  même si l'onglet n'a jamais été chargé (gère l'ordre de rendu / setTimeout de switchTab). */
+        function ouvrirProductionPourProduit(produitId) {
+            loadedTabs.tabProduction = true;
+            switchTab('tabProduction');
+            setTimeout(function () {
+                const sel = document.getElementById('selectProdProduction');
+                if (!sel) return;
+                if (!sel.options.length || sel.options.length <= 1) remplirSelectProduits('selectProdProduction', true);
+                sel.value = String(produitId);
+                chargerProduction();
+            }, 50);
+        }
+
         function demarrerProductionDepuisCampagne(campagneId) {
             const camp = getCampagne(campagneId);
             if (!camp) return;
@@ -2013,7 +2027,15 @@
             saveData();
             fermerModal();
             renderCampagnes();
-            if (loadedTabs.tabProduction) chargerProduction();
+            // Mise à jour temps réel du module « Productions, récoltes et livraisons » :
+            // on pointe le filtre sur la culture de la campagne pour que la nouvelle production soit visible immédiatement.
+            const selProd = document.getElementById('selectProdProduction');
+            if (selProd) {
+                if (!selProd.options.length || selProd.options.length <= 1) remplirSelectProduits('selectProdProduction', true);
+                selProd.value = String(camp.produitId);
+                loadedTabs.tabProduction = true;
+                chargerProduction();
+            }
             alert('✅ Production "' + newProd.reference + '" liée à la campagne. Son suivi suivra désormais l\'itinéraire technique.');
         }
 
@@ -2224,7 +2246,7 @@
                 // ── Mode lié à l'itinéraire technique : coûts en lecture seule, pilotés par la campagne ──
                 const groupes = detailCoutsParEtapeCampagne(camp);
                 html += `<h3>🌦️ Coûts issus de l'itinéraire technique — ${camp.nom}</h3>
-                    <p style="font-size:0.78rem;color:#666;margin-top:-0.4rem;">Ces coûts sont calculés automatiquement à partir des opérations de la campagne. Pour les modifier, gère les opérations dans l'onglet Campagnes.</p>
+                    <p style="font-size:0.78rem;color:#666;margin-top:-0.4rem;">Le <strong>coût réel</strong> ne se saisit pas ici : il vient des opérations de la campagne. Pour le renseigner → onglet <strong>Campagnes</strong>, sur chaque opération bouton <strong>✏️</strong> (coût réel main d'œuvre / autres frais + intrant et quantité), puis bouton <strong>✔</strong> pour la marquer réalisée. Seules les opérations <strong>réalisées ✔</strong> comptent en coût réel ; le coût de l'intrant est calculé automatiquement au prix FIFO du stock.</p>
                     <div style="overflow-x:auto;">
                     <table>
                         <thead><tr><th>Étape (type d'opération)</th><th>Coût prévu</th><th>Coût réel</th><th>Avancement</th></tr></thead>
@@ -4811,38 +4833,42 @@
             if (loadedTabs.tabProduction) chargerProduction();
         }
 
-        function ouvrirModalOperation(campagneId) {
+        function ouvrirModalOperation(campagneId, opId) {
             const camp = getCampagne(campagneId);
             if (!camp) return;
+            const op = opId ? camp.operations.find(o => o.id === opId) : null;
             const overlay = document.getElementById('modalOverlay');
             const body = document.getElementById('modalBody');
-            const optsType = TYPES_OPERATION.map(t => `<option value="${t}">${t}</option>`).join('');
+            const optsType = TYPES_OPERATION.map(t => `<option value="${t}"${op && op.type === t ? ' selected' : ''}>${t}</option>`).join('');
+            const dateVal = op ? (op.datePrevue || '') : new Date().toISOString().slice(0, 10);
             body.innerHTML = `
-                <h2>Nouvelle opération — ${camp.nom}</h2>
+                <h2>${op ? '✏️ Modifier l\'opération' : 'Nouvelle opération'} — ${camp.nom}</h2>
                 <div class="form-row">
                     <div class="form-group"><label>Type *</label><select id="opType">${optsType}</select></div>
-                    <div class="form-group"><label>Date prévue *</label><input type="date" id="opDatePrevue" value="${new Date().toISOString().slice(0,10)}"></div>
-                    <div class="form-group"><label>Coût main d'œuvre / autres frais (FCFA)</label><input type="number" id="opCout" step="0.01" value="0"></div>
+                    <div class="form-group"><label>Date prévue *</label><input type="date" id="opDatePrevue" value="${dateVal}"></div>
+                    <div class="form-group"><label>Coût réel main d'œuvre / autres frais (FCFA)</label><input type="number" id="opCout" step="0.01" value="${op ? (op.coutAutre || 0) : 0}"></div>
                 </div>
                 <div class="form-row">
                     <div class="form-group"><label>Intrant consommé</label><select id="opIntrant"></select></div>
-                    <div class="form-group"><label>Quantité intrant</label><input type="number" id="opIntrantQte" step="0.01" value="0"></div>
+                    <div class="form-group"><label>Quantité intrant</label><input type="number" id="opIntrantQte" step="0.01" value="${op ? (op.intrantQte || 0) : 0}"></div>
                 </div>
                 <div class="form-row">
-                    <div class="form-group"><label>👷 Responsable</label><select id="opResponsable"><option value="">-- Aucun --</option>${data.ouvriers.filter(o=>o.actif!==false).map(o=>`<option value="${o.id}">${o.nom}${o.role==='chef'?' (chef)':''}</option>`).join('')}</select></div>
-                    <div class="form-group"><label>👥 Équipe</label><select id="opEquipe"><option value="">-- Aucune --</option>${data.equipes.map(e=>`<option value="${e.id}">${e.nom}</option>`).join('')}</select></div>
+                    <div class="form-group"><label>👷 Responsable</label><select id="opResponsable"><option value="">-- Aucun --</option>${data.ouvriers.filter(o=>o.actif!==false).map(o=>`<option value="${o.id}"${op && op.responsableId === o.id ? ' selected' : ''}>${o.nom}${o.role==='chef'?' (chef)':''}</option>`).join('')}</select></div>
+                    <div class="form-group"><label>👥 Équipe</label><select id="opEquipe"><option value="">-- Aucune --</option>${data.equipes.map(e=>`<option value="${e.id}"${op && op.equipeId === e.id ? ' selected' : ''}>${e.nom}</option>`).join('')}</select></div>
                 </div>
-                <p style="font-size:0.75rem;color:#888;margin:-0.4rem 0 0.6rem;">L'intrant est décompté du stock (FIFO) et son coût réel ajouté automatiquement quand l'opération est marquée réalisée.</p>
+                <p style="font-size:0.75rem;color:#888;margin:-0.4rem 0 0.6rem;">💡 Le « coût réel autres frais » est le montant réellement dépensé (main d'œuvre, prestation…). L'intrant est décompté du stock (FIFO) et son coût réel ajouté automatiquement quand l'opération est marquée <strong>réalisée ✔</strong>. ${op && op.dateRealisee ? `<br>✅ Opération déjà réalisée le ${formatDateSimple(op.dateRealisee)}${op.coutIntrant ? ' — coût intrant constaté : ' + Math.round(op.coutIntrant) + ' FCFA' : ''}.` : ''}</p>
                 <div class="form-row">
-                    <div class="form-group" style="flex:3;"><label>Notes</label><input type="text" id="opNotes" placeholder="Dose, intervenant…"></div>
+                    <div class="form-group" style="flex:3;"><label>Notes</label><input type="text" id="opNotes" placeholder="Dose, intervenant…" value="${op ? (op.notes || '').replace(/"/g, '&quot;') : ''}"></div>
                 </div>
-                <button class="btn" onclick="validerOperation(${campagneId})">Ajouter l'opération</button>
+                <button class="btn btn-success" onclick="validerOperation(${campagneId}${op ? ',' + op.id : ''})">${op ? '💾 Enregistrer' : 'Ajouter l\'opération'}</button>
+                ${op ? '<button class="btn btn-outline" onclick="fermerModal()" style="margin-left:0.4rem;">Annuler</button>' : ''}
             `;
             remplirSelectIntrants('opIntrant');
+            if (op && op.intrantId) document.getElementById('opIntrant').value = String(op.intrantId);
             overlay.classList.add('active');
         }
 
-        function validerOperation(campagneId) {
+        function validerOperation(campagneId, opId) {
             const camp = getCampagne(campagneId);
             if (!camp) return;
             const type = document.getElementById('opType').value;
@@ -4854,14 +4880,26 @@
             const equipeId = parseInt(document.getElementById('opEquipe').value) || null;
             const notes = document.getElementById('opNotes').value.trim();
             if (!datePrevue) { alert('Date prévue requise.'); return; }
-            camp.operations.push({
-                id: data.nextId.operationCampagne++, type, datePrevue, dateRealisee: null,
-                coutAutre, cout: coutAutre, intrantId, intrantQte, coutIntrant: 0, stockConsomme: false,
-                responsableId, equipeId, notes
-            });
+            if (opId) {
+                const op = camp.operations.find(o => o.id === opId);
+                if (!op) return;
+                op.type = type; op.datePrevue = datePrevue; op.coutAutre = coutAutre;
+                op.responsableId = responsableId; op.equipeId = equipeId; op.notes = notes;
+                // Si l'intrant change et que le stock n'a pas encore été consommé, on met à jour la prévision.
+                if (!op.stockConsomme) { op.intrantId = intrantId; op.intrantQte = intrantQte; }
+                // Recalcul du coût total (coût intrant déjà constaté conservé s'il existe)
+                op.cout = coutAutre + (op.coutIntrant || 0);
+            } else {
+                camp.operations.push({
+                    id: data.nextId.operationCampagne++, type, datePrevue, dateRealisee: null,
+                    coutAutre, cout: coutAutre, intrantId, intrantQte, coutIntrant: 0, stockConsomme: false,
+                    responsableId, equipeId, notes
+                });
+            }
             saveData();
             fermerModal();
             renderCampagnes();
+            if (loadedTabs.tabProduction) chargerProduction();
         }
 
         function marquerOperationRealisee(campagneId, opId) {
@@ -4942,6 +4980,7 @@
                     <span style="width:78px;flex-shrink:0;color:#666;">${formatDateSimple(op.datePrevue)}</span>
                     <span style="width:72px;flex-shrink:0;font-size:0.72rem;">${delai}</span>
                     <span>${done ? '✅' : `<button class="btn btn-sm btn-success" onclick="marquerOperationRealisee(${camp.id},${op.id})">✔</button>`}</span>
+                    <button class="btn btn-sm btn-outline" title="Modifier (saisir le coût réel)" onclick="ouvrirModalOperation(${camp.id},${op.id})">✏️</button>
                     <button class="btn btn-sm btn-danger" onclick="supprimerOperation(${camp.id},${op.id})">🗑️</button>
                 </div>`;
             }).join('');
@@ -5095,7 +5134,7 @@
                     <div style="margin:0.6rem 0;">${renderGanttHtml(camp)}</div>
                     <div style="margin:0.4rem 0;">
                         <strong style="font-size:0.8rem;">🌾 Production(s) liée(s) :</strong>
-                        ${prodsLiees.length > 0 ? prodsLiees.map(p => `<span class="badge" style="background:#eaf3ee;color:#16623a;cursor:pointer;" onclick="switchTab('tabProduction');document.getElementById('selectProdProduction').value=${p.produitId};chargerProduction();">${p.reference} — ${(p.quantiteProduite||0)} unités produites</span>`).join(' ') : '<span class="badge" style="background:#f4f4f4;color:#888;">Aucune — démarre une production pour suivre coûts/récolte</span>'}
+                        ${prodsLiees.length > 0 ? prodsLiees.map(p => `<span class="badge" style="background:#eaf3ee;color:#16623a;cursor:pointer;" onclick="ouvrirProductionPourProduit(${p.produitId})">${p.reference} — ${(p.quantiteProduite||0)} unités produites</span>`).join(' ') : '<span class="badge" style="background:#f4f4f4;color:#888;">Aucune — démarre une production pour suivre coûts/récolte</span>'}
                     </div>
                     <button class="btn btn-sm btn-outline" onclick="ouvrirModalOperation(${camp.id})">+ Opération</button>
                     <button class="btn btn-sm" style="background:#16a085;color:#fff;" onclick="genererItineraireTechnique(${camp.id})">📋 Itinéraire technique</button>
