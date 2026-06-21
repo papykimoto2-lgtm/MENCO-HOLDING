@@ -1529,6 +1529,11 @@
             data.campagnes.forEach(c => (c.operations || []).forEach(op => {
                 if (op.responsableId === undefined) op.responsableId = null;
                 if (op.equipeId === undefined) op.equipeId = null;
+                if (!Array.isArray(op.intrants)) {
+                    op.intrants = (op.intrantId && op.intrantQte > 0)
+                        ? [{ intrantId: op.intrantId, qte: op.intrantQte, coutIntrant: op.coutIntrant || 0, consomme: !!op.stockConsomme }]
+                        : [];
+                }
             }));
             data.campagnes.forEach(c => { if (c.variete === undefined) c.variete = ''; });
             data.productions.forEach(p => { if (p.variete === undefined) p.variete = ''; });
@@ -4309,7 +4314,7 @@
                 if (camp) {
                     camp.operations.push({
                         id: data.nextId.operationCampagne++, type: 'Autre', datePrevue: date, dateRealisee: date,
-                        coutAutre: coutUsage, cout: coutUsage, intrantId: null, intrantQte: 0, coutIntrant: 0,
+                        coutAutre: coutUsage, cout: coutUsage, intrants: [], intrantId: null, intrantQte: 0, coutIntrant: 0,
                         stockConsomme: false, notes: `Usage ${eq.nom} — ${heures} h`
                     });
                 }
@@ -4502,10 +4507,13 @@
                 (c.operations || []).forEach(op => {
                     const t = (op.type || '').toLowerCase();
                     if (/semis|plantation/.test(t)) res.semis.push({ date: op.dateRealisee || op.datePrevue, notes: op.notes || '', campagne: c.nom });
-                    if (op.intrantId && op.intrantQte > 0) {
-                        const ip = getProduit(op.intrantId);
-                        res.intrants.push({ nom: ip ? ip.nom : 'Intrant', qte: op.intrantQte, date: op.dateRealisee || op.datePrevue, type: op.type, campagne: c.nom });
-                    }
+                    const lignesIntr = Array.isArray(op.intrants) && op.intrants.length ? op.intrants : (op.intrantId && op.intrantQte > 0 ? [{ intrantId: op.intrantId, qte: op.intrantQte }] : []);
+                    lignesIntr.forEach(li => {
+                        if (li.intrantId && li.qte > 0) {
+                            const ip = getProduit(li.intrantId);
+                            res.intrants.push({ nom: ip ? ip.nom : 'Intrant', qte: li.qte, date: op.dateRealisee || op.datePrevue, type: op.type, campagne: c.nom });
+                        }
+                    });
                     if (/traitement|phyto|herbicide|fongicide|insecticide/.test(t)) res.traitements.push({ type: op.type, date: op.dateRealisee || op.datePrevue, notes: op.notes || '', campagne: c.nom });
                 });
             });
@@ -4783,7 +4791,7 @@
                 camp.operations.push({
                     id: data.nextId.operationCampagne++, type: et.type,
                     datePrevue: d.toISOString().slice(0, 10), dateRealisee: null,
-                    coutAutre: 0, cout: 0, intrantId: null, intrantQte: 0, coutIntrant: 0,
+                    coutAutre: 0, cout: 0, intrants: [], intrantId: null, intrantQte: 0, coutIntrant: 0,
                     stockConsomme: false, responsableId: null, equipeId: null, notes: et.label
                 });
                 ajout++;
@@ -4863,23 +4871,59 @@
                     <div class="form-group"><label>Coût réel main d'œuvre / autres frais (FCFA)</label><input type="number" id="opCout" step="0.01" value="${op ? (op.coutAutre || 0) : 0}"></div>
                 </div>
                 <div class="form-row">
-                    <div class="form-group"><label>Intrant consommé</label><select id="opIntrant"></select></div>
-                    <div class="form-group"><label>Quantité intrant</label><input type="number" id="opIntrantQte" step="0.01" value="${op ? (op.intrantQte || 0) : 0}"></div>
+                    <div class="form-group" style="flex:3;"><label>🧪 Intrants consommés (engrais, produits phyto…)</label>
+                        <div id="opIntrantsList"></div>
+                        <button type="button" class="btn btn-sm btn-outline" onclick="ajouterLigneIntrantOp()" style="margin-top:0.3rem;">+ Ajouter un intrant</button>
+                    </div>
                 </div>
                 <div class="form-row">
                     <div class="form-group"><label>👷 Responsable</label><select id="opResponsable"><option value="">-- Aucun --</option>${data.ouvriers.filter(o=>o.actif!==false).map(o=>`<option value="${o.id}"${op && op.responsableId === o.id ? ' selected' : ''}>${o.nom}${o.role==='chef'?' (chef)':''}</option>`).join('')}</select></div>
                     <div class="form-group"><label>👥 Équipe</label><select id="opEquipe"><option value="">-- Aucune --</option>${data.equipes.map(e=>`<option value="${e.id}"${op && op.equipeId === e.id ? ' selected' : ''}>${e.nom}</option>`).join('')}</select></div>
                 </div>
-                <p style="font-size:0.75rem;color:#888;margin:-0.4rem 0 0.6rem;">💡 Le « coût réel autres frais » est le montant réellement dépensé (main d'œuvre, prestation…). L'intrant est décompté du stock (FIFO) et son coût réel ajouté automatiquement quand l'opération est marquée <strong>réalisée ✔</strong>. ${op && op.dateRealisee ? `<br>✅ Opération déjà réalisée le ${formatDateSimple(op.dateRealisee)}${op.coutIntrant ? ' — coût intrant constaté : ' + Math.round(op.coutIntrant) + ' FCFA' : ''}.` : ''}</p>
+                <p style="font-size:0.75rem;color:#888;margin:-0.4rem 0 0.6rem;">💡 Ajoute autant d'intrants que nécessaire (ex. engrais + produit phyto). Chacun est décompté du stock (FIFO) et son coût réel ajouté automatiquement quand l'opération est marquée <strong>réalisée ✔</strong>. Le « coût autres frais » est pour la main d'œuvre / prestations. ${op && op.dateRealisee ? `<br>✅ Opération réalisée le ${formatDateSimple(op.dateRealisee)}${op.coutIntrant ? ' — coût intrants constaté : ' + Math.round(op.coutIntrant) + ' FCFA' : ''}.` : ''}</p>
                 <div class="form-row">
                     <div class="form-group" style="flex:3;"><label>Notes</label><input type="text" id="opNotes" placeholder="Dose, intervenant…" value="${op ? (op.notes || '').replace(/"/g, '&quot;') : ''}"></div>
                 </div>
                 <button class="btn btn-success" onclick="validerOperation(${campagneId}${op ? ',' + op.id : ''})">${op ? '💾 Enregistrer' : 'Ajouter l\'opération'}</button>
                 ${op ? '<button class="btn btn-outline" onclick="fermerModal()" style="margin-left:0.4rem;">Annuler</button>' : ''}
             `;
-            remplirSelectIntrants('opIntrant');
-            if (op && op.intrantId) document.getElementById('opIntrant').value = String(op.intrantId);
+            // Lignes d'intrants existantes (ou une ligne vide pour une nouvelle opération)
+            const lignes = op && Array.isArray(op.intrants) ? op.intrants : [];
+            if (lignes.length) lignes.forEach(li => ajouterLigneIntrantOp(li.intrantId, li.qte, li.consomme, li.coutIntrant));
             overlay.classList.add('active');
+        }
+
+        let opIntrantRowIdx = 0;
+        function ajouterLigneIntrantOp(intrantId, qte, consomme, coutIntrant) {
+            const list = document.getElementById('opIntrantsList');
+            if (!list) return;
+            const idx = opIntrantRowIdx++;
+            const row = document.createElement('div');
+            row.className = 'form-row op-intrant-row';
+            row.style.cssText = 'gap:0.4rem;align-items:flex-end;margin-bottom:0.3rem;';
+            row.dataset.consomme = consomme ? '1' : '';
+            row.dataset.cout = consomme ? (coutIntrant || 0) : 0;
+            row.innerHTML = `
+                <div class="form-group" style="flex:2;margin:0;"><select id="opIntrantSel${idx}" class="opIntrantSel"${consomme ? ' disabled' : ''}></select></div>
+                <div class="form-group" style="margin:0;"><input type="number" step="0.01" class="opIntrantQteInp" value="${qte || 0}"${consomme ? ' disabled' : ''} placeholder="Quantité"></div>
+                <div class="form-group" style="flex:0;margin:0;">${consomme ? '<span class="badge" style="background:#eaf3ee;color:#16623a;white-space:nowrap;">✔ ' + Math.round(coutIntrant || 0) + ' F</span>' : '<button type="button" class="btn btn-sm btn-danger" onclick="this.closest(\'.op-intrant-row\').remove()">✕</button>'}</div>`;
+            list.appendChild(row);
+            remplirSelectIntrants('opIntrantSel' + idx);
+            if (intrantId) document.getElementById('opIntrantSel' + idx).value = String(intrantId);
+        }
+
+        function lireLignesIntrantsOp() {
+            const intrants = [];
+            document.querySelectorAll('#opIntrantsList .op-intrant-row').forEach(r => {
+                const sel = r.querySelector('.opIntrantSel');
+                const qteInp = r.querySelector('.opIntrantQteInp');
+                const iId = parseInt(sel.value) || null;
+                const q = parseFloat(qteInp.value) || 0;
+                if (!iId || q <= 0) return;
+                const consomme = r.dataset.consomme === '1';
+                intrants.push({ intrantId: iId, qte: q, coutIntrant: consomme ? Number(r.dataset.cout || 0) : 0, consomme });
+            });
+            return intrants;
         }
 
         function validerOperation(campagneId, opId) {
@@ -4888,25 +4932,30 @@
             const type = document.getElementById('opType').value;
             const datePrevue = document.getElementById('opDatePrevue').value;
             const coutAutre = parseFloat(document.getElementById('opCout').value) || 0;
-            const intrantId = parseInt(document.getElementById('opIntrant').value) || null;
-            const intrantQte = parseFloat(document.getElementById('opIntrantQte').value) || 0;
             const responsableId = parseInt(document.getElementById('opResponsable').value) || null;
             const equipeId = parseInt(document.getElementById('opEquipe').value) || null;
             const notes = document.getElementById('opNotes').value.trim();
             if (!datePrevue) { alert('Date prévue requise.'); return; }
+            const intrants = lireLignesIntrantsOp();
+            const coutIntrant = intrants.reduce((s, x) => s + (x.coutIntrant || 0), 0);
+            const stockConsomme = intrants.length > 0 && intrants.every(x => x.consomme);
             if (opId) {
                 const op = camp.operations.find(o => o.id === opId);
                 if (!op) return;
                 op.type = type; op.datePrevue = datePrevue; op.coutAutre = coutAutre;
                 op.responsableId = responsableId; op.equipeId = equipeId; op.notes = notes;
-                // Si l'intrant change et que le stock n'a pas encore été consommé, on met à jour la prévision.
-                if (!op.stockConsomme) { op.intrantId = intrantId; op.intrantQte = intrantQte; }
-                // Recalcul du coût total (coût intrant déjà constaté conservé s'il existe)
-                op.cout = coutAutre + (op.coutIntrant || 0);
+                op.intrants = intrants;
+                op.coutIntrant = coutIntrant;
+                op.cout = coutAutre + coutIntrant;
+                op.stockConsomme = stockConsomme;
+                op.intrantId = intrants[0] ? intrants[0].intrantId : null; // miroir legacy
+                op.intrantQte = intrants[0] ? intrants[0].qte : 0;
             } else {
                 camp.operations.push({
                     id: data.nextId.operationCampagne++, type, datePrevue, dateRealisee: null,
-                    coutAutre, cout: coutAutre, intrantId, intrantQte, coutIntrant: 0, stockConsomme: false,
+                    coutAutre, cout: coutAutre + coutIntrant, intrants, coutIntrant, stockConsomme,
+                    intrantId: intrants[0] ? intrants[0].intrantId : null,
+                    intrantQte: intrants[0] ? intrants[0].qte : 0,
                     responsableId, equipeId, notes
                 });
             }
@@ -4922,27 +4971,37 @@
             const op = camp.operations.find(o => o.id === opId);
             if (!op) return;
             op.dateRealisee = new Date().toISOString().slice(0, 10);
-            if (op.intrantId && op.intrantQte > 0 && !op.stockConsomme) {
-                const depotId = data.depots.length > 0 ? data.depots[0].id : null;
-                if (depotId) {
-                    const stock = getStock(op.intrantId, depotId);
+            const depotId = data.depots.length > 0 ? data.depots[0].id : null;
+            // Compat : si l'opération est encore au format mono-intrant, on la convertit en liste.
+            if (!Array.isArray(op.intrants)) {
+                op.intrants = (op.intrantId && op.intrantQte > 0)
+                    ? [{ intrantId: op.intrantId, qte: op.intrantQte, coutIntrant: op.coutIntrant || 0, consomme: !!op.stockConsomme }]
+                    : [];
+            }
+            if (depotId && op.intrants.length) {
+                op.intrants.forEach(line => {
+                    if (line.consomme || !line.intrantId || !(line.qte > 0)) return;
+                    const stock = getStock(line.intrantId, depotId);
                     const dispo = stock ? stock.quantite : 0;
-                    if (dispo < op.intrantQte) {
-                        alert('Stock intrant insuffisant (' + dispo + ' disponible). Opération marquée réalisée sans décompte de stock.');
-                    } else {
-                        stock.quantite -= op.intrantQte;
-                        const fifo = consommerFIFO(op.intrantId, depotId, op.intrantQte);
-                        op.coutIntrant = fifo.coutTotal;
-                        op.cout = (op.coutAutre || 0) + op.coutIntrant;
-                        op.stockConsomme = true;
-                        const intrant = getProduit(op.intrantId);
-                        genererEcritureCOGS('Intrant ' + (intrant ? intrant.nom : '') + ' — ' + camp.nom, fifo.coutTotal, 'OP' + op.id, 'operationCampagne', op.id);
-                        if (loadedTabs.tabStocks) { renderStocks(); verifierAlertesStock(); }
+                    const nomI = getProduit(line.intrantId) ? getProduit(line.intrantId).nom : 'intrant';
+                    if (dispo < line.qte) {
+                        alert('Stock insuffisant pour « ' + nomI + ' » (' + dispo + ' disponible). Cette ligne n\'a pas été décomptée.');
+                        return;
                     }
-                }
+                    stock.quantite -= line.qte;
+                    const fifo = consommerFIFO(line.intrantId, depotId, line.qte);
+                    line.coutIntrant = fifo.coutTotal;
+                    line.consomme = true;
+                    genererEcritureCOGS('Intrant ' + nomI + ' — ' + camp.nom, fifo.coutTotal, 'OP' + op.id, 'operationCampagne', op.id);
+                });
+                op.coutIntrant = op.intrants.reduce((s, x) => s + (x.coutIntrant || 0), 0);
+                op.cout = (op.coutAutre || 0) + op.coutIntrant;
+                op.stockConsomme = op.intrants.length > 0 && op.intrants.every(x => x.consomme);
+                if (loadedTabs.tabStocks) { renderStocks(); verifierAlertesStock(); }
             }
             saveData();
             renderCampagnes();
+            if (loadedTabs.tabProduction) chargerProduction();
             if (op.type === 'Récolte') {
                 gererRecolteDepuisOperation(camp.id);
             }
@@ -4976,7 +5035,8 @@
                 pct = Math.min(Math.max(pct, 0), 97);
                 const color = TYPE_OP_COLOR[op.type] || '#7f8c8d';
                 const done = !!op.dateRealisee;
-                const intrant = op.intrantId ? getProduit(op.intrantId) : null;
+                const intrantsArr = Array.isArray(op.intrants) && op.intrants.length ? op.intrants : (op.intrantId && op.intrantQte > 0 ? [{ intrantId: op.intrantId, qte: op.intrantQte }] : []);
+                const intrantsTxt = intrantsArr.map(li => { const ip = getProduit(li.intrantId); return (ip ? ip.nom : '?') + ' ×' + li.qte; }).join(', ');
                 const resp = op.responsableId ? getOuvrier(op.responsableId) : null;
                 const eq = op.equipeId ? getEquipe(op.equipeId) : null;
                 const respTxt = resp ? '👷 ' + resp.nom : (eq ? '👥 ' + eq.nom : '');
@@ -4987,7 +5047,7 @@
                     delai = jours < 0 ? '<span style="color:#c0392b;font-weight:600;">⚠️ ' + (-jours) + 'j retard</span>' : (jours <= 7 ? '<span style="color:#d4a017;">⏳ J-' + jours + '</span>' : '<span style="color:#999;">J-' + jours + '</span>');
                 }
                 return `<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:4px;font-size:0.78rem;">
-                    <span style="width:150px;flex-shrink:0;${done ? 'text-decoration:line-through;color:#999;' : ''}">${op.notes && op.notes.length < 20 ? op.notes : op.type}${intrant ? ' <em style="color:#888;">('+intrant.nom+' x'+op.intrantQte+')</em>' : ''}${respTxt ? '<br><span style="font-size:0.7rem;color:#16a085;">'+respTxt+'</span>' : ''}</span>
+                    <span style="width:150px;flex-shrink:0;${done ? 'text-decoration:line-through;color:#999;' : ''}">${op.notes && op.notes.length < 20 ? op.notes : op.type}${intrantsTxt ? ' <em style="color:#888;">('+intrantsTxt+')</em>' : ''}${respTxt ? '<br><span style="font-size:0.7rem;color:#16a085;">'+respTxt+'</span>' : ''}</span>
                     <div style="position:relative;flex:1;height:14px;background:#eef2f0;border-radius:4px;">
                         <div title="${formatDateSimple(op.datePrevue)}" style="position:absolute;left:${pct}%;width:10px;height:14px;border-radius:3px;background:${color};opacity:${done ? 0.4 : 1};"></div>
                     </div>
