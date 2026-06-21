@@ -850,6 +850,23 @@
                     </table>
                 </div>
             </div>
+
+            <div class="card">
+                <div class="flex-between"><h2 style="margin:0;">🏬 Liste des dépôts</h2><button class="btn btn-success btn-sm" onclick="ouvrirModalDepot()">+ Nouveau dépôt</button></div>
+                <div class="table-wrap"><table><thead><tr><th>Dépôt</th><th>Adresse</th><th>Réf. produits</th><th>Quantité totale</th><th>Valeur stock (FIFO)</th><th>Campagnes liées</th><th></th></tr></thead><tbody id="listeDepots"></tbody></table></div>
+            </div>
+
+            <div class="card">
+                <h2>📒 Journal des mouvements de stock</h2>
+                <div style="display:flex;gap:0.4rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:0.6rem;">
+                    <div class="form-group" style="margin:0;"><label>Dépôt</label><select id="jmDepot" onchange="renderJournalMouvements()"><option value="">Tous</option></select></div>
+                    <div class="form-group" style="margin:0;"><label>Sens</label><select id="jmSens" onchange="renderJournalMouvements()"><option value="">Tous</option><option value="entree">Entrées</option><option value="sortie">Sorties</option><option value="ajustement">Ajustements</option></select></div>
+                    <div class="form-group" style="margin:0;flex:1;"><label>Recherche (produit, réf…)</label><input type="text" id="jmSearch" oninput="renderJournalMouvements()" placeholder="Engrais, Vente, Récolte…"></div>
+                    <button class="btn btn-outline btn-sm" onclick="exporterJournalMouvementsCSV()">📤 Export CSV</button>
+                </div>
+                <div id="jmResume" style="font-size:0.8rem;color:#555;margin-bottom:0.4rem;"></div>
+                <div class="table-wrap"><table><thead><tr><th>Date</th><th>Sens</th><th>Produit</th><th>Dépôt</th><th>Quantité</th><th>Valeur</th><th>Origine</th><th>Réf.</th></tr></thead><tbody id="listeJournalMouvements"></tbody></table></div>
+            </div>
         </section>
 
         <!-- ==================== FOURNISSEURS ==================== -->
@@ -1512,6 +1529,8 @@
             if (!data.nextId.lotStock) data.nextId.lotStock = 1;
             // ── TRAÇABILITÉ COMPLÈTE ──
             if (!data.transformations) data.transformations = [];
+            if (!data.mouvementsManuels) data.mouvementsManuels = [];
+            if (!data.nextId.mouvementManuel) data.nextId.mouvementManuel = 1;
             if (!data.nextId.transformation) data.nextId.transformation = 1;
             if (!data.nextId.numeroLot) data.nextId.numeroLot = 1;
             data.lotsStock.forEach(l => {
@@ -3015,6 +3034,154 @@
             });
             if (stocksFiltres.length === 0) tbody.innerHTML =
                 '<tr><td colspan="5" style="text-align:center;color:#888;">Aucun stock pour ce dépôt</td></tr>';
+            renderListeDepots();
+            // remplir le filtre dépôt du journal
+            const jmd = document.getElementById('jmDepot');
+            if (jmd) {
+                const cur = jmd.value;
+                jmd.innerHTML = '<option value="">Tous</option>' + data.depots.map(d => `<option value="${d.id}">${d.nom}</option>`).join('');
+                jmd.value = cur;
+            }
+            renderJournalMouvements();
+        }
+
+        function valeurStockDepot(depotId) {
+            return data.lotsStock.filter(l => l.depotId === depotId && l.quantiteRestante > 0)
+                .reduce((s, l) => s + l.quantiteRestante * (l.coutUnitaire || 0), 0);
+        }
+
+        function renderListeDepots() {
+            const tb = document.getElementById('listeDepots');
+            if (!tb) return;
+            tb.innerHTML = data.depots.length ? data.depots.map(d => {
+                const lignes = data.stocks.filter(s => s.depotId === d.id && s.quantite !== 0);
+                const nbRef = lignes.length;
+                const qteTot = lignes.reduce((s, x) => s + x.quantite, 0);
+                const val = valeurStockDepot(d.id);
+                const nbCamp = data.campagnes.filter(c => c.depotId === d.id).length;
+                return `<tr><td><strong>${d.nom}</strong></td><td>${d.adresse || '—'}</td><td>${nbRef}</td><td>${qteTot}</td><td>${Math.round(val).toLocaleString('fr-FR')} F</td><td>${nbCamp}</td>` +
+                    `<td style="white-space:nowrap;"><button class="btn btn-sm btn-outline" onclick="editerDepot(${d.id})">✏️</button> <button class="btn btn-sm btn-danger" onclick="supprimerDepot(${d.id})">🗑️</button></td></tr>`;
+            }).join('') : '<tr><td colspan="7" style="color:#888;">Aucun dépôt. Créez-en un.</td></tr>';
+        }
+
+        function editerDepot(id) {
+            const d = getDepot(id);
+            if (!d) return;
+            const overlay = document.getElementById('modalOverlay');
+            const body = document.getElementById('modalBody');
+            body.innerHTML = `<h2>✏️ Modifier le dépôt</h2>
+                <div class="form-row"><div class="form-group"><label>Nom *</label><input type="text" id="depotNomEdit" value="${(d.nom || '').replace(/"/g, '&quot;')}"></div>
+                <div class="form-group"><label>Adresse</label><input type="text" id="depotAdresseEdit" value="${(d.adresse || '').replace(/"/g, '&quot;')}"></div></div>
+                <button class="btn btn-success" onclick="sauvegarderDepot(${id})">💾 Enregistrer</button>
+                <button class="btn btn-outline" onclick="fermerModal()" style="margin-left:0.4rem;">Annuler</button>`;
+            overlay.classList.add('active');
+        }
+
+        function sauvegarderDepot(id) {
+            const d = getDepot(id);
+            if (!d) return;
+            const nom = document.getElementById('depotNomEdit').value.trim();
+            if (!nom) { alert('Le nom est obligatoire.'); return; }
+            d.nom = nom;
+            d.adresse = document.getElementById('depotAdresseEdit').value.trim();
+            saveData();
+            fermerModal();
+            remplirSelectDepots('selectDepotStock');
+            renderStocks();
+        }
+
+        function supprimerDepot(id) {
+            const aDuStock = data.stocks.some(s => s.depotId === id && s.quantite !== 0) || data.lotsStock.some(l => l.depotId === id && l.quantiteRestante > 0);
+            if (aDuStock) { alert('Impossible : ce dépôt contient encore du stock. Transférez ou soldez le stock avant suppression.'); return; }
+            if (!confirm('Supprimer ce dépôt ?')) return;
+            data.depots = data.depots.filter(d => d.id !== id);
+            data.stocks = data.stocks.filter(s => s.depotId !== id);
+            data.campagnes.forEach(c => { if (c.depotId === id) c.depotId = null; });
+            saveData();
+            remplirSelectDepots('selectDepotStock');
+            renderStocks();
+        }
+
+        // ── JOURNAL DES MOUVEMENTS DE STOCK ──
+        function journalMouvements() {
+            const mv = [];
+            data.lotsStock.forEach(l => {
+                const t = l.source && l.source.type;
+                const lib = t === 'recolte' ? 'Récolte' : (t === 'transformation' ? 'Transformation (produit fini)' : 'Entrée en stock');
+                mv.push({ date: (l.dateEntree || '').slice(0, 10), sens: 'entree', produitId: l.produitId, depotId: l.depotId, quantite: l.quantiteInitiale, valeur: l.quantiteInitiale * (l.coutUnitaire || 0), type: t || 'entree', ref: l.numeroLot || '', libelle: lib });
+            });
+            data.ventes.forEach(v => {
+                (v.lotsConsommes || []).forEach(d => {
+                    const lot = getLot(d.lotId);
+                    mv.push({ date: (v.date || '').slice(0, 10), sens: 'sortie', produitId: v.produitId, depotId: lot ? lot.depotId : null, quantite: d.qte, valeur: d.qte * (lot ? lot.coutUnitaire : 0), type: 'vente', ref: 'Vente #' + v.id, libelle: 'Vente — ' + (getClient(v.clientId) ? getClient(v.clientId).nom : '') });
+                });
+            });
+            data.campagnes.forEach(c => (c.operations || []).forEach(op => {
+                (op.intrants || []).forEach(li => {
+                    if (li.consomme && li.qte > 0) mv.push({ date: (op.dateRealisee || op.datePrevue || '').slice(0, 10), sens: 'sortie', produitId: li.intrantId, depotId: op.depotId, quantite: li.qte, valeur: li.coutIntrant || 0, type: 'intrant', ref: c.nom, libelle: 'Intrant — ' + op.type });
+                });
+            }));
+            (data.transformations || []).forEach(t => {
+                (t.intrants || []).forEach(i => {
+                    const lot = getLot(i.lotId);
+                    mv.push({ date: (t.date || '').slice(0, 10), sens: 'sortie', produitId: t.produitSourceId, depotId: lot ? lot.depotId : t.depotSourceId, quantite: i.qte, valeur: i.qte * (lot ? lot.coutUnitaire : 0), type: 'transformation', ref: 'Transfo #' + t.id, libelle: 'Transformation (matière)' });
+                });
+            });
+            (data.mouvementsManuels || []).forEach(m => mv.push(Object.assign({}, m, { date: (m.date || '').slice(0, 10) })));
+            return mv.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+        }
+
+        const SENS_BADGE = {
+            entree: '<span class="badge" style="background:#eaf3ee;color:#16623a;">▲ Entrée</span>',
+            sortie: '<span class="badge" style="background:#fdecea;color:#c0392b;">▼ Sortie</span>',
+            ajustement: '<span class="badge" style="background:#fff8e1;color:#9a7d0a;">± Ajust.</span>'
+        };
+
+        function journalMouvementsFiltres() {
+            const dep = parseInt(document.getElementById('jmDepot')?.value) || null;
+            const sens = document.getElementById('jmSens')?.value || '';
+            const q = (document.getElementById('jmSearch')?.value || '').toLowerCase().trim();
+            return journalMouvements().filter(m => {
+                if (dep && m.depotId !== dep) return false;
+                if (sens && m.sens !== sens) return false;
+                if (q) {
+                    const p = getProduit(m.produitId);
+                    const txt = ((p ? p.nom : '') + ' ' + (m.ref || '') + ' ' + (m.libelle || '')).toLowerCase();
+                    if (!txt.includes(q)) return false;
+                }
+                return true;
+            });
+        }
+
+        function renderJournalMouvements() {
+            const tb = document.getElementById('listeJournalMouvements');
+            if (!tb) return;
+            const list = journalMouvementsFiltres();
+            const totalE = list.filter(m => m.sens === 'entree').reduce((s, m) => s + m.quantite, 0);
+            const totalS = list.filter(m => m.sens === 'sortie').reduce((s, m) => s + m.quantite, 0);
+            const resume = document.getElementById('jmResume');
+            if (resume) resume.innerHTML = `${list.length} mouvement(s) — ▲ entrées : <strong>${totalE}</strong> · ▼ sorties : <strong>${totalS}</strong>`;
+            const rows = list.slice(0, 300).map(m => {
+                const p = getProduit(m.produitId), d = m.depotId ? getDepot(m.depotId) : null;
+                return `<tr><td>${formatDateSimple(m.date)}</td><td>${SENS_BADGE[m.sens] || m.sens}</td><td>${p ? p.nom : '?'}</td><td>${d ? d.nom : '—'}</td><td style="text-align:right;">${m.quantite}</td><td style="text-align:right;">${m.valeur ? Math.round(m.valeur).toLocaleString('fr-FR') + ' F' : '—'}</td><td>${m.libelle || ''}</td><td style="font-size:0.78rem;color:#666;">${m.ref || ''}</td></tr>`;
+            }).join('');
+            tb.innerHTML = rows || '<tr><td colspan="8" style="color:#888;">Aucun mouvement.</td></tr>';
+        }
+
+        function exporterJournalMouvementsCSV() {
+            const list = journalMouvementsFiltres();
+            const lignes = [['Date', 'Sens', 'Produit', 'Depot', 'Quantite', 'Valeur', 'Origine', 'Reference']];
+            list.forEach(m => {
+                const p = getProduit(m.produitId), d = m.depotId ? getDepot(m.depotId) : null;
+                lignes.push([m.date, m.sens, p ? p.nom : '', d ? d.nom : '', m.quantite, Math.round(m.valeur || 0), m.libelle || '', m.ref || '']);
+            });
+            const csv = lignes.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(';')).join('\n');
+            const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = 'journal-mouvements-stock.csv';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
         }
 
         function verifierAlertesStock() {
@@ -3073,6 +3240,11 @@
                 if (stock.quantite < qte) { alert('Stock insuffisant.'); return; }
                 stock.quantite -= qte;
             }
+            data.mouvementsManuels.push({
+                id: data.nextId.mouvementManuel++, date: new Date().toISOString().slice(0, 10),
+                sens: type, produitId, depotId, quantite: qte, valeur: 0, type: 'manuel',
+                ref: 'Manuel', libelle: type === 'entree' ? 'Entrée manuelle' : 'Sortie manuelle'
+            });
             saveData();
             fermerModal();
             renderStocks();
@@ -3097,7 +3269,15 @@
             let stock = getStock(produitId, depotId);
             if (!stock) { stock = { produitId, depotId, quantite: 0, seuil: 10 };
                 data.stocks.push(stock); }
+            const ecart = qte - stock.quantite;
             stock.quantite = qte;
+            if (ecart !== 0) {
+                data.mouvementsManuels.push({
+                    id: data.nextId.mouvementManuel++, date: new Date().toISOString().slice(0, 10),
+                    sens: 'ajustement', produitId, depotId, quantite: ecart, valeur: 0, type: 'inventaire',
+                    ref: 'Inventaire', libelle: 'Ajustement inventaire (' + (ecart > 0 ? '+' : '') + ecart + ')'
+                });
+            }
             saveData();
             fermerModal();
             renderStocks();
