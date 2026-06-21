@@ -5638,6 +5638,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
               </table>
             </div>
             <div id="finv-attestation-zone" style="margin-top:16px;"></div>
+            <div id="finv-docs-zone" style="margin-top:4px;"></div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal('modal-fin-versements')">Fermer</button>
@@ -46450,11 +46451,15 @@ function finRender() {
     var badgeSt = solde
       ? '<span class="badge" style="background:#ECFDF5;color:#065F46;border:1px solid #A7F3D0;padding:2px 8px;border-radius:12px;font-size:11px;">✅ Soldé</span>'
       : '<span class="badge" style="background:#FFF7ED;color:#92400E;border:1px solid #FDE68A;padding:2px 8px;border-radius:12px;font-size:11px;">⏳ En cours</span>';
-    var attSt = f.attestation_emise
-      ? '<span style="color:var(--vert);font-size:12px;">✔ Émise le '+(f.date_attestation||'')+'</span>'
-      : (solde
-        ? '<button class="btn btn-primary btn-sm" onclick="finEmettrAttestation(\''+f.id+'\')">📄 Émettre</button>'
-        : '<span style="color:var(--dim);font-size:11px;">En attente versement</span>');
+    var attSt;
+    if (!solde) {
+      attSt = '<span style="color:var(--dim);font-size:11px;">En attente versement</span>';
+    } else if (!f.dg_valide) {
+      attSt = '<button class="btn btn-primary btn-sm" onclick="finOpenVersements(\''+f.id+'\')">🔐 Valider & documents</button>';
+    } else {
+      var nbD = FIN_DOCS.filter(function(d){ return finDocEtat(f,d.key).etat==='delivre'; }).length;
+      attSt = '<span style="font-size:11px;color:var(--vert);">📄 '+nbD+'/'+FIN_DOCS.length+' délivré(s)</span> <button class="btn btn-secondary btn-sm" onclick="finOpenVersements(\''+f.id+'\')">Voir</button>';
+    }
     html += '<tr>'
       +'<td><strong>'+f.nom+'</strong>'+(f.contact?('<br><span style="font-size:11px;color:var(--dim);">'+f.contact+'</span>'):'')+'</td>'
       +'<td>'+(op?op.nom:'—')+'</td>'
@@ -46602,17 +46607,13 @@ function finvRender(f) {
   var tb = document.getElementById('tbody-finv');
   if (tb) tb.innerHTML = html || '<tr><td colspan="6" style="text-align:center;color:var(--dim);padding:16px;">Aucun versement enregistré</td></tr>';
 
-  // Zone attestation
+  // Zone attestation / blocage
   var az = document.getElementById('finv-attestation-zone');
   if (az) {
-    if (finPeutAttester(f)) {
-      az.innerHTML = f.attestation_emise
-        ? '<div class="alert" style="background:#ECFDF5;border-color:#A7F3D0;color:#065F46;">✅ Attestation de cession émise le <strong>'+(f.date_attestation||'—')+'</strong>. <button class="btn btn-secondary btn-sm" onclick="finImprimerAttestation(\''+f.id+'\')">🖨 Réimprimer</button></div>'
-        : '<div class="alert" style="background:#EFF6FF;border-color:#BFDBFE;color:#1E40AF;">🎉 Engagement soldé ! L\'attestation de cession peut être émise. <button class="btn btn-primary btn-sm" onclick="finEmettrAttestation(\''+f.id+'\')">📄 Émettre l\'attestation</button></div>';
-    } else {
-      az.innerHTML = '<div class="alert" style="background:#FFF7ED;border-color:#FDE68A;color:#92400E;">⏳ Attestation bloquée — reliquat de <strong>'+fmtF(Math.max(0,engage-verse))+' FCFA</strong> restant à verser à la comptabilité.</div>';
-    }
+    az.innerHTML = finPeutAttester(f) ? '' :
+      '<div class="alert" style="background:#FFF7ED;border-color:#FDE68A;color:#92400E;">⏳ Documents bloqués — reliquat de <strong>'+fmtF(Math.max(0,engage-verse))+' FCFA</strong> restant à verser à la comptabilité.</div>';
   }
+  finRenderDocsZone(f);
 }
 
 async function finvSave() {
@@ -46751,6 +46752,177 @@ function finImprimerAttestation(fid) {
   win.document.write(html);
   win.document.close();
   setTimeout(function(){ win.print(); }, 600);
+}
+
+/* ════════════════════════════════════════════════════════════
+   VALIDATION DG + REGISTRE DOCUMENTS FINANCIER
+   Solde acquitté → validation DG (ou personne désignée, rôle admin)
+   → délivrance Contrat de réservation + Attestation de réservation
+   provisoire + Attestation de cession définitive. Suivi des états.
+════════════════════════════════════════════════════════════ */
+var FIN_DOCS = [
+  { key:'contrat_reservation',     label:'Contrat de réservation' },
+  { key:'attestation_reservation', label:'Attestation de réservation provisoire' },
+  { key:'attestation_cession',     label:'Attestation de cession définitive' }
+];
+
+function finDocEtat(f, key) {
+  if (key === 'attestation_cession' && f.attestation_emise) return { etat:'delivre', date:f.date_attestation||'' };
+  var d = (f.docs_etat||{})[key];
+  return d || { etat:'a_delivrer', date:'' };
+}
+
+async function finValiderDG(fid) {
+  if (!hasRole('admin')) { toast('Validation réservée au DG / personne désignée (rôle administrateur).','error'); return; }
+  var f = finGetAll().find(function(x){ return x.id===fid; });
+  if (!f) return;
+  if (!finPeutAttester(f)) { toast('Engagement non soldé — validation impossible.','error'); return; }
+  if (!confirm('Valider le solde de « '+f.nom+' » et autoriser la délivrance du contrat et de l\'attestation de réservation provisoire ?')) return;
+  f.dg_valide = true;
+  f.dg_valide_par = (APP.currentUser && APP.currentUser.nom) || 'Direction';
+  f.dg_valide_role = (APP.currentUser && APP.currentUser.role) || 'admin';
+  f.dg_valide_date = today();
+  if (!f.docs_etat) f.docs_etat = {};
+  ['contrat_reservation','attestation_reservation'].forEach(function(k){
+    if (!f.docs_etat[k]) f.docs_etat[k] = { etat:'a_delivrer', date:'' };
+  });
+  await dbPut('af_financiers', f);
+  if (typeof syncToSupabase==='function') syncToSupabase('pi_af_financiers', f);
+  if (typeof ajouterHistorique==='function') try { ajouterHistorique('af_financier', f.id, 'validation_dg', 'Solde validé par '+f.dg_valide_par); } catch(e){}
+  finRender();
+  if (_finvFinancierId===fid) finvRender(f);
+  toast('Solde validé par '+f.dg_valide_par+' — documents de réservation débloqués.','success');
+}
+
+async function finAnnulerValidationDG(fid) {
+  if (!hasRole('admin')) { toast('Action réservée à l\'administrateur.','error'); return; }
+  var f = finGetAll().find(function(x){ return x.id===fid; });
+  if (!f) return;
+  if (!confirm('Annuler la validation DG ? Les documents déjà délivrés resteront tracés.')) return;
+  f.dg_valide = false; delete f.dg_valide_par; delete f.dg_valide_role; delete f.dg_valide_date;
+  await dbPut('af_financiers', f);
+  if (typeof syncToSupabase==='function') syncToSupabase('pi_af_financiers', f);
+  finRender();
+  if (_finvFinancierId===fid) finvRender(f);
+  toast('Validation DG annulée.','info');
+}
+
+async function finDelivrerDoc(fid, key) {
+  var f = finGetAll().find(function(x){ return x.id===fid; });
+  if (!f) return;
+  if (!f.dg_valide) { toast('Validation DG requise avant délivrance.','error'); return; }
+  if (!f.docs_etat) f.docs_etat = {};
+  f.docs_etat[key] = { etat:'delivre', date:today(), par:(APP.currentUser&&APP.currentUser.nom)||'' };
+  if (key === 'attestation_cession') { f.attestation_emise = true; f.date_attestation = today(); }
+  await dbPut('af_financiers', f);
+  if (typeof syncToSupabase==='function') syncToSupabase('pi_af_financiers', f);
+  finRender();
+  if (_finvFinancierId===fid) finvRender(f);
+  finImprimerDoc(fid, key);
+}
+
+function finImprimerDoc(fid, key) {
+  if (key === 'contrat_reservation') finImprimerContratReservation(fid);
+  else if (key === 'attestation_reservation') finImprimerAttestationReservation(fid);
+  else if (key === 'attestation_cession') finImprimerAttestation(fid);
+}
+
+function finRenderDocsZone(f) {
+  var z = document.getElementById('finv-docs-zone');
+  if (!z) return;
+  if (!f || !finPeutAttester(f)) { z.innerHTML = ''; return; }
+
+  if (!f.dg_valide) {
+    z.innerHTML = '<div class="form-section-title" style="margin-top:18px;">Validation & documents</div>'
+      + '<div class="alert" style="background:#EFF6FF;border-color:#BFDBFE;color:#1E40AF;">'
+      + '🔐 Engagement <strong>soldé</strong>. Validation du <strong>Directeur Général</strong> (ou personne désignée) requise pour délivrer le contrat et l\'attestation de réservation provisoire.'
+      + (hasRole('admin')
+          ? '<div style="margin-top:10px;"><button class="btn btn-primary btn-sm" onclick="finValiderDG(\''+f.id+'\')">✅ Valider (DG / personne désignée)</button></div>'
+          : '<div style="margin-top:6px;font-size:11px;">Droits administrateur requis.</div>')
+      + '</div>';
+    return;
+  }
+
+  var rows = FIN_DOCS.map(function(d){
+    var e = finDocEtat(f, d.key);
+    var badge = e.etat==='delivre'
+      ? '<span class="badge" style="background:#ECFDF5;color:#065F46;border:1px solid #A7F3D0;padding:2px 8px;border-radius:12px;font-size:11px;">✔ Délivré'+(e.date?(' · '+e.date):'')+'</span>'
+      : '<span class="badge" style="background:#FFF7ED;color:#92400E;border:1px solid #FDE68A;padding:2px 8px;border-radius:12px;font-size:11px;">⏳ À délivrer</span>';
+    var act = e.etat==='delivre'
+      ? '<button class="btn btn-secondary btn-sm" onclick="finImprimerDoc(\''+f.id+'\',\''+d.key+'\')">🖨 Réimprimer</button>'
+      : '<button class="btn btn-primary btn-sm" onclick="finDelivrerDoc(\''+f.id+'\',\''+d.key+'\')">📄 Délivrer</button>';
+    return '<tr><td>'+d.label+'</td><td>'+badge+'</td><td style="text-align:right;">'+act+'</td></tr>';
+  }).join('');
+
+  z.innerHTML = '<div class="form-section-title" style="margin-top:18px;">Documents transmis au financier</div>'
+    + '<div class="alert" style="background:#ECFDF5;border-color:#A7F3D0;color:#065F46;font-size:12px;">✅ Solde validé par <strong>'+(f.dg_valide_par||'Direction')+'</strong> le <strong>'+(f.dg_valide_date||'—')+'</strong>.'
+    + (hasRole('admin') ? ' <button class="btn btn-secondary btn-sm" style="margin-left:8px;" onclick="finAnnulerValidationDG(\''+f.id+'\')">Annuler validation</button>' : '')
+    + '</div>'
+    + '<div class="table-wrap"><table><thead><tr><th>Document</th><th>État</th><th style="text-align:right;">Action</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+
+/* ── Gabarit commun documents ── */
+var _FIN_DOC_CSS = '<style>body{font-family:Georgia,serif;margin:0;padding:0;color:#1a1a2e;}.page{max-width:800px;margin:0 auto;padding:50px 60px;}.header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #1a3a6b;padding-bottom:20px;margin-bottom:30px;}.titre-doc{text-align:center;font-size:22px;font-weight:900;letter-spacing:2px;text-transform:uppercase;color:#1a3a6b;margin:24px 0 8px;}.sous-titre{text-align:center;font-size:13px;color:#555;margin-bottom:26px;}.ref{text-align:right;font-size:11px;color:#777;margin-bottom:20px;}.section{margin:18px 0;}.section-title{font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#1a3a6b;font-weight:700;border-bottom:1px solid #ddd;padding-bottom:4px;margin-bottom:10px;}table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:8px;}th{background:#f4f6fb;color:#555;font-size:11px;text-align:left;padding:6px 10px;}td{padding:7px 10px;border-bottom:1px solid #eee;}.montant-box{background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:16px;text-align:center;margin:18px 0;}.art{font-size:13px;line-height:1.7;margin:12px 0;text-align:justify;}.art b{color:#1a3a6b;}.mention{font-size:13px;line-height:1.8;margin:18px 0;text-align:justify;}.signatures{display:flex;justify-content:space-between;margin-top:54px;}.sig-box{text-align:center;width:45%;}.sig-line{border-bottom:1px solid #333;margin:40px 0 8px;}@media print{.page{padding:30px 40px;}}</style>';
+
+function _finDocHeader(params, societe) {
+  var logo = params.logo ? '<img src="'+params.logo+'" style="height:60px;object-fit:contain;" alt="Logo">' : '<div style="font-size:22px;font-weight:900;color:#1a3a6b;">'+societe+'</div>';
+  return '<div class="header">'+logo+'<div style="text-align:right;font-size:11px;color:#555;">'+(params.adresse||'')+'<br>'+(params.tel||params.telephone||'')+'<br>'+(params.email||'')+'</div></div>';
+}
+function _finPrintWin(html) {
+  var win = window.open('','_blank','width=900,height=700');
+  if (!win) { toast('Autorisez les pop-ups pour imprimer.','error'); return; }
+  win.document.write(html); win.document.close();
+  setTimeout(function(){ win.print(); }, 600);
+}
+function _finCtx(fid) {
+  var f = finGetAll().find(function(x){ return x.id===fid; });
+  if (!f) return null;
+  var op = (DATA['af_operations']||[]).find(function(o){ return o.id===f.operation_id; });
+  var params = DATA.params||{};
+  return { f:f, op:op, params:params,
+    societe: params.societe||params.nom_societe||'MENKO',
+    verse: finMontantVerse(f.id) };
+}
+
+function finImprimerContratReservation(fid) {
+  var c = _finCtx(fid); if (!c) return;
+  var f=c.f, op=c.op, params=c.params, societe=c.societe, verse=c.verse;
+  var dDoc = (f.docs_etat&&f.docs_etat.contrat_reservation&&f.docs_etat.contrat_reservation.date) || today();
+  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Contrat de réservation — '+f.nom+'</title>'+_FIN_DOC_CSS+'</head><body><div class="page">'
+    + _finDocHeader(params, societe)
+    + '<div class="titre-doc">Contrat de Réservation</div>'
+    + '<div class="sous-titre">Réservation provisoire de lots — en contrepartie d\'un apport de financement</div>'
+    + '<div class="ref">Réf. : CR-'+f.id.slice(-6).toUpperCase()+' &nbsp;|&nbsp; Date : '+dDoc+'</div>'
+    + '<div class="art"><b>ENTRE LES SOUSSIGNÉS :</b></div>'
+    + '<div class="art">La société <b>'+societe+'</b>'+(params.rccm?(', RCCM '+params.rccm):'')+(params.adresse?(', sise à '+params.adresse):'')+', ci-après dénommée « l\'Opérateur », d\'une part ;</div>'
+    + '<div class="art">Et <b>'+f.nom+'</b>'+(f.contact?(', '+f.contact):'')+', ci-après dénommé « le Réservataire », d\'autre part.</div>'
+    + '<div class="section"><div class="section-title">Article 1 — Objet</div><div class="art">Le présent contrat a pour objet la réservation provisoire, au profit du Réservataire, de <b>'+(f.nb_lots||0)+' lot(s)</b>'+(f.designation_lots?(' ('+f.designation_lots+')'):'')+' prélevé(s) sur la part cessible de l\'Opérateur dans l\'opération <b>'+(op?op.nom:'—')+'</b>.</div></div>'
+    + '<div class="section"><div class="section-title">Article 2 — Apport financier</div>'
+    + '<div class="montant-box"><div style="font-size:11px;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Engagement intégralement libéré</div><div style="font-size:26px;font-weight:900;color:#1E40AF;">'+fmtF(verse)+' FCFA</div></div>'
+    + '<div class="art">Le Réservataire a soldé son engagement de <b>'+fmtF(f.montant_engagement||0)+' FCFA</b>, dûment constaté par la comptabilité de l\'Opérateur'+(f.date_conv?(', au titre de la convention du '+f.date_conv):'')+'.</div></div>'
+    + '<div class="section"><div class="section-title">Article 3 — Validation</div><div class="art">La présente réservation est délivrée après validation de la Direction Générale'+(f.dg_valide_par?(' (<b>'+f.dg_valide_par+'</b>)'):'')+', en date du <b>'+(f.dg_valide_date||dDoc)+'</b>.</div></div>'
+    + '<div class="section"><div class="section-title">Article 4 — Caractère provisoire</div><div class="art">La réservation revêt un caractère <b>provisoire</b> jusqu\'à l\'établissement des actes définitifs. L\'attribution définitive fera l\'objet d\'une <b>attestation de cession définitive</b> et, le cas échéant, d\'actes notariés.</div></div>'
+    + '<div class="signatures"><div class="sig-box"><div class="sig-line"></div><div style="font-size:12px;font-weight:700;">'+f.nom+'</div><div style="font-size:11px;color:#555;">Le Réservataire</div></div>'
+    + '<div class="sig-box"><div class="sig-line"></div><div style="font-size:12px;font-weight:700;">Pour '+societe+'</div><div style="font-size:11px;color:#555;">Le Directeur Général</div></div></div>'
+    + '</div></body></html>';
+  _finPrintWin(html);
+}
+
+function finImprimerAttestationReservation(fid) {
+  var c = _finCtx(fid); if (!c) return;
+  var f=c.f, op=c.op, params=c.params, societe=c.societe, verse=c.verse;
+  var dDoc = (f.docs_etat&&f.docs_etat.attestation_reservation&&f.docs_etat.attestation_reservation.date) || today();
+  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Attestation de réservation provisoire — '+f.nom+'</title>'+_FIN_DOC_CSS+'</head><body><div class="page">'
+    + _finDocHeader(params, societe)
+    + '<div class="titre-doc">Attestation de Réservation Provisoire</div>'
+    + '<div class="sous-titre">Délivrée en contrepartie d\'un apport de financement</div>'
+    + '<div class="ref">Réf. : ARP-'+f.id.slice(-6).toUpperCase()+' &nbsp;|&nbsp; Date : '+dDoc+'</div>'
+    + '<div class="mention">La société <b>'+societe+'</b>, agissant en qualité d\'opérateur immobilier, atteste que <b>'+f.nom+'</b>'+(f.contact?(' ('+f.contact+')'):'')+' bénéficie de la <b>réservation provisoire</b> de <b>'+(f.nb_lots||0)+' lot(s)</b>'+(f.designation_lots?(' ('+f.designation_lots+')'):'')+' dans l\'opération <b>'+(op?op.nom:'—')+'</b>.</div>'
+    + '<div class="mention">Cette réservation fait suite au règlement intégral de l\'engagement financier, d\'un montant de <b>'+fmtF(verse)+' FCFA</b>, et à la validation de la Direction Générale'+(f.dg_valide_par?(' ('+f.dg_valide_par+')'):'')+' en date du <b>'+(f.dg_valide_date||dDoc)+'</b>.</div>'
+    + '<div class="mention">La présente attestation, de nature <b>provisoire</b>, ne vaut pas titre de propriété. Elle sera régularisée par la délivrance de l\'attestation de cession définitive et des actes y afférents.</div>'
+    + '<div class="signatures"><div class="sig-box"></div><div class="sig-box"><div class="sig-line"></div><div style="font-size:12px;font-weight:700;">Pour '+societe+'</div><div style="font-size:11px;color:#555;">Le Directeur Général — signature & cachet</div></div></div>'
+    + '</div></body></html>';
+  _finPrintWin(html);
 }
 
 </script>
