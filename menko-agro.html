@@ -582,6 +582,28 @@
                     <table><thead><tr><th>Référence</th><th>Zone agroécologique</th><th>Superficie (ha)</th><th>Statut</th><th>Type sol</th><th>Productions liées</th><th>Bandes liées</th><th>Rendement/ha</th><th></th></tr></thead><tbody id="listeParcelles"></tbody></table>
                 </div>
             </div>
+
+            <!-- ==================== GESTION FONCIÈRE ==================== -->
+            <div class="card">
+                <div class="flex-between">
+                    <h2 style="margin:0;">🏛️ Propriétaires</h2>
+                    <button class="btn btn-success btn-sm" onclick="ouvrirModalProprietaire()">➕ Nouveau propriétaire</button>
+                </div>
+                <div class="table-wrap">
+                    <table><thead><tr><th>Nom / Raison sociale</th><th>Type</th><th>Téléphone</th><th>Email</th><th>Pièce d'identité / RCCM</th><th>Contrats liés</th><th></th></tr></thead><tbody id="listeProprietaires"></tbody></table>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="flex-between">
+                    <h2 style="margin:0;">📜 Contrats fonciers & titres</h2>
+                    <button class="btn btn-success btn-sm" onclick="ouvrirModalContrat()">➕ Nouveau contrat / titre</button>
+                </div>
+                <p style="font-size:0.75rem;color:#888;margin-bottom:0.6rem;">Location, bail emphytéotique, titre de propriété, métayage… avec documents scannés et alertes d'expiration automatiques.</p>
+                <div class="table-wrap">
+                    <table><thead><tr><th>Parcelle</th><th>Type</th><th>Propriétaire</th><th>Début</th><th>Fin</th><th>Loyer</th><th>N° titre/acte</th><th>Statut</th><th>Docs</th><th></th></tr></thead><tbody id="listeContratsFonciers"></tbody></table>
+                </div>
+            </div>
         </section>
 
         <!-- ==================== TABLEAU DE BORD ==================== -->
@@ -1048,8 +1070,11 @@
                 ],
                 parcelles: [
                     { id: 1, reference: 'Parcelle Taabo A', superficieHa: 5, lat: 6.0667, lng: -5.1167,
-                        typeSol: 'Argilo-sableux', statut: 'culture', titreFoncier: '', notes: '' }
+                        typeSol: 'Argilo-sableux', statut: 'culture', titreFoncier: '', notes: '', bornage: [], photos: [] }
                 ],
+                // ── GESTION FONCIÈRE ──
+                proprietaires: [],
+                contratsFonciers: [],
                 campagnes: [
                     {
                         id: 1, nom: 'Campagne Maïs Taabo — Saison 1', parcelleId: 1, produitId: 1,
@@ -1164,7 +1189,8 @@
                     factureFourn: 1, commandeClient: 1, livraisonClient: 3, factureClient: 1, vente: 3,
                     production: 2, recolte: 3, bande: 2, suiviElevage: 3, sortieAnimaux: 2, prophylaxie: 3, alimentJ: 1,
                     ecriture: 1, parcelle: 2, campagne: 2, operationCampagne: 6, lotStock: 1, actionMarketing: 1,
-                    equipement: 2, maintenance: 1, reglementClient: 1, reglementFournisseur: 1 }
+                    equipement: 2, maintenance: 1, reglementClient: 1, reglementFournisseur: 1,
+                    proprietaire: 1, contratFoncier: 1, fichierFoncier: 1 }
             };
         }
 
@@ -1281,6 +1307,20 @@
             if (!getCompte('585')) data.planComptable.push({ compte:'585', libelle:'Mobile Money (Wave/Orange/MTN)', classe:5 });
             if (!getCompte('31')) data.planComptable.push({ compte:'31', libelle:'Stocks de marchandises & matières premières', classe:3 });
             if (!getCompte('624')) data.planComptable.push({ compte:'624', libelle:'Entretien, réparations & maintenance matériel', classe:6 });
+            // ── GESTION FONCIÈRE ──
+            if (!data.proprietaires) data.proprietaires = [];
+            if (!data.contratsFonciers) data.contratsFonciers = [];
+            if (!data.nextId.proprietaire) data.nextId.proprietaire = 1;
+            if (!data.nextId.contratFoncier) data.nextId.contratFoncier = 1;
+            if (!data.nextId.fichierFoncier) data.nextId.fichierFoncier = 1;
+            data.parcelles.forEach(p => {
+                if (!p.bornage) p.bornage = [];
+                if (!p.photos) p.photos = [];
+            });
+            data.contratsFonciers.forEach(c => {
+                if (!c.documents) c.documents = [];
+                if (c.statut === undefined) c.statut = 'actif';
+            });
         }
 
         async function loadData() {
@@ -3162,6 +3202,26 @@
                 });
             });
 
+            // Contrats fonciers / titres — expiration proche ou dépassée (hors résiliés)
+            data.contratsFonciers.filter(c => c.statut !== 'resilie' && c.dateFin).forEach(c => {
+                const joursRestants = Math.floor((new Date(c.dateFin).getTime() - Date.now()) / 86400000);
+                if (joursRestants < 0) {
+                    const parc = getParcelle(c.parcelleId);
+                    notifs.push({
+                        key: 'foncier_' + c.id, icone: '🏛️',
+                        message: `Contrat foncier expiré (${TYPE_CONTRAT_LABEL[c.type] || c.type}) — ${parc ? parc.reference : '?'}, échu le ${c.dateFin}`,
+                        tab: 'tabParcelles', urgence: 'danger'
+                    });
+                } else if (joursRestants <= 60) {
+                    const parc = getParcelle(c.parcelleId);
+                    notifs.push({
+                        key: 'foncier_' + c.id, icone: '🏛️',
+                        message: `Contrat foncier à renouveler dans ${joursRestants} j (${TYPE_CONTRAT_LABEL[c.type] || c.type}) — ${parc ? parc.reference : '?'}`,
+                        tab: 'tabParcelles', urgence: 'warning'
+                    });
+                }
+            });
+
             return notifs;
         }
 
@@ -4183,7 +4243,8 @@
             const zone = getZoneAgroecologique(latVal);
             data.parcelles.push({
                 id: data.nextId.parcelle++, reference, superficieHa, typeSol, statut,
-                lat: latVal, lng: isNaN(lng) ? null : lng, titreFoncier, notes, zoneId: zone ? zone.id : null
+                lat: latVal, lng: isNaN(lng) ? null : lng, titreFoncier, notes, zoneId: zone ? zone.id : null,
+                bornage: [], photos: []
             });
             saveData();
             document.getElementById('parcRef').value = '';
@@ -4255,28 +4316,57 @@
                 "</div>" +
                 "<div id=\"geoStatusEdit\" style=\"font-size:0.8rem;color:#2a7a4a;margin-bottom:0.5rem;display:none;\"></div>" +
                 "<div id=\"editParcelleMap\" style=\"height:280px;border-radius:8px;margin-bottom:1rem;border:1px solid #ccd7d2;\"></div>" +
-                "<p style=\"font-size:0.78rem;color:#888;margin-bottom:0.8rem;\">💡 Cliquez sur la carte pour définir la position de la parcelle.</p>" +
+                "<p style=\"font-size:0.78rem;color:#888;margin-bottom:0.8rem;\">💡 Cliquez sur la carte pour définir la position de la parcelle. En mode bornage, chaque clic ajoute un point au polygone.</p>" +
+                "<div class=\"flex-between\" style=\"margin-bottom:0.6rem;\">" +
+                  "<strong style=\"font-size:0.85rem;\">📐 Bornage GPS (" + p.bornage.length + " point(s))" + (p.bornage.length >= 3 ? " — surface bornée : " + surfaceBornageHa(p.bornage).toFixed(2) + " ha" : "") + "</strong>" +
+                  "<span>" +
+                    "<button class=\"btn btn-sm " + (bornageModeActif ? "btn-danger" : "btn-outline") + "\" type=\"button\" onclick=\"toggleModeBornage(" + id + ")\">" + (bornageModeActif ? "⏹ Arrêter le bornage" : "📍 Démarrer le bornage") + "</button> " +
+                    "<button class=\"btn btn-sm btn-outline\" type=\"button\" onclick=\"viderBornage(" + id + ")\">🗑️ Vider les points</button>" +
+                  "</span>" +
+                "</div>" +
+                "<div id=\"listeBornagePoints\" style=\"font-size:0.78rem;color:#555;margin-bottom:1rem;max-height:90px;overflow-y:auto;\">" + renderListeBornagePoints(p) + "</div>" +
                 "<div class=\"form-row\">" +
                   "<div class=\"form-group\" style=\"flex:3;\"><label>Notes</label><textarea id=\"editParcNotes\">" + (p.notes || "") + "</textarea></div>" +
                 "</div>" +
+                "<div class=\"flex-between\" style=\"margin-bottom:0.6rem;\">" +
+                  "<strong style=\"font-size:0.85rem;\">📷 Photos de la parcelle (" + p.photos.length + ")</strong>" +
+                  "<label class=\"btn btn-sm btn-outline\" style=\"cursor:pointer;margin:0;\">📤 Ajouter des photos<input type=\"file\" accept=\"image/*\" multiple style=\"display:none;\" onchange=\"ajouterPhotosParcelle(" + id + ", this.files)\"></label>" +
+                "</div>" +
+                "<div id=\"galeriePhotosParcelle\" style=\"display:flex;flex-wrap:wrap;gap:0.6rem;margin-bottom:1rem;\">" + renderGaleriePhotosParcelle(p) + "</div>" +
                 "<div class=\"form-row\">" +
                   "<button class=\"btn btn-success\" onclick=\"sauvegarderEditionParcelle(" + id + ")\">💾 Enregistrer</button>" +
                   "<button class=\"btn btn-outline\" onclick=\"fermerModal()\">Annuler</button>" +
                 "</div>";
             overlay.classList.add("active");
             setTimeout(function() {
-                const initLat = p.lat || 6.0667;
-                const initLng = p.lng || -5.1167;
-                const zoom = p.lat ? 13 : 7;
+                const initLat = p.lat || (p.bornage[0] ? p.bornage[0].lat : 6.0667);
+                const initLng = p.lng || (p.bornage[0] ? p.bornage[0].lng : -5.1167);
+                const zoom = (p.lat || p.bornage[0]) ? 13 : 7;
                 const miniMap = L.map("editParcelleMap").setView([initLat, initLng], zoom);
+                editParcelleMiniMap = miniMap;
                 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OSM" }).addTo(miniMap);
                 let marker = null;
                 if (p.lat && p.lng) {
                     marker = L.marker([p.lat, p.lng]).addTo(miniMap).bindPopup(p.reference).openPopup();
                 }
+                if (p.bornage.length >= 2) {
+                    const pts = p.bornage.map(function(pt) { return [pt.lat, pt.lng]; });
+                    L.polygon(pts, { color: "#c0392b", weight: 2, fillOpacity: 0.12, dashArray: "5,5" }).addTo(miniMap);
+                    p.bornage.forEach(function(pt, idx) {
+                        L.circleMarker([pt.lat, pt.lng], { radius: 5, color: "#c0392b", fillColor: "#fff", fillOpacity: 1, weight: 2 })
+                            .addTo(miniMap).bindTooltip("Borne " + (idx + 1), { permanent: false });
+                    });
+                    miniMap.fitBounds(pts, { maxZoom: 16, padding: [25, 25] });
+                }
                 miniMap.on("click", function(e) {
                     const latV = e.latlng.lat.toFixed(6);
                     const lngV = e.latlng.lng.toFixed(6);
+                    if (bornageModeActif) {
+                        p.bornage.push({ lat: parseFloat(latV), lng: parseFloat(lngV) });
+                        saveData();
+                        editerParcelle(id);
+                        return;
+                    }
                     document.getElementById("editParcLat").value = latV;
                     document.getElementById("editParcLng").value = lngV;
                     if (marker) miniMap.removeLayer(marker);
@@ -4287,6 +4377,101 @@
                 });
                 setTimeout(function() { miniMap.invalidateSize(); }, 200);
             }, 150);
+        }
+
+        // ============================================================
+        //  BORNAGE GPS DES PARCELLES
+        // ============================================================
+        let bornageModeActif = false;
+        let editParcelleMiniMap = null;
+
+        function toggleModeBornage(id) {
+            bornageModeActif = !bornageModeActif;
+            editerParcelle(id);
+        }
+
+        function viderBornage(id) {
+            const p = data.parcelles.find(function(pc) { return pc.id === id; });
+            if (!p) return;
+            if (!confirm("Vider tous les points de bornage de cette parcelle ?")) return;
+            p.bornage = [];
+            saveData();
+            editerParcelle(id);
+        }
+
+        function supprimerPointBornage(id, index) {
+            const p = data.parcelles.find(function(pc) { return pc.id === id; });
+            if (!p) return;
+            p.bornage.splice(index, 1);
+            saveData();
+            editerParcelle(id);
+        }
+
+        function renderListeBornagePoints(p) {
+            if (!p.bornage.length) return '<em style="color:#aaa;">Aucun point de bornage. Démarrez le bornage puis cliquez sur la carte pour placer les bornes successives.</em>';
+            return p.bornage.map(function(pt, idx) {
+                return '<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0;">' +
+                    '<span>📍 Borne ' + (idx + 1) + ' — ' + pt.lat.toFixed(6) + ', ' + pt.lng.toFixed(6) + '</span>' +
+                    '<button class="btn btn-sm btn-outline" type="button" style="padding:0 0.4rem;" onclick="supprimerPointBornage(' + p.id + ',' + idx + ')">✕</button>' +
+                    '</div>';
+            }).join('');
+        }
+
+        /** Surface d'un polygone GPS via la formule du lacet (shoelace), approximation plane convertie en hectares. */
+        function surfaceBornageHa(points) {
+            if (!points || points.length < 3) return 0;
+            const R = 6371000; // rayon terrestre moyen en mètres
+            const latRef = points.reduce((s, p) => s + p.lat, 0) / points.length;
+            const xy = points.map(function(p) {
+                const x = (p.lng * Math.PI / 180) * R * Math.cos(latRef * Math.PI / 180);
+                const y = (p.lat * Math.PI / 180) * R;
+                return [x, y];
+            });
+            let aire = 0;
+            for (let i = 0; i < xy.length; i++) {
+                const [x1, y1] = xy[i];
+                const [x2, y2] = xy[(i + 1) % xy.length];
+                aire += (x1 * y2 - x2 * y1);
+            }
+            aire = Math.abs(aire) / 2; // m²
+            return aire / 10000; // hectares
+        }
+
+        // ============================================================
+        //  PHOTOS DES PARCELLES
+        // ============================================================
+        function renderGaleriePhotosParcelle(p) {
+            if (!p.photos.length) return '<em style="color:#aaa;font-size:0.8rem;">Aucune photo. Ajoutez des photos de la parcelle (état des cultures, bornes, accès…).</em>';
+            return p.photos.map(function(ph) {
+                return '<div style="position:relative;width:110px;">' +
+                    '<img src="' + ph.dataBase64 + '" style="width:110px;height:90px;object-fit:cover;border-radius:6px;border:1px solid #ddd;cursor:pointer;" onclick="window.open(this.src,\'_blank\')" title="' + ph.nom + '">' +
+                    '<button class="btn btn-sm btn-danger" type="button" style="position:absolute;top:2px;right:2px;padding:0 0.35rem;line-height:1.4;" onclick="supprimerPhotoParcelle(' + p.id + ',' + ph.id + ')">✕</button>' +
+                    '</div>';
+            }).join('');
+        }
+
+        function ajouterPhotosParcelle(id, fileList) {
+            const p = data.parcelles.find(function(pc) { return pc.id === id; });
+            if (!p || !fileList || !fileList.length) return;
+            const files = Array.from(fileList);
+            let restant = files.length;
+            files.forEach(function(file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    p.photos.push({ id: data.nextId.fichierFoncier++, nom: file.name, dataBase64: e.target.result, dateAjout: new Date().toISOString().slice(0, 10) });
+                    restant--;
+                    if (restant === 0) { saveData(); editerParcelle(id); }
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+
+        function supprimerPhotoParcelle(id, photoId) {
+            const p = data.parcelles.find(function(pc) { return pc.id === id; });
+            if (!p) return;
+            p.photos = p.photos.filter(function(ph) { return ph.id !== photoId; });
+            saveData();
+            editerParcelle(id);
         }
 
         function sauvegarderEditionParcelle(id) {
@@ -4319,10 +4504,15 @@
         }
 
         function supprimerParcelle(id) {
-            if (!confirm('Supprimer cette parcelle ? (les productions/bandes liées restent mais perdent le lien)')) return;
+            const nbContrats = getContratsParcelle(id).length;
+            const msg = nbContrats
+                ? 'Cette parcelle a ' + nbContrats + ' contrat(s)/titre(s) foncier(s) lié(s) qui seront aussi supprimés. Continuer ?'
+                : 'Supprimer cette parcelle ? (les productions/bandes liées restent mais perdent le lien)';
+            if (!confirm(msg)) return;
             data.parcelles = data.parcelles.filter(p => p.id !== id);
             data.productions.forEach(p => { if (p.parcelleId === id) p.parcelleId = null; });
             data.bandes.forEach(b => { if (b.parcelleId === id) b.parcelleId = null; });
+            data.contratsFonciers = data.contratsFonciers.filter(c => c.parcelleId !== id);
             saveData();
             renderParcelles();
         }
@@ -4429,6 +4619,266 @@
                 tbody.appendChild(tr);
             });
             renderParcellesMap();
+            renderProprietaires();
+            renderContratsFonciers();
+        }
+
+        // ============================================================
+        //  GESTION FONCIÈRE — PROPRIÉTAIRES
+        // ============================================================
+        const TYPE_PROPRIETAIRE_LABEL = { physique: 'Personne physique', morale: 'Personne morale / Société' };
+
+        function getProprietaire(id) { return data.proprietaires.find(pr => pr.id === id); }
+
+        function remplirSelectProprietaires(selectId, selectedId) {
+            const sel = document.getElementById(selectId);
+            if (!sel) return;
+            sel.innerHTML = '<option value="">-- Aucun --</option>' + data.proprietaires.map(pr =>
+                '<option value="' + pr.id + '"' + (selectedId === pr.id ? ' selected' : '') + '>' + pr.nom + '</option>'
+            ).join('');
+        }
+
+        function ouvrirModalProprietaire(id) {
+            const pr = id ? getProprietaire(id) : null;
+            const overlay = document.getElementById('modalOverlay');
+            const body = document.getElementById('modalBody');
+            body.innerHTML = `
+                <h2>${pr ? '✏️ Modifier' : '➕ Nouveau'} propriétaire</h2>
+                <div class="form-row">
+                    <div class="form-group" style="flex:2;"><label>Nom / Raison sociale *</label><input type="text" id="proprNom" value="${pr ? pr.nom : ''}"></div>
+                    <div class="form-group"><label>Type</label>
+                        <select id="proprType">
+                            <option value="physique" ${(!pr || pr.type === 'physique') ? 'selected' : ''}>Personne physique</option>
+                            <option value="morale" ${pr && pr.type === 'morale' ? 'selected' : ''}>Personne morale / Société</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>Téléphone</label><input type="text" id="proprTel" value="${pr ? (pr.telephone || '') : ''}"></div>
+                    <div class="form-group"><label>Email</label><input type="email" id="proprEmail" value="${pr ? (pr.email || '') : ''}"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:2;"><label>Adresse</label><input type="text" id="proprAdresse" value="${pr ? (pr.adresse || '') : ''}"></div>
+                    <div class="form-group"><label>Pièce d'identité / RCCM</label><input type="text" id="proprPiece" value="${pr ? (pr.pieceIdentite || '') : ''}"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:3;"><label>Notes</label><textarea id="proprNotes">${pr ? (pr.notes || '') : ''}</textarea></div>
+                </div>
+                <div class="form-row">
+                    <button class="btn btn-success" onclick="validerProprietaire(${pr ? pr.id : 'null'})">💾 Enregistrer</button>
+                    <button class="btn btn-outline" onclick="fermerModal()">Annuler</button>
+                </div>`;
+            overlay.classList.add('active');
+        }
+
+        function validerProprietaire(id) {
+            const nom = document.getElementById('proprNom').value.trim();
+            if (!nom) { alert('Le nom est obligatoire.'); return; }
+            const champs = {
+                nom,
+                type: document.getElementById('proprType').value,
+                telephone: document.getElementById('proprTel').value.trim(),
+                email: document.getElementById('proprEmail').value.trim(),
+                adresse: document.getElementById('proprAdresse').value.trim(),
+                pieceIdentite: document.getElementById('proprPiece').value.trim(),
+                notes: document.getElementById('proprNotes').value.trim()
+            };
+            if (id) {
+                Object.assign(getProprietaire(id), champs);
+            } else {
+                data.proprietaires.push(Object.assign({ id: data.nextId.proprietaire++ }, champs));
+            }
+            saveData();
+            fermerModal();
+            renderProprietaires();
+            renderContratsFonciers();
+        }
+
+        function supprimerProprietaire(id) {
+            const lies = data.contratsFonciers.filter(c => c.proprietaireId === id);
+            if (lies.length && !confirm('Ce propriétaire est lié à ' + lies.length + ' contrat(s)/titre(s). Supprimer quand même ? (les contrats perdront ce lien)')) return;
+            if (!lies.length && !confirm('Supprimer ce propriétaire ?')) return;
+            data.contratsFonciers.forEach(c => { if (c.proprietaireId === id) c.proprietaireId = null; });
+            data.proprietaires = data.proprietaires.filter(pr => pr.id !== id);
+            saveData();
+            renderProprietaires();
+            renderContratsFonciers();
+        }
+
+        function renderProprietaires() {
+            const tbody = document.getElementById('listeProprietaires');
+            if (!tbody) return;
+            tbody.innerHTML = '';
+            data.proprietaires.forEach(pr => {
+                const nbContrats = data.contratsFonciers.filter(c => c.proprietaireId === pr.id).length;
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td><strong>${pr.nom}</strong></td>` +
+                    `<td>${TYPE_PROPRIETAIRE_LABEL[pr.type] || pr.type}</td>` +
+                    `<td>${pr.telephone || '-'}</td>` +
+                    `<td>${pr.email || '-'}</td>` +
+                    `<td>${pr.pieceIdentite || '-'}</td>` +
+                    `<td><span class="badge">${nbContrats}</span></td>` +
+                    `<td style="white-space:nowrap;"><button class="btn btn-sm btn-outline" onclick="ouvrirModalProprietaire(${pr.id})" style="margin-right:0.3rem;">✏️</button><button class="btn btn-sm btn-danger" onclick="supprimerProprietaire(${pr.id})">🗑️</button></td>`;
+                tbody.appendChild(tr);
+            });
+            if (!data.proprietaires.length) tbody.innerHTML = '<tr><td colspan="7" style="color:#888;">Aucun propriétaire enregistré.</td></tr>';
+        }
+
+        // ============================================================
+        //  GESTION FONCIÈRE — CONTRATS, BAUX & TITRES
+        // ============================================================
+        const TYPE_CONTRAT_LABEL = {
+            propriete: 'Titre de propriété', location: 'Contrat de location',
+            bail_emphyteotique: 'Bail emphytéotique', metayage: 'Métayage / Faire-valoir indirect', autre: 'Autre'
+        };
+        const STATUT_CONTRAT_LABEL = { actif: 'Actif', expire: 'Expiré', resilie: 'Résilié' };
+        const STATUT_CONTRAT_COLOR = { actif: '#2a7a4a', expire: '#c0392b', resilie: '#888' };
+
+        function getContratsParcelle(parcelleId) { return data.contratsFonciers.filter(c => c.parcelleId === parcelleId); }
+
+        /** Détermine automatiquement le statut effectif (expiré si dateFin dépassée et toujours marqué actif). */
+        function statutEffectifContrat(c) {
+            if (c.statut === 'resilie') return 'resilie';
+            const today = new Date().toISOString().slice(0, 10);
+            if (c.dateFin && c.dateFin < today) return 'expire';
+            return 'actif';
+        }
+
+        function ouvrirModalContrat(id) {
+            const c = id ? data.contratsFonciers.find(ct => ct.id === id) : null;
+            const overlay = document.getElementById('modalOverlay');
+            const body = document.getElementById('modalBody');
+            const optsParcelles = data.parcelles.map(p => '<option value="' + p.id + '"' + (c && c.parcelleId === p.id ? ' selected' : '') + '>' + p.reference + '</option>').join('');
+            const optsType = Object.entries(TYPE_CONTRAT_LABEL).map(([v, l]) => '<option value="' + v + '"' + (c && c.type === v ? ' selected' : (!c && v === 'location' ? ' selected' : '')) + '>' + l + '</option>').join('');
+            const optsStatut = Object.entries(STATUT_CONTRAT_LABEL).map(([v, l]) => '<option value="' + v + '"' + (c && c.statut === v ? ' selected' : '') + '>' + l + '</option>').join('');
+            body.innerHTML = `
+                <h2>${c ? '✏️ Modifier' : '➕ Nouveau'} contrat / titre foncier</h2>
+                <div class="form-row">
+                    <div class="form-group"><label>Parcelle *</label><select id="ctrParcelle"><option value="">-- Choisir --</option>${optsParcelles}</select></div>
+                    <div class="form-group"><label>Type *</label><select id="ctrType">${optsType}</select></div>
+                    <div class="form-group"><label>Propriétaire</label><div style="display:flex;gap:0.3rem;"><select id="ctrProprietaire" style="flex:1;"></select><button class="btn btn-sm btn-outline" type="button" onclick="ouvrirModalProprietaire()" title="Nouveau propriétaire">➕</button></div></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>Date début</label><input type="date" id="ctrDateDebut" value="${c ? (c.dateDebut || '') : ''}"></div>
+                    <div class="form-group"><label>Date fin / échéance</label><input type="date" id="ctrDateFin" value="${c ? (c.dateFin || '') : ''}"></div>
+                    <div class="form-group"><label>Statut</label><select id="ctrStatut">${optsStatut}</select></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group"><label>Loyer / redevance (FCFA)</label><input type="number" id="ctrLoyer" value="${c ? (c.loyerMontant || '') : ''}"></div>
+                    <div class="form-group"><label>Périodicité</label>
+                        <select id="ctrPeriodicite">
+                            <option value="annuel" ${(!c || c.loyerPeriodicite === 'annuel') ? 'selected' : ''}>Annuel</option>
+                            <option value="mensuel" ${c && c.loyerPeriodicite === 'mensuel' ? 'selected' : ''}>Mensuel</option>
+                            <option value="unique" ${c && c.loyerPeriodicite === 'unique' ? 'selected' : ''}>Paiement unique</option>
+                        </select>
+                    </div>
+                    <div class="form-group"><label>N° titre / acte</label><input type="text" id="ctrNumero" value="${c ? (c.numeroTitre || '') : ''}" placeholder="N° titre foncier, acte notarié…"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:3;"><label>Notes</label><textarea id="ctrNotes">${c ? (c.notes || '') : ''}</textarea></div>
+                </div>
+                <div class="flex-between" style="margin-bottom:0.4rem;">
+                    <strong style="font-size:0.85rem;">📎 Documents scannés (${c ? c.documents.length : 0})</strong>
+                    ${c ? '<label class="btn btn-sm btn-outline" style="cursor:pointer;margin:0;">📤 Ajouter<input type="file" multiple style="display:none;" onchange="ajouterDocumentsContrat(' + c.id + ', this.files)"></label>' : '<span style="font-size:0.75rem;color:#888;">Enregistrez le contrat pour pouvoir y joindre des documents.</span>'}
+                </div>
+                <div id="listeDocumentsContrat" style="margin-bottom:1rem;">${c ? renderListeDocumentsContrat(c) : ''}</div>
+                <div class="form-row">
+                    <button class="btn btn-success" onclick="validerContrat(${c ? c.id : 'null'})">💾 Enregistrer</button>
+                    <button class="btn btn-outline" onclick="fermerModal()">Annuler</button>
+                </div>`;
+            overlay.classList.add('active');
+            remplirSelectProprietaires('ctrProprietaire', c ? c.proprietaireId : null);
+        }
+
+        function validerContrat(id) {
+            const parcelleId = parseInt(document.getElementById('ctrParcelle').value) || null;
+            if (!parcelleId) { alert('La parcelle est obligatoire.'); return; }
+            const champs = {
+                parcelleId,
+                type: document.getElementById('ctrType').value,
+                proprietaireId: parseInt(document.getElementById('ctrProprietaire').value) || null,
+                dateDebut: document.getElementById('ctrDateDebut').value || null,
+                dateFin: document.getElementById('ctrDateFin').value || null,
+                statut: document.getElementById('ctrStatut').value,
+                loyerMontant: parseFloat(document.getElementById('ctrLoyer').value) || 0,
+                loyerPeriodicite: document.getElementById('ctrPeriodicite').value,
+                numeroTitre: document.getElementById('ctrNumero').value.trim(),
+                notes: document.getElementById('ctrNotes').value.trim()
+            };
+            if (id) {
+                Object.assign(data.contratsFonciers.find(c => c.id === id), champs);
+            } else {
+                data.contratsFonciers.push(Object.assign({ id: data.nextId.contratFoncier++, documents: [] }, champs));
+            }
+            saveData();
+            fermerModal();
+            renderContratsFonciers();
+        }
+
+        function supprimerContrat(id) {
+            if (!confirm('Supprimer ce contrat / titre foncier ?')) return;
+            data.contratsFonciers = data.contratsFonciers.filter(c => c.id !== id);
+            saveData();
+            renderContratsFonciers();
+        }
+
+        function renderListeDocumentsContrat(c) {
+            if (!c.documents.length) return '<em style="color:#aaa;font-size:0.8rem;">Aucun document joint.</em>';
+            return c.documents.map(d =>
+                '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:0.82rem;border-bottom:1px solid #f0f0f0;">' +
+                    '<a href="' + d.dataBase64 + '" download="' + d.nom + '" style="color:#1e3d2f;text-decoration:underline;">📄 ' + d.nom + '</a>' +
+                    '<span style="color:#aaa;font-size:0.75rem;">' + d.dateAjout + '</span>' +
+                    '<button class="btn btn-sm btn-danger" type="button" style="padding:0 0.4rem;" onclick="supprimerDocumentContrat(' + c.id + ',' + d.id + ')">✕</button>' +
+                '</div>'
+            ).join('');
+        }
+
+        function ajouterDocumentsContrat(contratId, fileList) {
+            const c = data.contratsFonciers.find(ct => ct.id === contratId);
+            if (!c || !fileList || !fileList.length) return;
+            const files = Array.from(fileList);
+            let restant = files.length;
+            files.forEach(file => {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    c.documents.push({ id: data.nextId.fichierFoncier++, nom: file.name, dataBase64: e.target.result, dateAjout: new Date().toISOString().slice(0, 10) });
+                    restant--;
+                    if (restant === 0) { saveData(); ouvrirModalContrat(contratId); }
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+
+        function supprimerDocumentContrat(contratId, docId) {
+            const c = data.contratsFonciers.find(ct => ct.id === contratId);
+            if (!c) return;
+            c.documents = c.documents.filter(d => d.id !== docId);
+            saveData();
+            ouvrirModalContrat(contratId);
+        }
+
+        function renderContratsFonciers() {
+            const tbody = document.getElementById('listeContratsFonciers');
+            if (!tbody) return;
+            tbody.innerHTML = '';
+            data.contratsFonciers.forEach(c => {
+                const statutEff = statutEffectifContrat(c);
+                const parc = getParcelle(c.parcelleId);
+                const propr = c.proprietaireId ? getProprietaire(c.proprietaireId) : null;
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${parc ? parc.reference : '<em style="color:#aaa;">Parcelle supprimée</em>'}</td>` +
+                    `<td>${TYPE_CONTRAT_LABEL[c.type] || c.type}</td>` +
+                    `<td>${propr ? propr.nom : '-'}</td>` +
+                    `<td>${c.dateDebut || '-'}</td>` +
+                    `<td>${c.dateFin || '<em style="color:#aaa;">Indéterminée</em>'}</td>` +
+                    `<td>${c.loyerMontant ? c.loyerMontant.toLocaleString('fr-FR') + ' FCFA/' + (c.loyerPeriodicite === 'mensuel' ? 'mois' : c.loyerPeriodicite === 'unique' ? 'unique' : 'an') : '-'}</td>` +
+                    `<td>${c.numeroTitre || '-'}</td>` +
+                    `<td><span style="color:${STATUT_CONTRAT_COLOR[statutEff]};font-weight:600;">● ${STATUT_CONTRAT_LABEL[statutEff]}</span></td>` +
+                    `<td><span class="badge">${c.documents.length}</span></td>` +
+                    `<td style="white-space:nowrap;"><button class="btn btn-sm btn-outline" onclick="ouvrirModalContrat(${c.id})" style="margin-right:0.3rem;">✏️</button><button class="btn btn-sm btn-danger" onclick="supprimerContrat(${c.id})">🗑️</button></td>`;
+                tbody.appendChild(tr);
+            });
+            if (!data.contratsFonciers.length) tbody.innerHTML = '<tr><td colspan="10" style="color:#888;">Aucun contrat ou titre foncier enregistré.</td></tr>';
         }
 
         // ============================================================
@@ -5125,6 +5575,8 @@
         function fermerModal() {
             document.getElementById('modalOverlay').classList.remove('active');
             document.getElementById('modalBody').innerHTML = '';
+            bornageModeActif = false;
+            editParcelleMiniMap = null;
         }
 
         // Fermer en cliquant sur l'overlay (fond sombre)
