@@ -527,6 +527,7 @@
             <button data-tab="tabVentes">⑩ 💰 Ventes</button>
             <button data-tab="tabMarketing">⑪ 📣 Marketing</button>
             <button data-tab="tabCompta">⑫ 🧾 Comptabilité</button>
+            <button data-tab="tabTracabilite">⑬ 🔗 Traçabilité</button>
         </nav>
 
         <div class="date-time" id="headerDateTime">Chargement...</div>
@@ -890,8 +891,41 @@
             </div>
         </section>
 
-        <!-- ==================== PLAN D'ACTION COMMERCIAL ==================== -->
-        <section id="tabMarketing" class="tab-pane">
+        <!-- ==================== TRAÇABILITÉ ==================== -->
+        <section id="tabTracabilite" class="tab-pane">
+            <div class="card">
+                <h2>🔗 Chaîne de traçabilité — du champ au client</h2>
+                <p style="font-size:0.82rem;color:#666;margin-bottom:0.4rem;">Chaque kilogramme vendu est rattaché à un lot. Chaque lot remonte jusqu'à la parcelle : semis, intrants, traitements, récolte, transformation.</p>
+                <div style="display:flex;gap:0.4rem;flex-wrap:wrap;align-items:flex-end;">
+                    <div class="form-group" style="flex:2;margin:0;"><label>Rechercher un n° de lot, parcelle, produit ou client</label><input type="text" id="tracSearch" placeholder="Ex: MA-MAI-… / Taabo / Koffi" oninput="renderTracabilite()"></div>
+                    <button class="btn btn-outline" onclick="exporterTracabiliteCSV()">📤 Export CSV</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="flex-between"><h2 style="margin:0;">🏭 Transformation</h2>
+                    <button class="btn btn-success btn-sm" onclick="ouvrirModalTransformation()">➕ Nouvelle transformation</button>
+                </div>
+                <p style="font-size:0.78rem;color:#888;margin:0.4rem 0;">Transforme un produit en un autre (ex : maïs grain → farine) en consommant des lots et en créant un lot fini qui hérite de toute la traçabilité amont.</p>
+                <div class="table-wrap">
+                    <table><thead><tr><th>Date</th><th>Produit source</th><th>Produit fini</th><th>Qté entrée</th><th>Qté obtenue</th><th>Rendement</th><th>Lot fini</th><th></th></tr></thead><tbody id="listeTransformations"></tbody></table>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>🛒 Ventes traçables</h2>
+                <div class="table-wrap">
+                    <table><thead><tr><th>Date</th><th>Client</th><th>Produit</th><th>Qté</th><th>Lots vendus</th><th>Origine</th><th>Passeport</th></tr></thead><tbody id="listeVentesTracables"></tbody></table>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>📦 Lots de stock</h2>
+                <div class="table-wrap">
+                    <table><thead><tr><th>N° lot</th><th>Produit</th><th>Dépôt</th><th>Origine</th><th>Entrée</th><th>Qté init.</th><th>Reste</th><th>Coût/u</th><th>Passeport</th></tr></thead><tbody id="listeLotsTracables"></tbody></table>
+                </div>
+            </div>
+        </section>
             <div class="card">
                 <h2>Nouvelle action commerciale</h2>
                 <div class="form-row">
@@ -1227,6 +1261,7 @@
             tabClients: false,
             tabVentes: false,
             tabCompta: false,
+            tabTracabilite: false,
             tabParcelles: false,
             tabCampagnes: false,
             tabMarketing: false,
@@ -1315,6 +1350,15 @@
             if (!data.nextId.operationCampagne) data.nextId.operationCampagne = 1;
             if (!data.lotsStock) data.lotsStock = [];
             if (!data.nextId.lotStock) data.nextId.lotStock = 1;
+            // ── TRAÇABILITÉ COMPLÈTE ──
+            if (!data.transformations) data.transformations = [];
+            if (!data.nextId.transformation) data.nextId.transformation = 1;
+            if (!data.nextId.numeroLot) data.nextId.numeroLot = 1;
+            data.lotsStock.forEach(l => {
+                if (!l.numeroLot) l.numeroLot = genererNumeroLot(l.produitId, (l.source && l.source.type) || 'autre', l.dateEntree);
+                if (!l.tracabilite) l.tracabilite = snapshotTracabiliteLot(l);
+            });
+            data.ventes.forEach(v => { if (!v.lotsConsommes) v.lotsConsommes = []; });
             if (!data.actionsMarketing) data.actionsMarketing = [];
             if (!data.nextId.actionMarketing) data.nextId.actionMarketing = 1;
             if (!data.equipements) data.equipements = [];
@@ -1472,6 +1516,9 @@
                         break;
                     case 'tabCompta':
                         renderCompta();
+                        break;
+                    case 'tabTracabilite':
+                        renderTracabilite();
                         break;
                     case 'tabMarketing':
                         renderMarketing();
@@ -3801,17 +3848,107 @@
             });
         }
 
+        function creerLotStock(produitId, depotId, quantite, coutUnitaire, sourceType, sourceId, meta) {
+            if (!depotId || !quantite || quantite <= 0) return null;
+            const lot = {
+                id: data.nextId.lotStock++, produitId, depotId,
+                dateEntree: nowISO(), quantiteInitiale: quantite, quantiteRestante: quantite,
+                coutUnitaire: Number(coutUnitaire) || 0, source: { type: sourceType, id: sourceId },
+                numeroLot: genererNumeroLot(produitId, sourceType),
+                tracabilite: meta || null
+            };
+            if (!lot.tracabilite) lot.tracabilite = snapshotTracabiliteLot(lot);
+            data.lotsStock.push(lot);
+            return lot;
+        }
+
+        function getLot(id) { return data.lotsStock.find(l => l.id === id); }
+
+        /** Numéro de lot lisible : MA-{CODE}-{AAMMJJ}-{seq} */
+        function genererNumeroLot(produitId, sourceType, dateISO) {
+            const prod = getProduit(produitId);
+            let code = (prod ? prod.nom : 'XXX').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z]/g, '').substring(0, 3).toUpperCase() || 'XXX';
+            if (sourceType === 'transformation') code = 'T' + code;
+            const d = dateISO ? new Date(dateISO) : new Date();
+            const aa = String(d.getFullYear()).slice(2);
+            const mm = String(d.getMonth() + 1).padStart(2, '0');
+            const jj = String(d.getDate()).padStart(2, '0');
+            const seq = String(data.nextId.numeroLot++).padStart(4, '0');
+            return 'MA-' + code + '-' + aa + mm + jj + '-' + seq;
+        }
+
+        /** Reconstitue l'itinéraire cultural d'une parcelle (semis, intrants, traitements) depuis les campagnes. */
+        function itineraireCultural(parcelleId, produitId) {
+            const res = { semis: [], intrants: [], traitements: [] };
+            if (!parcelleId) return res;
+            data.campagnes.filter(c => c.parcelleId === parcelleId && (!produitId || !c.produitId || c.produitId === produitId)).forEach(c => {
+                (c.operations || []).forEach(op => {
+                    const t = (op.type || '').toLowerCase();
+                    if (/semis|plantation/.test(t)) res.semis.push({ date: op.dateRealisee || op.datePrevue, notes: op.notes || '', campagne: c.nom });
+                    if (op.intrantId && op.intrantQte > 0) {
+                        const ip = getProduit(op.intrantId);
+                        res.intrants.push({ nom: ip ? ip.nom : 'Intrant', qte: op.intrantQte, date: op.dateRealisee || op.datePrevue, type: op.type, campagne: c.nom });
+                    }
+                    if (/traitement|phyto|herbicide|fongicide|insecticide/.test(t)) res.traitements.push({ type: op.type, date: op.dateRealisee || op.datePrevue, notes: op.notes || '', campagne: c.nom });
+                });
+            });
+            return res;
+        }
+
+        /** Construit le snapshot de traçabilité d'un lot au moment de sa création. */
+        function snapshotTracabiliteLot(lot) {
+            const src = lot.source || {};
+            if (src.type === 'recolte') {
+                const prod = data.productions.find(p => (p.recoltes || []).some(r => r.id === src.id));
+                const recolte = prod ? prod.recoltes.find(r => r.id === src.id) : null;
+                const parcelle = prod ? getParcelle(prod.parcelleId) : null;
+                const itin = prod ? itineraireCultural(prod.parcelleId, prod.produitId) : { semis: [], intrants: [], traitements: [] };
+                return {
+                    type: 'recolte',
+                    parcelleId: prod ? prod.parcelleId : null,
+                    parcelleRef: parcelle ? parcelle.reference : null,
+                    productionId: prod ? prod.id : null,
+                    productionRef: prod ? prod.reference : null,
+                    dateRecolte: recolte ? recolte.date : lot.dateEntree,
+                    semis: itin.semis, intrants: itin.intrants, traitements: itin.traitements,
+                    parents: []
+                };
+            }
+            if (src.type === 'transformation') {
+                const tr = data.transformations.find(t => t.id === src.id);
+                return {
+                    type: 'transformation',
+                    transformationId: src.id,
+                    dateTransformation: tr ? tr.date : lot.dateEntree,
+                    parents: tr ? tr.intrants.map(i => i.lotId) : []
+                };
+            }
+            return { type: src.type || 'autre', parents: [] };
+        }
+
+        /** Origine récursive d'un lot (pour le passeport). */
+        function getOrigineLot(lotId, profondeur) {
+            profondeur = profondeur || 0;
+            const lot = getLot(lotId);
+            if (!lot || profondeur > 8) return null;
+            const t = lot.tracabilite || snapshotTracabiliteLot(lot);
+            const o = {
+                lotId: lot.id, numeroLot: lot.numeroLot,
+                produit: getProduit(lot.produitId), depot: getDepot(lot.depotId),
+                dateEntree: lot.dateEntree, quantiteInitiale: lot.quantiteInitiale,
+                quantiteRestante: lot.quantiteRestante, coutUnitaire: lot.coutUnitaire,
+                type: t.type, trac: t, parents: []
+            };
+            if (t.type === 'transformation' && t.parents && t.parents.length) {
+                o.parents = t.parents.map(pid => getOrigineLot(pid, profondeur + 1)).filter(Boolean);
+            }
+            return o;
+        }
+
         // ============================================================
         //  FIFO MULTI-DÉPÔTS — valorisation des stocks par lots
         // ============================================================
-        function creerLotStock(produitId, depotId, quantite, coutUnitaire, sourceType, sourceId) {
-            if (!depotId || !quantite || quantite <= 0) return;
-            data.lotsStock.push({
-                id: data.nextId.lotStock++, produitId, depotId,
-                dateEntree: nowISO(), quantiteInitiale: quantite, quantiteRestante: quantite,
-                coutUnitaire: Number(coutUnitaire) || 0, source: { type: sourceType, id: sourceId }
-            });
-        }
+
 
         /** Consomme les lots les plus anciens en premier (FIFO). Retourne {coutTotal, details}. */
         function consommerFIFO(produitId, depotId, quantite) {
@@ -5469,15 +5606,272 @@
             const vente = { id: data.nextId.vente++, clientId, produitId, quantite: qte, prixUnitaire: prix, date: nowISO(), actionMarketingId };
             const fifo = consommerFIFO(produitId, depotId, qte);
             vente.coutRevient = fifo.coutTotal;
+            vente.lotsConsommes = fifo.details.filter(d => d.lotId != null);
             data.ventes.push(vente);
             genererEcritureVente(vente, getProduit(produitId));
             genererEcritureCOGS(getProduit(produitId)?.nom || '', fifo.coutTotal, 'V' + vente.id, 'vente', vente.id);
             saveData();
             renderVentes();
+            if (loadedTabs.tabTracabilite) renderTracabilite();
             if (loadedTabs.tabStocks) { renderStocks();
                 verifierAlertesStock(); }
             document.getElementById('venteQte').value = '';
             document.getElementById('ventePrix').value = '';
+        }
+
+        // ============================================================
+        //  TRAÇABILITÉ — rendu, transformation, passeport
+        // ============================================================
+        function origineResumeTexte(lotId) {
+            const o = getOrigineLot(lotId);
+            if (!o) return '—';
+            if (o.type === 'transformation') {
+                const sources = o.parents.map(p => p.trac && p.trac.parcelleRef ? p.trac.parcelleRef : 'lot ' + p.numeroLot);
+                return '🏭 Transformé — origine : ' + (sources.join(', ') || '?');
+            }
+            return o.trac && o.trac.parcelleRef ? '🗺️ ' + o.trac.parcelleRef : '—';
+        }
+
+        function renderTracabilite() {
+            renderTransformationsList();
+            const q = (document.getElementById('tracSearch')?.value || '').toLowerCase().trim();
+            // ── Ventes traçables ──
+            const tbV = document.getElementById('listeVentesTracables');
+            if (tbV) {
+                const ventes = data.ventes.slice().reverse().filter(v => {
+                    if (!q) return true;
+                    const cl = getClient(v.clientId), pr = getProduit(v.produitId);
+                    const lotsTxt = (v.lotsConsommes || []).map(d => getLot(d.lotId)?.numeroLot || '').join(' ');
+                    const orig = (v.lotsConsommes || []).map(d => origineResumeTexte(d.lotId)).join(' ');
+                    return ((cl?.nom || '') + ' ' + (pr?.nom || '') + ' ' + lotsTxt + ' ' + orig).toLowerCase().includes(q);
+                });
+                tbV.innerHTML = ventes.length ? ventes.map(v => {
+                    const cl = getClient(v.clientId), pr = getProduit(v.produitId);
+                    const lots = (v.lotsConsommes || []).filter(d => d.lotId != null);
+                    const lotsTxt = lots.length ? lots.map(d => '<span class="badge">' + (getLot(d.lotId)?.numeroLot || '?') + ' ×' + d.qte + '</span>').join(' ') : '<em style="color:#aaa;">non tracé</em>';
+                    const orig = lots.length ? lots.map(d => origineResumeTexte(d.lotId)).filter((x, i, a) => a.indexOf(x) === i).join('<br>') : '—';
+                    return '<tr><td>' + formatDateSimple(v.date) + '</td><td>' + (cl?.nom || '?') + '</td><td>' + (pr?.nom || '?') + '</td><td>' + v.quantite + '</td><td>' + lotsTxt + '</td><td style="font-size:0.78rem;">' + orig + '</td>' +
+                        '<td>' + (lots.length ? '<button class="btn btn-sm" style="background:#1e3d2f;color:#fff;" onclick="ouvrirPasseportVente(' + v.id + ')">🪪 Passeport</button>' : '') + '</td></tr>';
+                }).join('') : '<tr><td colspan="7" style="color:#888;">Aucune vente.</td></tr>';
+            }
+            // ── Lots ──
+            const tbL = document.getElementById('listeLotsTracables');
+            if (tbL) {
+                const lots = data.lotsStock.slice().reverse().filter(l => {
+                    if (!q) return true;
+                    const pr = getProduit(l.produitId);
+                    return ((l.numeroLot || '') + ' ' + (pr?.nom || '') + ' ' + origineResumeTexte(l.id)).toLowerCase().includes(q);
+                });
+                tbL.innerHTML = lots.length ? lots.map(l => {
+                    const pr = getProduit(l.produitId), dp = getDepot(l.depotId);
+                    return '<tr><td><strong>' + l.numeroLot + '</strong></td><td>' + (pr?.nom || '?') + '</td><td>' + (dp?.nom || '?') + '</td><td style="font-size:0.78rem;">' + origineResumeTexte(l.id) + '</td><td>' + formatDateSimple(l.dateEntree) + '</td><td>' + l.quantiteInitiale + '</td><td>' + l.quantiteRestante + '</td><td>' + Math.round(l.coutUnitaire) + '</td>' +
+                        '<td><button class="btn btn-sm" style="background:#1e3d2f;color:#fff;" onclick="ouvrirPasseportLot(' + l.id + ')">🪪</button></td></tr>';
+                }).join('') : '<tr><td colspan="9" style="color:#888;">Aucun lot.</td></tr>';
+            }
+        }
+
+        function renderTransformationsList() {
+            const tb = document.getElementById('listeTransformations');
+            if (!tb) return;
+            tb.innerHTML = data.transformations.length ? data.transformations.slice().reverse().map(t => {
+                const ps = getProduit(t.produitSourceId), pf = getProduit(t.produitFiniId);
+                const lf = getLot(t.lotProduitId);
+                const rdt = t.quantiteSource ? (t.quantiteObtenue / t.quantiteSource * 100) : 0;
+                return '<tr><td>' + formatDateSimple(t.date) + '</td><td>' + (ps?.nom || '?') + '</td><td>' + (pf?.nom || '?') + '</td><td>' + t.quantiteSource + '</td><td>' + t.quantiteObtenue + '</td><td>' + rdt.toFixed(0) + '%</td><td>' + (lf ? '<span class="badge">' + lf.numeroLot + '</span>' : '—') + '</td>' +
+                    '<td><button class="btn btn-sm btn-danger" onclick="supprimerTransformation(' + t.id + ')">🗑️</button></td></tr>';
+            }).join('') : '<tr><td colspan="8" style="color:#888;">Aucune transformation.</td></tr>';
+        }
+
+        function ouvrirModalTransformation() {
+            const overlay = document.getElementById('modalOverlay');
+            const body = document.getElementById('modalBody');
+            const optsSource = data.produits.filter(p => p.categorie !== 'intrant').map(p => '<option value="' + p.id + '">' + p.nom + '</option>').join('');
+            const optsFini = data.produits.map(p => '<option value="' + p.id + '">' + p.nom + '</option>').join('');
+            const optsDepots = data.depots.map(d => '<option value="' + d.id + '">' + d.nom + '</option>').join('');
+            body.innerHTML =
+                '<h2>🏭 Nouvelle transformation</h2>' +
+                '<div class="form-row">' +
+                  '<div class="form-group"><label>Produit source *</label><select id="trSource" onchange="majStockTransfo()">' + optsSource + '</select></div>' +
+                  '<div class="form-group"><label>Dépôt source *</label><select id="trDepotSource" onchange="majStockTransfo()">' + optsDepots + '</select></div>' +
+                  '<div class="form-group"><label>Qté à transformer *</label><input type="number" id="trQteSource" step="0.01" oninput="majStockTransfo()"></div>' +
+                '</div>' +
+                '<div id="trStockInfo" style="font-size:0.8rem;color:#2a7a4a;margin-bottom:0.6rem;"></div>' +
+                '<div class="form-row">' +
+                  '<div class="form-group"><label>Produit fini *</label><select id="trFini">' + optsFini + '</select></div>' +
+                  '<div class="form-group"><label>Dépôt fini *</label><select id="trDepotFini">' + optsDepots + '</select></div>' +
+                  '<div class="form-group"><label>Qté obtenue *</label><input type="number" id="trQteObtenue" step="0.01"></div>' +
+                '</div>' +
+                '<div class="form-row">' +
+                  '<div class="form-group"><label>Date</label><input type="date" id="trDate" value="' + new Date().toISOString().slice(0, 10) + '"></div>' +
+                  '<div class="form-group"><label>Coût de transfo (FCFA)</label><input type="number" id="trCout" step="1" value="0"></div>' +
+                  '<div class="form-group" style="flex:2;"><label>Notes</label><input type="text" id="trNotes" placeholder="Ex: mouture, séchage…"></div>' +
+                '</div>' +
+                '<div class="form-row">' +
+                  '<button class="btn btn-success" onclick="validerTransformation()">💾 Transformer</button>' +
+                  '<button class="btn btn-outline" onclick="fermerModal()">Annuler</button>' +
+                '</div>';
+            overlay.classList.add('active');
+            setTimeout(majStockTransfo, 50);
+        }
+
+        function majStockTransfo() {
+            const pid = parseInt(document.getElementById('trSource')?.value);
+            const did = parseInt(document.getElementById('trDepotSource')?.value);
+            const info = document.getElementById('trStockInfo');
+            if (!info) return;
+            const dispo = data.lotsStock.filter(l => l.produitId === pid && l.depotId === did && l.quantiteRestante > 0).reduce((s, l) => s + l.quantiteRestante, 0);
+            const qte = parseFloat(document.getElementById('trQteSource')?.value) || 0;
+            info.style.color = qte > dispo ? '#b33c3c' : '#2a7a4a';
+            info.textContent = '📦 Disponible : ' + dispo + ' unité(s)' + (qte > dispo ? ' — quantité demandée supérieure au stock !' : '');
+        }
+
+        function validerTransformation() {
+            const produitSourceId = parseInt(document.getElementById('trSource').value);
+            const depotSourceId = parseInt(document.getElementById('trDepotSource').value);
+            const quantiteSource = parseFloat(document.getElementById('trQteSource').value);
+            const produitFiniId = parseInt(document.getElementById('trFini').value);
+            const depotFiniId = parseInt(document.getElementById('trDepotFini').value);
+            const quantiteObtenue = parseFloat(document.getElementById('trQteObtenue').value);
+            const date = document.getElementById('trDate').value || nowISO();
+            const coutTransfo = parseFloat(document.getElementById('trCout').value) || 0;
+            const notes = document.getElementById('trNotes').value.trim();
+            if (!produitSourceId || !depotSourceId || isNaN(quantiteSource) || quantiteSource <= 0 || !produitFiniId || !depotFiniId || isNaN(quantiteObtenue) || quantiteObtenue <= 0) {
+                alert('Veuillez remplir tous les champs obligatoires.'); return;
+            }
+            const dispo = data.lotsStock.filter(l => l.produitId === produitSourceId && l.depotId === depotSourceId && l.quantiteRestante > 0).reduce((s, l) => s + l.quantiteRestante, 0);
+            if (quantiteSource > dispo) { alert('Stock source insuffisant (' + dispo + ' dispo).'); return; }
+            // Consommer le stock source (FIFO -> lots parents)
+            const fifo = consommerFIFO(produitSourceId, depotSourceId, quantiteSource);
+            const stockSrc = getStock(produitSourceId, depotSourceId);
+            if (stockSrc) stockSrc.quantite = Math.max(0, stockSrc.quantite - quantiteSource);
+            const coutUnitaireFini = (fifo.coutTotal + coutTransfo) / quantiteObtenue;
+            // Stock fini
+            let stockFini = getStock(produitFiniId, depotFiniId);
+            if (!stockFini) { stockFini = { produitId: produitFiniId, depotId: depotFiniId, quantite: 0, seuil: 10 }; data.stocks.push(stockFini); }
+            stockFini.quantite += quantiteObtenue;
+            const transfo = {
+                id: data.nextId.transformation++, date, produitSourceId, depotSourceId,
+                produitFiniId, depotFiniId, quantiteSource, quantiteObtenue, coutTransfo,
+                coutSource: fifo.coutTotal, notes,
+                intrants: fifo.details.filter(d => d.lotId != null).map(d => ({ lotId: d.lotId, qte: d.qte })),
+                lotProduitId: null
+            };
+            data.transformations.push(transfo);
+            const lotFini = creerLotStock(produitFiniId, depotFiniId, quantiteObtenue, coutUnitaireFini, 'transformation', transfo.id);
+            transfo.lotProduitId = lotFini ? lotFini.id : null;
+            saveData();
+            fermerModal();
+            renderTracabilite();
+            if (loadedTabs.tabStocks) { renderStocks(); verifierAlertesStock(); }
+            alert('✅ Transformation enregistrée. Lot fini : ' + (lotFini ? lotFini.numeroLot : '?'));
+        }
+
+        function supprimerTransformation(id) {
+            if (!confirm('Supprimer cette transformation ? (le stock n\'est pas recrédité)')) return;
+            data.transformations = data.transformations.filter(t => t.id !== id);
+            saveData();
+            renderTracabilite();
+        }
+
+        // ── PASSEPORT ──
+        function stageBloc(icone, titre, contenu, couleur) {
+            return '<div style="display:flex;gap:0.7rem;align-items:flex-start;margin-bottom:0.2rem;">' +
+                '<div style="flex:0 0 38px;height:38px;border-radius:50%;background:' + couleur + ';color:#fff;display:flex;align-items:center;justify-content:center;font-size:1.1rem;">' + icone + '</div>' +
+                '<div style="flex:1;background:#f7faf8;border-left:3px solid ' + couleur + ';border-radius:0 6px 6px 0;padding:0.5rem 0.7rem;">' +
+                '<strong style="font-size:0.83rem;color:#1e3d2f;">' + titre + '</strong><div style="font-size:0.8rem;color:#555;margin-top:0.15rem;">' + contenu + '</div></div></div>';
+        }
+        function fleche() { return '<div style="margin:0 0 0.2rem 18px;color:#bbb;font-size:1rem;line-height:0.6;">↓</div>'; }
+
+        function renderChaineOrigine(o, niveau) {
+            if (!o) return '';
+            let h = '';
+            const trac = o.trac || {};
+            if (o.type === 'transformation') {
+                // Remonter d'abord les parents (origine amont)
+                o.parents.forEach(p => { h += renderChaineOrigine(p, niveau + 1); });
+                h += fleche();
+                h += stageBloc('🏭', 'Transformation', 'Lot fini <strong>' + o.numeroLot + '</strong> — ' + (o.produit?.nom || '') + ' (' + o.quantiteInitiale + ' u, coût ' + Math.round(o.coutUnitaire) + ' FCFA/u)', '#6c3483');
+                return h;
+            }
+            // Lot primaire (récolte)
+            const parc = trac.parcelleRef || (trac.parcelleId ? getParcelle(trac.parcelleId)?.reference : null);
+            h += stageBloc('🗺️', 'Parcelle d\'origine', parc ? '<strong>' + parc + '</strong>' + (trac.productionRef ? ' — production : ' + trac.productionRef : '') : '<em>Non géolocalisée</em>', '#2a7a4a');
+            h += fleche();
+            const semis = (trac.semis || []);
+            h += stageBloc('🌱', 'Semis / Plantation', semis.length ? semis.map(s => formatDateSimple(s.date) + (s.notes ? ' — ' + s.notes : '')).join('<br>') : '<em>Non renseigné</em>', '#27ae60');
+            h += fleche();
+            const intr = (trac.intrants || []);
+            h += stageBloc('🧪', 'Intrants appliqués', intr.length ? intr.map(i => i.nom + ' — ' + i.qte + ' (' + formatDateSimple(i.date) + ')').join('<br>') : '<em>Aucun intrant tracé</em>', '#16a085');
+            h += fleche();
+            const trait = (trac.traitements || []);
+            h += stageBloc('💊', 'Traitements', trait.length ? trait.map(t => t.type + ' — ' + formatDateSimple(t.date) + (t.notes ? ' (' + t.notes + ')' : '')).join('<br>') : '<em>Aucun traitement tracé</em>', '#e67e22');
+            h += fleche();
+            h += stageBloc('🌾', 'Récolte', 'Récoltée le <strong>' + formatDateSimple(trac.dateRecolte || o.dateEntree) + '</strong>', '#d4a017');
+            h += fleche();
+            h += stageBloc('📦', 'Mise en lot', 'Lot <strong>' + o.numeroLot + '</strong> — ' + o.quantiteInitiale + ' u au dépôt ' + (o.depot?.nom || '?') + ' (coût ' + Math.round(o.coutUnitaire) + ' FCFA/u)', '#2980b9');
+            return h;
+        }
+
+        function ouvrirPasseportLot(lotId) {
+            const o = getOrigineLot(lotId);
+            if (!o) { alert('Lot introuvable.'); return; }
+            afficherPasseport('🪪 Passeport du lot ' + o.numeroLot, renderChaineOrigine(o, 0), o.numeroLot);
+        }
+
+        function ouvrirPasseportVente(venteId) {
+            const v = data.ventes.find(x => x.id === venteId);
+            if (!v) return;
+            const cl = getClient(v.clientId), pr = getProduit(v.produitId);
+            let h = '';
+            (v.lotsConsommes || []).filter(d => d.lotId != null).forEach((d, i) => {
+                const o = getOrigineLot(d.lotId);
+                if (!o) return;
+                if (i > 0) h += '<hr style="margin:1rem 0;border:none;border-top:1px dashed #ccc;">';
+                h += '<p style="font-size:0.82rem;color:#666;margin-bottom:0.5rem;">Lot ' + o.numeroLot + ' — ' + d.qte + ' unité(s) vendue(s)</p>';
+                h += renderChaineOrigine(o, 0);
+                h += fleche();
+            });
+            h += stageBloc('🛒', 'Vente', formatDateSimple(v.date) + ' — ' + v.quantite + ' × ' + (pr?.nom || '') + ' @ ' + Math.round(v.prixUnitaire) + ' FCFA', '#c0392b');
+            h += fleche();
+            h += stageBloc('👤', 'Client final', '<strong>' + (cl?.nom || '?') + '</strong>' + (cl?.telephone ? ' — ' + cl.telephone : ''), '#34495e');
+            afficherPasseport('🪪 Passeport de vente #' + v.id, h, 'V' + v.id);
+        }
+
+        function afficherPasseport(titre, contenuHTML, refCode) {
+            const overlay = document.getElementById('modalOverlay');
+            const body = document.getElementById('modalBody');
+            body.innerHTML =
+                '<div class="flex-between"><h2 style="margin:0;">' + titre + '</h2>' +
+                '<button class="btn btn-sm btn-outline" onclick="imprimerPasseport()">🖨️ Imprimer</button></div>' +
+                '<p style="font-size:0.78rem;color:#888;margin:0.3rem 0 1rem;">Réf. traçabilité : <strong>' + refCode + '</strong> — Menko Agro</p>' +
+                '<div id="passeportContenu">' + contenuHTML + '</div>' +
+                '<div class="form-row" style="margin-top:1rem;"><button class="btn btn-outline" onclick="fermerModal()">Fermer</button></div>';
+            overlay.classList.add('active');
+        }
+
+        function imprimerPasseport() {
+            const c = document.getElementById('passeportContenu');
+            if (!c) return;
+            const w = window.open('', '_blank');
+            w.document.write('<html><head><title>Passeport de traçabilité — Menko Agro</title></head><body style="font-family:sans-serif;padding:20px;max-width:600px;margin:auto;"><h2 style="color:#1e3d2f;">Menko Agro — Passeport de traçabilité</h2>' + c.innerHTML + '<p style="margin-top:30px;font-size:11px;color:#999;">Édité le ' + new Date().toLocaleString('fr-FR') + '</p></body></html>');
+            w.document.close();
+            w.print();
+        }
+
+        function exporterTracabiliteCSV() {
+            const lignes = [['N°lot', 'Produit', 'Depot', 'Origine_parcelle', 'Date_entree', 'Qte_initiale', 'Reste', 'Cout_unitaire', 'Type']];
+            data.lotsStock.forEach(l => {
+                const o = getOrigineLot(l.id);
+                const parc = o && o.trac ? (o.trac.parcelleRef || '') : '';
+                lignes.push([l.numeroLot, getProduit(l.produitId)?.nom || '', getDepot(l.depotId)?.nom || '', parc, formatDateSimple(l.dateEntree), l.quantiteInitiale, l.quantiteRestante, Math.round(l.coutUnitaire), (l.source?.type || '')]);
+            });
+            const csv = lignes.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(';')).join('\n');
+            const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = 'tracabilite-lots-menko-agro.csv';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
         }
 
         function genererReçu() {
