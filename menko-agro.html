@@ -997,7 +997,8 @@
                 </div>
                 <div class="form-row">
                     <div class="form-group"><label>Parcelle</label><select id="ptParcelle"></select></div>
-                    <div class="form-group"><label>Campagne / Culture</label><select id="ptCampagne"></select></div>
+                    <div class="form-group"><label>Campagne / Culture</label><select id="ptCampagne" onchange="majOperationsPointage()"></select></div>
+                    <div class="form-group"><label>Opération (itinéraire)</label><select id="ptOperation"><option value="">-- Toutes / non liée --</option></select></div>
                     <div class="form-group"><label>Heures *</label><input type="number" id="ptHeures" step="0.5" value="8" oninput="majCoutPointage()"></div>
                     <div class="form-group" style="flex:2;"><label>Tâches</label><input type="text" id="ptTaches" placeholder="Désherbage, semis…"></div>
                 </div>
@@ -1521,6 +1522,7 @@
             if (!data.ouvriers) data.ouvriers = [];
             if (!data.equipes) data.equipes = [];
             if (!data.pointages) data.pointages = [];
+            data.pointages.forEach(pt => { if (pt.operationId === undefined) pt.operationId = null; });
             if (!data.nextId.ouvrier) data.nextId.ouvrier = 1;
             if (!data.nextId.equipe) data.nextId.equipe = 1;
             if (!data.nextId.pointage) data.nextId.pointage = 1;
@@ -1947,13 +1949,15 @@
             const camp = getCampagneForProduction(p);
             if (camp) {
                 const prev = camp.operations.reduce((s, o) => s + (Number(o.cout) || 0), 0);
-                const reel = camp.operations.filter(o => o.dateRealisee).reduce((s, o) => s + (Number(o.cout) || 0), 0);
-                return { prev, reel };
+                const reelOps = camp.operations.filter(o => o.dateRealisee).reduce((s, o) => s + (Number(o.cout) || 0), 0);
+                // Main d'œuvre réellement pointée (paie au jour le jour) rattachée à la campagne
+                const moReel = data.pointages.filter(pt => pt.campagneId === camp.id).reduce((s, pt) => s + (pt.cout || 0), 0);
+                return { prev, reel: reelOps + moReel, opReel: reelOps, moReel };
             }
             const etapes = p.etapes || [];
             const prev = etapes.reduce((s, e) => s + e.previsionnelDirect + e.previsionnelIndirect, 0);
             const reel = etapes.reduce((s, e) => s + e.reelDirect + e.reelIndirect, 0);
-            return { prev, reel };
+            return { prev, reel, opReel: reel, moReel: 0 };
         }
 
         /** Regroupe les opérations de l'itinéraire technique par type, pour affichage en lecture seule
@@ -2244,22 +2248,33 @@
             if (camp) {
                 // ── Mode lié à l'itinéraire technique : coûts en lecture seule, pilotés par la campagne ──
                 const groupes = detailCoutsParEtapeCampagne(camp);
+                const moReel = data.pointages.filter(pt => pt.campagneId === camp.id).reduce((s, pt) => s + (pt.cout || 0), 0);
+                const moHeures = data.pointages.filter(pt => pt.campagneId === camp.id).reduce((s, pt) => s + (pt.heures || 0), 0);
                 html += `<h3>🌦️ Coûts issus de l'itinéraire technique — ${camp.nom}</h3>
-                    <p style="font-size:0.78rem;color:#666;margin-top:-0.4rem;">Le <strong>coût réel</strong> ne se saisit pas ici : il vient des opérations de la campagne. Pour le renseigner → onglet <strong>Campagnes</strong>, sur chaque opération bouton <strong>✏️</strong> (coût réel main d'œuvre / autres frais + intrant et quantité), puis bouton <strong>✔</strong> pour la marquer réalisée. Seules les opérations <strong>réalisées ✔</strong> comptent en coût réel ; le coût de l'intrant est calculé automatiquement au prix FIFO du stock.</p>
+                    <p style="font-size:0.78rem;color:#666;margin-top:-0.4rem;">Le <strong>coût de revient</strong> agrège deux flux saisis au jour le jour : (1) les <strong>intrants</strong> consommés sur les opérations réalisées ✔ (mouvement de stock, valorisé au prix FIFO) et les autres frais saisis sur l'opération ; (2) la <strong>main d'œuvre</strong> pointée dans l'onglet Main d'œuvre (paie réelle). Pour saisir : opérations via Campagnes (✏️ puis ✔), heures via Main d'œuvre (pointage quotidien lié à la campagne).</p>
                     <div style="overflow-x:auto;">
                     <table>
-                        <thead><tr><th>Étape (type d'opération)</th><th>Coût prévu</th><th>Coût réel</th><th>Avancement</th></tr></thead>
+                        <thead><tr><th>Poste</th><th>Coût prévu</th><th>Coût réel</th><th>Avancement</th></tr></thead>
                         <tbody>
                             ${groupes.map(g => `<tr>
-                                <td><strong>${g.type}</strong></td>
+                                <td><strong>${g.type}</strong> <span style="font-size:0.7rem;color:#888;">(opérations + intrants)</span></td>
                                 <td>${g.prev.toFixed(0)} FCFA</td>
                                 <td>${g.reel.toFixed(0)} FCFA</td>
                                 <td>${g.nbFait}/${g.nb} réalisée(s)</td>
                             </tr>`).join('')}
+                            <tr style="background:#f3f9f5;">
+                                <td><strong>👷 Main d'œuvre</strong> <span style="font-size:0.7rem;color:#888;">(pointages de paie)</span></td>
+                                <td>—</td>
+                                <td>${moReel.toFixed(0)} FCFA</td>
+                                <td>${moHeures} h pointées</td>
+                            </tr>
                         </tbody>
                     </table>
                     </div>
-                    <div class="mt-1"><button class="btn btn-sm" style="background:#16a085;color:#fff;" onclick="fermerModal();switchTab('tabCampagnes');">🌦️ Gérer l'itinéraire technique</button></div>`;
+                    <div class="mt-1" style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+                        <button class="btn btn-sm" style="background:#16a085;color:#fff;" onclick="fermerModal();switchTab('tabCampagnes');">🌦️ Gérer l'itinéraire</button>
+                        <button class="btn btn-sm" style="background:#6c3483;color:#fff;" onclick="fermerModal();switchTab('tabMainOeuvre');">👷 Saisir un pointage</button>
+                    </div>`;
             } else {
                 // ── Mode legacy : étapes PDCA saisies manuellement ──
                 html += `<h3>Étapes et coûts (PDCA)</h3>
@@ -6600,12 +6615,22 @@
             remplirSelectParcelles('ptParcelle');
             const selC = document.getElementById('ptCampagne');
             selC.innerHTML = '<option value="">-- Aucune --</option>' + data.campagnes.map(c => `<option value="${c.id}">${c.nom}</option>`).join('');
+            majOperationsPointage();
             majCiblePointage();
             renderOuvriers();
             renderEquipes();
             renderPointages();
             renderMOParParcelle();
             renderMOParCulture();
+        }
+
+        function majOperationsPointage() {
+            const sel = document.getElementById('ptOperation');
+            if (!sel) return;
+            const campId = parseInt(document.getElementById('ptCampagne').value) || null;
+            const camp = campId ? getCampagne(campId) : null;
+            sel.innerHTML = '<option value="">-- Toutes / non liée --</option>' +
+                (camp ? camp.operations.map(o => `<option value="${o.id}">${(o.notes && o.notes.length < 22 ? o.notes : o.type)} — ${formatDateSimple(o.datePrevue)}</option>`).join('') : '');
         }
 
         function majCiblePointage() {
@@ -6632,6 +6657,7 @@
             const equipeId = cible === 'equipe' ? (parseInt(document.getElementById('ptEquipe').value) || null) : null;
             const parcelleId = parseInt(document.getElementById('ptParcelle').value) || null;
             const campagneId = parseInt(document.getElementById('ptCampagne').value) || null;
+            const operationId = parseInt(document.getElementById('ptOperation').value) || null;
             const heures = parseFloat(document.getElementById('ptHeures').value);
             const taches = document.getElementById('ptTaches').value.trim();
             if (!date || isNaN(heures) || heures <= 0) { alert('Date et heures sont obligatoires.'); return; }
@@ -6643,13 +6669,14 @@
             const cout = coutHoraireCible(cible, cible === 'ouvrier' ? ouvrierId : equipeId) * heures;
             data.pointages.push({
                 id: data.nextId.pointage++, date, cible, ouvrierId, equipeId,
-                parcelleId: pId, campagneId, heures, taches, cout
+                parcelleId: pId, campagneId, operationId, heures, taches, cout
             });
             saveData();
             document.getElementById('ptHeures').value = '8';
             document.getElementById('ptTaches').value = '';
             renderMainOeuvre();
             if (loadedTabs.tabCampagnes) renderCampagnes();
+            if (loadedTabs.tabProduction) chargerProduction();
         }
 
         function supprimerPointage(id) {
