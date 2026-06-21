@@ -1534,6 +1534,7 @@
                         ? [{ intrantId: op.intrantId, qte: op.intrantQte, coutIntrant: op.coutIntrant || 0, consomme: !!op.stockConsomme }]
                         : [];
                 }
+                if (op.depotId === undefined) op.depotId = data.depots && data.depots[0] ? data.depots[0].id : null;
             }));
             data.campagnes.forEach(c => { if (c.variete === undefined) c.variete = ''; });
             data.productions.forEach(p => { if (p.variete === undefined) p.variete = ''; });
@@ -4871,6 +4872,11 @@
                     <div class="form-group"><label>Coût réel main d'œuvre / autres frais (FCFA)</label><input type="number" id="opCout" step="0.01" value="${op ? (op.coutAutre || 0) : 0}"></div>
                 </div>
                 <div class="form-row">
+                    <div class="form-group" style="flex:2;"><label>🏬 Dépôt source des intrants *</label>
+                        <select id="opDepot" onchange="majDispoIntrantsOp()">${data.depots.map(d => `<option value="${d.id}"${(op && op.depotId === d.id) || ((!op || !op.depotId) && data.depots[0] && data.depots[0].id === d.id) ? ' selected' : ''}>${d.nom}</option>`).join('')}</select>
+                    </div>
+                </div>
+                <div class="form-row">
                     <div class="form-group" style="flex:3;"><label>🧪 Intrants consommés (engrais, produits phyto…)</label>
                         <div id="opIntrantsList"></div>
                         <button type="button" class="btn btn-sm btn-outline" onclick="ajouterLigneIntrantOp()" style="margin-top:0.3rem;">+ Ajouter un intrant</button>
@@ -4904,12 +4910,33 @@
             row.dataset.consomme = consomme ? '1' : '';
             row.dataset.cout = consomme ? (coutIntrant || 0) : 0;
             row.innerHTML = `
-                <div class="form-group" style="flex:2;margin:0;"><select id="opIntrantSel${idx}" class="opIntrantSel"${consomme ? ' disabled' : ''}></select></div>
-                <div class="form-group" style="margin:0;"><input type="number" step="0.01" class="opIntrantQteInp" value="${qte || 0}"${consomme ? ' disabled' : ''} placeholder="Quantité"></div>
-                <div class="form-group" style="flex:0;margin:0;">${consomme ? '<span class="badge" style="background:#eaf3ee;color:#16623a;white-space:nowrap;">✔ ' + Math.round(coutIntrant || 0) + ' F</span>' : '<button type="button" class="btn btn-sm btn-danger" onclick="this.closest(\'.op-intrant-row\').remove()">✕</button>'}</div>`;
+                <div class="form-group" style="flex:2;margin:0;"><select id="opIntrantSel${idx}" class="opIntrantSel" onchange="majDispoIntrantsOp()"${consomme ? ' disabled' : ''}></select></div>
+                <div class="form-group" style="margin:0;"><input type="number" step="0.01" class="opIntrantQteInp" value="${qte || 0}" oninput="majDispoIntrantsOp()"${consomme ? ' disabled' : ''} placeholder="Quantité"></div>
+                <div class="form-group" style="flex:0;margin:0;">${consomme ? '<span class="badge" style="background:#eaf3ee;color:#16623a;white-space:nowrap;">✔ ' + Math.round(coutIntrant || 0) + ' F</span>' : '<button type="button" class="btn btn-sm btn-danger" onclick="this.closest(\'.op-intrant-row\').remove();majDispoIntrantsOp();">✕</button>'}</div>
+                <div class="dispo-intrant" style="flex-basis:100%;font-size:0.72rem;margin-top:-0.1rem;"></div>`;
             list.appendChild(row);
             remplirSelectIntrants('opIntrantSel' + idx);
             if (intrantId) document.getElementById('opIntrantSel' + idx).value = String(intrantId);
+            majDispoIntrantsOp();
+        }
+
+        /** Affiche le stock disponible de chaque intrant dans le dépôt sélectionné, et alerte si insuffisant. */
+        function majDispoIntrantsOp() {
+            const depEl = document.getElementById('opDepot');
+            if (!depEl) return;
+            const depotId = parseInt(depEl.value) || null;
+            document.querySelectorAll('#opIntrantsList .op-intrant-row').forEach(r => {
+                const info = r.querySelector('.dispo-intrant');
+                if (!info) return;
+                if (r.dataset.consomme === '1') { info.innerHTML = ''; return; }
+                const iId = parseInt(r.querySelector('.opIntrantSel').value) || null;
+                const q = parseFloat(r.querySelector('.opIntrantQteInp').value) || 0;
+                if (!iId || !depotId) { info.innerHTML = ''; return; }
+                const stock = getStock(iId, depotId);
+                const dispo = stock ? stock.quantite : 0;
+                const ok = dispo >= q;
+                info.innerHTML = `<span style="color:${ok ? '#16623a' : '#c0392b'};">📦 Disponible : ${dispo}${ok ? '' : ' — insuffisant pour ' + q + ' !'}</span>`;
+            });
         }
 
         function lireLignesIntrantsOp() {
@@ -4934,9 +4961,11 @@
             const coutAutre = parseFloat(document.getElementById('opCout').value) || 0;
             const responsableId = parseInt(document.getElementById('opResponsable').value) || null;
             const equipeId = parseInt(document.getElementById('opEquipe').value) || null;
+            const depotId = parseInt(document.getElementById('opDepot').value) || (data.depots[0] ? data.depots[0].id : null);
             const notes = document.getElementById('opNotes').value.trim();
             if (!datePrevue) { alert('Date prévue requise.'); return; }
             const intrants = lireLignesIntrantsOp();
+            if (intrants.length && !depotId) { alert('Sélectionnez un dépôt source pour les intrants.'); return; }
             const coutIntrant = intrants.reduce((s, x) => s + (x.coutIntrant || 0), 0);
             const stockConsomme = intrants.length > 0 && intrants.every(x => x.consomme);
             if (opId) {
@@ -4944,6 +4973,7 @@
                 if (!op) return;
                 op.type = type; op.datePrevue = datePrevue; op.coutAutre = coutAutre;
                 op.responsableId = responsableId; op.equipeId = equipeId; op.notes = notes;
+                op.depotId = depotId;
                 op.intrants = intrants;
                 op.coutIntrant = coutIntrant;
                 op.cout = coutAutre + coutIntrant;
@@ -4954,6 +4984,7 @@
                 camp.operations.push({
                     id: data.nextId.operationCampagne++, type, datePrevue, dateRealisee: null,
                     coutAutre, cout: coutAutre + coutIntrant, intrants, coutIntrant, stockConsomme,
+                    depotId,
                     intrantId: intrants[0] ? intrants[0].intrantId : null,
                     intrantQte: intrants[0] ? intrants[0].qte : 0,
                     responsableId, equipeId, notes
@@ -4971,7 +5002,7 @@
             const op = camp.operations.find(o => o.id === opId);
             if (!op) return;
             op.dateRealisee = new Date().toISOString().slice(0, 10);
-            const depotId = data.depots.length > 0 ? data.depots[0].id : null;
+            const depotId = op.depotId || (data.depots.length > 0 ? data.depots[0].id : null);
             // Compat : si l'opération est encore au format mono-intrant, on la convertit en liste.
             if (!Array.isArray(op.intrants)) {
                 op.intrants = (op.intrantId && op.intrantQte > 0)
@@ -5036,7 +5067,8 @@
                 const color = TYPE_OP_COLOR[op.type] || '#7f8c8d';
                 const done = !!op.dateRealisee;
                 const intrantsArr = Array.isArray(op.intrants) && op.intrants.length ? op.intrants : (op.intrantId && op.intrantQte > 0 ? [{ intrantId: op.intrantId, qte: op.intrantQte }] : []);
-                const intrantsTxt = intrantsArr.map(li => { const ip = getProduit(li.intrantId); return (ip ? ip.nom : '?') + ' ×' + li.qte; }).join(', ');
+                const depotOp = op.depotId ? getDepot(op.depotId) : null;
+                const intrantsTxt = intrantsArr.map(li => { const ip = getProduit(li.intrantId); return (ip ? ip.nom : '?') + ' ×' + li.qte; }).join(', ') + (intrantsArr.length && depotOp ? ' — 🏬 ' + depotOp.nom : '');
                 const resp = op.responsableId ? getOuvrier(op.responsableId) : null;
                 const eq = op.equipeId ? getEquipe(op.equipeId) : null;
                 const respTxt = resp ? '👷 ' + resp.nom : (eq ? '👥 ' + eq.nom : '');
