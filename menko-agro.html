@@ -87,6 +87,15 @@
             border-left-color: #7ed9a3;
             color: #fff;
         }
+        .nav-group {
+            font-size: 0.66rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: #8fbfa6;
+            padding: 0.85rem 1.2rem 0.25rem;
+            font-weight: 700;
+        }
+        .nav-group:first-child { padding-top: 0.3rem; }
         .sidebar .date-time {
             font-size: 0.75rem;
             color: #b9d6c6;
@@ -515,20 +524,30 @@
 
         <nav class="nav-tabs" id="navTabs">
             <button class="active" data-tab="tabDashboard">📊 Tableau de bord</button>
+
+            <div class="nav-group">▸ Ressources &amp; amont</div>
             <button data-tab="tabProduits">① 🌱 Produits</button>
             <button data-tab="tabParcelles">② 🗺️ Parcelles</button>
-            <button data-tab="tabFournisseurs">③ 🏭 Fournisseurs</button>
-            <button data-tab="tabStocks">④ 📦 Stocks</button>
-            <button data-tab="tabEquipements">⑤ 🚜 Équipements</button>
+            <button data-tab="tabMainOeuvre">③ 👷 Main d'œuvre</button>
+            <button data-tab="tabEquipements">④ 🚜 Équipements</button>
+            <button data-tab="tabFournisseurs">⑤ 🏭 Fournisseurs</button>
+
+            <div class="nav-group">▸ Production</div>
             <button data-tab="tabCampagnes">⑥ 🌦️ Campagnes</button>
             <button data-tab="tabProduction">⑦ ⚙️ Production</button>
             <button data-tab="tabElevage">⑧ 🐄 Élevage</button>
-            <button data-tab="tabClients">⑨ 👤 Clients</button>
-            <button data-tab="tabVentes">⑩ 💰 Ventes</button>
-            <button data-tab="tabMarketing">⑪ 📣 Marketing</button>
-            <button data-tab="tabCompta">⑫ 🧾 Comptabilité</button>
-            <button data-tab="tabTracabilite">⑬ 🔗 Traçabilité</button>
-            <button data-tab="tabMainOeuvre">⑭ 👷 Main d'œuvre</button>
+
+            <div class="nav-group">▸ Post-récolte</div>
+            <button data-tab="tabStocks">⑨ 📦 Stocks</button>
+            <button data-tab="tabTracabilite">⑩ 🔗 Traçabilité</button>
+
+            <div class="nav-group">▸ Commercialisation</div>
+            <button data-tab="tabClients">⑪ 👤 Clients</button>
+            <button data-tab="tabVentes">⑫ 💰 Ventes</button>
+            <button data-tab="tabMarketing">⑬ 📣 Marketing</button>
+
+            <div class="nav-group">▸ Pilotage &amp; finance</div>
+            <button data-tab="tabCompta">⑭ 🧾 Comptabilité</button>
             <button data-tab="tabBI">⑮ 📈 Business Intelligence</button>
         </nav>
 
@@ -1579,6 +1598,13 @@
             document.querySelectorAll('.nav-tabs button').forEach(btn => btn.classList.remove('active'));
             document.querySelector(`.nav-tabs button[data-tab="${tabId}"]`).classList.add('active');
             if (typeof renderNotifications === 'function') renderNotifications();
+
+            // Vues analytiques dérivées : toujours rafraîchir (données temps réel)
+            const vuesLive = { tabDashboard: 'renderDashboard', tabBI: 'renderBI', tabCompta: 'renderCompta', tabTracabilite: 'renderTracabilite', tabMainOeuvre: 'renderMainOeuvre' };
+            if (loadedTabs[tabId] && vuesLive[tabId] && typeof window[vuesLive[tabId]] === 'function') {
+                window[vuesLive[tabId]]();
+                return;
+            }
 
             // Si déjà chargé, ne rien faire
             if (loadedTabs[tabId]) return;
@@ -3750,6 +3776,39 @@
         function getReglementsFacture(factureId, type) {
             const liste = type === 'client' ? data.reglementsClients : data.reglementsFournisseurs;
             return liste.filter(r => r.factureId === factureId);
+        }
+
+        // ── RELANCE DES CLIENTS DÉBITEURS ──
+        function envoyerRelance() {
+            const filtre = (document.getElementById('filtreClientRelance')?.value || '').toLowerCase().trim();
+            const res = document.getElementById('resultRelance');
+            if (!res) return;
+            const debiteurs = [];
+            data.facturesClient.forEach(f => {
+                const { solde } = getSoldeFacture(f, 'client');
+                if (solde <= 0.5) return;
+                const client = getClient(f.clientId);
+                if (!client) return;
+                if (filtre && !client.nom.toLowerCase().includes(filtre)) return;
+                const jours = Math.floor((Date.now() - new Date(f.date).getTime()) / 86400000);
+                debiteurs.push({ client, facture: f, solde, jours });
+            });
+            if (!debiteurs.length) {
+                res.innerHTML = '<span style="color:#2a7a4a;">✅ Aucune facture impayée' + (filtre ? ' pour « ' + filtre + ' »' : '') + '.</span>';
+                return;
+            }
+            debiteurs.sort((a, b) => b.jours - a.jours);
+            res.innerHTML = '<div style="font-style:normal;"><strong>' + debiteurs.length + ' relance(s) préparée(s) :</strong></div>' +
+                debiteurs.map(d => {
+                    const msg = `Bonjour ${d.client.nom}, nous vous rappelons que la facture #${d.facture.id} d'un montant de ${d.solde.toLocaleString('fr-FR')} FCFA est en attente de règlement depuis ${d.jours} jour(s). Merci de régulariser. — Menko Agro`;
+                    const tel = (d.client.telephone || '').replace(/[^0-9]/g, '');
+                    const wa = tel ? 'https://wa.me/' + tel + '?text=' + encodeURIComponent(msg) : null;
+                    return `<div style="font-style:normal;background:#fff8e1;border-left:3px solid #d4a017;border-radius:0 6px 6px 0;padding:0.5rem 0.7rem;margin-top:0.5rem;font-size:0.84rem;">
+                        <strong>${d.client.nom}</strong> — solde ${d.solde.toLocaleString('fr-FR')} FCFA (${d.jours} j)<br>
+                        <span style="color:#555;">${msg}</span><br>
+                        ${wa ? `<a href="${wa}" target="_blank" class="btn btn-sm btn-success" style="margin-top:0.3rem;">📲 WhatsApp</a>` : '<em style="color:#aaa;">Aucun numéro enregistré</em>'}
+                    </div>`;
+                }).join('');
         }
 
         function getSoldeFacture(facture, type) {
