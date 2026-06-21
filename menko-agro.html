@@ -739,8 +739,16 @@
                 <div class="form-row">
                     <div class="form-group" style="flex:2;"><label>Nom *</label><input type="text" id="campNom" placeholder="Ex: Campagne Maïs Taabo — Saison 1"></div>
                     <div class="form-group"><label>Parcelle</label><select id="campParcelle" onchange="majInfoZoneCampagne()"></select></div>
-                    <div class="form-group"><label>Culture / Produit *</label><select id="campProduit" onchange="majInfoZoneCampagne()"></select></div>
-                    <div class="form-group"><label>Variété</label><input type="text" id="campVariete" placeholder="Ex: EV 8728, Bondofa…"></div>
+                    <div class="form-group"><label>Culture / Produit *</label><select id="campProduit" onchange="majInfoZoneCampagne(); majVarietesEtSemences()"></select></div>
+                    <div class="form-group"><label>Variété</label>
+                        <input type="text" id="campVariete" placeholder="Ex: EV 8728, Bondofa…" list="campVarieteList" oninput="majVarietesEtSemences()">
+                        <datalist id="campVarieteList"></datalist>
+                    </div>
+                    <div class="form-group"><label>Type de semences</label>
+                        <select id="campTypeSemences">
+                            <option value="">-- Sélectionner --</option>
+                        </select>
+                    </div>
                 </div>
                 <div id="campInfoZone" style="display:none;margin-bottom:0.8rem;"></div>
                 <div class="form-row">
@@ -772,9 +780,24 @@
             <div class="card">
                 <h2>Gestion des productions, récoltes et livraisons</h2>
                 <div class="form-row">
-                    <div class="form-group"><label>Produit</label><select id="selectProdProduction"></select></div>
+                    <div class="form-group"><label>Produit</label><select id="selectProdProduction" onchange="majVarietesProd()"></select></div>
                     <div class="form-group"><label>Référence / Zone</label><input type="text" id="prodRefZone"></div>
-                    <div class="form-group"><label>Variété</label><input type="text" id="prodVariete" placeholder="Ex: Bondofa"></div>
+                    <div class="form-group"><label>Variété</label>
+                        <input type="text" id="prodVariete" placeholder="Ex: Bondofa" list="prodVarieteList" oninput="majVarietesProd()">
+                        <datalist id="prodVarieteList"></datalist>
+                    </div>
+                    <div class="form-group"><label>Type de semences</label>
+                        <select id="prodTypeSemences">
+                            <option value="">-- Sélectionner --</option>
+                            <option>Semence certifiée</option>
+                            <option>Semence paysanne</option>
+                            <option>Semence importée</option>
+                            <option>Hybride (F1)</option>
+                            <option>Variété améliorée (OPV)</option>
+                            <option>Bouture / Plant</option>
+                            <option>Autre</option>
+                        </select>
+                    </div>
                     <div class="form-group"><label>Parcelle</label><select id="prodParcelle"><option value="">-- Aucune --</option></select></div>
                     <div class="form-group"><label>Date début</label><input type="date" id="prodDateDebut"></div>
                     <button class="btn" onclick="ajouterProduction()">➕ Démarrer</button>
@@ -1875,6 +1898,8 @@
                         <span>Début: ${formatDateSimple(pr.dateDebut)} ${pr.dateFin ? ' - Fin: '+formatDateSimple(pr.dateFin) : ''}</span>
                     </div>
                     <div style="display:flex; flex-wrap:wrap; gap:0.8rem; margin-top:0.3rem;">
+                        ${pr.variete ? "<span class=\"badge\" style=\"background:#e8f4fd;color:#1a5276;\">🌾 " + pr.variete + "</span>" : ""}
+                        ${pr.typeSemences ? "<span class=\"badge\" style=\"background:#fdf3e7;color:#784212;\">🌰 " + pr.typeSemences + "</span>" : ""}
                         <span class="badge">Quantité produite: ${pr.quantiteProduite || 0}</span>
                         <span class="badge">Coût prévisionnel: ${totalPrev.toFixed(0)} FCFA</span>
                         <span class="badge">Coût réel: ${totalReel.toFixed(0)} FCFA</span>
@@ -1909,10 +1934,40 @@
             container.innerHTML = html;
         }
 
+        /** Met à jour la datalist variétés et types de semences dans le formulaire Production */
+        function majVarietesProd() {
+            const sel = document.getElementById('selectProdProduction');
+            const produit = sel ? data.produits.find(p => p.id === parseInt(sel.value)) : null;
+            const nomCulture = produit ? produit.nom : '';
+            let ficheRef = null;
+            for (const k in CALENDRIER_CULTURAL) {
+                if (nomCulture.toLowerCase().includes(k.toLowerCase().split(' ')[0]) || k.toLowerCase().includes(nomCulture.toLowerCase().split(' ')[0])) {
+                    ficheRef = CALENDRIER_CULTURAL[k]; break;
+                }
+            }
+            const dl = document.getElementById('prodVarieteList');
+            if (dl) {
+                dl.innerHTML = ficheRef && ficheRef.varietes
+                    ? ficheRef.varietes.map(v => '<option value="' + v + '">').join('')
+                    : '';
+            }
+            const selSem = document.getElementById('prodTypeSemences');
+            if (selSem) {
+                const current = selSem.value;
+                selSem.innerHTML = '<option value="">-- Sélectionner --</option>';
+                const types = ficheRef && ficheRef.typesSemences ? ficheRef.typesSemences : [];
+                const generiques = ['Semence certifiée', 'Semence paysanne', 'Semence importée', 'Hybride (F1)', 'Variété améliorée (OPV)', 'Bouture / Plant', 'Autre'];
+                const all = [...types, ...generiques.filter(t => !types.includes(t))];
+                all.forEach(t => { const opt = document.createElement('option'); opt.value = t; opt.textContent = t; selSem.appendChild(opt); });
+                selSem.value = current;
+            }
+        }
+
         function ajouterProduction() {
             const prodId = parseInt(document.getElementById('selectProdProduction').value);
             const reference = document.getElementById('prodRefZone').value.trim();
             const variete = (document.getElementById('prodVariete')?.value || '').trim();
+            const typeSemences = (document.getElementById('prodTypeSemences')?.value || '').trim();
             const parcelleId = parseInt(document.getElementById('prodParcelle').value) || null;
             const dateDebut = document.getElementById('prodDateDebut').value;
             if (!prodId || !dateDebut) { alert('Veuillez sélectionner un produit et une date.'); return; }
@@ -1946,6 +2001,7 @@
                 produitId: prodId,
                 reference: reference || 'Sans réf',
                 variete,
+                typeSemences,
                 parcelleId,
                 dateDebut: dateDebut,
                 dateFin: '',
@@ -4358,19 +4414,45 @@
 
         /** Calendrier cultural de référence — cultures majeures de Côte d'Ivoire */
         const CALENDRIER_CULTURAL = {
-            'Maïs':            { cycleJours: 90,  semis: [3, 4, 9, 10],    recolte: [6, 7, 12, 1],         zones: ['nord', 'centre', 'sud'] },
-            'Manioc':          { cycleJours: 270, semis: [3, 4, 5, 9, 10], recolte: [12, 1, 2, 3],         zones: ['centre', 'sud'] },
-            'Tomate':          { cycleJours: 90,  semis: [9, 10, 11, 1, 2],recolte: [12, 1, 2, 3, 4],      zones: ['sud', 'centre'] },
-            'Riz pluvial':     { cycleJours: 120, semis: [4, 5, 6],        recolte: [9, 10, 11],           zones: ['nord', 'centre', 'sud'] },
-            'Igname':          { cycleJours: 240, semis: [2, 3, 4],        recolte: [10, 11, 12],          zones: ['nord', 'centre'] },
-            'Coton':           { cycleJours: 180, semis: [5, 6],           recolte: [11, 12, 1],           zones: ['nord'] },
-            'Mil/Sorgho':      { cycleJours: 100, semis: [5, 6],           recolte: [9, 10],               zones: ['nord'] },
-            'Anacarde (cajou)':{ cycleJours: 365, semis: [4, 5],           recolte: [2, 3, 4],             zones: ['nord', 'centre'], pluriannuelle: true },
-            'Cacao':           { cycleJours: 365, semis: [4, 5, 6],        recolte: [10, 11, 12, 1, 2],    zones: ['sud'], pluriannuelle: true },
-            'Hévéa':           { cycleJours: 365, semis: [4, 5],           recolte: [1,2,3,4,5,6,7,8,9,10,11,12], zones: ['sud'], pluriannuelle: true },
-            'Palmier à huile': { cycleJours: 365, semis: [4, 5],           recolte: [1,2,3,4,5,6,7,8,9,10,11,12], zones: ['sud'], pluriannuelle: true },
-            'Banane plantain': { cycleJours: 270, semis: [3, 4, 9, 10],    recolte: [11, 12, 1, 5, 6, 7],  zones: ['sud', 'centre'] },
-            'Ananas':          { cycleJours: 450, semis: [3, 4],           recolte: [10, 11, 12],          zones: ['sud'] }
+            'Maïs':            { cycleJours: 90,  semis: [3, 4, 9, 10],    recolte: [6, 7, 12, 1],         zones: ['nord', 'centre', 'sud'],
+                varietes: ['EV 8728', 'Bondofa', 'Obaatanpa', 'SR 52', 'BR 9943-DMRESR-Y', 'WC-G-SAT-Y', 'Abi-Farida', 'Locale (population)'],
+                typesSemences: ['Hybride (F1)', 'Variété améliorée (OPV)', 'Semence paysanne', 'Semence certifiée CNRA'] },
+            'Manioc':          { cycleJours: 270, semis: [3, 4, 5, 9, 10], recolte: [12, 1, 2, 3],         zones: ['centre', 'sud'],
+                varietes: ['Yacé (TMS 4(2)1425)', 'Bocou 1', 'Bocou 2', 'Loketi', 'CR41-10', 'CR 36-5', 'Locale'],
+                typesSemences: ['Bouture certifiée', 'Bouture saine (sélection paysanne)', 'Bouture issue de pépinière'] },
+            'Tomate':          { cycleJours: 90,  semis: [9, 10, 11, 1, 2],recolte: [12, 1, 2, 3, 4],      zones: ['sud', 'centre'],
+                varietes: ['Tropimech', 'Roma VF', 'Tropicana', 'Padma F1', 'Mongal F1', 'Cal J N3', 'Locale'],
+                typesSemences: ['Hybride (F1)', 'Variété améliorée', 'Semence certifiée', 'Semence paysanne'] },
+            'Riz pluvial':     { cycleJours: 120, semis: [4, 5, 6],        recolte: [9, 10, 11],           zones: ['nord', 'centre', 'sud'],
+                varietes: ['WITA 9', 'WITA 4', 'WAB 450-1', 'Bouaké 189', 'IR 64', 'CG 14', 'Locale (variété de montagne)'],
+                typesSemences: ['Variété améliorée WARDA', 'Semence certifiée CNRA', 'Semence paysanne', 'Semence de base'] },
+            'Igname':          { cycleJours: 240, semis: [2, 3, 4],        recolte: [10, 11, 12],          zones: ['nord', 'centre'],
+                varietes: ['Kponan', 'Florido', 'Bété-bété', 'Dioscorea cayenensis', 'Dioscorea rotundata', 'Dioscorea alata'],
+                typesSemences: ['Semenceaux (tête de tubercule)', 'Semenceaux calibrés', 'Plants issus de semences botaniques (TPS)'] },
+            'Coton':           { cycleJours: 180, semis: [5, 6],           recolte: [11, 12, 1],           zones: ['nord'],
+                varietes: ['STAM 59 A', 'STAM F', 'ISA 205 A', 'FK 37', 'NTA 93-5'],
+                typesSemences: ['Semence délintée certifiée CIDT', 'Semence hybride', 'Semence améliorée CNRA'] },
+            'Mil/Sorgho':      { cycleJours: 100, semis: [5, 6],           recolte: [9, 10],               zones: ['nord'],
+                varietes: ['CIRAD 406', 'Tiémarifing', 'Framida', 'ICSV 111', 'Locale à cycle court'],
+                typesSemences: ['Variété améliorée', 'Semence paysanne sélectionnée', 'Semence certifiée'] },
+            'Anacarde (cajou)':{ cycleJours: 365, semis: [4, 5],           recolte: [2, 3, 4],             zones: ['nord', 'centre'], pluriannuelle: true,
+                varietes: ['P-43 (Jumbo)', 'AA1 (Jumbo)', 'Locale (Bouaké)', 'Population ivoirienne améliorée', 'CCP-76', 'Brazil Early Dwarf'],
+                typesSemences: ['Noix sélectionnée certifiée', 'Noix de pied-mère (clone)', 'Greffe/marcottage (vitroplants)', 'Semence paysanne'] },
+            'Cacao':           { cycleJours: 365, semis: [4, 5, 6],        recolte: [10, 11, 12, 1, 2],    zones: ['sud'], pluriannuelle: true,
+                varietes: ['Mercedes (T 79/501)', 'PA 7 (Amelonado amélioré)', 'GU 255 K', 'IMC 67 (Forastero)', 'Trinitario hybride CNRA', 'Mercedes F2'],
+                typesSemences: ['Semence hybride certifiée ANADER', 'Cabosse sélectionnée (clonal)', 'Plant greffé (vitroplant)', 'Semence paysanne'] },
+            'Hévéa':           { cycleJours: 365, semis: [4, 5],           recolte: [1,2,3,4,5,6,7,8,9,10,11,12], zones: ['sud'], pluriannuelle: true,
+                varietes: ['GT 1', 'PB 235', 'PB 260', 'IRCA 18', 'IRCA 19', 'IRCA 130', 'RRIC 100'],
+                typesSemences: ['Plant greffé certifié (clone)', 'Graine botanique (porte-greffe)', 'Stumps greffés (moignons)'] },
+            'Palmier à huile': { cycleJours: 365, semis: [4, 5],           recolte: [1,2,3,4,5,6,7,8,9,10,11,12], zones: ['sud'], pluriannuelle: true,
+                varietes: ['Deli × La Mé (D × L)', 'Tenera NIFOR', 'Dura (Deli)', 'Pissifera CNRA', 'SOCAPALM hybride', 'Tenera IRHO'],
+                typesSemences: ['Semence hybride Dura × Pissifera (CNRA/INRAB)', 'Noix germée certifiée', 'Plant de pépinière (sac)'] },
+            'Banane plantain': { cycleJours: 270, semis: [3, 4, 9, 10],    recolte: [11, 12, 1, 5, 6, 7],  zones: ['sud', 'centre'],
+                varietes: ['Corne 1 (French Horn)', 'Orishele', 'Big Ebanga', 'FHIA-21', 'Batard', 'Agbagba'],
+                typesSemences: ['Rejet épée (type bouture)', 'Rejet eau', 'Plants issus de culture in vitro (vitro-plants CNRA)', 'Corme (rhizome)'] },
+            'Ananas':          { cycleJours: 450, semis: [3, 4],           recolte: [10, 11, 12],          zones: ['sud'],
+                varietes: ['Cayenne lisse (Smooth Cayenne)', 'MD-2 (Extra Sweet)', 'Sugarloaf (Pain de sucre)', 'Queen', 'Perolera'],
+                typesSemences: ['Couronne (apex du fruit)', 'Cayeu (rejet basal)', 'Bulbille (rejet axillaire)', 'Ratoon (rejet de tige)'] }
         };
         const NOMS_MOIS = ['', 'Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc'];
         const TYPES_OPERATION = ['Préparation sol', 'Semis/Plantation', 'Fertilisation', 'Traitement phytosanitaire', 'Désherbage', 'Irrigation', 'Récolte', 'Autre'];
@@ -4383,6 +4465,49 @@
         };
 
         function getCampagne(id) { return data.campagnes.find(c => c.id === id); }
+
+        /** Met à jour dynamiquement les suggestions de variétés et les types de semences selon la culture choisie */
+        function majVarietesEtSemences() {
+            const sel = document.getElementById('campProduit');
+            const produit = sel ? data.produits.find(p => p.id === parseInt(sel.value)) : null;
+            const nomCulture = produit ? produit.nom : '';
+            // Trouver la fiche calendrier correspondante (correspondance partielle)
+            let ficheRef = null;
+            for (const k in CALENDRIER_CULTURAL) {
+                if (nomCulture.toLowerCase().includes(k.toLowerCase().split(' ')[0]) || k.toLowerCase().includes(nomCulture.toLowerCase().split(' ')[0])) {
+                    ficheRef = CALENDRIER_CULTURAL[k]; break;
+                }
+            }
+            // Datalist variétés
+            const dl = document.getElementById('campVarieteList');
+            if (dl) {
+                dl.innerHTML = ficheRef && ficheRef.varietes
+                    ? ficheRef.varietes.map(v => '<option value= + v + >').join('')
+                    : '';
+            }
+            // Select type de semences
+            const selSem = document.getElementById('campTypeSemences');
+            if (selSem) {
+                const current = selSem.value;
+                selSem.innerHTML = '<option value="">-- Sélectionner --</option>';
+                if (ficheRef && ficheRef.typesSemences) {
+                    ficheRef.typesSemences.forEach(t => {
+                        const opt = document.createElement('option');
+                        opt.value = t; opt.textContent = t;
+                        selSem.appendChild(opt);
+                    });
+                }
+                // Types génériques toujours disponibles
+                ['Semence certifiée', 'Semence paysanne', 'Semence importée', 'Autre'].forEach(t => {
+                    if (!ficheRef || !ficheRef.typesSemences || !ficheRef.typesSemences.includes(t)) {
+                        const opt = document.createElement('option');
+                        opt.value = t; opt.textContent = t;
+                        selSem.appendChild(opt);
+                    }
+                });
+                selSem.value = current;
+            }
+        }
 
         // ── ITINÉRAIRE TECHNIQUE (planification culturale auto) ──
         // offset = fraction du cycle (0 = jour du semis). prep avant semis = négatif.
@@ -4454,12 +4579,14 @@
             data.campagnes.push({
                 id: data.nextId.campagne++, nom, parcelleId, produitId, saison, dateDebut, dateFin,
                 variete: (document.getElementById('campVariete')?.value || '').trim(),
+                typeSemences: (document.getElementById('campTypeSemences')?.value || '').trim(),
                 statut: 'planifiee', operations: []
             });
             saveData();
             document.getElementById('campNom').value = '';
             document.getElementById('campSaison').value = '';
             if (document.getElementById('campVariete')) document.getElementById('campVariete').value = '';
+            if (document.getElementById('campTypeSemences')) document.getElementById('campTypeSemences').value = '';
             document.getElementById('campDateDebut').value = '';
             document.getElementById('campDateFin').value = '';
             renderCampagnes();
@@ -4629,6 +4756,8 @@
                     <div><strong>${zone.nom}</strong> — ${zone.saisonPluies}</div>
                     <div>${adapte ? '✅' : '⚠️'} ${produit.nom} ${adapte ? 'est une culture adaptée à cette zone.' : "n'est pas habituellement cultivé dans cette zone."}</div>
                     <div>${bonnePeriode ? '✅ Période actuelle dans la fenêtre de semis recommandée' : '⚠️ Hors fenêtre de semis recommandée'} (${cal.semis.map(m => NOMS_MOIS[m]).join(', ')}).</div>
+                    ${cal.varietes ? `<div style="margin-top:0.4rem;font-size:0.82rem;"><strong>🌾 Variétés recommandées :</strong> <span style="color:#1a5276;">${cal.varietes.slice(0,5).join(', ')}${cal.varietes.length > 5 ? '…' : ''}</span></div>` : ''}
+                    ${cal.typesSemences ? `<div style="font-size:0.82rem;"><strong>🌰 Types de semences :</strong> <span style="color:#784212;">${cal.typesSemences.join(' · ')}</span></div>` : ''}
                 </div>`;
             }
             zoneDiv.innerHTML = html;
@@ -4656,7 +4785,7 @@
             if (!container) return;
             const moisActuel = new Date().getMonth() + 1;
             let html = '<table style="border-collapse:collapse;width:100%;font-size:0.75rem;">';
-            html += '<thead><tr><th style="text-align:left;padding:4px 8px;">Culture</th><th style="padding:4px;">Zones</th>' +
+            html += '<thead><tr><th style="text-align:left;padding:4px 8px;">Culture</th><th style="padding:4px;">Zones</th><th style="padding:4px;font-size:0.7rem;color:#555;">Variétés recommandées</th><th style="padding:4px;font-size:0.7rem;color:#555;">Types de semences</th>' +
                 Array.from({ length: 12 }, (_, i) => i + 1).map(m =>
                     `<th style="padding:4px;text-align:center;${m === moisActuel ? 'background:#1e3d2f;color:#fff;border-radius:4px;' : ''}">${NOMS_MOIS[m]}</th>`
                 ).join('') + '</tr></thead><tbody>';
@@ -4664,6 +4793,8 @@
                 const c = CALENDRIER_CULTURAL[nom];
                 html += `<tr><td style="padding:4px 8px;font-weight:600;white-space:nowrap;">${nom}${c.pluriannuelle ? ' <span title="Culture pérenne" style="color:#888;">🌳</span>' : ''}</td>`;
                 html += `<td style="padding:4px;text-align:center;font-size:0.68rem;color:#666;">${c.zones.map(zid => ({nord:'N',centre:'C',sud:'S'})[zid]).join('/')}</td>`;
+                html += `<td style="padding:4px;font-size:0.67rem;color:#1a5276;max-width:160px;line-height:1.3;">${c.varietes ? c.varietes.slice(0,3).join('<br>') + (c.varietes.length > 3 ? '<br><em style="color:#aaa;">+' + (c.varietes.length - 3) + ' autres</em>' : '') : '-'}</td>`;
+                html += `<td style="padding:4px;font-size:0.67rem;color:#784212;max-width:140px;line-height:1.3;">${c.typesSemences ? c.typesSemences[0] : '-'}</td>`;
                 for (let m = 1; m <= 12; m++) {
                     const isSemis = c.semis.includes(m);
                     const isRecolte = c.recolte.includes(m);
@@ -4735,6 +4866,8 @@
                     </div>
                     <div style="display:flex;flex-wrap:wrap;gap:0.6rem;margin:0.4rem 0;">
                         <span class="badge">🌱 ${produit ? produit.nom : '?'}</span>
+                        ${camp.variete ? '<span class="badge" style="background:#e8f4fd;color:#1a5276;">🌾 ' + camp.variete + '</span>' : ''}
+                        ${camp.typeSemences ? '<span class="badge" style="background:#fdf3e7;color:#784212;">🌰 ' + camp.typeSemences + '</span>' : ''}
                         <span class="badge">🗺️ ${parcelle ? parcelle.reference : 'Aucune parcelle'}</span>
                         ${parcelle && getZoneParcelle(parcelle) ? `<span class="badge" style="background:#e3eef7;color:#1a5276;">📍 ${getZoneParcelle(parcelle).nom}</span>` : ''}
                         <span class="badge">📅 ${camp.saison || '-'}</span>
