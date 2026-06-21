@@ -8718,6 +8718,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
                 <div class="form-group"><label>Financier (%)</label><input type="number" id="af-cle-fin" class="form-control" value="25" step="0.1" oninput="afCalcRepartition()"></div>
               </div>
               <div id="af-repartition-res" class="card" style="margin-top:12px;background:var(--card2);"></div>
+              <div id="af-cessible-jauge" style="margin-top:12px;"></div>
             </div>
 
             <!-- P7 Commercialisation -->
@@ -44166,6 +44167,59 @@ function afCalcRepartition(){
   var cz=document.getElementById('af-commercial-res');
   if(cz) cz.innerHTML='CA prévisionnel : <strong>'+fmtF(caTot)+' FCFA</strong> · CA réalisé (lots vendus) : <strong>'+fmtF(caReal)+' FCFA</strong>'
     +'<br>Quote-part théorique (prix×lots) — Propriétaires '+fmtF(lp*prix)+' · Aménageur '+fmtF(la*prix)+' · Financier '+fmtF(lf*prix)+' FCFA';
+  /* Jauge part cessible aux financiers */
+  afRenderJaugeCessible(lf, cf);
+}
+
+/* ── Lots déjà attribués aux financiers d'une opération ── */
+function afLotsFinanciersAttribues(opId){
+  return (DATA.af_financiers||[]).reduce(function(s,f){
+    return s + (f.operation_id===opId ? (parseInt(f.nb_lots)||0) : 0);
+  }, 0);
+}
+
+/* ── Jauge demi-cercle : cessions financiers vs part cessible ── */
+function afRenderJaugeCessible(cessibleLots, tauxCessible){
+  var z=document.getElementById('af-cessible-jauge'); if(!z) return;
+  if(!_afOp){ z.innerHTML=''; return; }
+  cessibleLots = parseInt(cessibleLots)||0;
+  var attribues = afLotsFinanciersAttribues(_afOp.id);
+  var dispo = cessibleLots - attribues;
+  var pct = cessibleLots>0 ? (attribues/cessibleLots*100) : (attribues>0?999:0);
+  var pctClamp = Math.max(0, Math.min(100, pct));
+  var depasse = attribues > cessibleLots;
+  var color = depasse ? '#c0392b' : (pct>=100 ? '#c0392b' : (pct>=80 ? '#E67E22' : '#1A6B3A'));
+
+  // arc demi-cercle (centre 100,100 ; rayon 80 ; gauche 180° → droite 0°)
+  var t = pctClamp/100, a = Math.PI*(1-t);
+  var vx = (100 + 80*Math.cos(a)).toFixed(1), vy = (100 - 80*Math.sin(a)).toFixed(1);
+  var large = pctClamp>50 ? 1 : 0;
+  var svg = '<svg viewBox="0 0 200 124" width="220" style="max-width:100%;">'
+    + '<path d="M20 100 A80 80 0 1 1 180 100" fill="none" stroke="#E5E7EB" stroke-width="16" stroke-linecap="round"/>'
+    + (t>0 ? '<path d="M20 100 A80 80 0 '+large+' 1 '+vx+' '+vy+'" fill="none" stroke="'+color+'" stroke-width="16" stroke-linecap="round"/>' : '')
+    + '<circle cx="'+vx+'" cy="'+vy+'" r="6" fill="'+color+'"/>'
+    + '<text x="100" y="92" text-anchor="middle" font-size="30" font-weight="800" fill="'+color+'">'+attribues+'</text>'
+    + '<text x="100" y="112" text-anchor="middle" font-size="12" fill="#6B7280">/ '+cessibleLots+' lot(s) cessible(s)</text>'
+    + '</svg>';
+
+  var msg;
+  if(depasse){
+    msg='<div class="alert" style="background:#FEF3F2;border:1px solid #FECACA;color:#b42318;font-size:12px;margin-top:6px;">⛔ Dépassement : '+attribues+' lot(s) cédés aux financiers pour une part cessible de '+cessibleLots+' lot(s). Excédent de <strong>'+(attribues-cessibleLots)+' lot(s)</strong>. Augmentez le taux cessible ou réduisez les cessions.</div>';
+  } else if(dispo===0 && cessibleLots>0){
+    msg='<div class="alert" style="background:#FFF7ED;border:1px solid #FDE68A;color:#92400E;font-size:12px;margin-top:6px;">⚠️ Part cessible atteinte : aucune cession supplémentaire possible.</div>';
+  } else {
+    msg='<div style="font-size:12px;color:#065F46;margin-top:6px;">✅ Disponible à la cession : <strong>'+dispo+' lot(s)</strong> ('+Math.round(100-pctClamp)+' % de la part cessible).</div>';
+  }
+
+  z.innerHTML='<div class="card" style="background:var(--card2);">'
+    +'<div class="form-section-title">🤝 Part cessible aux financiers — taux '+ (tauxCessible||0) +' %</div>'
+    +'<div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;">'
+    +'<div style="text-align:center;">'+svg+'</div>'
+    +'<div style="flex:1;min-width:180px;font-size:13px;line-height:1.9;">'
+    +'Lots cessibles (part financiers) : <strong>'+cessibleLots+'</strong><br>'
+    +'Lots déjà cédés aux financiers : <strong>'+attribues+'</strong><br>'
+    +'Solde cessible : <strong style="color:'+color+';">'+dispo+'</strong> lot(s)'
+    +'</div></div>'+msg+'</div>';
 }
 
 async function afSaveOperation(){
@@ -46521,6 +46575,20 @@ async function finSave() {
   var opId = document.getElementById('fin-operation').value;
   if (!nom) { toast('Nom du financier obligatoire.','error'); return; }
   if (!opId) { toast('Sélectionnez une opération foncière.','error'); return; }
+  // ── Garde-fou : cessions financiers ≤ part cessible ──
+  var newLots = parseInt(document.getElementById('fin-nb-lots').value)||0;
+  var opCtl = (DATA.af_operations||[]).find(function(x){ return x.id===opId; });
+  if (opCtl) {
+    var tauxFin = (opCtl.cle && opCtl.cle.fin!=null) ? opCtl.cle.fin : 25;
+    var cessibleLots = Math.round((parseInt(opCtl.nb_lots)||0) * tauxFin/100);
+    var dejaAttribues = (DATA.af_financiers||[]).reduce(function(s,x){
+      return s + ((x.operation_id===opId && x.id!==_finId) ? (parseInt(x.nb_lots)||0) : 0);
+    }, 0);
+    if (newLots + dejaAttribues > cessibleLots) {
+      toast('Cession refusée : '+(newLots+dejaAttribues)+' lot(s) dépassent la part cessible ('+cessibleLots+' lot(s) au taux '+tauxFin+' %). Solde cessible : '+Math.max(0,cessibleLots-dejaAttribues)+' lot(s).','error');
+      return;
+    }
+  }
   if (!DATA['af_financiers']) DATA['af_financiers'] = [];
   var f = _finId ? DATA['af_financiers'].find(function(x){return x.id===_finId;}) : null;
   if (!f) { f={ id:uid(), created_at:today() }; DATA['af_financiers'].push(f); }
