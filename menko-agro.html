@@ -779,6 +779,7 @@
         <section id="tabProduction" class="tab-pane">
             <div class="card">
                 <h2>Gestion des productions, récoltes et livraisons</h2>
+                <p style="font-size:0.8rem;color:#666;margin-top:-0.4rem;">🌦️ Pour une culture végétale suivie par itinéraire technique, démarre la production depuis l'onglet <strong>Campagnes</strong> (bouton « 🌾 Démarrer une production » sur la campagne) : coûts et récolte seront alors pilotés automatiquement par les opérations de l'itinéraire. Le formulaire ci-dessous reste utile pour un suivi manuel (élevage, ou culture sans campagne).</p>
                 <div class="form-row">
                     <div class="form-group"><label>Produit</label><select id="selectProdProduction" onchange="majVarietesProd()"></select></div>
                     <div class="form-group"><label>Référence / Zone</label><input type="text" id="prodRefZone"></div>
@@ -1463,6 +1464,7 @@
             data.productions.forEach(p => {
                 if (!p.recoltes) p.recoltes = [];
                 if (!p.livraisons) p.livraisons = [];
+                if (p.campagneId === undefined) p.campagneId = null;
             });
             data.bandes.forEach(b => {
                 if (!b.sorties) b.sorties = [];
@@ -1873,6 +1875,115 @@
             });
         }
 
+        // ============================================================
+        //  LIAISON PRODUCTION ↔ CAMPAGNE (ITINÉRAIRE TECHNIQUE)
+        // ============================================================
+        /** Retourne la campagne liée à une production végétale, ou null si production non liée (mode legacy / élevage). */
+        function getCampagneForProduction(p) {
+            return p && p.campagneId ? getCampagne(p.campagneId) : null;
+        }
+
+        /** Calcule les coûts prévisionnel/réel d'une production.
+         *  Si la production est liée à une campagne, les coûts proviennent de l'itinéraire technique
+         *  (camp.operations) — chaque opération réalisée alimente le coût réel.
+         *  Sinon (mode legacy ou élevage), on retombe sur les étapes PDCA manuelles (p.etapes). */
+        function coutsProduction(p) {
+            const camp = getCampagneForProduction(p);
+            if (camp) {
+                const prev = camp.operations.reduce((s, o) => s + (Number(o.cout) || 0), 0);
+                const reel = camp.operations.filter(o => o.dateRealisee).reduce((s, o) => s + (Number(o.cout) || 0), 0);
+                return { prev, reel };
+            }
+            const etapes = p.etapes || [];
+            const prev = etapes.reduce((s, e) => s + e.previsionnelDirect + e.previsionnelIndirect, 0);
+            const reel = etapes.reduce((s, e) => s + e.reelDirect + e.reelIndirect, 0);
+            return { prev, reel };
+        }
+
+        /** Regroupe les opérations de l'itinéraire technique par type, pour affichage en lecture seule
+         *  dans la fiche Production (équivalent des "étapes PDCA" mais piloté par la campagne). */
+        function detailCoutsParEtapeCampagne(camp) {
+            const groupes = {};
+            camp.operations.forEach(o => {
+                if (!groupes[o.type]) groupes[o.type] = { type: o.type, prev: 0, reel: 0, nb: 0, nbFait: 0 };
+                const g = groupes[o.type];
+                g.prev += Number(o.cout) || 0;
+                g.nb++;
+                if (o.dateRealisee) { g.reel += Number(o.cout) || 0; g.nbFait++; }
+            });
+            return Object.values(groupes);
+        }
+
+        /** Ouvre une modale pour démarrer une production liée à une campagne (bouton sur la fiche campagne). */
+        function demarrerProductionDepuisCampagne(campagneId) {
+            const camp = getCampagne(campagneId);
+            if (!camp) return;
+            const overlay = document.getElementById('modalOverlay');
+            const body = document.getElementById('modalBody');
+            body.innerHTML = `
+                <h2>🌾 Démarrer une production — ${camp.nom}</h2>
+                <p style="font-size:0.8rem;color:#666;">La production sera liée à l'itinéraire technique de cette campagne : coûts et avancement seront calculés automatiquement à partir des opérations (semis, entretien, récolte…).</p>
+                <div class="form-row">
+                    <div class="form-group"><label>Référence</label><input type="text" id="dpRef" value="${camp.nom}"></div>
+                    <div class="form-group"><label>Date début *</label><input type="date" id="dpDate" value="${camp.dateDebut}"></div>
+                </div>
+                <button class="btn btn-success" onclick="validerDemarrageProduction(${camp.id})">➕ Démarrer la production</button>
+            `;
+            overlay.classList.add('active');
+        }
+
+        function validerDemarrageProduction(campagneId) {
+            const camp = getCampagne(campagneId);
+            if (!camp) return;
+            const reference = document.getElementById('dpRef').value.trim();
+            const dateDebut = document.getElementById('dpDate').value;
+            if (!dateDebut) { alert('Date début requise.'); return; }
+            const newProd = {
+                id: data.nextId.production++,
+                produitId: camp.produitId,
+                reference: reference || camp.nom,
+                variete: camp.variete || '',
+                typeSemences: camp.typeSemences || '',
+                parcelleId: camp.parcelleId,
+                campagneId: camp.id,
+                dateDebut,
+                dateFin: '',
+                quantiteProduite: 0,
+                etapes: [],
+                recoltes: [],
+                livraisons: []
+            };
+            data.productions.push(newProd);
+            saveData();
+            fermerModal();
+            renderCampagnes();
+            if (loadedTabs.tabProduction) chargerProduction();
+            alert('✅ Production "' + newProd.reference + '" liée à la campagne. Son suivi suivra désormais l\'itinéraire technique.');
+        }
+
+        /** Quand une opération "Récolte" de l'itinéraire est marquée réalisée, propose d'enregistrer
+         *  la quantité récoltée sur la (ou les) production(s) liée(s) à la campagne. */
+        function gererRecolteDepuisOperation(campagneId) {
+            const camp = getCampagne(campagneId);
+            if (!camp) return;
+            const prods = data.productions.filter(p => p.campagneId === camp.id);
+            if (prods.length === 1) {
+                ajouterRecolte(prods[0].id);
+            } else if (prods.length > 1) {
+                const overlay = document.getElementById('modalOverlay');
+                const body = document.getElementById('modalBody');
+                body.innerHTML = `<h2>Récolte — ${camp.nom}</h2>
+                    <p>Plusieurs productions sont liées à cette campagne. Pour laquelle enregistrer la récolte ?</p>
+                    ${prods.map(p => `<button class="btn btn-outline" style="display:block;width:100%;margin-bottom:0.4rem;" onclick="ajouterRecolte(${p.id})">🌾 ${p.reference} (démarrée le ${formatDateSimple(p.dateDebut)})</button>`).join('')}
+                `;
+                overlay.classList.add('active');
+            } else {
+                if (confirm('Aucune production n\'est encore liée à cette campagne. Démarrer une production maintenant pour enregistrer la récolte ?')) {
+                    demarrerProductionDepuisCampagne(camp.id);
+                }
+            }
+        }
+
         function chargerProduction() {
             const prodId = parseInt(document.getElementById('selectProdProduction').value);
             const container = document.getElementById('productionListe');
@@ -1888,16 +1999,18 @@
             let html = '';
             prods.forEach(pr => {
                 const produit = getProduit(pr.produitId);
-                const totalPrev = pr.etapes.reduce((s, e) => s + e.previsionnelDirect + e.previsionnelIndirect, 0);
-                const totalReel = pr.etapes.reduce((s, e) => s + e.reelDirect + e.reelIndirect, 0);
+                const camp = getCampagneForProduction(pr);
+                const { prev: totalPrev, reel: totalReel } = coutsProduction(pr);
                 const ecart = totalReel - totalPrev;
                 const bandesLiees = data.bandes.filter(b => b.productionId === pr.id);
+                const nbOpFait = camp ? camp.operations.filter(o => o.dateRealisee).length : 0;
                 html += `<div class="production-step">
                     <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:0.5rem;">
                         <span style="font-weight:600;">📌 ${produit ? produit.nom : 'Produit'} - Réf: ${pr.reference || 'Sans réf'}</span>
                         <span>Début: ${formatDateSimple(pr.dateDebut)} ${pr.dateFin ? ' - Fin: '+formatDateSimple(pr.dateFin) : ''}</span>
                     </div>
                     <div style="display:flex; flex-wrap:wrap; gap:0.8rem; margin-top:0.3rem;">
+                        ${camp ? `<span class="badge" style="background:#eaf3ee;color:#16623a;">🌦️ Itinéraire: ${camp.nom} (${nbOpFait}/${camp.operations.length} opérations)</span>` : '<span class="badge" style="background:#f4f4f4;color:#888;">⚠️ Suivi manuel (non lié à une campagne)</span>'}
                         ${pr.variete ? "<span class=\"badge\" style=\"background:#e8f4fd;color:#1a5276;\">🌾 " + pr.variete + "</span>" : ""}
                         ${pr.typeSemences ? "<span class=\"badge\" style=\"background:#fdf3e7;color:#784212;\">🌰 " + pr.typeSemences + "</span>" : ""}
                         <span class="badge">Quantité produite: ${pr.quantiteProduite || 0}</span>
@@ -1907,6 +2020,7 @@
                     </div>
                     <div style="margin-top:0.5rem;">
                         <button class="btn btn-sm btn-outline" onclick="editerProduction(${pr.id})">✏️ Détails & Analyse</button>
+                        ${camp ? `<button class="btn btn-sm" style="background:#16a085;color:#fff;" onclick="switchTab('tabCampagnes')">🌦️ Voir l'itinéraire</button>` : ''}
                         <button class="btn btn-sm btn-success" onclick="ajouterRecolte(${pr.id})">🌾 Récolte</button>
                         <button class="btn btn-sm btn-success" onclick="creerLivraisonDepuisProduction(${pr.id})">🚚 Livrer</button>
                         ${produit && produit.categorie === 'elevage' ? `<button class="btn btn-sm btn-success" onclick="creerBandeDepuisProduction(${pr.id})">🐣 Créer bande</button>` : ''}
@@ -2003,6 +2117,7 @@
                 variete,
                 typeSemences,
                 parcelleId,
+                campagneId: null,
                 dateDebut: dateDebut,
                 dateFin: '',
                 quantiteProduite: 0,
@@ -2027,16 +2142,40 @@
         function editerProduction(id) {
             const prod = data.productions.find(p => p.id === id);
             if (!prod) return;
+            const camp = getCampagneForProduction(prod);
             const overlay = document.getElementById('modalOverlay');
             const body = document.getElementById('modalBody');
+            const { prev: totalPrev, reel: totalReel } = coutsProduction(prod);
             let html = `<h2>Production #${prod.id} - ${getProduit(prod.produitId)?.nom || '?'}</h2>
                 <div class="form-row">
                     <div class="form-group"><label>Référence</label><input type="text" id="editProdRef" value="${prod.reference || ''}"></div>
                     <div class="form-group"><label>Date début</label><input type="date" id="editProdDateDebut" value="${prod.dateDebut}"></div>
                     <div class="form-group"><label>Date fin</label><input type="date" id="editProdDateFin" value="${prod.dateFin || ''}"></div>
                     <div class="form-group"><label>Quantité produite</label><input type="number" id="editProdQte" step="1" value="${prod.quantiteProduite || 0}"></div>
-                </div>
-                <h3>Étapes et coûts (PDCA)</h3>
+                </div>`;
+
+            if (camp) {
+                // ── Mode lié à l'itinéraire technique : coûts en lecture seule, pilotés par la campagne ──
+                const groupes = detailCoutsParEtapeCampagne(camp);
+                html += `<h3>🌦️ Coûts issus de l'itinéraire technique — ${camp.nom}</h3>
+                    <p style="font-size:0.78rem;color:#666;margin-top:-0.4rem;">Ces coûts sont calculés automatiquement à partir des opérations de la campagne. Pour les modifier, gère les opérations dans l'onglet Campagnes.</p>
+                    <div style="overflow-x:auto;">
+                    <table>
+                        <thead><tr><th>Étape (type d'opération)</th><th>Coût prévu</th><th>Coût réel</th><th>Avancement</th></tr></thead>
+                        <tbody>
+                            ${groupes.map(g => `<tr>
+                                <td><strong>${g.type}</strong></td>
+                                <td>${g.prev.toFixed(0)} FCFA</td>
+                                <td>${g.reel.toFixed(0)} FCFA</td>
+                                <td>${g.nbFait}/${g.nb} réalisée(s)</td>
+                            </tr>`).join('')}
+                        </tbody>
+                    </table>
+                    </div>
+                    <div class="mt-1"><button class="btn btn-sm" style="background:#16a085;color:#fff;" onclick="fermerModal();switchTab('tabCampagnes');">🌦️ Gérer l'itinéraire technique</button></div>`;
+            } else {
+                // ── Mode legacy : étapes PDCA saisies manuellement ──
+                html += `<h3>Étapes et coûts (PDCA)</h3>
                 <div style="overflow-x:auto;">
                 <table>
                     <thead>
@@ -2049,20 +2188,23 @@
                         </tr>
                     </thead>
                     <tbody>`;
-            prod.etapes.forEach((e, idx) => {
-                html += `<tr>
-                        <td><strong>${e.nom}</strong></td>
-                        <td><input type="number" class="editProdPrevD" data-idx="${idx}" step="0.01" value="${e.previsionnelDirect || 0}" style="width:100px;"></td>
-                        <td><input type="number" class="editProdPrevI" data-idx="${idx}" step="0.01" value="${e.previsionnelIndirect || 0}" style="width:100px;"></td>
-                        <td><input type="number" class="editProdReelD" data-idx="${idx}" step="0.01" value="${e.reelDirect || 0}" style="width:100px;"></td>
-                        <td><input type="number" class="editProdReelI" data-idx="${idx}" step="0.01" value="${e.reelIndirect || 0}" style="width:100px;"></td>
-                    </tr>`;
-            });
-            html += `</tbody></table></div>
+                prod.etapes.forEach((e, idx) => {
+                    html += `<tr>
+                            <td><strong>${e.nom}</strong></td>
+                            <td><input type="number" class="editProdPrevD" data-idx="${idx}" step="0.01" value="${e.previsionnelDirect || 0}" style="width:100px;"></td>
+                            <td><input type="number" class="editProdPrevI" data-idx="${idx}" step="0.01" value="${e.previsionnelIndirect || 0}" style="width:100px;"></td>
+                            <td><input type="number" class="editProdReelD" data-idx="${idx}" step="0.01" value="${e.reelDirect || 0}" style="width:100px;"></td>
+                            <td><input type="number" class="editProdReelI" data-idx="${idx}" step="0.01" value="${e.reelIndirect || 0}" style="width:100px;"></td>
+                        </tr>`;
+                });
+                html += `</tbody></table></div>`;
+            }
+
+            html += `
                 <div class="summary-box">
-                    <div class="line"><span>Coût prévisionnel total</span><span id="summaryPrevTotal">0</span></div>
-                    <div class="line"><span>Coût réel total</span><span id="summaryReelTotal">0</span></div>
-                    <div class="line"><span>Écart</span><span id="summaryEcart">0</span></div>
+                    <div class="line"><span>Coût prévisionnel total</span><span id="summaryPrevTotal">${totalPrev.toFixed(0)}</span></div>
+                    <div class="line"><span>Coût réel total</span><span id="summaryReelTotal">${totalReel.toFixed(0)}</span></div>
+                    <div class="line"><span>Écart</span><span id="summaryEcart">${(totalReel - totalPrev).toFixed(0)}</span></div>
                     <div class="line"><span>Coût unitaire prévisionnel</span><span id="summaryPrevUnitaire">0</span></div>
                     <div class="line"><span>Coût unitaire réel</span><span id="summaryReelUnitaire">0</span></div>
                     <hr>
@@ -2082,10 +2224,10 @@
             body.innerHTML = html;
             overlay.classList.add('active');
 
-            function updateSummary() {
+            function calculerTotaux() {
+                if (camp) return coutsProduction(prod);
                 const rows = document.querySelectorAll('#modalBody tbody tr');
-                let prevTotal = 0,
-                    reelTotal = 0;
+                let prevTotal = 0, reelTotal = 0;
                 rows.forEach(row => {
                     const pd = parseFloat(row.querySelector('.editProdPrevD').value) || 0;
                     const pi = parseFloat(row.querySelector('.editProdPrevI').value) || 0;
@@ -2094,6 +2236,11 @@
                     prevTotal += pd + pi;
                     reelTotal += rd + ri;
                 });
+                return { prev: prevTotal, reel: reelTotal };
+            }
+
+            function updateSummary() {
+                const { prev: prevTotal, reel: reelTotal } = calculerTotaux();
                 document.getElementById('summaryPrevTotal').textContent = prevTotal.toFixed(0);
                 document.getElementById('summaryReelTotal').textContent = reelTotal.toFixed(0);
                 document.getElementById('summaryEcart').textContent = (reelTotal - prevTotal).toFixed(0);
@@ -2115,13 +2262,7 @@
 
             window.calculerPrixVenteConseille = function() {
                 const qte = parseFloat(document.getElementById('editProdQte').value) || 1;
-                const rows = document.querySelectorAll('#modalBody tbody tr');
-                let reelTotal = 0;
-                rows.forEach(row => {
-                    const rd = parseFloat(row.querySelector('.editProdReelD').value) || 0;
-                    const ri = parseFloat(row.querySelector('.editProdReelI').value) || 0;
-                    reelTotal += rd + ri;
-                });
+                const { reel: reelTotal } = calculerTotaux();
                 const coutUnitaire = reelTotal / qte;
                 const margeSouhaitee = parseFloat(document.getElementById('editProdMargeSouhaitee').value) || 30;
                 if (coutUnitaire <= 0) { alert('Coût unitaire nul.'); return; }
@@ -2139,17 +2280,19 @@
             prod.dateDebut = document.getElementById('editProdDateDebut').value;
             prod.dateFin = document.getElementById('editProdDateFin').value;
             prod.quantiteProduite = parseFloat(document.getElementById('editProdQte').value) || 0;
-            const rows = document.querySelectorAll('#modalBody tbody tr');
-            rows.forEach((row, idx) => {
-                const pd = parseFloat(row.querySelector('.editProdPrevD').value) || 0;
-                const pi = parseFloat(row.querySelector('.editProdPrevI').value) || 0;
-                const rd = parseFloat(row.querySelector('.editProdReelD').value) || 0;
-                const ri = parseFloat(row.querySelector('.editProdReelI').value) || 0;
-                prod.etapes[idx].previsionnelDirect = pd;
-                prod.etapes[idx].previsionnelIndirect = pi;
-                prod.etapes[idx].reelDirect = rd;
-                prod.etapes[idx].reelIndirect = ri;
-            });
+            if (!getCampagneForProduction(prod)) {
+                const rows = document.querySelectorAll('#modalBody tbody tr');
+                rows.forEach((row, idx) => {
+                    const pd = parseFloat(row.querySelector('.editProdPrevD').value) || 0;
+                    const pi = parseFloat(row.querySelector('.editProdPrevI').value) || 0;
+                    const rd = parseFloat(row.querySelector('.editProdReelD').value) || 0;
+                    const ri = parseFloat(row.querySelector('.editProdReelI').value) || 0;
+                    prod.etapes[idx].previsionnelDirect = pd;
+                    prod.etapes[idx].previsionnelIndirect = pi;
+                    prod.etapes[idx].reelDirect = rd;
+                    prod.etapes[idx].reelIndirect = ri;
+                });
+            }
             saveData();
             fermerModal();
             chargerProduction();
@@ -2195,7 +2338,8 @@
             stock.quantite += quantite;
             prod.quantiteProduite = (prod.quantiteProduite || 0) + quantite;
             // Coût unitaire FIFO = coût réel cumulé de la production / quantité produite cumulée
-            const totalReelProd = prod.etapes.reduce((s, e) => s + e.reelDirect + e.reelIndirect, 0);
+            // (coût réel = somme des opérations réalisées de l'itinéraire technique si campagne liée, sinon étapes manuelles)
+            const totalReelProd = coutsProduction(prod).reel;
             const coutUnitaireRecolte = prod.quantiteProduite ? (totalReelProd / prod.quantiteProduite) : 0;
             creerLotStock(prod.produitId, depotId, quantite, coutUnitaireRecolte, 'recolte', newRec.id);
             saveData();
@@ -3754,7 +3898,7 @@
                 if (prods.length === 0) return null;
                 const actives = prods.filter(pr => !pr.dateFin).length;
                 const qte = prods.reduce((s, pr) => s + (pr.quantiteProduite || 0), 0);
-                const cout = prods.reduce((s, pr) => s + pr.etapes.reduce((s2, e) => s2 + e.reelDirect + e.reelIndirect, 0), 0);
+                const cout = prods.reduce((s, pr) => s + coutsProduction(pr).reel, 0);
                 const coutUnite = qte ? (cout / qte) : 0;
                 return `<tr><td><strong>${p.nom}</strong></td><td>${actives}</td><td>${qte}</td><td>${cout.toFixed(0)}</td><td>${coutUnite.toFixed(0)}</td></tr>`;
             }).filter(Boolean);
@@ -3797,8 +3941,8 @@
                 const prods = data.productions.filter(pr => pr.parcelleId === parc.id);
                 const camps = data.campagnes.filter(c => c.parcelleId === parc.id);
                 const qte = prods.reduce((s, pr) => s + (pr.quantiteProduite || 0), 0);
-                const coutProduction = prods.reduce((s, pr) => s + pr.etapes.reduce((s2, e) => s2 + e.reelDirect + e.reelIndirect, 0), 0);
-                const coutCampagnes = camps.reduce((s, c) => s + c.operations.reduce((s2, o) => s2 + (o.cout || 0), 0), 0);
+                const coutProduction = prods.filter(pr => !pr.campagneId).reduce((s, pr) => s + coutsProduction(pr).reel, 0);
+                const coutCampagnes = camps.reduce((s, c) => s + c.operations.filter(o => o.dateRealisee).reduce((s2, o) => s2 + (o.cout || 0), 0), 0);
                 const coutTotal = coutProduction + coutCampagnes;
                 // Revenu estimé via prix de vente catalogue, pondéré par produit
                 const revenuEstime = prods.reduce((s, pr) => {
@@ -4593,10 +4737,21 @@
         }
 
         function supprimerCampagne(id) {
-            if (!confirm('Supprimer cette campagne et toutes ses opérations ?')) return;
+            const prodsLiees = data.productions.filter(p => p.campagneId === id);
+            const msg = prodsLiees.length > 0
+                ? `Supprimer cette campagne et toutes ses opérations ? ${prodsLiees.length} production(s) liée(s) seront détachées (leur historique de quantité/récoltes/livraisons est conservé, mais elles perdront le suivi par itinéraire technique).`
+                : 'Supprimer cette campagne et toutes ses opérations ?';
+            if (!confirm(msg)) return;
+            prodsLiees.forEach(p => { p.campagneId = null; if (!p.etapes || p.etapes.length === 0) p.etapes = [
+                { nom: 'Préparation du sol', previsionnelDirect: 0, previsionnelIndirect: 0, reelDirect: 0, reelIndirect: 0 },
+                { nom: 'Plantation', previsionnelDirect: 0, previsionnelIndirect: 0, reelDirect: 0, reelIndirect: 0 },
+                { nom: 'Entretien', previsionnelDirect: 0, previsionnelIndirect: 0, reelDirect: 0, reelIndirect: 0 },
+                { nom: 'Récolte', previsionnelDirect: 0, previsionnelIndirect: 0, reelDirect: 0, reelIndirect: 0 }
+            ]; });
             data.campagnes = data.campagnes.filter(c => c.id !== id);
             saveData();
             renderCampagnes();
+            if (loadedTabs.tabProduction) chargerProduction();
         }
 
         function ouvrirModalOperation(campagneId) {
@@ -4679,6 +4834,9 @@
             }
             saveData();
             renderCampagnes();
+            if (op.type === 'Récolte') {
+                gererRecolteDepuisOperation(camp.id);
+            }
         }
 
         function supprimerOperation(campagneId, opId) {
@@ -4857,6 +5015,7 @@
                 const coutMO = data.pointages.filter(p => p.campagneId === camp.id).reduce((s, p) => s + (p.cout || 0), 0);
                 const heuresMO = data.pointages.filter(p => p.campagneId === camp.id).reduce((s, p) => s + (p.heures || 0), 0);
                 const nbDone = camp.operations.filter(o => o.dateRealisee).length;
+                const prodsLiees = data.productions.filter(p => p.campagneId === camp.id);
                 return `<div class="production-step">
                     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;">
                         <span style="font-weight:600;">🌦️ ${camp.nom}</span>
@@ -4877,8 +5036,13 @@
                         <span class="badge">✅ ${nbDone}/${camp.operations.length} opérations réalisées</span>
                     </div>
                     <div style="margin:0.6rem 0;">${renderGanttHtml(camp)}</div>
+                    <div style="margin:0.4rem 0;">
+                        <strong style="font-size:0.8rem;">🌾 Production(s) liée(s) :</strong>
+                        ${prodsLiees.length > 0 ? prodsLiees.map(p => `<span class="badge" style="background:#eaf3ee;color:#16623a;cursor:pointer;" onclick="switchTab('tabProduction');document.getElementById('selectProdProduction').value=${p.produitId};chargerProduction();">${p.reference} — ${(p.quantiteProduite||0)} unités produites</span>`).join(' ') : '<span class="badge" style="background:#f4f4f4;color:#888;">Aucune — démarre une production pour suivre coûts/récolte</span>'}
+                    </div>
                     <button class="btn btn-sm btn-outline" onclick="ouvrirModalOperation(${camp.id})">+ Opération</button>
                     <button class="btn btn-sm" style="background:#16a085;color:#fff;" onclick="genererItineraireTechnique(${camp.id})">📋 Itinéraire technique</button>
+                    <button class="btn btn-sm btn-success" onclick="demarrerProductionDepuisCampagne(${camp.id})">🌾 Démarrer une production</button>
                     <button class="btn btn-sm btn-danger" onclick="supprimerCampagne(${camp.id})">🗑️ Supprimer la campagne</button>
                 </div>`;
             }).join('');
@@ -6148,7 +6312,8 @@
                 const intrants = camps.reduce((s, c) => s + (c.operations || []).reduce((a, o) => a + (o.coutIntrant || 0), 0), 0);
                 const operations = camps.reduce((s, c) => s + (c.operations || []).reduce((a, o) => a + (o.coutAutre || 0), 0), 0);
                 const mo = data.pointages.filter(p => p.parcelleId === parc.id).reduce((s, p) => s + (p.cout || 0), 0);
-                const prodCost = data.productions.filter(p => p.parcelleId === parc.id).reduce((s, p) => s + (p.etapes || []).reduce((a, e) => a + (e.reelDirect || 0) + (e.reelIndirect || 0), 0), 0);
+                // Productions liées à une campagne : leur coût est déjà compté via intrants/operations ci-dessus (itinéraire technique). On ne compte ici que les productions non liées (mode legacy).
+                const prodCost = data.productions.filter(p => p.parcelleId === parc.id && !p.campagneId).reduce((s, p) => s + coutsProduction(p).reel, 0);
                 const total = intrants + operations + mo + prodCost;
                 const qte = data.productions.filter(p => p.parcelleId === parc.id).reduce((s, p) => s + (p.quantiteProduite || 0), 0);
                 const revenu = revParc[parc.id] || 0;
@@ -6176,7 +6341,7 @@
             data.productions.forEach(p => {
                 const k = p.produitId;
                 if (!cultMap[k]) cultMap[k] = { produitId: k, cout: 0, qte: 0 };
-                cultMap[k].cout += (p.etapes || []).reduce((a, e) => a + (e.reelDirect || 0) + (e.reelIndirect || 0), 0);
+                if (!p.campagneId) cultMap[k].cout += coutsProduction(p).reel; // sinon déjà compté via les opérations de la campagne ci-dessus
                 cultMap[k].qte += (p.quantiteProduite || 0);
             });
             const revCult = {};
@@ -6198,7 +6363,7 @@
                 const prod = getProduit(p.produitId);
                 const key = (prod ? prod.nom : '?') + ' / ' + (p.variete || '—');
                 if (!varMap[key]) varMap[key] = { nom: key, cout: 0, qte: 0 };
-                varMap[key].cout += (p.etapes || []).reduce((a, e) => a + (e.reelDirect || 0) + (e.reelIndirect || 0), 0);
+                if (!p.campagneId) varMap[key].cout += coutsProduction(p).reel; // sinon déjà compté via les opérations de la campagne ci-dessus
                 varMap[key].qte += (p.quantiteProduite || 0);
             });
             const varietes = Object.values(varMap).map(v => ({ nom: v.nom, cout: v.cout, qte: v.qte, coutKg: v.qte ? v.cout / v.qte : 0 })).filter(v => v.cout > 0 || v.qte > 0);
