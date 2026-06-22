@@ -3504,6 +3504,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <button class="tab-btn active" onclick="switchTab('stock','etat')">📋 État des stocks</button>
           <button class="tab-btn" onclick="switchTab('stock','mouvements')">🔁 Mouvements</button>
           <button class="tab-btn" onclick="switchTab('stock','chantier')">🏗️ Consommation par chantier</button>
+          <button class="tab-btn" onclick="switchTab('stock','marge')">💹 Marge chantiers</button>
         </div>
         <div class="tab-pane active" id="tab-stock-etat">
           <div class="card">
@@ -3529,6 +3530,34 @@ button:focus-visible, input:focus-visible, select:focus-visible {
             </table></div>
             <div style="font-size:11px;color:var(--blanc-dim);margin-top:8px;">La consommation est valorisée au CUMP. Le budget est rapproché des conventions (montant TTC) à titre indicatif.</div>
           </div>
+        </div>
+        <div class="tab-pane" id="tab-stock-marge">
+          <div class="page-header" style="margin:0 0 12px;"><div></div><button class="btn btn-secondary btn-sm" onclick="openChantierCout()">➕ Coût chantier (main d'œuvre / autre)</button></div>
+          <div class="card">
+            <div class="table-wrap"><table>
+              <thead><tr><th>Chantier</th><th>Maître d'ouvrage</th><th style="text-align:right;">Facturé (situations)</th><th style="text-align:right;">Matériaux</th><th style="text-align:right;">Main d'œuvre</th><th style="text-align:right;">Autres</th><th style="text-align:right;">Marge</th><th style="text-align:right;">Taux</th></tr></thead>
+              <tbody id="tbody-stock-marge"></tbody>
+            </table></div>
+            <div style="font-size:11px;color:var(--blanc-dim);margin-top:8px;">Facturé = situations validées/payées (HT). Coûts = matériaux consommés (CUMP) + main d'œuvre + autres coûts directs. Marge = facturé − coûts.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal Coût chantier -->
+      <div class="modal" id="modal-chantier-cout">
+        <div class="modal-content" style="max-width:460px;">
+          <div class="modal-header"><div class="modal-title">➕ Coût direct chantier</div><button class="modal-close" onclick="closeModal('modal-chantier-cout')">✕</button></div>
+          <div class="modal-body">
+            <div class="form-grid" style="grid-template-columns:1fr 1fr;">
+              <div class="form-group span-2"><label>Chantier (convention) *</label><select class="form-control" id="cc-chantier"></select></div>
+              <div class="form-group"><label>Type *</label><select class="form-control" id="cc-type"><option value="main_oeuvre">Main d'œuvre</option><option value="autre">Autre coût direct</option></select></div>
+              <div class="form-group"><label>Date</label><input type="date" class="form-control" id="cc-date"></div>
+              <div class="form-group span-2"><label>Libellé</label><input class="form-control" id="cc-libelle" placeholder="Ex : Équipe maçonnerie — semaine 12"></div>
+              <div class="form-group span-2"><label>Montant (FCFA) *</label><input type="number" class="form-control" id="cc-montant" min="0" step="any" value="0"></div>
+            </div>
+            <div id="cc-liste" style="margin-top:10px;"></div>
+          </div>
+          <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('modal-chantier-cout')">Fermer</button><button class="btn btn-primary" onclick="saveChantierCout()">Ajouter le coût</button></div>
         </div>
       </div>
 
@@ -13470,6 +13499,7 @@ var DATA = {
   eds_etudes: [],
   eds_ressources: [],
   stock_mouvements: [],
+  chantier_couts: [],
   cessions_foncieres: [],
   lot_unites: [],
   /* v114 — Aménagement foncier */
@@ -13481,7 +13511,7 @@ var DATA = {
    INDEXEDDB
 ────────────────────────────────────────────────────── */
 var DB_NAME = 'ImmoSuiteDB';
-var DB_VERSION = 119; /* v119: stock_mouvements (materiaux dept construction) */
+var DB_VERSION = 120; /* v120: chantier_couts (marge chantier interne) */
 var db = null;
 
 /* Liste COMPLÈTE et définitive de tous les stores */
@@ -13532,7 +13562,8 @@ var ALL_STORES = [
   'af_operations','af_agents',
   /* v118 — Financiers partenaires & versements */
   'af_financiers','af_versements_financiers',
-  'stock_mouvements'
+  'stock_mouvements',
+  'chantier_couts'
 ];
 
 function initDB() {
@@ -13950,6 +13981,7 @@ var SUPA_STORE_MAP = [
   ['pi_eds_etudes',      'eds_etudes'],
   ['pi_eds_ressources',  'eds_ressources'],
   ['pi_stock_mouvements','stock_mouvements'],
+  ['pi_chantier_couts',  'chantier_couts'],
   ['pi_af_operations',   'af_operations'],
   ['pi_af_agents',       'af_agents'],
   ['pi_employes',        'employes'],
@@ -14751,7 +14783,7 @@ function goTo(page) {
   if (page === 'previsionnel') { loadPrevisionnel(); }
   if (page === 'amenagement') { loadAmenagement(); }
   if (page === 'debourse') { edsRender(); }
-  if (page === 'stock') { renderStock(); }
+  if (page === 'stock') { renderStock(); renderMargeChantiers(); }
   if (page === 'foncierops') { afRender(); }
 }
 
@@ -45010,6 +45042,67 @@ async function deleteStockMvt(id){
   if(!confirm('Supprimer ce mouvement de stock ?')) return;
   DATA.stock_mouvements=DATA.stock_mouvements.filter(function(m){return m.id!==id;});
   await dbDelete('stock_mouvements',id); renderStock(); toast('Mouvement supprimé.','info');
+}
+
+/* ── Marge par chantier interne ── */
+function renderMargeChantiers(){
+  var tb=document.getElementById('tbody-stock-marge'); if(!tb) return;
+  var comp=stockCompute();
+  var matByConv={}, facByConv={}, moByConv={}, autreByConv={};
+  comp.mvts.forEach(function(m){ if(m.type==='sortie'&&m.chantier_id){ matByConv[m.chantier_id]=(matByConv[m.chantier_id]||0)+(m._val||0); } });
+  (DATA.situations||[]).forEach(function(s){ if(s.statut==='validee'||s.statut==='payee'){ facByConv[s.convention_id]=(facByConv[s.convention_id]||0)+(parseFloat(s.montant_ht)||0); } });
+  (DATA.chantier_couts||[]).forEach(function(c){ var t=(c.type==='main_oeuvre')?moByConv:autreByConv; t[c.convention_id]=(t[c.convention_id]||0)+(parseFloat(c.montant)||0); });
+  var ids={}; [matByConv,facByConv,moByConv,autreByConv].forEach(function(o){Object.keys(o).forEach(function(k){ids[k]=1;});});
+  var keys=Object.keys(ids);
+  if(!keys.length){ tb.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--blanc-dim);padding:20px;">Aucune donnée. Affectez des situations, des sorties de stock ou des coûts à un chantier.</td></tr>'; return; }
+  tb.innerHTML=keys.map(function(cid){
+    var conv=DATA.conventions.find(function(c){return c.id===cid;})||{numero:'—'};
+    var mat=matByConv[cid]||0, fac=facByConv[cid]||0, mo=moByConv[cid]||0, au=autreByConv[cid]||0;
+    var cout=mat+mo+au; var marge=fac-cout; var taux=fac>0?Math.round(marge/fac*100):null;
+    var col=marge>=0?'var(--vert)':'var(--rouge)';
+    return '<tr><td style="font-family:monospace;color:var(--or);">'+conv.numero+'</td>'
+      +'<td style="font-size:12px;">'+(conv.maitre_ouvrage||'—')+'</td>'
+      +'<td style="text-align:right;font-weight:600;">'+fmtF(Math.round(fac))+'</td>'
+      +'<td style="text-align:right;">'+fmtF(Math.round(mat))+'</td>'
+      +'<td style="text-align:right;">'+fmtF(Math.round(mo))+'</td>'
+      +'<td style="text-align:right;">'+fmtF(Math.round(au))+'</td>'
+      +'<td style="text-align:right;font-weight:700;color:'+col+';">'+fmtF(Math.round(marge))+'</td>'
+      +'<td style="text-align:right;color:'+col+';">'+(taux==null?'—':taux+'%')+'</td></tr>';
+  }).join('');
+}
+function openChantierCout(){
+  document.getElementById('cc-chantier').innerHTML=stockChantierOptions();
+  document.getElementById('cc-type').value='main_oeuvre';
+  document.getElementById('cc-date').value=today();
+  document.getElementById('cc-libelle').value=''; document.getElementById('cc-montant').value=0;
+  renderChantierCoutListe();
+  document.getElementById('modal-chantier-cout').classList.add('open');
+}
+function renderChantierCoutListe(){
+  var z=document.getElementById('cc-liste'); if(!z) return;
+  var list=(DATA.chantier_couts||[]).slice().sort(function(a,b){return (b.date||'').localeCompare(a.date||'');}).slice(0,12);
+  if(!list.length){ z.innerHTML='<div style="font-size:11px;color:var(--blanc-dim);">Aucun coût saisi.</div>'; return; }
+  z.innerHTML='<div style="font-size:11px;color:var(--blanc-dim);margin-bottom:4px;">Derniers coûts :</div>'+list.map(function(c){
+    var conv=DATA.conventions.find(function(x){return x.id===c.convention_id;})||{numero:'—'};
+    return '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;border-bottom:1px solid var(--bord);padding:4px 0;"><span>'+conv.numero+' · '+(c.type==='main_oeuvre'?'MO':'Autre')+' · '+(c.libelle||'')+'</span><span style="display:flex;gap:8px;align-items:center;"><strong>'+fmtF(c.montant)+'</strong><button class="btn btn-danger btn-sm btn-icon" onclick="deleteChantierCout(\''+c.id+'\')">🗑</button></span></div>';
+  }).join('');
+}
+async function saveChantierCout(){
+  var cid=document.getElementById('cc-chantier').value;
+  var mt=parseFloat(document.getElementById('cc-montant').value)||0;
+  if(!cid){ toast('Choisissez un chantier.','error'); return; }
+  if(mt<=0){ toast('Montant invalide.','error'); return; }
+  var c={ id:uid(), convention_id:cid, type:document.getElementById('cc-type').value,
+    libelle:document.getElementById('cc-libelle').value.trim(),
+    montant:mt, date:document.getElementById('cc-date').value||today(), created_at:new Date().toISOString() };
+  DATA.chantier_couts.push(c); await dbPut('chantier_couts',c);
+  if(typeof syncToSupabase==='function')syncToSupabase('pi_chantier_couts',c);
+  document.getElementById('cc-libelle').value=''; document.getElementById('cc-montant').value=0;
+  renderChantierCoutListe(); renderMargeChantiers(); toast('Coût ajouté.','success');
+}
+async function deleteChantierCout(id){
+  DATA.chantier_couts=(DATA.chantier_couts||[]).filter(function(c){return c.id!==id;});
+  await dbDelete('chantier_couts',id); renderChantierCoutListe(); renderMargeChantiers(); toast('Coût supprimé.','info');
 }
 
 function edsResOptions(sel) {
