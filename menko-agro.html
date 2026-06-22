@@ -1803,12 +1803,61 @@ function _agroAccessWindow(){
             } else {
                 data = getDefaultData();
             }
+            await agroPull();
+            try { applyMigrations(); } catch (e) {}
             await saveData();
         }
 
         async function saveData() {
             if (!agroDB) agroDB = await openAgroDB();
+            data._modifie = new Date().toISOString();
             await idbPut(agroDB, 'data', data);
+            agroPushDebounced();
+        }
+
+        /* ── Synchro cloud Agro (table agro_state, blob unique) ── */
+        var AGRO_ROW_ID = 'main';
+        function agroSbCfg(){
+            var url=(localStorage.getItem('sb_url')||'').trim().replace(/\/+$/,'');
+            var key=(localStorage.getItem('sb_key')||'').trim();
+            return (url && key) ? { url:url, key:key } : null;
+        }
+        async function agroSb(path, method, body){
+            var c=agroSbCfg(); if(!c) return null;
+            var opt={ method:method, headers:{ 'apikey':c.key, 'Authorization':'Bearer '+c.key, 'Content-Type':'application/json' } };
+            if(method==='POST') opt.headers['Prefer']='resolution=merge-duplicates,return=minimal';
+            if(body) opt.body=JSON.stringify(body);
+            var r=await fetch(c.url+'/rest/v1/'+path, opt);
+            if(!r.ok) throw new Error('Supabase '+r.status);
+            var txt=await r.text(); return txt?JSON.parse(txt):null;
+        }
+        var _agroPushTimer=null, _agroSyncing=false;
+        function agroPushDebounced(){
+            if(!agroSbCfg()) return;
+            clearTimeout(_agroPushTimer);
+            _agroPushTimer=setTimeout(agroPush, 1500);
+        }
+        async function agroPush(){
+            if(!agroSbCfg() || _agroSyncing) return;
+            _agroSyncing=true;
+            try{
+                await agroSb('agro_state?on_conflict=id','POST',{ id:AGRO_ROW_ID, data:data, updated_at:new Date().toISOString() });
+            }catch(e){ /* hors ligne — réessai au prochain save */ }
+            finally{ _agroSyncing=false; }
+        }
+        async function agroPull(){
+            if(!agroSbCfg()) return;
+            try{
+                var rows=await agroSb('agro_state?id=eq.'+AGRO_ROW_ID+'&select=data,updated_at','GET');
+                if(Array.isArray(rows) && rows.length && rows[0].data){
+                    var remote=rows[0].data;
+                    var localT=data && data._modifie ? Date.parse(data._modifie) : 0;
+                    var remoteT=remote._modifie ? Date.parse(remote._modifie) : Date.parse(rows[0].updated_at||0);
+                    if(!data || !data._modifie || remoteT>localT){
+                        data=remote;
+                    }
+                }
+            }catch(e){ /* hors ligne — on garde le local */ }
         }
 
         // ============================================================
