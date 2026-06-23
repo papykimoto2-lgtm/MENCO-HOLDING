@@ -3497,6 +3497,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
             <button class="btn btn-primary" onclick="openStockEntree()">➕ Entrée (appro)</button>
             <button class="btn btn-secondary" onclick="openStockSortie()">➖ Sortie (chantier)</button>
+            <button class="btn btn-secondary" onclick="openStockInventaire()">🧮 Inventaire</button>
           </div>
         </div>
         <div class="kpi-grid" id="kpi-stock" style="margin-bottom:18px;"></div>
@@ -3597,6 +3598,23 @@ button:focus-visible, input:focus-visible, select:focus-visible {
             <div id="ss-info" style="font-size:11px;color:var(--blanc-dim);margin-top:6px;"></div>
           </div>
           <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('modal-stock-sortie')">Annuler</button><button class="btn btn-primary" onclick="saveStockSortie()">Enregistrer la sortie</button></div>
+        </div>
+      </div>
+
+      <!-- Modal Inventaire stock -->
+      <div class="modal-overlay" id="modal-stock-inventaire">
+        <div class="modal" style="max-width:480px;">
+          <div class="modal-header"><div class="modal-title">🧮 Inventaire (ajustement de stock)</div><button class="modal-close" onclick="closeModal('modal-stock-inventaire')">✕</button></div>
+          <div class="modal-body">
+            <div class="form-grid" style="grid-template-columns:1fr 1fr;">
+              <div class="form-group span-2"><label>Matériau *</label><select class="form-control" id="si-key"></select></div>
+              <div class="form-group"><label>Stock physique compté *</label><input type="number" class="form-control" id="si-compte" min="0" step="any" value="0" oninput="stockInvInfo()"></div>
+              <div class="form-group"><label>Date</label><input type="date" class="form-control" id="si-date"></div>
+              <div class="form-group span-2"><label>Motif / observation</label><input class="form-control" id="si-motif" placeholder="Ex : inventaire mensuel, casse, perte…"></div>
+            </div>
+            <div id="si-info" style="font-size:11px;color:var(--blanc-dim);margin-top:6px;"></div>
+          </div>
+          <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('modal-stock-inventaire')">Annuler</button><button class="btn btn-primary" onclick="saveStockInventaire()">Valider l'inventaire</button></div>
         </div>
       </div>
 
@@ -45042,6 +45060,43 @@ async function deleteStockMvt(id){
   if(!confirm('Supprimer ce mouvement de stock ?')) return;
   DATA.stock_mouvements=DATA.stock_mouvements.filter(function(m){return m.id!==id;});
   await dbDelete('stock_mouvements',id); renderStock(); toast('Mouvement supprimé.','info');
+}
+
+/* ── Inventaire (ajustement de stock) ── */
+function openStockInventaire(){
+  var comp=stockCompute();
+  var opts='<option value="">— choisir —</option>';
+  Object.keys(comp.articles).forEach(function(k){var a=comp.articles[k]; opts+='<option value="'+k+'">'+a.libelle+' — théorique '+fmtQ(a.qte)+' '+(a.unite||'')+'</option>';});
+  var sel=document.getElementById('si-key'); sel.innerHTML=opts; sel.onchange=stockInvInfo;
+  document.getElementById('si-compte').value=0; document.getElementById('si-motif').value='';
+  document.getElementById('si-date').value=today(); document.getElementById('si-info').innerHTML='';
+  document.getElementById('modal-stock-inventaire').classList.add('open');
+}
+function stockInvInfo(){
+  var comp=stockCompute(); var a=comp.articles[document.getElementById('si-key').value];
+  var el=document.getElementById('si-info'); if(!el) return;
+  if(!a){ el.innerHTML=''; return; }
+  var v=document.getElementById('si-compte').value;
+  var base='Stock théorique : <strong>'+fmtQ(a.qte)+' '+(a.unite||'')+'</strong> · CUMP '+fmtF(Math.round(a.cump))+' F';
+  if(v!==''){ var ec=(parseFloat(v)||0)-a.qte; base+=' · écart : <strong style="color:'+(ec<0?'var(--rouge)':'var(--vert)')+';">'+(ec>0?'+':'')+fmtQ(ec)+'</strong>'; }
+  el.innerHTML=base;
+}
+async function saveStockInventaire(){
+  var key=document.getElementById('si-key').value;
+  if(!key){ toast('Choisissez un matériau.','error'); return; }
+  var cs=document.getElementById('si-compte').value;
+  if(cs===''){ toast('Saisissez le stock physique compté.','error'); return; }
+  var compte=parseFloat(cs)||0; if(compte<0){ toast('Quantité invalide.','error'); return; }
+  var comp=stockCompute(); var a=comp.articles[key]||{};
+  var m={ id:uid(), type:'ajustement',
+    res_id:(key.indexOf('res:')===0?key.slice(4):null),
+    designation:(key.indexOf('lib:')===0?key.slice(4):''),
+    unite:a.unite||'', qte:compte, pu:0,
+    motif:(document.getElementById('si-motif').value.trim()||'Inventaire'),
+    date:document.getElementById('si-date').value||today(), created_at:new Date().toISOString() };
+  DATA.stock_mouvements.push(m); await dbPut('stock_mouvements',m);
+  if(typeof syncToSupabase==='function')syncToSupabase('pi_stock_mouvements',m);
+  closeModal('modal-stock-inventaire'); renderStock(); toast('Inventaire enregistré.','success');
 }
 
 /* ── Marge par chantier interne ── */
