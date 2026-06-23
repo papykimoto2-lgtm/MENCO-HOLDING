@@ -3498,6 +3498,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
             <button class="btn btn-primary" onclick="openStockEntree()">➕ Entrée (appro)</button>
             <button class="btn btn-secondary" onclick="openStockSortie()">➖ Sortie (chantier)</button>
             <button class="btn btn-secondary" onclick="openStockInventaire()">🧮 Inventaire</button>
+            <button class="btn btn-secondary" onclick="openStockTransfert()">🔄 Transfert</button>
+            <button class="btn btn-secondary" onclick="openStockDepots()">🏬 Dépôts</button>
           </div>
         </div>
         <div class="kpi-grid" id="kpi-stock" style="margin-bottom:18px;"></div>
@@ -3505,6 +3507,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <button class="tab-btn active" onclick="switchTab('stock','etat')">📋 État des stocks</button>
           <button class="tab-btn" onclick="switchTab('stock','mouvements')">🔁 Mouvements</button>
           <button class="tab-btn" onclick="switchTab('stock','chantier')">🏗️ Consommation par chantier</button>
+          <button class="tab-btn" onclick="switchTab('stock','depot')">🏬 Par dépôt</button>
           <button class="tab-btn" onclick="switchTab('stock','marge')">💹 Marge chantiers</button>
         </div>
         <div class="tab-pane active" id="tab-stock-etat">
@@ -3530,6 +3533,14 @@ button:focus-visible, input:focus-visible, select:focus-visible {
               <tbody id="tbody-stock-chantier"></tbody>
             </table></div>
             <div style="font-size:11px;color:var(--blanc-dim);margin-top:8px;">La consommation est valorisée au CUMP. Le budget est rapproché des conventions (montant TTC) à titre indicatif.</div>
+          </div>
+        </div>
+        <div class="tab-pane" id="tab-stock-depot">
+          <div class="card">
+            <div class="table-wrap"><table>
+              <thead><tr><th>Dépôt</th><th>Matériau</th><th style="text-align:right;">Stock</th><th style="text-align:right;">CUMP</th><th style="text-align:right;">Valeur</th></tr></thead>
+              <tbody id="tbody-stock-depot"></tbody>
+            </table></div>
           </div>
         </div>
         <div class="tab-pane" id="tab-stock-marge">
@@ -3569,14 +3580,19 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <div class="modal-body">
             <div class="form-grid" style="grid-template-columns:1fr 1fr;">
               <div class="form-group span-2"><label>Matériau (bibliothèque) </label><select class="form-control" id="se-res" onchange="stockFillFromRes('se')"></select></div>
+              <div class="form-group span-2"><label>Dépôt de réception *</label><select class="form-control" id="se-depot"></select></div>
               <div class="form-group span-2"><label>Désignation (si hors bibliothèque)</label><input class="form-control" id="se-designation" placeholder="Ex : Ciment CPA 45"></div>
               <div class="form-group"><label>Unité</label><input class="form-control" id="se-unite" placeholder="sac, m³, kg…"></div>
               <div class="form-group"><label>Quantité *</label><input type="number" class="form-control" id="se-qte" min="0" step="any" value="0"></div>
               <div class="form-group"><label>Prix unitaire (FCFA) *</label><input type="number" class="form-control" id="se-pu" min="0" step="any" value="0"></div>
               <div class="form-group"><label>Date</label><input type="date" class="form-control" id="se-date"></div>
-              <div class="form-group span-2"><label>Fournisseur</label><input class="form-control" id="se-fournisseur"></div>
+              <div class="form-group span-2"><label>Fournisseur</label><div style="display:flex;gap:6px;"><select class="form-control" id="se-fournisseur" style="flex:1;"></select><button type="button" class="btn btn-secondary btn-sm" onclick="openFournisseurs()" title="Gérer les fournisseurs">🏢</button></div></div>
               <div class="form-group span-2"><label>Seuil d'alerte (optionnel)</label><input type="number" class="form-control" id="se-seuil" min="0" step="any" placeholder="laisser vide pour ne pas modifier"></div>
-              <div class="form-group span-2"><label style="font-weight:normal;font-size:12px;"><input type="checkbox" id="se-ecriture" style="margin-right:6px;"> Générer l'écriture d'achat (601 / 401)</label></div>
+              <div class="form-group span-2" style="border-top:1px solid var(--bord);padding-top:10px;margin-top:4px;"><label style="font-weight:700;color:var(--or);">Comptabilisation de l'achat</label></div>
+              <div class="form-group"><label style="font-weight:normal;font-size:12px;"><input type="checkbox" id="se-tva" checked style="margin-right:6px;"> TVA déductible 18 %</label></div>
+              <div class="form-group"><label>Mode de règlement</label><select class="form-control" id="se-mode" onchange="stockEntreeModeToggle()"><option value="credit">À crédit (401 fournisseur)</option><option value="comptant">Comptant</option></select></div>
+              <div class="form-group span-2" id="se-tresorerie-wrap" style="display:none;"><label>Compte de trésorerie (comptant)</label><select class="form-control" id="se-tresorerie"></select></div>
+              <div class="form-group span-2"><label style="font-weight:normal;font-size:12px;"><input type="checkbox" id="se-ecriture" checked style="margin-right:6px;"> Générer les écritures comptables</label></div>
             </div>
           </div>
           <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('modal-stock-entree')">Annuler</button><button class="btn btn-primary" onclick="saveStockEntree()">Enregistrer l'entrée</button></div>
@@ -3589,7 +3605,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <div class="modal-header"><div class="modal-title">➖ Sortie de matériau (consommation chantier)</div><button class="modal-close" onclick="closeModal('modal-stock-sortie')">✕</button></div>
           <div class="modal-body">
             <div class="form-grid" style="grid-template-columns:1fr 1fr;">
-              <div class="form-group span-2"><label>Matériau en stock *</label><select class="form-control" id="ss-key"></select></div>
+              <div class="form-group span-2"><label>Dépôt source *</label><select class="form-control" id="ss-depot" onchange="stockSortieReloadArticles()"></select></div>
+              <div class="form-group span-2"><label>Matériau en stock *</label><select class="form-control" id="ss-key" onchange="stockSortieInfo()"></select></div>
               <div class="form-group"><label>Quantité *</label><input type="number" class="form-control" id="ss-qte" min="0" step="any" value="0"></div>
               <div class="form-group"><label>Date</label><input type="date" class="form-control" id="ss-date"></div>
               <div class="form-group span-2"><label>Chantier (convention)</label><select class="form-control" id="ss-chantier"></select></div>
@@ -3607,7 +3624,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <div class="modal-header"><div class="modal-title">🧮 Inventaire (ajustement de stock)</div><button class="modal-close" onclick="closeModal('modal-stock-inventaire')">✕</button></div>
           <div class="modal-body">
             <div class="form-grid" style="grid-template-columns:1fr 1fr;">
-              <div class="form-group span-2"><label>Matériau *</label><select class="form-control" id="si-key"></select></div>
+              <div class="form-group span-2"><label>Dépôt *</label><select class="form-control" id="si-depot" onchange="stockInvReloadArticles()"></select></div>
+              <div class="form-group span-2"><label>Matériau *</label><select class="form-control" id="si-key" onchange="stockInvInfo()"></select></div>
               <div class="form-group"><label>Stock physique compté *</label><input type="number" class="form-control" id="si-compte" min="0" step="any" value="0" oninput="stockInvInfo()"></div>
               <div class="form-group"><label>Date</label><input type="date" class="form-control" id="si-date"></div>
               <div class="form-group span-2"><label>Motif / observation</label><input class="form-control" id="si-motif" placeholder="Ex : inventaire mensuel, casse, perte…"></div>
@@ -3615,6 +3633,59 @@ button:focus-visible, input:focus-visible, select:focus-visible {
             <div id="si-info" style="font-size:11px;color:var(--blanc-dim);margin-top:6px;"></div>
           </div>
           <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('modal-stock-inventaire')">Annuler</button><button class="btn btn-primary" onclick="saveStockInventaire()">Valider l'inventaire</button></div>
+        </div>
+      </div>
+
+      <!-- Modal Transfert dépôt -->
+      <div class="modal-overlay" id="modal-stock-transfert">
+        <div class="modal" style="max-width:500px;">
+          <div class="modal-header"><div class="modal-title">🔄 Transfert dépôt → dépôt</div><button class="modal-close" onclick="closeModal('modal-stock-transfert')">✕</button></div>
+          <div class="modal-body">
+            <div class="form-grid" style="grid-template-columns:1fr 1fr;">
+              <div class="form-group"><label>Dépôt source *</label><select class="form-control" id="st-source" onchange="stockTransfReloadArticles()"></select></div>
+              <div class="form-group"><label>Dépôt destination *</label><select class="form-control" id="st-dest"></select></div>
+              <div class="form-group span-2"><label>Matériau *</label><select class="form-control" id="st-key" onchange="stockTransfInfo()"></select></div>
+              <div class="form-group"><label>Quantité *</label><input type="number" class="form-control" id="st-qte" min="0" step="any" value="0"></div>
+              <div class="form-group"><label>Date</label><input type="date" class="form-control" id="st-date"></div>
+              <div class="form-group span-2"><label>Motif</label><input class="form-control" id="st-motif" placeholder="Ex : réappro chantier R+1"></div>
+            </div>
+            <div id="st-info" style="font-size:11px;color:var(--blanc-dim);margin-top:6px;"></div>
+          </div>
+          <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('modal-stock-transfert')">Annuler</button><button class="btn btn-primary" onclick="saveStockTransfert()">Valider le transfert</button></div>
+        </div>
+      </div>
+
+      <!-- Modal Dépôts -->
+      <div class="modal-overlay" id="modal-stock-depots">
+        <div class="modal" style="max-width:440px;">
+          <div class="modal-header"><div class="modal-title">🏬 Dépôts</div><button class="modal-close" onclick="closeModal('modal-stock-depots')">✕</button></div>
+          <div class="modal-body">
+            <div style="display:flex;gap:8px;align-items:flex-end;">
+              <div class="form-group" style="flex:1;margin:0;"><label>Nouveau dépôt</label><input class="form-control" id="dep-nom" placeholder="Ex : Dépôt chantier Riviera"></div>
+              <button class="btn btn-primary" onclick="saveDepot()">Ajouter</button>
+            </div>
+            <div id="dep-liste" style="margin-top:12px;"></div>
+          </div>
+          <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('modal-stock-depots')">Fermer</button></div>
+        </div>
+      </div>
+
+      <!-- Modal Fournisseurs -->
+      <div class="modal-overlay" id="modal-fournisseurs">
+        <div class="modal" style="max-width:520px;">
+          <div class="modal-header"><div class="modal-title">🏢 Fournisseurs (matériaux)</div><button class="modal-close" onclick="closeModal('modal-fournisseurs')">✕</button></div>
+          <div class="modal-body">
+            <div class="form-grid" style="grid-template-columns:1fr 1fr;">
+              <div class="form-group span-2"><label>Raison sociale *</label><input class="form-control" id="fo-nom"></div>
+              <div class="form-group"><label>RCCM</label><input class="form-control" id="fo-rccm"></div>
+              <div class="form-group"><label>NCC</label><input class="form-control" id="fo-ncc"></div>
+              <div class="form-group"><label>Contact / Tél</label><input class="form-control" id="fo-contact"></div>
+              <div class="form-group"><label>Compte (401x)</label><input class="form-control" id="fo-compte" placeholder="401"></div>
+            </div>
+            <button class="btn btn-primary btn-sm" style="margin-top:8px;" onclick="saveFournisseur()">Ajouter le fournisseur</button>
+            <div id="fo-liste" style="margin-top:12px;"></div>
+          </div>
+          <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('modal-fournisseurs')">Fermer</button></div>
         </div>
       </div>
 
@@ -13518,6 +13589,8 @@ var DATA = {
   eds_ressources: [],
   stock_mouvements: [],
   chantier_couts: [],
+  depots: [],
+  fournisseurs: [],
   cessions_foncieres: [],
   lot_unites: [],
   /* v114 — Aménagement foncier */
@@ -13529,7 +13602,7 @@ var DATA = {
    INDEXEDDB
 ────────────────────────────────────────────────────── */
 var DB_NAME = 'ImmoSuiteDB';
-var DB_VERSION = 120; /* v120: chantier_couts (marge chantier interne) */
+var DB_VERSION = 122; /* v122: fournisseurs (appro matériaux) */
 var db = null;
 
 /* Liste COMPLÈTE et définitive de tous les stores */
@@ -13581,7 +13654,9 @@ var ALL_STORES = [
   /* v118 — Financiers partenaires & versements */
   'af_financiers','af_versements_financiers',
   'stock_mouvements',
-  'chantier_couts'
+  'chantier_couts',
+  'depots',
+  'fournisseurs'
 ];
 
 function initDB() {
@@ -14000,6 +14075,8 @@ var SUPA_STORE_MAP = [
   ['pi_eds_ressources',  'eds_ressources'],
   ['pi_stock_mouvements','stock_mouvements'],
   ['pi_chantier_couts',  'chantier_couts'],
+  ['pi_depots',          'depots'],
+  ['pi_fournisseurs',    'fournisseurs'],
   ['pi_af_operations',   'af_operations'],
   ['pi_af_agents',       'af_agents'],
   ['pi_employes',        'employes'],
@@ -44866,89 +44943,104 @@ async function edsLoadRessources() {
    Valorisation CUMP. Seuils dans DATA.params.stock_seuils.
    ══════════════════════════════════════════════════════ */
 function stockSeuils(){ if(!DATA.params) DATA.params={}; if(!DATA.params.stock_seuils) DATA.params.stock_seuils={}; return DATA.params.stock_seuils; }
+function stockEnsureDepots(){
+  if(!DATA.depots) DATA.depots=[];
+  if(!DATA.depots.some(function(d){return d.id==='dep_central';})){
+    var d={id:'dep_central',nom:'Magasin central',actif:true,created_at:today()};
+    DATA.depots.unshift(d); dbPut('depots',d); if(typeof syncToSupabase==='function')syncToSupabase('pi_depots',d);
+  }
+}
+function depotName(id){ var d=(DATA.depots||[]).find(function(x){return x.id===id;}); return d?d.nom:(id==='dep_central'?'Magasin central':'—'); }
+function depotOptions(sel,includeAll){
+  stockEnsureDepots();
+  var html=includeAll?'<option value="">— tous les dépôts —</option>':'';
+  (DATA.depots||[]).filter(function(d){return d.actif!==false;}).forEach(function(d){
+    html+='<option value="'+d.id+'"'+(sel===d.id?' selected':'')+'>'+d.nom+'</option>';
+  });
+  return html;
+}
 function stockKeyOf(m){ return m.res_id ? ('res:'+m.res_id) : ('lib:'+((m.designation||'').trim().toLowerCase())); }
+function depotOf(m){ return m.depot_id || 'dep_central'; }
 function stockResInfo(m){
   if(m.res_id){ var r=(DATA.eds_ressources||[]).find(function(x){return x.id===m.res_id;}); if(r) return {libelle:r.libelle,unite:r.unite}; }
   return {libelle:m.designation||'—', unite:m.unite||''};
 }
-/* Reduce chronologique → état par article + valorisation de chaque mouvement */
+function fmtQ(n){ n=parseFloat(n)||0; return (Math.round(n*100)/100).toLocaleString('fr-FR'); }
 function stockCompute(){
   var mvts=(DATA.stock_mouvements||[]).slice().sort(function(a,b){
     var d=(a.date||'').localeCompare(b.date||''); return d!==0?d:((a.created_at||'').localeCompare(b.created_at||''));
   });
-  var art={};
+  var cells={};
+  function getCell(ak,dep,info){ var ck=ak+'@'+dep; if(!cells[ck]) cells[ck]={key:ck,artKey:ak,depot_id:dep,libelle:info.libelle,unite:info.unite,qte:0,valeur:0,cump:0}; var c=cells[ck]; if(info.libelle&&info.libelle!=='—')c.libelle=info.libelle; if(info.unite)c.unite=info.unite; return c; }
   mvts.forEach(function(m){
-    var k=stockKeyOf(m); var info=stockResInfo(m);
-    if(!art[k]) art[k]={key:k,res_id:m.res_id||null,libelle:info.libelle,unite:info.unite,qte:0,valeur:0,cump:0};
-    var a=art[k]; if(info.libelle!=='—')a.libelle=info.libelle; if(info.unite)a.unite=info.unite;
-    var q=parseFloat(m.qte)||0;
-    if(m.type==='entree'){ var pu=parseFloat(m.pu)||0; a.qte+=q; a.valeur+=q*pu; a.cump=a.qte>0?a.valeur/a.qte:0; m._val=q*pu; }
-    else if(m.type==='sortie'){ var v=a.cump*q; a.qte-=q; a.valeur-=v; if(a.qte<0)a.qte=0; if(a.valeur<0)a.valeur=0; m._val=v; m._cump=a.cump; }
-    else if(m.type==='ajustement'){ a.qte=q; a.valeur=q*a.cump; m._val=q*a.cump; }
+    var ak=stockKeyOf(m), info=stockResInfo(m), q=parseFloat(m.qte)||0;
+    if(m.type==='entree'){ var c=getCell(ak,depotOf(m),info); var pu=parseFloat(m.pu)||0; c.qte+=q; c.valeur+=q*pu; c.cump=c.qte>0?c.valeur/c.qte:0; m._val=q*pu; }
+    else if(m.type==='sortie'){ var c2=getCell(ak,depotOf(m),info); var v=c2.cump*q; c2.qte-=q; c2.valeur-=v; if(c2.qte<0)c2.qte=0; if(c2.valeur<0)c2.valeur=0; m._val=v; m._cump=c2.cump; }
+    else if(m.type==='ajustement'){ var c3=getCell(ak,depotOf(m),info); c3.qte=q; c3.valeur=q*c3.cump; m._val=q*c3.cump; }
+    else if(m.type==='transfert'){ var src=getCell(ak,m.depot_source||'dep_central',info); var vt=src.cump*q; src.qte-=q; src.valeur-=vt; if(src.qte<0)src.qte=0; if(src.valeur<0)src.valeur=0; var dst=getCell(ak,m.depot_dest||'dep_central',info); dst.qte+=q; dst.valeur+=vt; dst.cump=dst.qte>0?dst.valeur/dst.qte:0; m._val=vt; m._cump=src.cump; }
   });
-  return {articles:art, mvts:mvts};
+  var byArticle={};
+  Object.keys(cells).forEach(function(ck){ var c=cells[ck]; if(!byArticle[c.artKey]) byArticle[c.artKey]={artKey:c.artKey,libelle:c.libelle,unite:c.unite,qte:0,valeur:0,cump:0}; var a=byArticle[c.artKey]; a.qte+=c.qte; a.valeur+=c.valeur; if(c.libelle&&c.libelle!=='—')a.libelle=c.libelle; if(c.unite)a.unite=c.unite; });
+  Object.keys(byArticle).forEach(function(k){ var a=byArticle[k]; a.cump=a.qte>0?a.valeur/a.qte:0; });
+  return {cells:cells, byArticle:byArticle, mvts:mvts};
 }
-function fmtQ(n){ n=parseFloat(n)||0; return (Math.round(n*100)/100).toLocaleString('fr-FR'); }
-
 function renderStock(){
-  var comp=stockCompute(); var arts=Object.keys(comp.articles).map(function(k){return comp.articles[k];});
+  stockEnsureDepots();
+  var comp=stockCompute();
+  var arts=Object.keys(comp.byArticle).map(function(k){return comp.byArticle[k];});
+  var cells=Object.keys(comp.cells).map(function(k){return comp.cells[k];});
   var seuils=stockSeuils();
   var valTot=arts.reduce(function(s,a){return s+a.valeur;},0);
   var nbArt=arts.filter(function(a){return a.qte>0;}).length;
-  var sousSeuil=arts.filter(function(a){var s=parseFloat(seuils[a.key]); return !isNaN(s)&&a.qte<=s;});
-
+  var sousSeuil=arts.filter(function(a){var s=parseFloat(seuils[a.artKey]); return !isNaN(s)&&a.qte<=s;});
   var kpi=document.getElementById('kpi-stock');
   if(kpi){ kpi.innerHTML=[
     {l:'Articles en stock',v:nbArt,i:'📦',c:'kpi-blue'},
-    {l:'Valeur du stock',v:fmtF(valTot)+' F',i:'💰',c:'kpi-green'},
-    {l:'Sous seuil d\'alerte',v:sousSeuil.length,i:'⚠️',c:sousSeuil.length?'kpi-red':''},
-    {l:'Mouvements',v:(DATA.stock_mouvements||[]).length,i:'🔁',c:''},
+    {l:'Valeur du stock',v:fmtF(Math.round(valTot))+' F',i:'💰',c:'kpi-green'},
+    {l:'Sous seuil',v:sousSeuil.length,i:'⚠️',c:sousSeuil.length?'kpi-red':''},
+    {l:'Dépôts',v:(DATA.depots||[]).filter(function(d){return d.actif!==false;}).length,i:'🏬',c:''},
   ].map(function(k){return '<div class="kpi-card '+(k.c||'')+'"><div class="kpi-icon">'+k.i+'</div><div class="kpi-value">'+k.v+'</div><div class="kpi-label">'+k.l+'</div></div>';}).join(''); }
-
-  // État
   var tb=document.getElementById('tbody-stock-etat');
   if(tb){
-    if(!arts.length){ tb.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--blanc-dim);padding:20px;">Aucun matériau en stock. Saisissez une entrée.</td></tr>'; }
+    if(!arts.length){ tb.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--blanc-dim);padding:20px;">Aucun matériau en stock.</td></tr>'; }
     else tb.innerHTML=arts.sort(function(a,b){return b.valeur-a.valeur;}).map(function(a){
-      var seuil=seuils[a.key]; var hasSeuil=seuil!==undefined&&seuil!=='';
+      var seuil=seuils[a.artKey]; var hasSeuil=seuil!==undefined&&seuil!=='';
       var alerte=hasSeuil&&a.qte<=parseFloat(seuil);
       var etat=a.qte<=0?'<span class="badge badge-rouge">Épuisé</span>':(alerte?'<span class="badge badge-or">⚠️ Sous seuil</span>':'<span class="badge badge-vert">OK</span>');
-      return '<tr>'
-        +'<td style="font-weight:600;">'+a.libelle+'</td>'
-        +'<td style="font-size:11px;">'+(a.unite||'—')+'</td>'
+      return '<tr><td style="font-weight:600;">'+a.libelle+'</td><td style="font-size:11px;">'+(a.unite||'—')+'</td>'
         +'<td style="text-align:right;font-weight:700;'+(alerte?'color:var(--or);':'')+'">'+fmtQ(a.qte)+'</td>'
         +'<td style="text-align:right;">'+fmtF(Math.round(a.cump))+'</td>'
         +'<td style="text-align:right;font-weight:600;">'+fmtF(Math.round(a.valeur))+'</td>'
-        +'<td style="text-align:right;"><input type="number" value="'+(hasSeuil?seuil:'')+'" placeholder="—" style="width:70px;text-align:right;background:transparent;border:1px solid var(--bord);border-radius:6px;color:inherit;padding:3px 6px;font-size:12px;" onchange="stockSetSeuil(\''+a.key+'\',this.value)"></td>'
-        +'<td>'+etat+'</td>'
-        +'</tr>';
+        +'<td style="text-align:right;"><input type="number" value="'+(hasSeuil?seuil:'')+'" placeholder="—" style="width:70px;text-align:right;background:transparent;border:1px solid var(--bord);border-radius:6px;color:inherit;padding:3px 6px;font-size:12px;" onchange="stockSetSeuil(\''+a.artKey+'\',this.value)"></td>'
+        +'<td>'+etat+'</td></tr>';
     }).join('');
   }
-
-  // Mouvements
+  var td=document.getElementById('tbody-stock-depot');
+  if(td){
+    var withStock=cells.filter(function(c){return c.qte>0.0001;}).sort(function(a,b){ var d=depotName(a.depot_id).localeCompare(depotName(b.depot_id)); return d!==0?d:b.valeur-a.valeur; });
+    if(!withStock.length){ td.innerHTML='<tr><td colspan="5" style="text-align:center;color:var(--blanc-dim);padding:20px;">Aucun stock par dépôt.</td></tr>'; }
+    else td.innerHTML=withStock.map(function(c){ return '<tr><td style="font-size:12px;">🏬 '+depotName(c.depot_id)+'</td><td style="font-weight:600;">'+c.libelle+'</td><td style="text-align:right;font-weight:700;">'+fmtQ(c.qte)+' '+(c.unite||'')+'</td><td style="text-align:right;">'+fmtF(Math.round(c.cump))+'</td><td style="text-align:right;font-weight:600;">'+fmtF(Math.round(c.valeur))+'</td></tr>'; }).join('');
+  }
   var tm=document.getElementById('tbody-stock-mvt');
   if(tm){
     var rev=comp.mvts.slice().reverse();
     if(!rev.length){ tm.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--blanc-dim);padding:20px;">Aucun mouvement.</td></tr>'; }
     else tm.innerHTML=rev.map(function(m){
       var info=stockResInfo(m);
-      var typBadge=m.type==='entree'?'<span class="badge badge-vert">Entrée</span>':(m.type==='sortie'?'<span class="badge badge-bleu">Sortie</span>':'<span class="badge badge-or">Ajust.</span>');
+      var typBadge=m.type==='entree'?'<span class="badge badge-vert">Entrée</span>':(m.type==='sortie'?'<span class="badge badge-bleu">Sortie</span>':(m.type==='transfert'?'<span class="badge badge-or">Transfert</span>':'<span class="badge badge-or">Ajust.</span>'));
       var conv=m.chantier_id?(DATA.conventions.find(function(c){return c.id===m.chantier_id;})||{}):null;
-      var ref=m.type==='entree'?(m.fournisseur||'—'):(conv?conv.numero:(m.motif||'—'));
+      var ref;
+      if(m.type==='entree') ref=(m.fournisseur||'—')+' → '+depotName(depotOf(m));
+      else if(m.type==='sortie') ref=(conv?conv.numero:(m.motif||'—'))+' ('+depotName(depotOf(m))+')';
+      else if(m.type==='transfert') ref=depotName(m.depot_source)+' → '+depotName(m.depot_dest);
+      else ref=(m.motif||'Inventaire')+' ('+depotName(depotOf(m))+')';
       var pu=m.type==='entree'?(parseFloat(m.pu)||0):(m._cump||0);
-      return '<tr>'
-        +'<td>'+(m.date||'—')+'</td><td>'+typBadge+'</td>'
-        +'<td style="font-size:12px;">'+info.libelle+'</td>'
-        +'<td style="text-align:right;">'+fmtQ(m.qte)+'</td>'
-        +'<td style="text-align:right;">'+fmtF(Math.round(pu))+'</td>'
-        +'<td style="text-align:right;font-weight:600;">'+fmtF(Math.round(m._val||0))+'</td>'
-        +'<td style="font-size:11px;">'+ref+'</td>'
-        +'<td><button class="btn btn-danger btn-sm btn-icon" onclick="deleteStockMvt(\''+m.id+'\')">🗑</button></td>'
-        +'</tr>';
+      return '<tr><td>'+(m.date||'—')+'</td><td>'+typBadge+'</td><td style="font-size:12px;">'+info.libelle+'</td>'
+        +'<td style="text-align:right;">'+fmtQ(m.qte)+'</td><td style="text-align:right;">'+fmtF(Math.round(pu))+'</td>'
+        +'<td style="text-align:right;font-weight:600;">'+fmtF(Math.round(m._val||0))+'</td><td style="font-size:11px;">'+ref+'</td>'
+        +'<td><button class="btn btn-danger btn-sm btn-icon" onclick="deleteStockMvt(\''+m.id+'\')">🗑</button></td></tr>';
     }).join('');
   }
-
-  // Consommation par chantier
   var tc=document.getElementById('tbody-stock-chantier');
   if(tc){
     var byConv={};
@@ -44959,15 +45051,12 @@ function renderStock(){
       var conv=DATA.conventions.find(function(c){return c.id===cid;})||{numero:'—'};
       var constr=DATA.constructeurs.find(function(x){return x.id===conv.constructeur_id;})||{raison_sociale:'—'};
       var conso=byConv[cid]; var budget=parseFloat(conv.montant_ttc)||0;
-      var ecart=budget>0?(conso-budget):null;
       var ecartHtml=budget>0?('<span style="color:'+(conso>budget?'var(--rouge)':'var(--vert)')+';">'+(conso>budget?'+':'')+fmtF(Math.round(conso-budget))+' F</span>'):'—';
       return '<tr><td style="font-family:monospace;color:var(--or);">'+conv.numero+'</td><td style="font-size:12px;">'+constr.raison_sociale+(constr.interne?' <span class="badge badge-bleu" style="font-size:9px;">INTERNE</span>':'')+'</td><td style="text-align:right;font-weight:600;">'+fmtF(Math.round(conso))+' F</td><td style="text-align:right;">'+(budget>0?fmtF(budget)+' F':'—')+'</td><td>'+ecartHtml+'</td></tr>';
     }).join('');
   }
 }
-
 function stockSetSeuil(key,val){ var s=stockSeuils(); if(val===''||val==null){ delete s[key]; } else { s[key]=parseFloat(val)||0; } DATA.params.id='main'; dbPut('params',DATA.params); if(typeof syncToSupabase==='function')syncToSupabase('pi_params',DATA.params); renderStock(); }
-
 function stockMateriauxOptions(sel){
   var html='<option value="">— hors bibliothèque —</option>';
   (DATA.eds_ressources||[]).filter(function(r){return r.type==='materiau';}).forEach(function(r){
@@ -44988,11 +45077,25 @@ function stockFillFromRes(pfx){
   var r=(DATA.eds_ressources||[]).find(function(x){return x.id===rid;});
   if(r){ document.getElementById(pfx+'-unite').value=r.unite||''; document.getElementById(pfx+'-pu').value=r.pu||0; document.getElementById(pfx+'-designation').value=''; }
 }
+function stockCellOptions(depotId){
+  var comp=stockCompute(); var opts='<option value="">— choisir —</option>';
+  Object.keys(comp.cells).forEach(function(ck){ var c=comp.cells[ck]; if(c.depot_id===depotId && c.qte>0.0001){ opts+='<option value="'+c.artKey+'">'+c.libelle+' — stock '+fmtQ(c.qte)+' '+(c.unite||'')+'</option>'; } });
+  return opts;
+}
+function cellGet(artKey,depotId){ var comp=stockCompute(); return comp.cells[artKey+'@'+depotId]||null; }
 function openStockEntree(){
+  stockEnsureDepots();
   document.getElementById('se-res').innerHTML=stockMateriauxOptions('');
-  ['se-designation','se-fournisseur','se-seuil'].forEach(function(id){document.getElementById(id).value='';});
+  document.getElementById('se-depot').innerHTML=depotOptions('dep_central',false);
+  document.getElementById('se-fournisseur').innerHTML=fournisseurOptions('');
+  document.getElementById('se-tresorerie').innerHTML=tresorerieOptions('521');
+  ['se-designation','se-seuil'].forEach(function(id){document.getElementById(id).value='';});
   document.getElementById('se-unite').value=''; document.getElementById('se-qte').value=0; document.getElementById('se-pu').value=0;
-  document.getElementById('se-date').value=today(); document.getElementById('se-ecriture').checked=false;
+  document.getElementById('se-date').value=today();
+  document.getElementById('se-tva').checked=true; document.getElementById('se-mode').value='credit';
+  document.getElementById('se-ecriture').checked=true;
+  var rc=document.getElementById('se-recap'); if(rc)rc.innerHTML='';
+  stockEntreeModeToggle();
   document.getElementById('modal-stock-entree').classList.add('open');
 }
 async function saveStockEntree(){
@@ -45002,78 +45105,126 @@ async function saveStockEntree(){
   var pu=parseFloat(document.getElementById('se-pu').value)||0;
   if(!rid && !desig){ toast('Choisissez un matériau ou saisissez une désignation.','error'); return; }
   if(qte<=0){ toast('Quantité invalide.','error'); return; }
+  var fid=document.getElementById('se-fournisseur').value||null;
+  var four=(DATA.fournisseurs||[]).find(function(x){return x.id===fid;});
+  var mode=document.getElementById('se-mode').value;
+  var avecTva=document.getElementById('se-tva').checked;
+  var compteTreso=document.getElementById('se-tresorerie').value||'521';
+  var ht=Math.round(qte*pu); var tva=avecTva?Math.round(ht*0.18):0; var ttc=ht+tva;
   var m={ id:uid(), type:'entree', res_id:rid||null, designation:rid?'':desig,
     unite:document.getElementById('se-unite').value.trim(), qte:qte, pu:pu,
-    fournisseur:document.getElementById('se-fournisseur').value.trim(),
+    depot_id:document.getElementById('se-depot').value||'dep_central',
+    fournisseur_id:fid, fournisseur:(four?four.nom:''),
+    mode_paiement:mode, compte_tresorerie:(mode==='comptant'?compteTreso:''),
+    ht:ht, tva:tva, ttc:ttc,
     date:document.getElementById('se-date').value||today(), created_at:new Date().toISOString() };
   DATA.stock_mouvements.push(m); await dbPut('stock_mouvements',m);
   if(typeof syncToSupabase==='function')syncToSupabase('pi_stock_mouvements',m);
-  // seuil
   var sv=document.getElementById('se-seuil').value;
   if(sv!==''){ stockSeuils()[stockKeyOf(m)]=parseFloat(sv)||0; DATA.params.id='main'; await dbPut('params',DATA.params); if(typeof syncToSupabase==='function')syncToSupabase('pi_params',DATA.params); }
-  // écriture achat 601/401
-  if(document.getElementById('se-ecriture').checked && qte*pu>0){
+  if(document.getElementById('se-ecriture').checked && ht>0){
     var info=stockResInfo(m); var num='ACH-'+(m.id.slice(-5));
-    var ecr={ id:'ecr_stk_'+m.id, ref:num, date:m.date, piece:num,
-      libelle:'Achat matériaux — '+info.libelle+(m.fournisseur?(' ('+m.fournisseur+')'):''),
-      compte:'601', compte_debit:'601', compte_credit:'401', montant:Math.round(qte*pu),
-      type:'charge', mode:'', created_at:today() };
-    DATA.ecritures.push(ecr); await dbPut('ecritures',ecr);
-    if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',ecr);
+    var creditCompte = mode==='comptant' ? compteTreso : (four&&four.compte?four.compte:'401');
+    var libFour = four?(' ('+four.nom+')'):'';
+    var e1={ id:'ecr_stk_'+m.id, ref:num, date:m.date, piece:num, libelle:'Achat matériaux — '+info.libelle+libFour, compte:'601', compte_debit:'601', compte_credit:creditCompte, montant:ht, type:'charge', mode:mode, created_at:today() };
+    DATA.ecritures.push(e1); await dbPut('ecritures',e1); if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',e1);
+    if(tva>0){
+      var e2={ id:'ecr_tva_'+m.id, ref:'TVA-'+num, date:m.date, piece:num, libelle:'TVA déductible s/ achat '+info.libelle, compte:'4452', compte_debit:'4452', compte_credit:creditCompte, montant:tva, type:'charge', mode:mode, created_at:today() };
+      DATA.ecritures.push(e2); await dbPut('ecritures',e2); if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',e2);
+    }
   }
   closeModal('modal-stock-entree'); renderStock(); toast('Entrée enregistrée.','success');
 }
+function fournisseurOptions(sel){
+  var html='<option value="">— aucun / non renseigné —</option>';
+  (DATA.fournisseurs||[]).forEach(function(fr){ html+='<option value="'+fr.id+'"'+(sel===fr.id?' selected':'')+'>'+fr.nom+'</option>'; });
+  return html;
+}
+function tresorerieOptions(sel){
+  var list=[['521','521 — Banque'],['571','571 — Caisse'],['551','551 — Wave'],['552','552 — Orange Money'],['553','553 — MTN MoMo']];
+  return list.map(function(o){return '<option value="'+o[0]+'"'+(sel===o[0]?' selected':'')+'>'+o[1]+'</option>';}).join('');
+}
+function stockEntreeModeToggle(){
+  var mode=document.getElementById('se-mode').value;
+  document.getElementById('se-tresorerie-wrap').style.display=(mode==='comptant')?'block':'none';
+}
+function openFournisseurs(){
+  ['fo-nom','fo-rccm','fo-ncc','fo-contact'].forEach(function(id){document.getElementById(id).value='';});
+  document.getElementById('fo-compte').value='401';
+  renderFournisseursListe();
+  document.getElementById('modal-fournisseurs').classList.add('open');
+}
+function renderFournisseursListe(){
+  var z=document.getElementById('fo-liste'); if(!z) return;
+  var l=DATA.fournisseurs||[];
+  if(!l.length){ z.innerHTML='<div style="font-size:11px;color:var(--blanc-dim);">Aucun fournisseur.</div>'; return; }
+  z.innerHTML=l.map(function(fr){ return '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;border-bottom:1px solid var(--bord);padding:5px 0;"><span><strong>'+fr.nom+'</strong>'+(fr.ncc?(' · NCC '+fr.ncc):'')+(fr.compte?(' · '+fr.compte):'')+'</span><button class="btn btn-danger btn-sm btn-icon" onclick="deleteFournisseur(\''+fr.id+'\')">🗑</button></div>'; }).join('');
+}
+async function saveFournisseur(){
+  var nom=document.getElementById('fo-nom').value.trim();
+  if(!nom){ toast('Raison sociale requise.','error'); return; }
+  var fr={ id:uid(), nom:nom, rccm:document.getElementById('fo-rccm').value.trim(), ncc:document.getElementById('fo-ncc').value.trim(), contact:document.getElementById('fo-contact').value.trim(), compte:(document.getElementById('fo-compte').value.trim()||'401'), created_at:today() };
+  if(!DATA.fournisseurs) DATA.fournisseurs=[];
+  DATA.fournisseurs.push(fr); await dbPut('fournisseurs',fr); if(typeof syncToSupabase==='function')syncToSupabase('pi_fournisseurs',fr);
+  ['fo-nom','fo-rccm','fo-ncc','fo-contact'].forEach(function(id){document.getElementById(id).value='';}); document.getElementById('fo-compte').value='401';
+  renderFournisseursListe();
+  var selF=document.getElementById('se-fournisseur'); if(selF) selF.innerHTML=fournisseurOptions(fr.id);
+  toast('Fournisseur ajouté.','success');
+}
+async function deleteFournisseur(id){
+  DATA.fournisseurs=(DATA.fournisseurs||[]).filter(function(f){return f.id!==id;});
+  await dbDelete('fournisseurs',id); renderFournisseursListe();
+  var selF=document.getElementById('se-fournisseur'); if(selF) selF.innerHTML=fournisseurOptions('');
+  toast('Fournisseur supprimé.','info');
+}
 function openStockSortie(){
-  var comp=stockCompute();
-  var opts='<option value="">— choisir —</option>';
-  Object.keys(comp.articles).forEach(function(k){ var a=comp.articles[k]; if(a.qte>0){ opts+='<option value="'+k+'">'+a.libelle+' — stock '+fmtQ(a.qte)+' '+(a.unite||'')+'</option>'; } });
-  var sel=document.getElementById('ss-key'); sel.innerHTML=opts;
-  sel.onchange=stockSortieInfo;
+  stockEnsureDepots();
+  document.getElementById('ss-depot').innerHTML=depotOptions('dep_central',false);
   document.getElementById('ss-chantier').innerHTML=stockChantierOptions();
+  stockSortieReloadArticles();
   document.getElementById('ss-qte').value=0; document.getElementById('ss-motif').value='';
-  document.getElementById('ss-date').value=today(); document.getElementById('ss-info').innerHTML='';
+  document.getElementById('ss-date').value=today();
   document.getElementById('modal-stock-sortie').classList.add('open');
 }
+function stockSortieReloadArticles(){
+  var dep=document.getElementById('ss-depot').value||'dep_central';
+  document.getElementById('ss-key').innerHTML=stockCellOptions(dep);
+  document.getElementById('ss-info').innerHTML='';
+}
 function stockSortieInfo(){
-  var comp=stockCompute(); var a=comp.articles[document.getElementById('ss-key').value];
+  var dep=document.getElementById('ss-depot').value||'dep_central';
+  var a=cellGet(document.getElementById('ss-key').value,dep);
   document.getElementById('ss-info').innerHTML = a ? ('Stock disponible : <strong>'+fmtQ(a.qte)+' '+(a.unite||'')+'</strong> · CUMP '+fmtF(Math.round(a.cump))+' F') : '';
 }
 async function saveStockSortie(){
+  var dep=document.getElementById('ss-depot').value||'dep_central';
   var key=document.getElementById('ss-key').value;
   var qte=parseFloat(document.getElementById('ss-qte').value)||0;
   if(!key){ toast('Choisissez un matériau.','error'); return; }
   if(qte<=0){ toast('Quantité invalide.','error'); return; }
-  var comp=stockCompute(); var a=comp.articles[key];
-  if(!a||qte>a.qte+1e-9){ toast('Stock insuffisant ('+(a?fmtQ(a.qte):'0')+' disponible).','error'); return; }
-  var m={ id:uid(), type:'sortie',
-    res_id:(key.indexOf('res:')===0?key.slice(4):null),
-    designation:(key.indexOf('lib:')===0?key.slice(4):''),
-    unite:a.unite, qte:qte, pu:0,
-    chantier_id:document.getElementById('ss-chantier').value||null,
-    motif:document.getElementById('ss-motif').value.trim(),
-    date:document.getElementById('ss-date').value||today(), created_at:new Date().toISOString() };
+  var a=cellGet(key,dep);
+  if(!a||qte>a.qte+1e-9){ toast('Stock insuffisant ('+(a?fmtQ(a.qte):'0')+' au dépôt).','error'); return; }
+  var m={ id:uid(), type:'sortie', res_id:(key.indexOf('res:')===0?key.slice(4):null), designation:(key.indexOf('lib:')===0?key.slice(4):''), unite:a.unite, qte:qte, pu:0, depot_id:dep, chantier_id:document.getElementById('ss-chantier').value||null, motif:document.getElementById('ss-motif').value.trim(), date:document.getElementById('ss-date').value||today(), created_at:new Date().toISOString() };
   DATA.stock_mouvements.push(m); await dbPut('stock_mouvements',m);
   if(typeof syncToSupabase==='function')syncToSupabase('pi_stock_mouvements',m);
   closeModal('modal-stock-sortie'); renderStock(); toast('Sortie enregistrée.','success');
 }
-async function deleteStockMvt(id){
-  if(!confirm('Supprimer ce mouvement de stock ?')) return;
-  DATA.stock_mouvements=DATA.stock_mouvements.filter(function(m){return m.id!==id;});
-  await dbDelete('stock_mouvements',id); renderStock(); toast('Mouvement supprimé.','info');
-}
-
-/* ── Inventaire (ajustement de stock) ── */
 function openStockInventaire(){
-  var comp=stockCompute();
-  var opts='<option value="">— choisir —</option>';
-  Object.keys(comp.articles).forEach(function(k){var a=comp.articles[k]; opts+='<option value="'+k+'">'+a.libelle+' — théorique '+fmtQ(a.qte)+' '+(a.unite||'')+'</option>';});
-  var sel=document.getElementById('si-key'); sel.innerHTML=opts; sel.onchange=stockInvInfo;
+  stockEnsureDepots();
+  document.getElementById('si-depot').innerHTML=depotOptions('dep_central',false);
+  stockInvReloadArticles();
   document.getElementById('si-compte').value=0; document.getElementById('si-motif').value='';
   document.getElementById('si-date').value=today(); document.getElementById('si-info').innerHTML='';
   document.getElementById('modal-stock-inventaire').classList.add('open');
 }
+function stockInvReloadArticles(){
+  var dep=document.getElementById('si-depot').value||'dep_central';
+  document.getElementById('si-key').innerHTML=stockCellOptions(dep);
+  document.getElementById('si-info').innerHTML='';
+}
 function stockInvInfo(){
-  var comp=stockCompute(); var a=comp.articles[document.getElementById('si-key').value];
+  var dep=document.getElementById('si-depot').value||'dep_central';
+  var a=cellGet(document.getElementById('si-key').value,dep);
   var el=document.getElementById('si-info'); if(!el) return;
   if(!a){ el.innerHTML=''; return; }
   var v=document.getElementById('si-compte').value;
@@ -45082,21 +45233,79 @@ function stockInvInfo(){
   el.innerHTML=base;
 }
 async function saveStockInventaire(){
+  var dep=document.getElementById('si-depot').value||'dep_central';
   var key=document.getElementById('si-key').value;
   if(!key){ toast('Choisissez un matériau.','error'); return; }
   var cs=document.getElementById('si-compte').value;
   if(cs===''){ toast('Saisissez le stock physique compté.','error'); return; }
   var compte=parseFloat(cs)||0; if(compte<0){ toast('Quantité invalide.','error'); return; }
-  var comp=stockCompute(); var a=comp.articles[key]||{};
-  var m={ id:uid(), type:'ajustement',
-    res_id:(key.indexOf('res:')===0?key.slice(4):null),
-    designation:(key.indexOf('lib:')===0?key.slice(4):''),
-    unite:a.unite||'', qte:compte, pu:0,
-    motif:(document.getElementById('si-motif').value.trim()||'Inventaire'),
-    date:document.getElementById('si-date').value||today(), created_at:new Date().toISOString() };
+  var a=cellGet(key,dep)||{};
+  var m={ id:uid(), type:'ajustement', res_id:(key.indexOf('res:')===0?key.slice(4):null), designation:(key.indexOf('lib:')===0?key.slice(4):''), unite:a.unite||'', qte:compte, pu:0, depot_id:dep, motif:(document.getElementById('si-motif').value.trim()||'Inventaire'), date:document.getElementById('si-date').value||today(), created_at:new Date().toISOString() };
   DATA.stock_mouvements.push(m); await dbPut('stock_mouvements',m);
   if(typeof syncToSupabase==='function')syncToSupabase('pi_stock_mouvements',m);
   closeModal('modal-stock-inventaire'); renderStock(); toast('Inventaire enregistré.','success');
+}
+function openStockTransfert(){
+  stockEnsureDepots();
+  document.getElementById('st-source').innerHTML=depotOptions('dep_central',false);
+  document.getElementById('st-dest').innerHTML=depotOptions('',false);
+  stockTransfReloadArticles();
+  document.getElementById('st-qte').value=0; document.getElementById('st-motif').value='';
+  document.getElementById('st-date').value=today(); document.getElementById('st-info').innerHTML='';
+  document.getElementById('modal-stock-transfert').classList.add('open');
+}
+function stockTransfReloadArticles(){
+  var dep=document.getElementById('st-source').value||'dep_central';
+  document.getElementById('st-key').innerHTML=stockCellOptions(dep);
+  document.getElementById('st-info').innerHTML='';
+}
+function stockTransfInfo(){
+  var dep=document.getElementById('st-source').value||'dep_central';
+  var a=cellGet(document.getElementById('st-key').value,dep);
+  document.getElementById('st-info').innerHTML = a ? ('Disponible au dépôt source : <strong>'+fmtQ(a.qte)+' '+(a.unite||'')+'</strong> · CUMP '+fmtF(Math.round(a.cump))+' F') : '';
+}
+async function saveStockTransfert(){
+  var src=document.getElementById('st-source').value, dst=document.getElementById('st-dest').value;
+  var key=document.getElementById('st-key').value;
+  var qte=parseFloat(document.getElementById('st-qte').value)||0;
+  if(!src||!dst){ toast('Choisissez les dépôts.','error'); return; }
+  if(src===dst){ toast('Dépôts source et destination identiques.','error'); return; }
+  if(!key){ toast('Choisissez un matériau.','error'); return; }
+  if(qte<=0){ toast('Quantité invalide.','error'); return; }
+  var a=cellGet(key,src);
+  if(!a||qte>a.qte+1e-9){ toast('Stock insuffisant au dépôt source ('+(a?fmtQ(a.qte):'0')+').','error'); return; }
+  var m={ id:uid(), type:'transfert', res_id:(key.indexOf('res:')===0?key.slice(4):null), designation:(key.indexOf('lib:')===0?key.slice(4):''), unite:a.unite, qte:qte, pu:0, depot_source:src, depot_dest:dst, motif:document.getElementById('st-motif').value.trim(), date:document.getElementById('st-date').value||today(), created_at:new Date().toISOString() };
+  DATA.stock_mouvements.push(m); await dbPut('stock_mouvements',m);
+  if(typeof syncToSupabase==='function')syncToSupabase('pi_stock_mouvements',m);
+  closeModal('modal-stock-transfert'); renderStock(); toast('Transfert enregistré.','success');
+}
+function openStockDepots(){ stockEnsureDepots(); document.getElementById('dep-nom').value=''; renderDepotsListe(); document.getElementById('modal-stock-depots').classList.add('open'); }
+function renderDepotsListe(){
+  var z=document.getElementById('dep-liste'); if(!z) return;
+  z.innerHTML=(DATA.depots||[]).map(function(d){
+    var central=d.id==='dep_central';
+    return '<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;border-bottom:1px solid var(--bord);padding:6px 0;"><span>🏬 '+d.nom+(central?' <span class="badge badge-bleu" style="font-size:9px;">défaut</span>':'')+'</span>'+(central?'':'<button class="btn btn-danger btn-sm btn-icon" onclick="deleteDepot(\''+d.id+'\')">🗑</button>')+'</div>';
+  }).join('');
+}
+async function saveDepot(){
+  var nom=document.getElementById('dep-nom').value.trim();
+  if(!nom){ toast('Nom du dépôt requis.','error'); return; }
+  var d={ id:uid(), nom:nom, actif:true, created_at:today() };
+  DATA.depots.push(d); await dbPut('depots',d); if(typeof syncToSupabase==='function')syncToSupabase('pi_depots',d);
+  document.getElementById('dep-nom').value=''; renderDepotsListe(); toast('Dépôt ajouté.','success');
+}
+async function deleteDepot(id){
+  if(id==='dep_central'){ toast('Le magasin central ne peut être supprimé.','error'); return; }
+  var comp=stockCompute(); var hasStock=Object.keys(comp.cells).some(function(ck){return comp.cells[ck].depot_id===id && comp.cells[ck].qte>0.0001;});
+  if(hasStock){ toast('Dépôt non vide — transférez le stock avant suppression.','error'); return; }
+  if(!confirm('Supprimer ce dépôt ?')) return;
+  DATA.depots=DATA.depots.filter(function(d){return d.id!==id;});
+  await dbDelete('depots',id); renderDepotsListe(); renderStock(); toast('Dépôt supprimé.','info');
+}
+async function deleteStockMvt(id){
+  if(!confirm('Supprimer ce mouvement de stock ?')) return;
+  DATA.stock_mouvements=DATA.stock_mouvements.filter(function(m){return m.id!==id;});
+  await dbDelete('stock_mouvements',id); renderStock(); toast('Mouvement supprimé.','info');
 }
 
 /* ── Marge par chantier interne ── */
