@@ -20496,6 +20496,21 @@ async function envoyerRelance() {
   closeModal('modal-relance');
   toast('Relance marquée comme envoyée.', 'success');
   detectRelances();
+
+  /* Auto-création/MAJ dossier juridique dès Mise en demeure (3 mois) ou Résiliation (6 mois) */
+  var clientRel = DATA.clients.find(function(c) { return c.id === APP.relanceEditId; });
+  var rRel = getRetardataires().find(function(x) { return x.id === APP.relanceEditId; });
+  if (clientRel && rRel && rRel.moisRetard >= 3) {
+    var progRel = DATA.programmes.find(function(p) { return p.id === clientRel.programme_id; });
+    var lotRel = DATA.lots.find(function(l) { return l.id === clientRel.lot_id; });
+    ensureDossierContentieux('souscripteur', clientRel.id, {
+      titre: (clientRel.nom || '') + ' ' + (clientRel.prenoms || '') + (progRel ? ' — ' + progRel.nom : '') + (lotRel ? ' / Lot ' + lotRel.numero : ''),
+      interlocuteur: (clientRel.nom || '') + ' ' + (clientRel.prenoms || ''),
+      montant: rRel.montantDu,
+      moisRetard: rRel.moisRetard,
+      niveau: rRel.moisRetard >= 6 ? 3 : 2
+    });
+  }
 }
 
 /* ──────────────────────────────────────────────────────
@@ -34551,6 +34566,65 @@ async function deleteDossierJur(id) {
   DATA.docsJuridiques = (DATA.docsJuridiques||[]).filter(function(d){return d.dossier_id!==id;});
   renderDossiersJuridiques();
   toast('Dossier supprimé.', 'info');
+}
+
+/* ══════════════════════════════════════════════════════
+   AUTOMATISATION RELANCES → JURIDIQUE
+   Dès qu'une relance (souscripteur ou tiers acquéreur foncier)
+   atteint le niveau "Mise en demeure" (2) ou "Résiliation" (3),
+   un dossier est ouvert automatiquement dans Dossiers Juridiques.
+   Un seul dossier contentieux ouvert par source (évite les doublons) :
+   si un dossier existe déjà pour ce client/cession et n'est pas clos,
+   on le met à jour (priorité, montant, note datée) au lieu d'en recréer un.
+══════════════════════════════════════════════════════ */
+async function ensureDossierContentieux(sourceType, sourceId, opts) {
+  opts = opts || {};
+  if (!DATA.dossiersJuridiques) DATA.dossiersJuridiques = [];
+
+  var niveauLabel = opts.niveau >= 3 ? 'Résiliation' : 'Mise en demeure';
+  var prioAuto = opts.niveau >= 3 ? 'urgente' : 'haute';
+  var noteLigne = '[Auto ' + dateShort(today()) + '] Relance niveau « ' + niveauLabel + ' » — '
+    + (opts.moisRetard || 0) + ' mois de retard — ' + fcfa(opts.montant || 0) + ' dû.';
+
+  var existant = DATA.dossiersJuridiques.find(function(d) {
+    return d.source_type === sourceType && d.source_id === sourceId
+      && d.statut !== 'clos_favorable' && d.statut !== 'clos_defavorable';
+  });
+
+  if (existant) {
+    if (prioAuto === 'urgente' || existant.priorite !== 'urgente') existant.priorite = prioAuto;
+    existant.montant = opts.montant || existant.montant;
+    existant.notes = (existant.notes ? existant.notes + '\n' : '') + noteLigne;
+    DATA.dossiersJuridiques = DATA.dossiersJuridiques.map(function(d){ return d.id === existant.id ? existant : d; });
+    await dbPut('dossiersJuridiques', existant);
+    if (document.getElementById('tbody-dossiers-jur')) renderDossiersJuridiques();
+    toast('⚖️ Dossier juridique ' + existant.ref + ' mis à jour (' + niveauLabel + ').', 'info');
+    return existant;
+  }
+
+  var an = new Date().getFullYear();
+  var num = DATA.dossiersJuridiques.filter(function(d) { return (d.ref || '').indexOf('CTX-' + an) === 0; }).length + 1;
+  var ref = 'CTX-' + an + '-' + String(num).padStart(4, '0');
+  var d = {
+    id: uid(), ref: ref, type: 'contentieux',
+    objet: 'Recouvrement — ' + (opts.titre || (sourceType === 'cession_fonciere' ? 'Acquisition foncière' : 'Souscription')),
+    interlocuteur: opts.interlocuteur || '',
+    avocat: '',
+    date_ouv: today(),
+    date_ech: '',
+    priorite: prioAuto,
+    statut: 'ouvert',
+    montant: opts.montant || 0,
+    notes: noteLigne,
+    source_type: sourceType,
+    source_id: sourceId,
+    created_at: today()
+  };
+  DATA.dossiersJuridiques.push(d);
+  await dbPut('dossiersJuridiques', d);
+  if (document.getElementById('tbody-dossiers-jur')) renderDossiersJuridiques();
+  toast('⚖️ Dossier juridique ' + ref + ' créé automatiquement (' + niveauLabel + ').', 'warn');
+  return d;
 }
 
 /* ══════════════════════════════════════════════════════
@@ -50296,8 +50370,9 @@ async function crecEnvoyerRelance() {
   var c = (DATA.cessions_foncieres || []).find(function (x) { return x.id === _crecId; });
   if (!c) return;
   if (!c.relances) c.relances = [];
+  var nivRel = parseInt((document.getElementById('crec-relance-niv') || {}).value) || 0;
   c.relances.push({
-    id: uid(), date: today(), niveau: parseInt((document.getElementById('crec-relance-niv') || {}).value) || 0,
+    id: uid(), date: today(), niveau: nivRel,
     canal: 'sms', message: (document.getElementById('crec-relance-msg') || {}).value || ''
   });
   await dbPut('cessions_foncieres', c);
@@ -50305,6 +50380,18 @@ async function crecEnvoyerRelance() {
   closeModal('modal-crec-relance');
   toast('Relance enregistrée', 'success');
   crecRender();
+
+  /* Auto-création/MAJ dossier juridique dès Mise en demeure (niveau 2) ou Résiliation (niveau 3) */
+  if (nivRel >= 2) {
+    var rRel = crecRetard(c);
+    ensureDossierContentieux('cession_fonciere', c.id, {
+      titre: (c.acquereur || '') + (c.designation ? ' — ' + c.designation : (typeof cesSourceRef === 'function' ? ' — ' + cesSourceRef(c.source_key) : '')),
+      interlocuteur: c.acquereur || '',
+      montant: rRel ? rRel.montantDu : crecReste(c),
+      moisRetard: rRel ? rRel.moisRetard : 0,
+      niveau: nivRel
+    });
+  }
 }
 
 /* ── Lettre de relance / mise en demeure (PDF imprimable) ── */
