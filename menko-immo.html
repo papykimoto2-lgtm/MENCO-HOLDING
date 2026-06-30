@@ -2844,6 +2844,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
           <div class="tab-nav" style="margin-bottom:14px;">
             <button class="tab-btn active" onclick="switchTiersTab('clients411')">411 Clients / Souscripteurs</button>
+            <button class="tab-btn" onclick="switchTiersTab('acquereurs4111')">4111 Acquéreurs Fonciers</button>
             <button class="tab-btn" onclick="switchTiersTab('fournisseurs401')">401 Fournisseurs</button>
             <button class="tab-btn" onclick="switchTiersTab('personnel422')">422 Personnel</button>
             <button class="tab-btn" onclick="switchTiersTab('etat441')">44x État & Fisc</button>
@@ -2890,15 +2891,54 @@ button:focus-visible, input:focus-visible, select:focus-visible {
                 </table>
               </div>
             </div>
+          </div>
 
-            <!-- Relevé de compte individuel -->
-            <div class="card" style="margin-top:12px;" id="releve-tiers-box" style="display:none;">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
-                <div class="card-title" style="margin-bottom:0;">📄 Relevé de compte tiers — <span id="releve-tiers-nom"></span></div>
-                <button class="btn btn-secondary btn-sm" onclick="printReleveTiers()">🖨️ Imprimer</button>
-              </div>
-              <div id="releve-tiers-content"></div>
+          <!-- 4111 — Acquéreurs Fonciers (cessions de terrain) -->
+          <div id="tiers-pane-acquereurs4111" style="display:none;">
+            <div class="filters-bar">
+              <input type="text" class="search-input" id="search-tiers4111" placeholder="🔍 Acquéreur, bien cédé..." oninput="buildTiersAcquereurs4111()">
+              <select class="filter-select" id="filter-tiers4111-statut" onchange="buildTiersAcquereurs4111()">
+                <option value="">Tous statuts</option>
+                <option value="debiteur">Débiteur (solde dû)</option>
+                <option value="solde">Soldé</option>
+                <option value="crediteur">Créditeur (trop perçu)</option>
+              </select>
+              <button class="btn btn-secondary btn-sm" onclick="exportTiersAcquereurs4111CSV()">⬇ Export</button>
             </div>
+
+            <!-- Synthèse âge de la créance -->
+            <div class="card" style="margin-bottom:12px;">
+              <div class="card-title">⏱️ Analyse de l'antériorité des créances — Compte 4111 (Acquéreurs fonciers)</div>
+              <div id="tiers4111-anteriorite" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-top:10px;"></div>
+            </div>
+
+            <div class="card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <div class="card-title" style="margin-bottom:0;">🏞️ Relevé individuel des tiers 4111 — Acquéreurs de cessions foncières</div>
+                <div id="tiers4111-total" style="font-size:13px;font-weight:700;color:var(--or);"></div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr>
+                    <th>Dossier</th><th>Acquéreur</th><th>Bien cédé</th>
+                    <th>Prix de cession</th><th>Total versé</th>
+                    <th style="color:var(--rouge);">Solde dû (4111)</th>
+                    <th>Mensualité</th><th>Statut</th>
+                    <th>Provision (682)</th><th>Actions</th>
+                  </tr></thead>
+                  <tbody id="tbody-tiers4111"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Relevé de compte individuel — partagé 411 / 4111 -->
+          <div class="card" id="releve-tiers-box" style="margin-top:12px;display:none;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+              <div class="card-title" style="margin-bottom:0;">📄 Relevé de compte tiers — <span id="releve-tiers-nom"></span></div>
+              <button class="btn btn-secondary btn-sm" onclick="printReleveTiers()">🖨️ Imprimer</button>
+            </div>
+            <div id="releve-tiers-content"></div>
           </div>
 
           <!-- 401 — Fournisseurs / Constructeurs -->
@@ -2975,6 +3015,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
             </div>
           </div>
         </div><!-- fin tab-compta-tiers -->
+
 
         <!-- ══ AMORTISSEMENTS ═════════════════════════════════ -->
         <div class="tab-pane" id="tab-compta-amortissements">
@@ -27246,16 +27287,17 @@ goTo = function(page) {
 
 /* ─── Navigation sub-onglets Tiers ─────────────────── */
 function switchTiersTab(tab) {
-  ['clients411','fournisseurs401','personnel422','etat441','autres461'].forEach(function(t) {
+  ['clients411','acquereurs4111','fournisseurs401','personnel422','etat441','autres461'].forEach(function(t) {
     var el = document.getElementById('tiers-pane-'+t);
     if (el) el.style.display = t===tab ? 'block' : 'none';
   });
   // Update sub-tab buttons
   var btns = document.querySelectorAll('#tab-compta-tiers .tab-nav .tab-btn');
-  var tabs = ['clients411','fournisseurs401','personnel422','etat441','autres461'];
+  var tabs = ['clients411','acquereurs4111','fournisseurs401','personnel422','etat441','autres461'];
   btns.forEach(function(b,i){ b.classList.toggle('active', tabs[i]===tab); });
   // Load content
   if (tab==='clients411') buildTiers411();
+  else if (tab==='acquereurs4111') buildTiersAcquereurs4111();
   else if (tab==='fournisseurs401') buildTiers401();
   else if (tab==='personnel422') buildTiers422();
   else if (tab==='etat441') buildTiersEtat();
@@ -27562,10 +27604,16 @@ function buildTiersKPIs() {
   // 422 — salaires à payer (dernier mois)
   var masse = DATA.employes.reduce(function(s,e){return s+(e.salaire_base||0)+(e.transport||30000);},0);
 
+  // 4111 — créances acquéreurs fonciers (cessions de terrain)
+  var solde4111 = (DATA.cessions_foncieres||[]).reduce(function(s,cf){
+    return s + Math.max(0, (cf.prix_cession||0) - crecVerse(cf));
+  },0);
+
   el.innerHTML = [
     {label:'Créances clients (411)', val:fmtF(solde411)+' FCFA', icon:'📋', color:'var(--or)', cls:'kpi-green'},
     {label:'Taux recouvrement',       val:(totalContrats>0?(totalVerse/totalContrats*100).toFixed(1):0)+'%', icon:'📈', color:'var(--vert)', cls:'kpi-green'},
     {label:'Clients en retard',        val:nbRetards, icon:'⚠️', color:'var(--rouge)', cls:'kpi-red'},
+    {label:'Créances acq. fonciers (4111)', val:fmtF(solde4111)+' FCFA', icon:'🏞️', color:'var(--or)', cls:''},
     {label:'Dettes fourn. (401)',       val:fmtF(total401)+' FCFA', icon:'🏗️', color:'var(--bleu)', cls:'kpi-blue'},
     {label:'Masse salariale (422)',     val:fmtF(masse)+' FCFA', icon:'👥', color:'var(--blanc)', cls:''},
     {label:'Provisions douteux (682)',  val:fmtF(Math.round(solde411*0.05))+' FCFA', icon:'🔒', color:'var(--violet)', cls:''},
@@ -27636,40 +27684,6 @@ function buildTiers411() {
     rows.push({source:'client', c:c, totalVerse:totalVerse, solde:solde, statut:statut, retardMois:retardMois, provision:provision, prog:prog});
   });
 
-  /* [FIX 2026-06-30] Inclusion des acquéreurs de cessions foncières (module
-     Recouvrement) dans le relevé 411 : ils utilisent le compte 4111 mais
-     n'étaient jusqu'ici visibles que via le Grand Livre brut, sans relevé
-     individuel ni analyse d'antériorité dédiée. */
-  (DATA.cessions_foncieres || []).forEach(function(cf) {
-    if ((cf.prix_cession || 0) <= 0) return;
-    if (search && !((cf.acquereur||'') + ' ' + (cf.designation||'')).toLowerCase().includes(search.toLowerCase())) return;
-    if (filtProg) return; /* les cessions foncières ne sont rattachées à aucun "programme" de vente classique */
-
-    var totalVerse = crecVerse(cf);
-    var solde = (cf.prix_cession || 0) - totalVerse;
-    var statut = solde<=0 ? 'solde' : 'debiteur';
-
-    if (filtStatut === 'solde' && solde > 100) return;
-    if (filtStatut === 'debiteur' && solde <= 0) return;
-    if (filtStatut === 'crediteur' && solde >= 0) return;
-
-    var r = crecRetard(cf);
-    var retardMois = r ? r.moisRetard : 0;
-    var provision = retardMois > 6 ? Math.round(solde * 0.05) : 0;
-
-    if (solde > 0) {
-      if (retardMois <= 0) anteriorite.courant += solde;
-      else if (retardMois <= 3) anteriorite.m1_3 += solde;
-      else if (retardMois <= 6) anteriorite.m3_6 += solde;
-      else if (retardMois <= 12) anteriorite.m6_12 += solde;
-      else anteriorite.plus12 += solde;
-    }
-
-    totalSolde += Math.max(0, solde);
-
-    rows.push({source:'cession', c:cf, totalVerse:totalVerse, solde:solde, statut:statut, retardMois:retardMois, provision:provision, prog:{nom:'Cession foncière'}});
-  });
-
   // Antériorité KPIs
   var antEl = document.getElementById('tiers-anteriorite');
   if (antEl) {
@@ -27699,21 +27713,19 @@ function buildTiers411() {
 
   tbody.innerHTML = rows.map(function(r) {
     var c=r.c, solde=r.solde;
-    var isCession = r.source === 'cession';
-    var lot = isCession ? null : (DATA.lots.find(function(l){return l.id===c.lot_id;})||{numero:'—',type:'—'});
-    var mensualite = isCession ? crecMensualite(c) : (c.mensualite||0);
+    var lot = DATA.lots.find(function(l){return l.id===c.lot_id;})||{numero:'—',type:'—'};
+    var mensualite = c.mensualite||0;
     var prog = r.prog;
     var statBadge = solde<=0 ? 'badge-vert' : r.retardMois>6 ? 'badge-rouge' : r.retardMois>0 ? 'badge-or' : 'badge-bleu';
     var statLabel = solde<=0 ? 'Soldé' : r.retardMois>6 ? 'Litigieux' : r.retardMois>0 ? 'Retard x'+r.retardMois+' mois' : 'Courant';
-    var dossier   = isCession ? ('CES-'+c.id.slice(-6).toUpperCase()) : (c.dossier||'—');
-    var nomComplet= isCession ? (c.acquereur||'—') : (c.nom+' '+c.prenoms);
-    var tel       = isCession ? ((c.acheteur && c.acheteur.tel) || c.contact || '') : (c.tel||'');
-    var progLabel = isCession ? (c.designation || (typeof cesSourceRef==='function'?cesSourceRef(c.source_key):'') || '—') : prog.nom;
-    var lotLabel  = isCession ? '' : lot.numero;
-    var typeLabel = isCession ? '🏞️ Cession foncière' : (c.type_logement||lot.type||'—');
-    var montantTotal = isCession ? (c.prix_cession||0) : (c.montant_total||0);
-    var releveBtn = isCession ? ('showReleveTiers(\'cession:'+c.id+'\')') : ('showReleveTiers(\'client:'+c.id+'\')');
-    var actionExtra = isCession ? '' : ('<button class="btn btn-secondary btn-sm btn-icon" onclick="openBienAmortFromClient(\''+c.id+'\')" title="Enregistrer bien amortissable">🏠</button>');
+    var dossier   = c.dossier||'—';
+    var nomComplet= c.nom+' '+c.prenoms;
+    var tel       = c.tel||'';
+    var progLabel = prog.nom;
+    var lotLabel  = lot.numero;
+    var typeLabel = c.type_logement||lot.type||'—';
+    var montantTotal = c.montant_total||0;
+    var releveBtn = ('showReleveTiers(\'client:'+c.id+'\')');
     return '<tr>'
       +'<td style="font-family:monospace;font-size:12px;color:var(--or);">'+dossier+'</td>'
       +'<td><strong>'+nomComplet+'</strong>'+(tel?'<div style="font-size:11px;color:var(--dim);">'+tel+'</div>':'')+'</td>'
@@ -27728,7 +27740,7 @@ function buildTiers411() {
       +'<td><span class="badge '+statBadge+'">'+statLabel+'</span></td>'
       +'<td style="white-space:nowrap;">'
         +'<button class="btn btn-secondary btn-sm btn-icon" onclick="'+releveBtn+'" title="Relevé de compte">📄</button> '
-        +actionExtra
+        +'<button class="btn btn-secondary btn-sm btn-icon" onclick="openBienAmortFromClient(\''+c.id+'\')" title="Enregistrer bien amortissable">🏠</button>'
       +'</td>'
       +'</tr>';
   }).join('');
@@ -27887,15 +27899,111 @@ function exportTiers411CSV() {
     var prog=DATA.programmes.find(function(p){return p.id===c.programme_id;})||{nom:''};
     rows.push([c.dossier,c.nom+' '+c.prenoms,prog.nom,c.montant_total||0,verse,(c.montant_total||0)-verse,0].join(','));
   });
-  /* [FIX 2026-06-30] Export CSV étendu aux acquéreurs de cessions foncières */
-  (DATA.cessions_foncieres||[]).forEach(function(cf){
-    if ((cf.prix_cession||0)<=0) return;
-    var verse=crecVerse(cf);
-    rows.push(['CES-'+cf.id.slice(-6).toUpperCase(),(cf.acquereur||''),'Cession foncière',cf.prix_cession||0,verse,(cf.prix_cession||0)-verse,0].join(','));
-  });
   var blob=new Blob([rows.join('\n')],{type:'text/csv'});
   var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='tiers411.csv'; a.click();
   toast('Export tiers 411 généré.','success');
+}
+
+/* ─── 4111 Acquéreurs Fonciers (cessions de terrain) ───────────────── */
+function buildTiersAcquereurs4111() {
+  buildTiersKPIs();
+  var search = (document.getElementById('search-tiers4111')||{}).value||'';
+  var filtStatut = (document.getElementById('filter-tiers4111-statut')||{}).value||'';
+
+  var rows = [];
+  var totalSolde = 0;
+  var anteriorite = {courant:0, m1_3:0, m3_6:0, m6_12:0, plus12:0};
+
+  (DATA.cessions_foncieres || []).forEach(function(cf) {
+    if ((cf.prix_cession || 0) <= 0) return;
+    if (search && !((cf.acquereur||'') + ' ' + (cf.designation||'')).toLowerCase().includes(search.toLowerCase())) return;
+
+    var totalVerse = crecVerse(cf);
+    var solde = (cf.prix_cession || 0) - totalVerse;
+    var statut = solde<=0 ? 'solde' : 'debiteur';
+
+    if (filtStatut === 'solde' && solde > 100) return;
+    if (filtStatut === 'debiteur' && solde <= 0) return;
+    if (filtStatut === 'crediteur' && solde >= 0) return;
+
+    var r = crecRetard(cf);
+    var retardMois = r ? r.moisRetard : 0;
+    var provision = retardMois > 6 ? Math.round(solde * 0.05) : 0;
+
+    if (solde > 0) {
+      if (retardMois <= 0) anteriorite.courant += solde;
+      else if (retardMois <= 3) anteriorite.m1_3 += solde;
+      else if (retardMois <= 6) anteriorite.m3_6 += solde;
+      else if (retardMois <= 12) anteriorite.m6_12 += solde;
+      else anteriorite.plus12 += solde;
+    }
+
+    totalSolde += Math.max(0, solde);
+    rows.push({c:cf, totalVerse:totalVerse, solde:solde, statut:statut, retardMois:retardMois, provision:provision});
+  });
+
+  // Antériorité
+  var antEl = document.getElementById('tiers4111-anteriorite');
+  if (antEl) {
+    antEl.innerHTML = [
+      {label:'Courant (< 1 mois)', val:anteriorite.courant, color:'var(--vert)'},
+      {label:'1 à 3 mois',         val:anteriorite.m1_3,   color:'var(--or)'},
+      {label:'3 à 6 mois',         val:anteriorite.m3_6,   color:'#E0A052'},
+      {label:'6 à 12 mois',        val:anteriorite.m6_12,  color:'var(--rouge)'},
+      {label:'Plus de 12 mois',    val:anteriorite.plus12, color:'#C03030'},
+    ].map(function(a){
+      var pct = totalSolde>0 ? (a.val/totalSolde*100).toFixed(0) : 0;
+      return '<div class="card" style="padding:12px;text-align:center;">'
+        +'<div style="font-size:11px;color:var(--dim);margin-bottom:4px;">'+a.label+'</div>'
+        +'<div style="font-size:16px;font-weight:700;color:'+a.color+';">'+fmtF(a.val)+' FCFA</div>'
+        +'<div style="font-size:11px;color:var(--dim);margin-top:2px;">'+pct+'% du solde</div>'
+        +'<div class="progress-bar" style="margin-top:6px;"><div class="progress-fill" style="width:'+pct+'%;background:'+a.color+';"></div></div>'
+        +'</div>';
+    }).join('');
+  }
+
+  var totalEl = document.getElementById('tiers4111-total');
+  if (totalEl) totalEl.textContent = 'Solde '+crecCompte()+' total : '+fmtF(totalSolde)+' FCFA';
+
+  var tbody = document.getElementById('tbody-tiers4111');
+  if (!tbody) return;
+  if (!rows.length) { tbody.innerHTML='<tr><td colspan="10" style="text-align:center;padding:20px;color:var(--dim);">Aucun acquéreur foncier trouvé.</td></tr>'; return; }
+
+  tbody.innerHTML = rows.map(function(r) {
+    var c=r.c, solde=r.solde;
+    var mensualite = crecMensualite(c);
+    var statBadge = solde<=0 ? 'badge-vert' : r.retardMois>6 ? 'badge-rouge' : r.retardMois>0 ? 'badge-or' : 'badge-bleu';
+    var statLabel = solde<=0 ? 'Soldé' : r.retardMois>6 ? 'Litigieux' : r.retardMois>0 ? 'Retard x'+r.retardMois+' mois' : 'Courant';
+    var dossier   = 'CES-'+c.id.slice(-6).toUpperCase();
+    var bien      = c.designation || (typeof cesSourceRef==='function'?cesSourceRef(c.source_key):'') || '—';
+    var tel       = (c.acheteur && c.acheteur.tel) || c.contact || '';
+    return '<tr>'
+      +'<td style="font-family:monospace;font-size:12px;color:var(--or);">'+dossier+'</td>'
+      +'<td><strong>'+(c.acquereur||'—')+'</strong>'+(tel?'<div style="font-size:11px;color:var(--dim);">'+tel+'</div>':'')+'</td>'
+      +'<td style="font-size:12px;">'+bien+'</td>'
+      +'<td style="font-weight:700;">'+fmtF(c.prix_cession||0)+' FCFA</td>'
+      +'<td style="color:var(--vert);">'+fmtF(r.totalVerse)+' FCFA</td>'
+      +'<td style="font-weight:700;color:'+(solde>0?'var(--rouge)':'var(--vert)')+';">'+(solde>0?fmtF(solde)+' FCFA':'Soldé')+'</td>'
+      +'<td style="font-size:12px;">'+fmtF(mensualite)+' FCFA</td>'
+      +'<td style="text-align:center;"><span class="badge '+statBadge+'">'+statLabel+'</span></td>'
+      +'<td style="color:'+(r.provision>0?'var(--rouge)':'var(--dim)')+';">'+(r.provision>0?fmtF(r.provision)+' FCFA':'—')+'</td>'
+      +'<td style="white-space:nowrap;"><button class="btn btn-secondary btn-sm btn-icon" onclick="showReleveTiers(\'cession:'+c.id+'\')" title="Relevé de compte">📄</button></td>'
+      +'</tr>';
+  }).join('');
+}
+
+function exportTiersAcquereurs4111CSV() {
+  var rows = ['Dossier,Acquéreur,Bien,Prix cession,Total versé,Solde '+crecCompte()+',Retard (mois)'];
+  (DATA.cessions_foncieres||[]).forEach(function(cf){
+    if ((cf.prix_cession||0)<=0) return;
+    var verse = crecVerse(cf);
+    var r = crecRetard(cf);
+    var bien = cf.designation || (typeof cesSourceRef==='function'?cesSourceRef(cf.source_key):'') || '';
+    rows.push(['CES-'+cf.id.slice(-6).toUpperCase(), (cf.acquereur||''), bien, cf.prix_cession||0, verse, (cf.prix_cession||0)-verse, r?r.moisRetard:0].join(','));
+  });
+  var blob=new Blob([rows.join('\n')],{type:'text/csv'});
+  var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='tiers_acquereurs_fonciers.csv'; a.click();
+  toast('Export acquéreurs fonciers généré.','success');
 }
 
 /* ─── 401 Fournisseurs ──────────────────────────────── */
