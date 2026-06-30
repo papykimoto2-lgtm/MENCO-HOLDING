@@ -19412,6 +19412,7 @@ async function deleteLot(id) {
   renderLots();
   if (typeof renderLotsDashboard==='function') renderLotsDashboard();
   if (typeof refreshDashboard==='function') refreshDashboard();
+  filiereLiveRefresh();
   toast('Lot supprimé.', 'info');
 }
 
@@ -19528,6 +19529,7 @@ async function saveLot() {
   closeModal('modal-lot');
   toast('Lot enregistré.', 'success');
   renderLots();
+  filiereLiveRefresh();
 }
 
 function filterLots() { renderLots(); }
@@ -33623,7 +33625,7 @@ var RT_PAGE_REFRESH = {
   declarations:['loadDeclarations'], conges_rh:['renderConges'],
   candidats_rh:['renderCandidats'], pointages:['renderPointages'],
   visites_rdv:['renderVisitesRDV'], messages:['renderMessages'],
-  dossiersJuridiques:['renderDossiers']
+  dossiersJuridiques:['renderDossiers'], cessions_foncieres:['cesRender','crecRender']
 };
 
 /* MAP store → data-page pour détecter la page active */
@@ -33636,16 +33638,24 @@ var RT_STORE_PAGE = {
   af_operations:'foncierops', af_relances:'foncierops', conceptions:'conception',
   situations:'avancement', stock_mouvements:'stock', declarations:'rh-declarations',
   conges_rh:'rh-conges', candidats_rh:'rh-recrutement', pointages:'rh-pointage',
-  visites_rdv:'accueil-visites', messages:'messagerie', dossiersJuridiques:'juridique'
+  visites_rdv:'accueil-visites', messages:'messagerie', dossiersJuridiques:'juridique',
+  cessions_foncieres:'foncier'
 };
 
 function _rtRefreshPage(store){
   var targetPage = RT_STORE_PAGE[store];
-  if (!targetPage || APP.currentPage !== targetPage) return;
-  var fns = RT_PAGE_REFRESH[store] || [];
-  fns.forEach(function(fn){
-    try { if (typeof window[fn]==='function') window[fn](); } catch(e){}
-  });
+  if (targetPage && APP.currentPage === targetPage) {
+    var fns = RT_PAGE_REFRESH[store] || [];
+    fns.forEach(function(fn){
+      try { if (typeof window[fn]==='function') window[fn](); } catch(e){}
+    });
+  }
+  /* Filière Foncière : recalcule la chaîne Opération → Parcelle → Lots → Cessions
+     dès qu'une de ces 4 tables bouge — propre écriture comme écriture distante
+     reçue en temps réel d'un autre poste — si cette vue est affichée. */
+  if (FILIERE_STORES.indexOf(store) !== -1 && APP.currentPage === 'filiere' && typeof filiereRender === 'function') {
+    filiereRender();
+  }
 }
 
 /* Démarrer la connexion Realtime */
@@ -34292,8 +34302,23 @@ async function saveParcelle() {
   if (APP.editingId) { var idx=DATA.parcelles.findIndex(function(x){return x.id===APP.editingId;}); if(idx>=0)DATA.parcelles[idx]=p; }
   else DATA.parcelles.push(p);
   await dbPut('parcelles', p);
+  if (typeof syncToSupabase==='function') syncToSupabase('pi_parcelles', p);
+
+  /* Synchronisation temps réel vers Acquisition & Aménagement Foncier si une
+     opération est liée (filiation parcelle → opération). */
+  var _opLink = p.operation_id ? (DATA.af_operations||[]).find(function(x){ return x.id===p.operation_id; }) : null;
+  if (_opLink) {
+    _opLink.commune = p.commune || _opLink.commune || '';
+    _opLink.village = p.localisation || _opLink.village || '';
+    if (p.superficie) _opLink.superficie = p.superficie;
+    await dbPut('af_operations', _opLink);
+    if (typeof syncToSupabase==='function') syncToSupabase('pi_af_operations', _opLink);
+    if (typeof afRenderPipeline==='function' && APP.currentPage==='foncierops') { afRenderPipeline(); afRenderDashboard(); }
+  }
+
   closeModal('modal-parcelle');
   renderParcelles(); updateFoncierKPIs();
+  filiereLiveRefresh();
   toast('Parcelle enregistrée.', 'success');
 }
 
@@ -34302,6 +34327,7 @@ async function deleteParcelle(id) {
   var ok = await deleteRecord('parcelles', id);   /* RAM + IndexedDB + Supabase + tombstone + intégrité */
   if (ok === false) return;
   renderParcelles(); updateFoncierKPIs();
+  filiereLiveRefresh();
   toast('Parcelle supprimée.', 'info');
 }
 
@@ -47536,8 +47562,29 @@ async function afSaveOperation(){
   var idx=DATA.af_operations.findIndex(function(x){return x.id===_afOp.id;});
   if(idx>=0) DATA.af_operations[idx]=_afOp; else DATA.af_operations.push(_afOp);
   await dbPut('af_operations',_afOp);
+  if (typeof syncToSupabase==='function') syncToSupabase('pi_af_operations', _afOp);
+
+  /* Synchronisation temps réel vers le Portefeuille Foncier si une parcelle est déjà liée :
+     les champs communs (localisation, commune, superficie, coordonnées) restent cohérents
+     sans devoir repasser par « Transférer vers le Portefeuille Foncier ». */
+  if (_afOp.parcelle_id) {
+    var _pLink = (DATA.parcelles||[]).find(function(x){ return x.id===_afOp.parcelle_id; });
+    if (_pLink) {
+      _pLink.localisation = _afOp.village || _afOp.commune || _pLink.localisation || '';
+      _pLink.commune = _afOp.commune || _pLink.commune || '';
+      _pLink.sous_prefecture = _afOp.departement || _pLink.sous_prefecture || '';
+      if (_afOp.superficie) _pLink.superficie = _afOp.superficie;
+      if (_afOp.lat) _pLink.lat = _afOp.lat;
+      if (_afOp.lng) _pLink.lng = _afOp.lng;
+      await dbPut('parcelles', _pLink);
+      if (typeof syncToSupabase==='function') syncToSupabase('pi_parcelles', _pLink);
+      if (typeof renderParcelles==='function' && APP.currentPage==='foncier') renderParcelles();
+    }
+  }
+
   closeModal('modal-af-operation');
   afRenderPipeline(); afRenderDashboard(); if(typeof afCheckInactivity==='function'){afCheckInactivity(); afRenderRelances();}
+  filiereLiveRefresh();
   toast('Opération enregistrée','success');
 }
 
@@ -47547,6 +47594,7 @@ async function afDeleteOperation(){
   await dbDelete('af_operations',_afOp.id);
   closeModal('modal-af-operation');
   afRenderPipeline(); afRenderDashboard();
+  filiereLiveRefresh();
 }
 
 /* ════════ AGENTS DU FONCIER (CRM) ════════ */
@@ -47734,31 +47782,40 @@ function ouvrirCarteFoncier() {
   setTimeout(zoomFoncier, 600);
 }
 
-/* ── Transfert d'une opération d'acquisition vers le Portefeuille Foncier ── */
-async function afTransfererFoncier() {
-  if (!_afOp) return;
-  if (!_afOp.nom || !_afOp.nom.trim()) { toast('Renseignez la désignation du site', 'error'); return; }
+/* ── Transfert d'une opération d'acquisition vers le Portefeuille Foncier ──
+   opId optionnel : permet l'appel depuis la vue Filière Foncière (hors modale)
+   en ciblant explicitement l'opération, sans dépendre de l'état _afOp courant. */
+async function afTransfererFoncier(opId) {
+  var op = opId ? (DATA.af_operations || []).find(function(x){ return x.id === opId; }) : _afOp;
+  if (!op) return;
+  if (!op.nom || !op.nom.trim()) { toast('Renseignez la désignation du site', 'error'); return; }
   if (!DATA.parcelles) DATA.parcelles = [];
-  var p = _afOp.parcelle_id ? DATA.parcelles.find(function(x){ return x.id === _afOp.parcelle_id; }) : null;
+  var p = op.parcelle_id ? DATA.parcelles.find(function(x){ return x.id === op.parcelle_id; }) : null;
   var isNew = false;
   if (!p) { p = { id:'parc_'+uid(), created_at:today() }; isNew = true; }
-  if (!p.ref) p.ref = 'OP-' + _afOp.nom.trim().substring(0,24);
-  p.operation_id   = _afOp.id;
-  p.localisation   = _afOp.village || _afOp.commune || p.localisation || '';
-  p.commune        = _afOp.commune || p.commune || '';
-  p.sous_prefecture= _afOp.departement || p.sous_prefecture || '';
-  p.superficie     = _afOp.superficie || p.superficie || 0;
-  if (_afOp.lat) p.lat = _afOp.lat;
-  if (_afOp.lng) p.lng = _afOp.lng;
-  p.statut         = p.statut || (_afOp.juridique_valide ? 'tf_definitif' : 'en_cours');
-  p.description    = 'Issu de l\u2019opération d\u2019acquisition : ' + _afOp.nom.trim();
+  if (!p.ref) p.ref = 'OP-' + op.nom.trim().substring(0,24);
+  p.operation_id   = op.id;
+  p.localisation   = op.village || op.commune || p.localisation || '';
+  p.commune        = op.commune || p.commune || '';
+  p.sous_prefecture= op.departement || p.sous_prefecture || '';
+  p.superficie     = op.superficie || p.superficie || 0;
+  if (op.lat) p.lat = op.lat;
+  if (op.lng) p.lng = op.lng;
+  p.statut         = p.statut || (op.juridique_valide ? 'tf_definitif' : 'en_cours');
+  p.description    = 'Issu de l\u2019opération d\u2019acquisition : ' + op.nom.trim();
   if (isNew) DATA.parcelles.push(p);
   await dbPut('parcelles', p);
-  _afOp.parcelle_id = p.id;
-  var idx = DATA.af_operations.findIndex(function(x){ return x.id === _afOp.id; });
-  if (idx >= 0) DATA.af_operations[idx] = _afOp; else DATA.af_operations.push(_afOp);
-  await dbPut('af_operations', _afOp);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_parcelles', p);
+  op.parcelle_id = p.id;
+  var idx = DATA.af_operations.findIndex(function(x){ return x.id === op.id; });
+  if (idx >= 0) DATA.af_operations[idx] = op; else DATA.af_operations.push(op);
+  await dbPut('af_operations', op);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_af_operations', op);
+  if (_afOp && _afOp.id === op.id) _afOp.parcelle_id = p.id;   /* garde la modale ouverte cohérente si c'est la même opération */
+  if (typeof renderParcelles === 'function' && APP.currentPage === 'foncier') renderParcelles();
+  if (typeof afRenderPipeline === 'function' && APP.currentPage === 'foncierops') { afRenderPipeline(); afRenderDashboard(); }
   toast(isNew ? 'Parcelle créée dans le Portefeuille Foncier ✅' : 'Parcelle liée mise à jour ✅', 'success');
+  filiereLiveRefresh();
 }
 
 
@@ -49659,6 +49716,7 @@ async function cesDelete() {
   cesRender();
   if (typeof filterEcritures==='function') filterEcritures();
   if (typeof buildTresorerie==='function') buildTresorerie();
+  filiereLiveRefresh();
   toast('Cession supprimée', 'info');
 }
 
@@ -50055,13 +50113,14 @@ async function cesSave() {
     if (p) { p.superficie_cedee=(p.superficie_cedee||0)+(isNew?c.superficie:0); await dbPut('parcelles',p); if(typeof syncToSupabase==='function') syncToSupabase('pi_parcelles',p); }
   } else if (c.source_type==='operation') {
     var op=DATA.af_operations.find(function(x){return x.id===c.source_id;});
-    if (op) { op.lots_cedes=(op.lots_cedes||0)+(isNew?c.nb_lots:0); await dbPut('af_operations',op); }
+    if (op) { op.lots_cedes=(op.lots_cedes||0)+(isNew?c.nb_lots:0); await dbPut('af_operations',op); if(typeof syncToSupabase==='function') syncToSupabase('pi_af_operations',op); }
   }
   closeModal('modal-cession');
   cesRender();
   if (typeof filterEcritures==='function') filterEcritures();
   if (typeof buildTresorerie==='function') buildTresorerie();
   if (typeof buildCompteResultat==='function') buildCompteResultat();
+  filiereLiveRefresh();
   toast('Cession enregistrée', 'success');
 }
 
@@ -50309,6 +50368,7 @@ async function crecSavePaiement() {
   if (typeof cesRender === 'function') cesRender();
   if (typeof filterEcritures === 'function') filterEcritures();
   if (typeof buildTresorerie === 'function') buildTresorerie();
+  filiereLiveRefresh();
 }
 async function crecGenEcriture(c, p) {
   if (!DATA.ecritures) DATA.ecritures = [];
@@ -50342,6 +50402,7 @@ async function crecDeletePaiement(cid, pid) {
   if (typeof cesRender === 'function') cesRender();
   if (typeof filterEcritures === 'function') filterEcritures();
   if (typeof buildTresorerie === 'function') buildTresorerie();
+  filiereLiveRefresh();
   toast('Versement supprimé', 'info');
 }
 
@@ -50465,6 +50526,19 @@ function crecEcheancierPDF(id) {
    FILIÈRE FONCIÈRE — interconnexion Opération · Parcelle · Lots · Cessions
    Niveau 1 (filiation FK) + Niveau 2 (vue chaîne) + roll-up KPIs
 ══════════════════════════════════════════════════════════════════ */
+
+/* Stores dont la moindre modification (locale OU reçue en temps réel
+   d'un autre utilisateur via Supabase Realtime) doit recalculer la
+   chaîne Filière Foncière si cette page est actuellement affichée. */
+var FILIERE_STORES = ['af_operations', 'parcelles', 'lots', 'cessions_foncieres'];
+
+/* Rafraîchissement « temps réel » de la Filière Foncière :
+   à appeler après toute sauvegarde/suppression touchant Acquisition &
+   Aménagement Foncier, Portefeuille Foncier, Lots ou Cessions — qu'elle
+   provienne de cet utilisateur ou d'un autre poste connecté. */
+function filiereLiveRefresh() {
+  if (APP.currentPage === 'filiere' && typeof filiereRender === 'function') filiereRender();
+}
 
 /* ── Liens de filiation ── */
 function filiereFindParcelle(op) {
@@ -50607,7 +50681,7 @@ function filiereRenderChain(op) {
     s2act = '<button class="btn btn-secondary btn-sm" onclick="filiereOpenParcelle(\'' + parcelle.id + '\')">Ouvrir au portefeuille</button>';
   } else {
     s2corps = '<span style="color:var(--blanc-dim);">Aucune parcelle rattachée. Transférez l\'opération au Portefeuille Foncier depuis sa fiche (onglet juridique/administratif).</span>';
-    s2act = (typeof afTransfererFoncier === 'function') ? '<button class="btn btn-primary btn-sm" onclick="afTransfererFoncier(\'' + op.id + '\');setTimeout(filiereRender,400);">→ Créer la parcelle</button>' : '';
+    s2act = (typeof afTransfererFoncier === 'function') ? '<button class="btn btn-primary btn-sm" onclick="afTransfererFoncier(\'' + op.id + '\')">→ Créer la parcelle</button>' : '';
   }
   var s2 = step('2', 'Parcelle / Titre foncier', '#8B5CF6', s2corps, s2act);
 
