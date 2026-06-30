@@ -2596,6 +2596,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
             <div class="page-subtitle">Suivi des versements et des échéances</div>
           </div>
           <div class="spacer"></div>
+          <button class="btn btn-secondary" onclick="backfillEcrituresVersements()" title="Génère les écritures comptables manquantes pour les versements déjà saisis">🧾 Générer écritures manquantes</button>
           <button class="btn btn-primary" onclick="openPaiementModal()">+ Enregistrer un versement</button>
         </div>
 
@@ -6040,6 +6041,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <button class="tab-btn" onclick="switchTab('foncier','mutations')">🔄 Mutations</button>
           <button class="tab-btn" onclick="switchTab('foncier','cessions');cesRender()">💰 Cessions</button>
           <button class="tab-btn" onclick="switchTab('foncier','financiers');finRender()">🤝 Financiers</button>
+          <button class="tab-btn" onclick="switchTab('foncier','recouvrement');crecRender()">📨 Recouvrement</button>
         </div>
         <div class="tab-pane active" id="tab-foncier-parcelles">
           <div class="filters-bar">
@@ -6089,6 +6091,86 @@ button:focus-visible, input:focus-visible, select:focus-visible {
             </table></div>
           </div>
         </div>
+
+        <!-- ── Onglet Recouvrement acquéreurs fonciers ── -->
+        <div class="tab-pane" id="tab-foncier-recouvrement">
+          <div id="crec-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px;"></div>
+          <div style="font-size:12px;color:var(--blanc-dim);margin:4px 0 6px;">Répartition des retards par niveau de relance</div>
+          <div id="crec-niveaux" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;"></div>
+          <div class="filters-bar" style="margin-bottom:10px;">
+            <input type="text" class="search-input" placeholder="🔍 Acquéreur, désignation..." id="crec-search" oninput="crecRender()" style="flex:1;min-width:160px;">
+          </div>
+          <div class="card">
+            <div style="font-size:12px;color:var(--blanc-dim);margin-bottom:8px;">Suivi des créances sur les tiers acquéreurs de foncier (personnes physiques &amp; morales). Encaissements générant automatiquement l'écriture SYSCOHADA (trésorerie / compte <strong>4111</strong> — paramétrable en <strong>4112</strong>).</div>
+            <div class="table-wrap"><table>
+              <thead><tr><th>Acquéreur / Bien</th><th>Contact</th><th>Plan</th><th style="text-align:right;">Prix</th><th style="text-align:right;">Encaissé</th><th style="text-align:right;">Reste</th><th style="text-align:center;">Retard / Niveau</th><th>Dern. relance</th><th>Actions</th></tr></thead>
+              <tbody id="tbody-crec"></tbody>
+            </table></div>
+          </div>
+        </div>
+
+      <!-- ── MODAL : Plan / Échéancier de recouvrement ── -->
+      <div class="modal-overlay" id="modal-crec-plan">
+        <div class="modal" style="max-width:680px;">
+          <div class="modal-header"><div class="modal-title">🗓️ Échéancier — <span id="crec-titre-acq"></span></div><button class="modal-close" onclick="closeModal('modal-crec-plan')">✕</button></div>
+          <div class="modal-body">
+            <div id="crec-plan-info" class="card" style="background:var(--card2);margin-bottom:12px;font-size:13px;"></div>
+            <div class="form-grid">
+              <div class="form-group"><label>Suivi recouvrement actif</label><select id="crec-actif" class="form-control"><option value="1">Oui — échéancier mensuel</option><option value="0">Non</option></select></div>
+              <div class="form-group"><label>Apport / déjà encaissé (FCFA)</label><input type="number" id="crec-apport" class="form-control" oninput="crecPlanPreview()"></div>
+              <div class="form-group"><label>Durée (mensualités)</label><input type="number" id="crec-duree" class="form-control" oninput="crecPlanPreview()"></div>
+              <div class="form-group"><label>Date 1ère échéance</label><input type="date" id="crec-debut" class="form-control"></div>
+            </div>
+            <div id="crec-mensualite-info" style="font-size:13px;margin:8px 0;"></div>
+            <div style="display:flex;gap:8px;margin:6px 0 16px;">
+              <button class="btn btn-primary btn-sm" onclick="crecSavePlan()">💾 Enregistrer l'échéancier</button>
+              <button class="btn btn-secondary btn-sm" onclick="crecEcheancierPDF()">📄 Échéancier PDF</button>
+            </div>
+            <div style="font-weight:700;color:var(--vert);margin:6px 0;">Versements enregistrés</div>
+            <div id="crec-paiements"></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal('modal-crec-plan')">Fermer</button>
+            <button class="btn btn-primary" onclick="closeModal('modal-crec-plan');crecEncaisser(_crecId)">💵 Encaisser un versement</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── MODAL : Encaisser un versement ── -->
+      <div class="modal-overlay" id="modal-crec-paiement">
+        <div class="modal" style="max-width:520px;">
+          <div class="modal-header"><div class="modal-title">💵 Encaisser — <span id="crecp-acq"></span></div><button class="modal-close" onclick="closeModal('modal-crec-paiement')">✕</button></div>
+          <div class="modal-body">
+            <div class="alert alert-info" style="margin-bottom:12px;">Reste à recouvrer : <strong id="crecp-reste"></strong></div>
+            <div class="form-grid">
+              <div class="form-group"><label>Date</label><input type="date" id="crecp-date" class="form-control"></div>
+              <div class="form-group"><label>Montant (FCFA)</label><input type="number" id="crecp-montant" class="form-control"></div>
+              <div class="form-group"><label>Mode</label><select id="crecp-mode" class="form-control"><option value="virement">Virement (521)</option><option value="especes">Espèces (571)</option><option value="cheque">Chèque (521)</option><option value="mobile_money">Mobile Money (531)</option></select></div>
+              <div class="form-group"><label>Référence</label><input id="crecp-ref" class="form-control"></div>
+              <div class="form-group span-2"><label>Notes</label><input id="crecp-notes" class="form-control"></div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal('modal-crec-paiement')">Annuler</button>
+            <button class="btn btn-primary" onclick="crecSavePaiement()">💾 Encaisser + écriture</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── MODAL : Relance ── -->
+      <div class="modal-overlay" id="modal-crec-relance">
+        <div class="modal" style="max-width:560px;">
+          <div class="modal-header"><div class="modal-title">📨 Relance acquéreur</div><button class="modal-close" onclick="closeModal('modal-crec-relance')">✕</button></div>
+          <div class="modal-body">
+            <input type="hidden" id="crec-relance-niv">
+            <div id="crec-relance-body"></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal('modal-crec-relance')">Fermer</button>
+            <button class="btn btn-primary" onclick="crecEnvoyerRelance()">✅ Marquer comme relancé</button>
+          </div>
+        </div>
+      </div>
 
       <!-- ── MODAL : Cession foncière ── -->
       <div class="modal-overlay" id="modal-cession">
@@ -11875,13 +11957,15 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
         <div style="display:flex;justify-content:space-between;align-items:center;margin:16px 0 6px;">
           <strong>Tableau des coordonnées (bornes)</strong>
-          <div style="display:flex;gap:8px;">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
             <button class="btn btn-secondary btn-sm" onclick="brnAdd()">+ Borne</button>
+            <label class="btn btn-secondary btn-sm" style="cursor:pointer;">📥 Importer bornes CSV<input type="file" accept=".csv,.txt" style="display:none;" onchange="brnImportBornesCSV(this)"></label>
             <button class="btn btn-secondary btn-sm" onclick="brnApplyArea()">📐 Superficie ← bornes</button>
             <button class="btn btn-secondary btn-sm" onclick="brnPrintPlan()">🖨 Plan de bornage</button>
             <button class="btn btn-primary btn-sm" onclick="genererPlanParcellaire()">📐 Plan parcellaire</button>
           </div>
         </div>
+        <div style="font-size:11px;color:var(--blanc-dim,#888);margin:-2px 0 6px;">Colonnes reconnues : Nom/Borne, X (ou Longitude), Y (ou Latitude), Z/Altitude, Angle, Distance — séparateur , ; ou tabulation.</div>
         <div class="table-wrap">
           <table id="table-bornes">
             <thead><tr><th>Borne</th><th style="text-align:right;">X</th><th style="text-align:right;">Y</th><th style="text-align:right;">Z (alt.)</th><th style="text-align:right;">Angle</th><th style="text-align:right;">Distance</th><th></th></tr></thead>
@@ -17866,13 +17950,70 @@ function exportCommissionsCSV() {
   toast('Commissions exportées.','success');
 }
 
+/* ── ÉCRITURE COMPTABLE AUTOMATIQUE D'UN VERSEMENT (Débit Trésorerie / Crédit Client) ── */
+function _compteTresoVersement(mode) {
+  return mode === 'especes' ? '571' : (mode === 'mobile_money' ? '531' : '521');
+}
+async function genererEcritureVersement(versement) {
+  var client = DATA.clients.find(function(c){ return c.id === versement.client_id; }) || {};
+  var nomClient = (client.nom || '') + ' ' + (client.prenoms || '');
+  var compteTreso = _compteTresoVersement(versement.mode);
+  var estFrais = versement.type === 'frais_souscription';
+  var compteCredit = estFrais ? ((DATA.params || {}).compte_frais_souscription || '7088') : '4111';
+  var typeLabels = { apport: 'Apport initial', mensualite: 'Mensualité', regularisation: 'Régularisation', frais_souscription: 'Frais de souscription', autre: 'Versement' };
+  var ecr = {
+    id: 'ecr_vrs_' + versement.id,
+    ref: versement.ref || ('VRS-' + versement.id),
+    date: versement.date,
+    piece: versement.ref || '',
+    libelle: (typeLabels[versement.type] || 'Versement') + ' — ' + nomClient.trim(),
+    compte: compteTreso,
+    compte_debit: compteTreso,
+    compte_credit: compteCredit,
+    montant: parseFloat(versement.montant) || 0,
+    type: 'actif',
+    mode: versement.mode,
+    notes: versement.notes || '',
+    created_at: today()
+  };
+  var idx = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; });
+  if (idx >= 0) DATA.ecritures[idx] = ecr; else DATA.ecritures.push(ecr);
+  await dbPut('ecritures', ecr);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecr);
+  if (typeof buildBalance === 'function') buildBalance();
+  if (typeof buildGrandLivre === 'function') buildGrandLivre();
+  return ecr;
+}
+async function supprimerEcritureVersement(versementId) {
+  var ecrId = 'ecr_vrs_' + versementId;
+  if (DATA.ecritures.some(function(e){ return e.id === ecrId; })) {
+    await deleteRecord('ecritures', ecrId, { skipIntegrity: true });
+  }
+}
+
+/* ── RATTRAPAGE : génère les écritures manquantes pour les versements saisis AVANT ce correctif ── */
+async function backfillEcrituresVersements() {
+  var manquants = DATA.versements.filter(function(v) {
+    return !DATA.ecritures.some(function(e){ return e.id === 'ecr_vrs_' + v.id; });
+  });
+  if (!manquants.length) { toast('Aucune écriture manquante — tout est déjà à jour.', 'success'); return; }
+  if (!confirm(manquants.length + ' versement(s) sans écriture comptable détecté(s).\nGénérer les écritures (Débit Trésorerie / Crédit Client) maintenant ?')) return;
+  for (var i = 0; i < manquants.length; i++) {
+    await genererEcritureVersement(manquants[i]);
+  }
+  if (typeof buildBalance === 'function') buildBalance();
+  if (typeof buildGrandLivre === 'function') buildGrandLivre();
+  if (typeof buildBilan === 'function') buildBilan();
+  toast(manquants.length + ' écriture(s) générée(s) — Grand Livre et Balance mis à jour.', 'success');
+}
+
 async function savePaiement() {
   var cid = document.getElementById('v-client').value;
   var montant = parseFloat(document.getElementById('v-montant').value);
   var date = document.getElementById('v-date').value;
   if (!cid || !montant || !date) { toast('Client, montant et date sont obligatoires.', 'error'); return; }
 
-  // ── MODE ÉDITION : mise à jour + ré-impact des commissions ──
+  // ── MODE ÉDITION : mise à jour + ré-impact des commissions + ré-écriture comptable ──
   if (APP._editVersementId) {
     var vEdit = DATA.versements.find(function(x){ return x.id === APP._editVersementId; });
     if (vEdit) {
@@ -17888,10 +18029,11 @@ async function savePaiement() {
       await dbPut('versements', vEdit);
       if (typeof syncToSupabase === 'function') syncToSupabase('pi_versements', vEdit);
       await reimpacterCommissionsVersement(vEdit);
+      await genererEcritureVersement(vEdit);
       if (typeof majStatutLotClient === 'function') await majStatutLotClient(vEdit.client_id);
       APP._editVersementId = null;
       closeModal('modal-paiement');
-      toast('Versement modifié — commissions réimpactées.', 'success');
+      toast('Versement modifié — commissions et écriture comptable réimpactées.', 'success');
       renderVersements();
       if (typeof renderComptaVersements === 'function') renderComptaVersements();
       refreshDashboard();
@@ -17918,13 +18060,15 @@ async function savePaiement() {
   await dbPut('versements', versement);
   syncToSupabase('pi_versements', versement);
 
+  // ── Écriture comptable automatique (Débit Trésorerie / Crédit Client) ──────
+  await genererEcritureVersement(versement);
   // ── Génération automatique des commissions ─────────────────────────────────
   await genererCommissionsVersement(versement);
   // ── Statut du lot : passe « vendu » dès que le seuil d'immobilisation est atteint ──
   if (typeof majStatutLotClient === 'function') await majStatutLotClient(versement.client_id);
 
   closeModal('modal-paiement');
-  toast('Versement enregistré.', 'success');
+  toast('Versement enregistré — écriture ' + _compteTresoVersement(versement.mode) + '/' + (versement.type === 'frais_souscription' ? ((DATA.params||{}).compte_frais_souscription||'7088') : '4111') + ' créée.', 'success');
 
   // Afficher reçu
   showRecu(versement);
@@ -17981,10 +18125,13 @@ async function deleteVersement(id) {
   var clientId = v ? v.client_id : null;
   DATA.versements = DATA.versements.filter(function(v) { return v.id !== id; });
   await deleteRecord('versements', id);
+  await supprimerEcritureVersement(id);
+  if (typeof buildBalance === 'function') buildBalance();
+  if (typeof buildGrandLivre === 'function') buildGrandLivre();
   if (clientId && typeof majStatutLotClient === 'function') await majStatutLotClient(clientId);
   renderVersements();
   refreshDashboard();
-  toast('Versement supprimé.', 'info');
+  toast('Versement et écriture comptable supprimés.', 'info');
 }
 
 function loadEcheancier() {
@@ -23066,7 +23213,8 @@ function printBulletinData(d) {
     + '</tbody></table>');
   win.document.write('<div class="sign"><span>Signature Employé</span><span>Signature Employeur</span></div>');
   win.document.write('<div class="foot">Coût total employeur : '+fmtF(r.coutTotal)+' FCFA — Pour vous aider à faire valoir vos droits, conservez ce bulletin sans limitation de durée.</div>');
-  win.document.body.insertAdjacentHTML('beforeend',printQrFooter('BUL-'+(d&&d.nom?d.nom:'BULLETIN'))); win.document.write('</body></html>');
+  try{ win.document.body.insertAdjacentHTML('beforeend',printQrFooter('BUL-'+(d&&d.nom?d.nom:'BULLETIN'))); }catch(e){ console.warn('printQrFooter indisponible :', e); }
+  win.document.write('</body></html>');
   win.document.close();
   win.focus();
   setTimeout(function(){ win.print(); }, 250);
@@ -27485,7 +27633,41 @@ function buildTiers411() {
     totalSolde += Math.max(0, solde);
 
     var prog = DATA.programmes.find(function(p){return p.id===c.programme_id;})||{nom:'—'};
-    rows.push({c:c, totalVerse:totalVerse, solde:solde, statut:statut, retardMois:retardMois, provision:provision, prog:prog});
+    rows.push({source:'client', c:c, totalVerse:totalVerse, solde:solde, statut:statut, retardMois:retardMois, provision:provision, prog:prog});
+  });
+
+  /* [FIX 2026-06-30] Inclusion des acquéreurs de cessions foncières (module
+     Recouvrement) dans le relevé 411 : ils utilisent le compte 4111 mais
+     n'étaient jusqu'ici visibles que via le Grand Livre brut, sans relevé
+     individuel ni analyse d'antériorité dédiée. */
+  (DATA.cessions_foncieres || []).forEach(function(cf) {
+    if ((cf.prix_cession || 0) <= 0) return;
+    if (search && !((cf.acquereur||'') + ' ' + (cf.designation||'')).toLowerCase().includes(search.toLowerCase())) return;
+    if (filtProg) return; /* les cessions foncières ne sont rattachées à aucun "programme" de vente classique */
+
+    var totalVerse = crecVerse(cf);
+    var solde = (cf.prix_cession || 0) - totalVerse;
+    var statut = solde<=0 ? 'solde' : 'debiteur';
+
+    if (filtStatut === 'solde' && solde > 100) return;
+    if (filtStatut === 'debiteur' && solde <= 0) return;
+    if (filtStatut === 'crediteur' && solde >= 0) return;
+
+    var r = crecRetard(cf);
+    var retardMois = r ? r.moisRetard : 0;
+    var provision = retardMois > 6 ? Math.round(solde * 0.05) : 0;
+
+    if (solde > 0) {
+      if (retardMois <= 0) anteriorite.courant += solde;
+      else if (retardMois <= 3) anteriorite.m1_3 += solde;
+      else if (retardMois <= 6) anteriorite.m3_6 += solde;
+      else if (retardMois <= 12) anteriorite.m6_12 += solde;
+      else anteriorite.plus12 += solde;
+    }
+
+    totalSolde += Math.max(0, solde);
+
+    rows.push({source:'cession', c:cf, totalVerse:totalVerse, solde:solde, statut:statut, retardMois:retardMois, provision:provision, prog:{nom:'Cession foncière'}});
   });
 
   // Antériorité KPIs
@@ -27517,17 +27699,27 @@ function buildTiers411() {
 
   tbody.innerHTML = rows.map(function(r) {
     var c=r.c, solde=r.solde;
-    var lot = DATA.lots.find(function(l){return l.id===c.lot_id;})||{numero:'—',type:'—'};
-    var mensualite = c.mensualite||0;
+    var isCession = r.source === 'cession';
+    var lot = isCession ? null : (DATA.lots.find(function(l){return l.id===c.lot_id;})||{numero:'—',type:'—'});
+    var mensualite = isCession ? crecMensualite(c) : (c.mensualite||0);
     var prog = r.prog;
     var statBadge = solde<=0 ? 'badge-vert' : r.retardMois>6 ? 'badge-rouge' : r.retardMois>0 ? 'badge-or' : 'badge-bleu';
     var statLabel = solde<=0 ? 'Soldé' : r.retardMois>6 ? 'Litigieux' : r.retardMois>0 ? 'Retard x'+r.retardMois+' mois' : 'Courant';
+    var dossier   = isCession ? ('CES-'+c.id.slice(-6).toUpperCase()) : (c.dossier||'—');
+    var nomComplet= isCession ? (c.acquereur||'—') : (c.nom+' '+c.prenoms);
+    var tel       = isCession ? ((c.acheteur && c.acheteur.tel) || c.contact || '') : (c.tel||'');
+    var progLabel = isCession ? (c.designation || (typeof cesSourceRef==='function'?cesSourceRef(c.source_key):'') || '—') : prog.nom;
+    var lotLabel  = isCession ? '' : lot.numero;
+    var typeLabel = isCession ? '🏞️ Cession foncière' : (c.type_logement||lot.type||'—');
+    var montantTotal = isCession ? (c.prix_cession||0) : (c.montant_total||0);
+    var releveBtn = isCession ? ('showReleveTiers(\'cession:'+c.id+'\')') : ('showReleveTiers(\'client:'+c.id+'\')');
+    var actionExtra = isCession ? '' : ('<button class="btn btn-secondary btn-sm btn-icon" onclick="openBienAmortFromClient(\''+c.id+'\')" title="Enregistrer bien amortissable">🏠</button>');
     return '<tr>'
-      +'<td style="font-family:monospace;font-size:12px;color:var(--or);">'+(c.dossier||'—')+'</td>'
-      +'<td><strong>'+c.nom+'</strong> '+c.prenoms+'<div style="font-size:11px;color:var(--dim);">'+c.tel+'</div></td>'
-      +'<td style="font-size:12px;">'+prog.nom+'<br><span style="color:var(--dim);">'+lot.numero+'</span></td>'
-      +'<td style="font-size:12px;">'+(c.type_logement||lot.type||'—')+'</td>'
-      +'<td style="font-weight:700;">'+fmtF(c.montant_total||0)+' FCFA</td>'
+      +'<td style="font-family:monospace;font-size:12px;color:var(--or);">'+dossier+'</td>'
+      +'<td><strong>'+nomComplet+'</strong>'+(tel?'<div style="font-size:11px;color:var(--dim);">'+tel+'</div>':'')+'</td>'
+      +'<td style="font-size:12px;">'+progLabel+(lotLabel?'<br><span style="color:var(--dim);">'+lotLabel+'</span>':'')+'</td>'
+      +'<td style="font-size:12px;">'+typeLabel+'</td>'
+      +'<td style="font-weight:700;">'+fmtF(montantTotal)+' FCFA</td>'
       +'<td style="color:var(--vert);">'+fmtF(r.totalVerse)+' FCFA</td>'
       +'<td style="font-weight:700;color:'+(solde>0?'var(--rouge)':'var(--vert)')+';">'+(solde>0?fmtF(solde)+' FCFA':'Soldé')+'</td>'
       +'<td style="font-size:12px;">'+fmtF(mensualite)+' FCFA</td>'
@@ -27535,14 +27727,26 @@ function buildTiers411() {
       +'<td style="color:'+(r.provision>0?'var(--rouge)':'var(--dim)')+';">'+(r.provision>0?fmtF(r.provision)+' FCFA':'—')+'</td>'
       +'<td><span class="badge '+statBadge+'">'+statLabel+'</span></td>'
       +'<td style="white-space:nowrap;">'
-        +'<button class="btn btn-secondary btn-sm btn-icon" onclick="showReleveTiers(\''+c.id+'\')" title="Relevé de compte">📄</button> '
-        +'<button class="btn btn-secondary btn-sm btn-icon" onclick="openBienAmortFromClient(\''+c.id+'\')" title="Enregistrer bien amortissable">🏠</button>'
+        +'<button class="btn btn-secondary btn-sm btn-icon" onclick="'+releveBtn+'" title="Relevé de compte">📄</button> '
+        +actionExtra
       +'</td>'
       +'</tr>';
   }).join('');
 }
 
-function showReleveTiers(clientId) {
+function showReleveTiers(refId) {
+  /* [FIX 2026-06-30] refId peut être "client:<id>" (souscripteur classique)
+     ou "cession:<id>" (acquéreur cession foncière). Conserve la compatibilité
+     avec les anciens appels showReleveTiers('<clientId>') sans préfixe. */
+  var type = 'client', id = refId;
+  if (refId && refId.indexOf(':') !== -1) {
+    var parts = refId.split(':'); type = parts[0]; id = parts.slice(1).join(':');
+  }
+  if (type === 'cession') return showReleveTiersCession(id);
+  return showReleveTiersClient(id);
+}
+
+function showReleveTiersClient(clientId) {
   var c = DATA.clients.find(function(x){return x.id===clientId;});
   if (!c) return;
   var box = document.getElementById('releve-tiers-box');
@@ -27605,6 +27809,73 @@ function showReleveTiers(clientId) {
     +'</div>';
 }
 
+/* [FIX 2026-06-30] Relevé de compte tiers pour les acquéreurs de cessions
+   foncières (compte 4111), miroir de showReleveTiersClient ci-dessus mais
+   sur DATA.cessions_foncieres / c.paiements au lieu de DATA.clients /
+   DATA.versements. */
+function showReleveTiersCession(cessionId) {
+  var c = (DATA.cessions_foncieres || []).find(function(x){return x.id===cessionId;});
+  if (!c) return;
+  var box = document.getElementById('releve-tiers-box');
+  var nomEl = document.getElementById('releve-tiers-nom');
+  var content = document.getElementById('releve-tiers-content');
+  if (!box||!content) return;
+  box.style.display='block';
+  if (nomEl) nomEl.textContent = (c.acquereur||'—')+' (CES-'+c.id.slice(-6).toUpperCase()+')';
+  box.scrollIntoView({behavior:'smooth'});
+
+  var paiements = (c.paiements || []).slice()
+    .sort(function(a,b){return (a.date||'').localeCompare(b.date||'');});
+  var soldeRunning = 0;
+  var montantTotal = c.prix_cession||0;
+  var bien = c.designation || (typeof cesSourceRef==='function'?cesSourceRef(c.source_key):'') || '—';
+
+  content.innerHTML =
+    '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px;font-size:12px;">'
+    +'<div><span style="color:var(--dim);">Type</span><br><strong>🏞️ Cession foncière</strong></div>'
+    +'<div><span style="color:var(--dim);">Bien</span><br><strong>'+bien+'</strong></div>'
+    +'<div><span style="color:var(--dim);">Prix de cession</span><br><strong style="color:var(--or);">'+fmtF(montantTotal)+' FCFA</strong></div>'
+    +'</div>'
+    +'<div class="table-wrap"><table>'
+    +'<thead><tr>'
+    +'<th>Date</th><th>Libellé</th><th>Cpt Débit</th><th>Cpt Crédit</th>'
+    +'<th style="text-align:right;">Débit (FCFA)</th><th style="text-align:right;">Crédit (FCFA)</th>'
+    +'<th style="text-align:right;">Solde (FCFA)</th><th>Mode</th><th>Réf.</th>'
+    +'</tr></thead><tbody>'
+    // Ligne d'ouverture (cession)
+    +'<tr style="background:rgba(184,115,51,0.05);">'
+    +'<td>'+(c.date||'—')+'</td>'
+    +'<td style="font-weight:600;">Ouverture compte acquéreur — cession foncière</td>'
+    +'<td style="font-family:monospace;color:var(--or);">'+crecCompte()+'</td>'
+    +'<td style="font-family:monospace;color:var(--vert);">702</td>'
+    +'<td style="text-align:right;font-weight:700;">'+fmtF(montantTotal)+'</td>'
+    +'<td style="text-align:right;">—</td>'
+    +'<td style="text-align:right;color:var(--rouge);font-weight:700;">'+fmtF(montantTotal)+'</td>'
+    +'<td>—</td><td>CES-'+c.id.slice(-6).toUpperCase()+'</td>'
+    +'</tr>'
+    + paiements.map(function(p) {
+        soldeRunning += p.montant||0;
+        var soldeCourant = montantTotal - soldeRunning;
+        var compteTreso = (p.mode === 'especes') ? '571' : (p.mode === 'mobile_money' ? '531' : '521');
+        return '<tr>'
+          +'<td>'+p.date+'</td>'
+          +'<td>Versement'+(p.notes?' — '+p.notes:'')+'</td>'
+          +'<td style="font-family:monospace;color:var(--vert);">'+compteTreso+'</td>'
+          +'<td style="font-family:monospace;color:var(--or);">'+crecCompte()+'</td>'
+          +'<td style="text-align:right;">—</td>'
+          +'<td style="text-align:right;color:var(--vert);font-weight:600;">'+fmtF(p.montant)+'</td>'
+          +'<td style="text-align:right;color:'+(soldeCourant>0?'var(--rouge)':'var(--vert)')+';font-weight:700;">'+fmtF(Math.abs(soldeCourant))+(soldeCourant<0?' (CR)':'')+'</td>'
+          +'<td style="font-size:11px;">'+(p.mode||'—')+'</td>'
+          +'<td style="font-size:11px;font-family:monospace;">'+(p.ref||'—')+'</td>'
+          +'</tr>';
+      }).join('')
+    +'</tbody></table></div>'
+    +'<div style="display:flex;justify-content:flex-end;gap:24px;padding:12px 0;border-top:1px solid var(--bord);font-weight:700;font-size:13px;margin-top:8px;">'
+    +'<span>Total versé : <span style="color:var(--vert);">'+fmtF(soldeRunning)+' FCFA</span></span>'
+    +'<span>Solde dû : <span style="color:'+(montantTotal-soldeRunning>0?'var(--rouge)':'var(--vert)')+';font-size:15px;">'+fmtF(Math.abs(montantTotal-soldeRunning))+' FCFA</span></span>'
+    +'</div>';
+}
+
 function printReleveTiers() {
   _printFromElement('releve-tiers-content', 'Relevé de compte tiers');
 }
@@ -27615,6 +27886,12 @@ function exportTiers411CSV() {
     var verse=DATA.versements.filter(function(v){return v.client_id===c.id && _versementSurPrix(v);}).reduce(function(s,v){return s+v.montant;},0);
     var prog=DATA.programmes.find(function(p){return p.id===c.programme_id;})||{nom:''};
     rows.push([c.dossier,c.nom+' '+c.prenoms,prog.nom,c.montant_total||0,verse,(c.montant_total||0)-verse,0].join(','));
+  });
+  /* [FIX 2026-06-30] Export CSV étendu aux acquéreurs de cessions foncières */
+  (DATA.cessions_foncieres||[]).forEach(function(cf){
+    if ((cf.prix_cession||0)<=0) return;
+    var verse=crecVerse(cf);
+    rows.push(['CES-'+cf.id.slice(-6).toUpperCase(),(cf.acquereur||''),'Cession foncière',cf.prix_cession||0,verse,(cf.prix_cession||0)-verse,0].join(','));
   });
   var blob=new Blob([rows.join('\n')],{type:'text/csv'});
   var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='tiers411.csv'; a.click();
@@ -30043,7 +30320,10 @@ function updateRapportGauge(){var r=parseInt((document.getElementById('rch-avanc
 async function saveRapportChantier(){var convId=document.getElementById('rch-convention').value;if(!convId){toast('Sélectionnez une convention.','error');return;}var av=parseInt(document.getElementById('rch-avancement').value)||0;var r={id:APP.editingId||uid(),convention_id:convId,numero:document.getElementById('rch-numero').value.trim(),date_debut:document.getElementById('rch-date-debut').value,date_fin:document.getElementById('rch-date-fin').value,avancement:av,avancement_prevu:parseInt(document.getElementById('rch-avancement-prevu').value)||0,nb_ouvriers:parseInt(document.getElementById('rch-ouvriers').value)||0,meteo:document.getElementById('rch-meteo').value,travaux_realises:document.getElementById('rch-travaux-realises').value.trim(),travaux_prevus:document.getElementById('rch-travaux-prevus').value.trim(),difficultes:document.getElementById('rch-difficultes').value.trim(),depenses:parseFloat(document.getElementById('rch-depenses').value)||0,budget_cumul:parseFloat(document.getElementById('rch-budget-cumul').value)||0,observations:document.getElementById('rch-observations').value.trim(),valideur:document.getElementById('rch-valideur').value.trim(),statut:document.getElementById('rch-statut').value,created_at:APP.editingId?undefined:today()};if(APP.editingId){var idx=DATA.rapports_chantier.findIndex(function(x){return x.id===APP.editingId;});if(idx>=0)DATA.rapports_chantier[idx]=r;}else DATA.rapports_chantier.push(r);await dbPut('rapports_chantier',r);var conv=DATA.conventions.find(function(c){return c.id===convId;});if(conv&&av>=(conv.avancement||0)){conv.avancement=av;await dbPut('conventions',conv);}closeModal('modal-rapport-chantier');renderChantiersDashboard();renderRapports();renderConventions();toast('Rapport enregistré.','success');}
 function editRapportChantier(id){APP.editingId=id;openRapportChantier();setTimeout(function(){var r=DATA.rapports_chantier.find(function(x){return x.id===id;});if(!r)return;var el=function(eid,v){var e=document.getElementById(eid);if(e)e.value=v||'';};el('rch-convention',r.convention_id);el('rch-numero',r.numero);el('rch-date-debut',r.date_debut);el('rch-date-fin',r.date_fin);el('rch-avancement',r.avancement);el('rch-avancement-prevu',r.avancement_prevu);el('rch-ouvriers',r.nb_ouvriers);el('rch-meteo',r.meteo);el('rch-travaux-realises',r.travaux_realises);el('rch-travaux-prevus',r.travaux_prevus);el('rch-difficultes',r.difficultes);el('rch-depenses',r.depenses);el('rch-budget-cumul',r.budget_cumul);el('rch-observations',r.observations);el('rch-valideur',r.valideur);el('rch-statut',r.statut);document.getElementById('rch-modal-title').textContent='Modifier rapport';updateRapportGauge();},120);}
 async function deleteRapport(id){if(!confirm('Supprimer ce rapport ?'))return;if(await deleteRecord('rapports_chantier',id)===false)return;renderRapports();toast('Supprimé.','info');}
-function printRapportId(id){var r=DATA.rapports_chantier.find(function(x){return x.id===id;});if(!r)return;var conv=DATA.conventions.find(function(c){return c.id===r.convention_id;})||{numero:'—',objet:'—'};var constr=DATA.constructeurs.find(function(c){return c.id===conv.constructeur_id;})||{raison_sociale:'—'};var societe=DATA.params.societe||'ImmoSuite ERP';var ec=r.avancement-(r.avancement_prevu||r.avancement);/* [AUDIT FIX v17] Photos dans impression */var photosHtml='';if(r.photos&&r.photos.length){photosHtml='<h3>\u{1F4F8} Photos de chantier ('+r.photos.length+')</h3><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:10px 0;">'+(r.photos.slice(0,9).map(function(p){return'<div style="text-align:center;"><img src="'+p.data+'" style="width:100%;max-height:150px;object-fit:cover;border-radius:4px;border:1px solid #ddd;"><div style="font-size:10px;color:#666;margin-top:2px;">'+p.legende+'</div></div>';}).join(''))+'</div>';}var win=window.open('','','width=850,height=750');win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Rapport '+r.numero+'</title><style>body{font-family:Arial,sans-serif;padding:32px;font-size:13px;color:#222;}h1{color:#1A6B3A;border-bottom:3px solid #1A6B3A;padding-bottom:8px;}h3{color:#444;margin:16px 0 8px;}table{border-collapse:collapse;width:100%;margin:8px 0;}td,th{border:1px solid #ccc;padding:7px 12px;}th{background:#E8F4EE;}.kpi{display:inline-block;background:#F3F4EF;border:1px solid #ddd;border-radius:8px;padding:10px 18px;margin:4px;text-align:center;min-width:90px;}.kv{font-size:18px;font-weight:bold;color:#1A6B3A;}.kl{font-size:11px;color:#888;}.travaux{background:#F8F9F5;border:1px solid #D4D9D1;border-radius:4px;padding:12px;white-space:pre-line;font-size:12px;}.diff{background:#FDECEA;border-left:4px solid #C93535;padding:10px;border-radius:4px;}.sig{display:flex;justify-content:space-between;margin-top:50px;}.sb{border-top:1px solid #999;width:40%;padding-top:8px;font-size:12px;color:#666;}</style></head><body><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;"><div><strong style="font-size:18px;color:#1A6B3A;">'+societe+'</strong></div><div style="text-align:right;font-size:12px;"><strong>RAPPORT DE CHANTIER N° '+r.numero+'</strong></div></div><h1>📋 Rapport Hebdomadaire — Semaine du '+r.date_debut+(r.date_fin?' au '+r.date_fin:'')+'</h1><table><tr><td><strong>Convention :</strong> '+conv.numero+'</td><td><strong>Constructeur :</strong> '+constr.raison_sociale+'</td></tr></table><div><span class="kpi"><div class="kv">'+r.avancement+'%</div><div class="kl">Réalisé</div></span><span class="kpi"><div class="kv">'+(r.avancement_prevu||r.avancement)+'%</div><div class="kl">Prévu</div></span><span class="kpi"><div class="kv" style="color:'+(ec>=0?'#1A6B3A':'#C93535')+'">'+(ec>=0?'+':'')+ec+'%</div><div class="kl">Écart</div></span><span class="kpi"><div class="kv">'+r.nb_ouvriers+'</div><div class="kl">Ouvriers</div></span></div><h3>Travaux réalisés</h3><div class="travaux">'+(r.travaux_realises||'—')+'</div>'+(r.difficultes?'<h3>Difficultés</h3><div class="diff">'+r.difficultes+'</div>':'')+photosHtml+'<div class="sig"><div class="sb">LE CHEF DE CHANTIER<br>'+constr.raison_sociale+'<br><br><br>Signature</div><div class="sb" style="text-align:right;">LE MAÎTRE D\'OUVRAGE<br>'+societe+'<br><br><br>Signature</div></div></body></html>');try{ if(win.document.body && !win.document.querySelector('.doc-qr')){ var _qr=(win.document.querySelector('title')||{}).textContent||'DOC'; win.document.body.insertAdjacentHTML('beforeend', printQrFooter(_qr)); } }catch(e){} win.document.close(); win.print();}
+/* [FIX 2026-06-30] Ancienne définition de printRapportId supprimée ici :
+   elle était dupliquée plus bas (fusionnée avec la fonctionnalité photos
+   de chantier le 2026-06-30) et était de toute façon écrasée silencieusement
+   par cette seconde définition, comme toute redéfinition de fonction en JS. */
 function exportRapportsChantier(){var rows=['Rapport,Convention,Date début,Avancement,Prévu,Ouvriers,Statut'];DATA.rapports_chantier.forEach(function(r){rows.push([r.numero,(DATA.conventions.find(function(c){return c.id===r.convention_id;})||{numero:''}).numero,r.date_debut,r.avancement+'%',(r.avancement_prevu||r.avancement)+'%',r.nb_ouvriers,r.statut].join(','));});var b=new Blob([rows.join('\n')],{type:'text/csv'});var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='rapports_chantier.csv';a.click();toast('Export rapports chantier.','success');}
 function printRapportChantier(){var id=APP.editingId;if(id)printRapportId(id);else toast('Enregistrez d\'abord le rapport.','info');}
 
@@ -33248,6 +33528,9 @@ function _ppLoad(forPrint) {
     var blob = new Blob([html], {type: 'text/html; charset=utf-8'});
     var url  = URL.createObjectURL(blob);
     frame.onload = function() { try { URL.revokeObjectURL(url); } catch(e){} frame.onload=null; };
+    /* [FIX 2026-06-30] Sécurité : un srcdoc résiduel (même vide) prime sur
+       src selon la spec HTML et empêcherait le nouveau document de s'afficher. */
+    frame.removeAttribute('srcdoc');
     frame.src = url;
   } catch(e) {
     /* Repli : srcdoc */
@@ -33301,7 +33584,19 @@ function _ppDownload() {
 function closePrintPreview() {
   document.getElementById('modal-print-preview').style.display = 'none';
   document.body.style.overflow = '';
-  document.getElementById('pp-frame').srcdoc = '';
+  /* [FIX 2026-06-30] Auparavant : frame.srcdoc = ''. Assigner srcdoc, même
+     vide, fait que le navigateur priorise désormais srcdoc sur src selon la
+     spec HTML : au prochain aperçu, _ppLoad() réaffecte frame.src (nouvelle
+     URL Blob) mais celui-ci était silencieusement ignoré tant que l'attribut
+     srcdoc restait présent (même vide) → aperçu vide au 2e essai sur un même
+     dossier, alors que le HTML généré était pourtant correct. On retire
+     complètement l'attribut au lieu de le vider, pour repartir d'une iframe
+     totalement vierge. */
+  var frame = document.getElementById('pp-frame');
+  if (frame) {
+    frame.removeAttribute('srcdoc');
+    frame.removeAttribute('src');
+  }
 }
 
 /* Fermer sur Echap */
@@ -35647,6 +35942,9 @@ function printRapportId(id){
   var constr=DATA.constructeurs.find(function(c){return c.id===conv.constructeur_id;})||{raison_sociale:'—'};
   var societe=DATA.params.societe||'ImmoSuite ERP';
   var ec=r.avancement-(r.avancement_prevu||r.avancement);
+  /* [AUDIT FIX v17] Photos dans impression — récupérée lors de la fusion des deux
+     versions dupliquées de printRapportId (2026-06-30) */
+  var photosHtml='';if(r.photos&&r.photos.length){photosHtml='<h3>\u{1F4F8} Photos de chantier ('+r.photos.length+')</h3><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:10px 0;">'+(r.photos.slice(0,9).map(function(p){return'<div style="text-align:center;"><img src="'+p.data+'" style="width:100%;max-height:150px;object-fit:cover;border-radius:4px;border:1px solid #ddd;"><div style="font-size:10px;color:#666;margin-top:2px;">'+p.legende+'</div></div>';}).join(''))+'</div>';}
   var win=window.open('','','width=850,height=750');
   win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Rapport '+r.numero+'</title><style>body{font-family:Arial,sans-serif;padding:32px;font-size:13px;color:#222;}h1{color:#1A6B3A;border-bottom:3px solid #1A6B3A;padding-bottom:8px;}h3{color:#444;margin:18px 0 8px;border-bottom:1px solid #eee;padding-bottom:5px;}table{border-collapse:collapse;width:100%;margin:8px 0;}td,th{border:1px solid #ccc;padding:7px 12px;}th{background:#E8F4EE;text-align:left;}.kpi{display:inline-block;background:#F3F4EF;border:1px solid #D4D9D1;border-radius:8px;padding:12px 20px;margin:6px;text-align:center;min-width:100px;}.kv{font-size:22px;font-weight:bold;color:#1A6B3A;}.kl{font-size:11px;color:#8A9E92;margin-top:3px;}.travaux{background:#F8F9F5;border:1px solid #D4D9D1;border-radius:4px;padding:12px;white-space:pre-line;font-size:12px;}.diff{background:#FDECEA;border-left:4px solid #C93535;padding:10px;border-radius:4px;}.sig{display:flex;justify-content:space-between;margin-top:50px;}.sb{border-top:1px solid #999;width:40%;padding-top:8px;font-size:12px;color:#666;}</style></head><body>'
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;"><div><strong style="font-size:18px;color:#1A6B3A;">'+societe+'</strong><br><span style="font-size:11px;color:#888;">Promoteur immobilier — Côte d\'Ivoire</span></div><div style="text-align:right;font-size:12px;"><strong>RAPPORT DE CHANTIER N° '+r.numero+'</strong></div></div>'
@@ -35656,6 +35954,7 @@ function printRapportId(id){
     +'<h3>Travaux réalisés</h3><div class="travaux">'+(r.travaux_realises||'—')+'</div>'
     +(r.travaux_prevus?'<h3>Travaux prévus</h3><div class="travaux">'+r.travaux_prevus+'</div>':'')
     +(r.difficultes?'<h3>Difficultés</h3><div class="diff">'+r.difficultes+'</div>':'')
+    +photosHtml
     +'<div class="sig"><div class="sb">LE CHEF DE CHANTIER<br>'+constr.raison_sociale+'<br><br><br>Signature</div><div class="sb" style="text-align:right;">LE MAÎTRE D\'OUVRAGE<br>'+societe+'<br><br><br>Signature</div></div></body></html>');
   try{ if(win.document.body && !win.document.querySelector('.doc-qr')){ var _qr=(win.document.querySelector('title')||{}).textContent||'DOC'; win.document.body.insertAdjacentHTML('beforeend', printQrFooter(_qr)); } }catch(e){} win.document.close(); win.print();
 }
@@ -45709,6 +46008,62 @@ function brnCoupe(){
     +'<text x="'+(W/2)+'" y="'+(H-6)+'" font-size="10" text-anchor="middle" fill="#444">Distance '+totalD.toFixed(1)+' m · dénivelé '+(zmax-zmin).toFixed(2)+' m</text></svg>';
   document.getElementById('brn-coupe-out').innerHTML='<div style="font-size:12px;margin-bottom:4px;">Coupe '+(A.nom||ia)+' → '+(B.nom||ib)+'</div>'+svg;
 }
+/* [FIX 2026-06-30] Import CSV des bornes officielles de la parcelle (tableau
+   _brnList : nom, X, Y, Z, angle, distance) — à ne pas confondre avec
+   brnImportCSV ci-dessous, qui importe un nuage de points de LEVÉ topo
+   (_topoPoints) pour le modèle d'altitude/courbes de niveau, et reste
+   inchangée. Reconnaît : Nom/Borne, X/Longitude, Y/Latitude, Z/Altitude,
+   Angle, Distance. Coordonnées GPS décimales (lat/lon) acceptées aussi bien
+   que des coordonnées projetées X/Y locales — les deux sont stockées telles
+   quelles dans x/y (le système de calcul de superficie par la formule de
+   Gauss fonctionne avec les deux, tant que toutes les bornes de la même
+   parcelle utilisent un référentiel cohérent). */
+function brnImportBornesCSV(input){
+  var fl=input.files&&input.files[0]; if(!fl)return;
+  var mode = (_brnList && _brnList.length) ? confirm(
+    'Le tableau contient déjà '+_brnList.length+' borne(s).\n\n'
+    +'OK = Remplacer entièrement le tableau par le contenu du fichier.\n'
+    +'Annuler = Ajouter les bornes du fichier à la suite des bornes existantes.'
+  ) : true;
+  var rd=new FileReader();
+  rd.onload=function(ev){
+    var txt=ev.target.result; var lines=txt.split(/\r?\n/).filter(function(l){return l.trim();});
+    if(!lines.length){ toast('Fichier vide.','error'); input.value=''; return; }
+    var sep=(txt.indexOf(';')>-1)?';':(txt.indexOf('\t')>-1?'\t':',');
+    var first=lines[0].split(sep);
+    var isHeader=first.some(function(c){ return /[a-zA-Z]/.test(c) && isNaN(parseFloat(c)); });
+    var col={x:-1,y:-1,z:-1,nom:-1,angle:-1,distance:-1};
+    if(isHeader){
+      first.forEach(function(h,idx){ var hh=h.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+        if(['x','coordx','easting','est','abscisse','lon','long','longitude'].indexOf(hh)>=0)col.x=idx;
+        else if(['y','coordy','northing','nord','ordonnee','lat','latitude'].indexOf(hh)>=0)col.y=idx;
+        else if(['z','alt','altitude','cote','elevation'].indexOf(hh)>=0)col.z=idx;
+        else if(['nom','name','point','borne','id','label','repere'].indexOf(hh)>=0)col.nom=idx;
+        else if(['angle','gisement','az','azimut'].indexOf(hh)>=0)col.angle=idx;
+        else if(['distance','dist','longueur'].indexOf(hh)>=0)col.distance=idx;
+      });
+    }
+    if(col.x<0||col.y<0){ var fl0=(lines[isHeader?1:0]||'').split(sep); var base=isNaN(parseFloat(fl0[0]))?1:0; if(base===1)col.nom=0; col.x=base; col.y=base+1; col.z=base+2; col.angle=base+3; col.distance=base+4; }
+    var start=isHeader?1:0; var pts=[];
+    for(var r=start;r<lines.length;r++){
+      var c=lines[r].split(sep); if(c.length<=Math.max(col.x,col.y))continue;
+      var x=parseFloat((c[col.x]||'').replace(',','.')), y=parseFloat((c[col.y]||'').replace(',','.'));
+      if(isNaN(x)||isNaN(y))continue;
+      var z=col.z>=0?parseFloat((c[col.z]||'').replace(',','.')):0; if(isNaN(z))z=0;
+      var angle=col.angle>=0?parseFloat((c[col.angle]||'').replace(',','.')):0; if(isNaN(angle))angle=0;
+      var distance=col.distance>=0?parseFloat((c[col.distance]||'').replace(',','.')):0; if(isNaN(distance))distance=0;
+      var nom=col.nom>=0?(c[col.nom]||'').trim():('B'+(r-start+1));
+      pts.push({nom:nom,x:x,y:y,z:z,angle:angle,distance:distance});
+    }
+    if(!pts.length){ toast('Aucune borne lisible (séparateur "'+sep+'" détecté).','error'); input.value=''; return; }
+    _brnList = mode ? pts : (_brnList||[]).concat(pts);
+    brnRender();
+    var area = brnArea();
+    toast(pts.length+' borne(s) importée(s)'+(mode?' (tableau remplacé)':' (ajoutées)')+(area>0?' · superficie calculée '+(area/10000).toFixed(4)+' ha':''),'success');
+    input.value='';
+  };
+  rd.readAsText(fl);
+}
 function brnImportCSV(input){
   var fl=input.files&&input.files[0]; if(!fl)return;
   var rd=new FileReader();
@@ -49399,6 +49754,388 @@ async function cesSave() {
 }
 
 
+
+
+/* ══════════════════════════════════════════════════════════════════
+   RECOUVREMENT DES TIERS ACQUÉREURS FONCIERS
+   Échéancier · Versements · Relances (4 niveaux) · Lettres PDF
+   Données embarquées dans l'objet cession :
+     c.recouv     = { actif, apport, duree, mensualite, date_debut, compte }
+     c.paiements  = [{ id, date, montant, mode, ref, notes, ecriture_id }]
+     c.relances   = [{ id, date, niveau, canal, message }]
+   Sync : via le store cessions_foncieres existant (pi_cessions_foncieres JSONB)
+══════════════════════════════════════════════════════════════════ */
+
+function crecCompte() {
+  return (DATA.params && DATA.params.compte_acquereur_foncier) || '4111';
+}
+function crecMensualite(c) {
+  if (!c.recouv || !c.recouv.duree) return 0;
+  if (c.recouv.mensualite) return c.recouv.mensualite;
+  return Math.ceil(((c.prix_cession || 0) - (c.recouv.apport || 0)) / c.recouv.duree);
+}
+function crecVerse(c) { return parseFloat(c.montant_encaisse) || 0; }
+function crecReste(c) { return Math.max(0, (c.prix_cession || 0) - crecVerse(c)); }
+
+/* Retard d'un acquéreur — mode échéancier mensuel OU échéance unique */
+function crecRetard(c) {
+  var prix = c.prix_cession || 0, verse = crecVerse(c);
+  if (prix <= 0 || verse >= prix) return null;            // pas de créance / soldé
+  var now = new Date();
+  if (c.recouv && c.recouv.actif && c.recouv.duree > 0) {
+    var m = crecMensualite(c);
+    var debut = new Date(c.recouv.date_debut || c.date);
+    var mois = Math.max(0, (now.getFullYear() - debut.getFullYear()) * 12 + (now.getMonth() - debut.getMonth()));
+    var attendu = Math.min(prix, (c.recouv.apport || 0) + mois * m);
+    if (verse < attendu) return { mode: 'plan', moisRetard: Math.max(1, Math.round((attendu - verse) / (m || 1))), montantDu: attendu - verse };
+    return null;
+  }
+  if (c.echeance) {
+    var ech = new Date(c.echeance);
+    if (now > ech) {
+      var moisR = Math.max(1, (now.getFullYear() - ech.getFullYear()) * 12 + (now.getMonth() - ech.getMonth()));
+      return { mode: 'echeance', moisRetard: moisR, montantDu: prix - verse };
+    }
+  }
+  return null;
+}
+function crecNiveau(moisRetard) {
+  if (moisRetard >= 6) return 3;   // résiliation
+  if (moisRetard >= 3) return 2;   // mise en demeure
+  if (moisRetard >= 2) return 1;   // lettre
+  return 0;                        // rappel
+}
+var CREC_NIV = ['💬 Rappel simple', '📧 Lettre de relance', '⚖️ Mise en demeure', '🚫 Résiliation'];
+var CREC_NIV_BADGE = ['badge-bleu', 'badge-or', 'badge-rouge', 'badge-violet'];
+
+function getRetardatairesCessions() {
+  return (DATA.cessions_foncieres || []).map(function (c) {
+    var r = crecRetard(c);
+    if (!r) return null;
+    return { c: c, moisRetard: r.moisRetard, montantDu: r.montantDu, mode: r.mode, niveau: crecNiveau(r.moisRetard) };
+  }).filter(Boolean).sort(function (a, b) { return b.moisRetard - a.moisRetard; });
+}
+
+/* Échéancier prévisionnel (pour aperçu / impression) */
+function crecEcheancier(c) {
+  var rows = []; if (!c.recouv || !c.recouv.duree) return rows;
+  var m = crecMensualite(c), prix = c.prix_cession || 0;
+  var d = new Date(c.recouv.date_debut || c.date);
+  var verse = crecVerse(c), cumul = c.recouv.apport || 0;
+  for (var i = 0; i < c.recouv.duree; i++) {
+    var dt = new Date(d.getFullYear(), d.getMonth() + i, d.getDate() || 1);
+    var mont = (i === c.recouv.duree - 1) ? Math.max(0, prix - cumul) : m;
+    cumul += mont;
+    rows.push({ rang: i + 1, date: dt.toISOString().split('T')[0], montant: mont, cumul: cumul, paye: verse >= cumul });
+  }
+  return rows;
+}
+
+/* ── Vue : onglet Recouvrement ── */
+function crecRender() {
+  var L = (DATA.cessions_foncieres || []).filter(function (c) { return (c.prix_cession || 0) > 0; });
+  var encours = L.filter(function (c) { return crecReste(c) > 0; });
+  var retards = getRetardatairesCessions();
+  var niveaux = [0, 0, 0, 0];
+  retards.forEach(function (r) { niveaux[r.niveau]++; });
+
+  var totCre = L.reduce(function (s, c) { return s + (c.prix_cession || 0); }, 0);
+  var totEnc = L.reduce(function (s, c) { return s + crecVerse(c); }, 0);
+  var totReste = totCre - totEnc;
+  var tx = totCre > 0 ? Math.round(totEnc / totCre * 100) : 0;
+  var enRetardMt = retards.reduce(function (s, r) { return s + r.montantDu; }, 0);
+
+  var kpi = function (t, v, col) { return '<div class="kpi-card" style="border-top-color:' + col + ';"><div class="kpi-label">' + t + '</div><div class="kpi-value" style="font-size:16px;color:' + col + ';">' + v + '</div></div>'; };
+  var k = document.getElementById('crec-kpis');
+  if (k) k.innerHTML =
+      kpi('Créances acquéreurs', fmtF(totCre) + ' F', '#3B82F6')
+    + kpi('Recouvré', fmtF(totEnc) + ' F', '#1A6B3A')
+    + kpi('Reste à recouvrer', fmtF(totReste) + ' F', '#c0392b')
+    + kpi('Taux recouvrement', tx + ' %', tx >= 80 ? '#1A6B3A' : (tx >= 50 ? '#B8732F' : '#c0392b'))
+    + kpi('Acquéreurs en retard', retards.length, retards.length ? '#c0392b' : '#1A6B3A')
+    + kpi('Montant échu impayé', fmtF(enRetardMt) + ' F', '#c0392b');
+
+  var st = document.getElementById('crec-niveaux');
+  if (st) st.innerHTML = niveaux.map(function (n, i) {
+    var col = ['var(--bleu)', 'var(--or)', 'var(--rouge)', 'var(--violet)'][i];
+    return '<div class="kpi-card" style="border-top-color:' + col + ';"><div class="kpi-label">' + CREC_NIV[i] + '</div><div class="kpi-value" style="color:' + col + ';">' + n + '</div></div>';
+  }).join('');
+
+  /* Table — toutes cessions en cours de recouvrement */
+  var q = ((document.getElementById('crec-search') || {}).value || '').toLowerCase();
+  var rows = encours.filter(function (c) {
+    return !q || ((c.acquereur || '') + ' ' + (c.designation || '')).toLowerCase().indexOf(q) !== -1;
+  }).map(function (c) {
+    var r = crecRetard(c);
+    var reste = crecReste(c);
+    var prix = c.prix_cession || 0, verse = crecVerse(c);
+    var txc = prix > 0 ? Math.round(verse / prix * 100) : 0;
+    var planTxt = (c.recouv && c.recouv.duree) ? (c.recouv.duree + '× ' + fmtF(crecMensualite(c)) + ' F') : (c.echeance ? ('échéance ' + dateShort(c.echeance)) : '<span style="color:var(--blanc-dim);">aucun plan</span>');
+    var derniere = (c.relances && c.relances.length) ? dateShort(c.relances[c.relances.length - 1].date) : 'Jamais';
+    var nivBadge = r ? '<span class="badge ' + CREC_NIV_BADGE[r.niveau] + '">' + CREC_NIV[r.niveau].replace(/^.. /, '') + '</span>' : '<span class="badge badge-vert">À jour</span>';
+    var at = (c.acheteur && c.acheteur.type === 'morale') ? 'PM' : 'PP';
+    return '<tr' + (r ? ' style="background:rgba(192,57,43,.06);"' : '') + '>'
+      + '<td><strong>' + (c.acquereur || '—') + '</strong> <span class="badge badge-neutre" style="font-size:9px;">' + at + '</span>'
+      + '<br><span style="font-size:11px;color:var(--blanc-dim);">' + (c.designation || cesSourceRef(c.source_key)) + '</span></td>'
+      + '<td style="font-size:11px;">' + (c.contact || (c.acheteur && c.acheteur.tel) || '—') + '</td>'
+      + '<td style="font-size:11px;">' + planTxt + '</td>'
+      + '<td style="text-align:right;font-weight:700;">' + fmtF(prix) + '</td>'
+      + '<td style="text-align:right;color:var(--vert);">' + fmtF(verse) + '<br><span style="font-size:10px;color:var(--blanc-dim);">' + txc + '%</span></td>'
+      + '<td style="text-align:right;color:var(--rouge);font-weight:700;">' + fmtF(reste) + '</td>'
+      + '<td style="text-align:center;">' + (r ? '<span style="color:var(--rouge);font-weight:700;">' + r.moisRetard + ' m</span><br>' : '') + nivBadge + '</td>'
+      + '<td style="font-size:11px;">' + derniere + '</td>'
+      + '<td style="white-space:nowrap;">'
+      + '<button class="btn btn-primary btn-sm btn-icon" title="Encaisser" onclick="crecEncaisser(\'' + c.id + '\')">💵</button> '
+      + '<button class="btn btn-secondary btn-sm btn-icon" title="Échéancier / Plan" onclick="crecOpenPlan(\'' + c.id + '\')">🗓️</button> '
+      + (r ? '<button class="btn btn-warning btn-sm btn-icon" title="Relancer" onclick="crecOpenRelance(\'' + c.id + '\')">📨</button> '
+           + '<button class="btn btn-secondary btn-sm btn-icon" title="Lettre PDF" onclick="crecLettrePDF(\'' + c.id + '\')">📄</button>' : '')
+      + '</td></tr>';
+  }).join('');
+
+  var tb = document.getElementById('tbody-crec');
+  if (tb) tb.innerHTML = rows || '<tr><td colspan="9" style="text-align:center;color:var(--vert);padding:20px;">✅ Aucune créance en cours sur les acquéreurs fonciers.</td></tr>';
+}
+
+/* ── Modal Plan / Échéancier + Versements ── */
+var _crecId = null;
+function crecOpenPlan(id) {
+  var c = (DATA.cessions_foncieres || []).find(function (x) { return x.id === id; });
+  if (!c) return;
+  _crecId = id;
+  var rec = c.recouv || {};
+  var set = function (i, v) { var e = document.getElementById(i); if (e) e.value = (v == null ? '' : v); };
+  set('crec-titre-acq', c.acquereur || '—');
+  set('crec-actif', rec.actif ? '1' : '0');
+  set('crec-apport', rec.apport != null ? rec.apport : crecVerse(c));
+  set('crec-duree', rec.duree || 0);
+  set('crec-debut', rec.date_debut || c.date || today());
+  var info = document.getElementById('crec-plan-info');
+  if (info) info.innerHTML = 'Prix : <strong>' + fmtF(c.prix_cession || 0) + ' F</strong> · Déjà encaissé : <strong style="color:var(--vert);">' + fmtF(crecVerse(c)) + ' F</strong> · Reste : <strong style="color:var(--rouge);">' + fmtF(crecReste(c)) + ' F</strong>';
+  crecPlanPreview();
+  crecRenderPaiements(c);
+  openModal('modal-crec-plan');
+}
+function crecPlanPreview() {
+  var c = (DATA.cessions_foncieres || []).find(function (x) { return x.id === _crecId; });
+  if (!c) return;
+  var apport = parseFloat((document.getElementById('crec-apport') || {}).value) || 0;
+  var duree = parseInt((document.getElementById('crec-duree') || {}).value) || 0;
+  var prix = c.prix_cession || 0;
+  var z = document.getElementById('crec-mensualite-info');
+  if (z) {
+    if (duree > 0) {
+      var m = Math.ceil((prix - apport) / duree);
+      z.innerHTML = 'Mensualité ≈ <strong>' + fmtF(m) + ' FCFA</strong> sur <strong>' + duree + '</strong> mois.';
+    } else z.innerHTML = '<span style="color:var(--blanc-dim);">Durée 0 = pas d\u2019échéancier mensuel (échéance unique gérée via la cession).</span>';
+  }
+}
+async function crecSavePlan() {
+  var c = (DATA.cessions_foncieres || []).find(function (x) { return x.id === _crecId; });
+  if (!c) return;
+  var apport = parseFloat((document.getElementById('crec-apport') || {}).value) || 0;
+  var duree = parseInt((document.getElementById('crec-duree') || {}).value) || 0;
+  var debut = (document.getElementById('crec-debut') || {}).value || c.date || today();
+  var actif = (document.getElementById('crec-actif') || {}).value === '1';
+  c.recouv = { actif: actif, apport: apport, duree: duree, mensualite: 0, date_debut: debut, compte: crecCompte() };
+  await dbPut('cessions_foncieres', c);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_cessions_foncieres', c);
+  toast('Échéancier enregistré', 'success');
+  crecRender();
+  crecOpenPlan(_crecId);
+}
+function crecRenderPaiements(c) {
+  var box = document.getElementById('crec-paiements');
+  if (!box) return;
+  var ps = (c.paiements || []).slice().sort(function (a, b) { return new Date(b.date) - new Date(a.date); });
+  box.innerHTML = '<table style="width:100%;font-size:12px;"><thead><tr><th>Date</th><th>Montant</th><th>Mode</th><th>Réf.</th><th></th></tr></thead><tbody>'
+    + (ps.length ? ps.map(function (p) {
+        return '<tr><td>' + dateShort(p.date) + '</td><td style="text-align:right;color:var(--vert);">' + fmtF(p.montant) + '</td><td>' + (p.mode || '—') + '</td><td>' + (p.ref || '—') + '</td>'
+          + '<td><button class="btn btn-danger btn-sm btn-icon" onclick="crecDeletePaiement(\'' + c.id + '\',\'' + p.id + '\')">🗑</button></td></tr>';
+      }).join('') : '<tr><td colspan="5" style="text-align:center;color:var(--blanc-dim);padding:8px;">Aucun versement enregistré.</td></tr>')
+    + '</tbody></table>';
+}
+
+/* ── Encaissement d'un versement (+ écriture SYSCOHADA) ── */
+function crecEncaisser(id) {
+  var c = (DATA.cessions_foncieres || []).find(function (x) { return x.id === id; });
+  if (!c) return;
+  _crecId = id;
+  var set = function (i, v) { var e = document.getElementById(i); if (e) e.value = v; };
+  set('crecp-acq', c.acquereur || '—');
+  set('crecp-reste', fmtF(crecReste(c)) + ' FCFA');
+  set('crecp-date', today());
+  set('crecp-montant', '');
+  set('crecp-mode', 'virement');
+  set('crecp-ref', '');
+  set('crecp-notes', '');
+  openModal('modal-crec-paiement');
+}
+async function crecSavePaiement() {
+  var c = (DATA.cessions_foncieres || []).find(function (x) { return x.id === _crecId; });
+  if (!c) return;
+  var montant = parseFloat((document.getElementById('crecp-montant') || {}).value) || 0;
+  if (montant <= 0) { toast('Montant invalide', 'error'); return; }
+  var reste = crecReste(c);
+  if (montant > reste + 1) { if (!confirm('Le montant dépasse le reste dû (' + fmtF(reste) + ' F). Continuer ?')) return; }
+  var p = {
+    id: uid(), date: (document.getElementById('crecp-date') || {}).value || today(),
+    montant: montant, mode: (document.getElementById('crecp-mode') || {}).value || 'virement',
+    ref: ((document.getElementById('crecp-ref') || {}).value || '').trim(),
+    notes: ((document.getElementById('crecp-notes') || {}).value || '').trim()
+  };
+  if (!c.paiements) c.paiements = [];
+  c.paiements.push(p);
+  c.montant_encaisse = crecVerse(c) + montant;
+  if (c.montant_encaisse >= (c.prix_cession || 0)) c.statut = 'soldee';
+  else if (c.statut === 'promesse') c.statut = 'cedee';
+  await crecGenEcriture(c, p);
+  await dbPut('cessions_foncieres', c);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_cessions_foncieres', c);
+  closeModal('modal-crec-paiement');
+  toast('Versement encaissé — écriture générée', 'success');
+  crecRender();
+  if (typeof cesRender === 'function') cesRender();
+  if (typeof filterEcritures === 'function') filterEcritures();
+  if (typeof buildTresorerie === 'function') buildTresorerie();
+}
+async function crecGenEcriture(c, p) {
+  if (!DATA.ecritures) DATA.ecritures = [];
+  var an = (p.date || today()).slice(0, 4);
+  var num = DATA.ecritures.length + 1;
+  var compteTreso = (p.mode === 'especes') ? '571' : (p.mode === 'mobile_money' ? '531' : '521');
+  var compteCre = crecCompte();
+  var e = {
+    id: uid(), ref: 'ENC-ACQ-' + an + '-' + String(num).padStart(4, '0'), date: p.date || today(), piece: 'RECOUVREMENT',
+    type: 'tresorerie', libelle: 'Recouvrement acquéreur foncier — ' + (c.acquereur || ''),
+    compte: compteTreso, compte_debit: compteTreso, compte_credit: compteCre, montant: p.montant,
+    mode: p.mode || 'virement', programme_id: '', notes: 'Versement cession ' + (c.contrat_ref || c.id), source: 'recouvrement_cession', cession_id: c.id, paiement_id: p.id, created_at: today()
+  };
+  DATA.ecritures.push(e); await dbPut('ecritures', e);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', e);
+  p.ecriture_id = e.id;
+}
+async function crecDeletePaiement(cid, pid) {
+  var c = (DATA.cessions_foncieres || []).find(function (x) { return x.id === cid; });
+  if (!c || !confirm('Supprimer ce versement et son écriture ?')) return;
+  var p = (c.paiements || []).find(function (x) { return x.id === pid; });
+  if (p) {
+    c.montant_encaisse = Math.max(0, crecVerse(c) - (p.montant || 0));
+    if (p.ecriture_id && typeof deleteRecord === 'function') await deleteRecord('ecritures', p.ecriture_id);
+    c.paiements = c.paiements.filter(function (x) { return x.id !== pid; });
+    if (c.montant_encaisse < (c.prix_cession || 0) && c.statut === 'soldee') c.statut = 'cedee';
+  }
+  await dbPut('cessions_foncieres', c);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_cessions_foncieres', c);
+  crecRenderPaiements(c); crecRender();
+  if (typeof cesRender === 'function') cesRender();
+  if (typeof filterEcritures === 'function') filterEcritures();
+  if (typeof buildTresorerie === 'function') buildTresorerie();
+  toast('Versement supprimé', 'info');
+}
+
+/* ── Relances (SMS / WhatsApp) ── */
+function crecOpenRelance(id) {
+  var c = (DATA.cessions_foncieres || []).find(function (x) { return x.id === id; });
+  if (!c) return;
+  _crecId = id;
+  var r = crecRetard(c); if (!r) { toast('Cet acquéreur est à jour', 'info'); return; }
+  var niv = crecNiveau(r.moisRetard);
+  var params = DATA.params || {};
+  var soc = params.societe || 'la Société';
+  var tel = c.contact || (c.acheteur && c.acheteur.tel) || '';
+  var msg = 'Bonjour ' + (c.acquereur || '') + ', nous vous rappelons que votre acquisition foncière (' + (c.designation || cesSourceRef(c.source_key)) + ') aupres de ' + soc + ' presente un solde echu de ' + fcfa(r.montantDu) + ' (' + r.moisRetard + ' mois de retard). Merci de regulariser. Contact : ' + (params.tel || '');
+  var body = '<div class="alert alert-warn" style="margin-bottom:14px;">Niveau : <strong>' + CREC_NIV[niv] + '</strong> — ' + r.moisRetard + ' mois — <strong>' + fcfa(r.montantDu) + '</strong></div>'
+    + '<div class="form-group"><label>Message SMS / WhatsApp</label><textarea class="form-control" id="crec-relance-msg" style="min-height:110px;">' + msg + '</textarea></div>'
+    + '<div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap;">'
+    + (tel ? '<a class="btn btn-secondary btn-sm" href="sms:' + tel + '">📱 SMS</a>'
+          + '<a class="btn btn-secondary btn-sm" target="_blank" href="https://wa.me/225' + tel.replace(/[\s+\-()]/g, '') + '?text=' + encodeURIComponent(msg) + '">💬 WhatsApp</a>' : '<span style="color:var(--rouge);font-size:12px;">Aucun téléphone enregistré.</span>')
+    + '</div>';
+  document.getElementById('crec-relance-body').innerHTML = body;
+  document.getElementById('crec-relance-niv').value = String(niv);
+  openModal('modal-crec-relance');
+}
+async function crecEnvoyerRelance() {
+  var c = (DATA.cessions_foncieres || []).find(function (x) { return x.id === _crecId; });
+  if (!c) return;
+  if (!c.relances) c.relances = [];
+  c.relances.push({
+    id: uid(), date: today(), niveau: parseInt((document.getElementById('crec-relance-niv') || {}).value) || 0,
+    canal: 'sms', message: (document.getElementById('crec-relance-msg') || {}).value || ''
+  });
+  await dbPut('cessions_foncieres', c);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_cessions_foncieres', c);
+  closeModal('modal-crec-relance');
+  toast('Relance enregistrée', 'success');
+  crecRender();
+}
+
+/* ── Lettre de relance / mise en demeure (PDF imprimable) ── */
+function crecLettrePDF(id) {
+  var c = (DATA.cessions_foncieres || []).find(function (x) { return x.id === id; });
+  if (!c) return;
+  var r = crecRetard(c); if (!r) { toast('Acquéreur à jour', 'info'); return; }
+  var niv = crecNiveau(r.moisRetard);
+  var p = DATA.params || {}, soc = p.societe || 'La Société';
+  var a = c.acheteur || {};
+  var dest = (a.type === 'morale') ? ((a.raison || '') + ' (' + (a.forme || '') + ')') : ((a.nom || '') + ' ' + (a.prenoms || ''));
+  var adr = a.adresse || c.contact || '';
+  var titres = ['LETTRE DE RAPPEL', 'LETTRE DE RELANCE', 'MISE EN DEMEURE DE PAYER', 'NOTIFICATION DE RÉSILIATION'];
+  var corps;
+  if (niv === 0) corps = '<p>Sauf erreur ou omission de notre part, votre compte présente un solde échu de <strong>' + fcfa(r.montantDu) + '</strong> au titre de votre acquisition foncière.</p><p>Nous vous saurions gré de bien vouloir procéder à sa régularisation dans les meilleurs délais.</p>';
+  else if (niv === 1) corps = '<p>Malgré nos précédents rappels, votre compte demeure débiteur d\'une somme de <strong>' + fcfa(r.montantDu) + '</strong>, correspondant à ' + r.moisRetard + ' mois de retard.</p><p>Nous vous invitons à régulariser votre situation sous huitaine afin d\'éviter toute mesure complémentaire.</p>';
+  else if (niv === 2) corps = '<p>Nous constatons que, en dépit de nos relances, votre compte reste débiteur de la somme de <strong>' + fcfa(r.montantDu) + '</strong>.</p><p>Par la présente, nous vous <strong>mettons en demeure</strong> de régler l\'intégralité de cette somme dans un délai de <strong>quinze (15) jours</strong> à compter de la réception des présentes.</p><p>À défaut, nous nous réservons le droit d\'engager toute procédure de recouvrement et, le cas échéant, de mettre en œuvre la clause résolutoire du contrat ' + (c.contrat_ref ? ('réf. ' + c.contrat_ref) : 'de cession') + '.</p>';
+  else corps = '<p>Malgré notre mise en demeure restée infructueuse, votre compte demeure débiteur de <strong>' + fcfa(r.montantDu) + '</strong>.</p><p>En conséquence, nous vous notifions notre intention de procéder à la <strong>résiliation</strong> du contrat ' + (c.contrat_ref ? ('réf. ' + c.contrat_ref) : 'de cession') + ', conformément à ses stipulations, et de reprendre la libre disposition du bien (' + (c.designation || cesSourceRef(c.source_key)) + ').</p>';
+
+  var w = window.open('', '_blank', 'width=820,height=900');
+  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>' + titres[niv] + '</title><style>'
+    + 'body{font-family:Georgia,serif;color:#111;padding:42px;max-width:760px;margin:0 auto;line-height:1.7;font-size:13.5px;}'
+    + 'h1{font-size:17px;text-align:center;text-transform:uppercase;letter-spacing:1px;color:#7a1f1f;border-bottom:2px solid #7a1f1f;padding-bottom:8px;}'
+    + '.head{display:flex;justify-content:space-between;margin-bottom:24px;}.dest{margin:18px 0;text-align:right;}'
+    + '.amount{font-size:15px;font-weight:bold;}@media print{button{display:none;}}</style></head><body>'
+    + '<div style="text-align:center;margin-bottom:8px;"><button onclick="window.print()" style="padding:8px 18px;background:#7a1f1f;color:#fff;border:none;border-radius:6px;cursor:pointer;">🖨 Imprimer</button></div>'
+    + '<div class="head"><div><strong style="font-size:15px;">' + soc + '</strong><br><span style="font-size:11px;color:#555;">' + (p.email || '') + '<br>' + (p.tel || '') + '</span></div>'
+    + '<div style="text-align:right;font-size:11px;">Abidjan, le ' + dateShort(today()) + '<br>Réf : REL-' + c.id.slice(-6).toUpperCase() + '</div></div>'
+    + '<div class="dest"><strong>' + dest + '</strong><br><span style="font-size:11px;">' + adr + '</span></div>'
+    + '<h1>' + titres[niv] + '</h1>'
+    + '<p>Objet : Solde échu — acquisition foncière ' + (c.designation || cesSourceRef(c.source_key)) + '</p>'
+    + '<p>Madame, Monsieur,</p>' + corps
+    + '<p style="margin-top:16px;">Détail : prix de cession ' + fcfa(c.prix_cession || 0) + ' · encaissé ' + fcfa(crecVerse(c)) + ' · <span class="amount">solde échu ' + fcfa(r.montantDu) + '</span>.</p>'
+    + '<p>Dans l\'attente de votre règlement, nous vous prions d\'agréer, Madame, Monsieur, l\'expression de nos salutations distinguées.</p>'
+    + '<div style="margin-top:50px;text-align:right;">Pour ' + soc + '<br><br>La Direction</div>'
+    + '</body></html>';
+  w.document.write(html);
+  try { if (typeof printQrFooter === 'function' && w.document.body) w.document.body.insertAdjacentHTML('beforeend', printQrFooter('REL-' + c.id.slice(-6).toUpperCase())); } catch (e) {}
+  w.document.close();
+}
+
+/* ── Échéancier imprimable ── */
+function crecEcheancierPDF(id) {
+  var c = id ? (DATA.cessions_foncieres || []).find(function (x) { return x.id === id; }) : (DATA.cessions_foncieres || []).find(function (x) { return x.id === _crecId; });
+  if (!c) return;
+  var rows = crecEcheancier(c);
+  if (!rows.length) {
+    /* [FIX 2026-06-30] Message plus visible et explicite : aucune fenêtre ne
+       doit jamais s'ouvrir tant qu'aucun plan (durée en mensualités) n'a été
+       enregistré pour ce dossier, pour éviter de laisser croire à un aperçu
+       d'impression vide/cassé. */
+    toast('Aucun plan d\u2019échéancier défini pour ' + (c.acquereur || 'cet acquéreur') + ' — renseignez d\u2019abord une durée (mensualités) puis cliquez sur « Enregistrer l\u2019échéancier ».', 'error');
+    return;
+  }
+  var p = DATA.params || {}, soc = p.societe || 'La Société';
+  var w = window.open('', '_blank', 'width=820,height=900');
+  var trs = rows.map(function (r) {
+    return '<tr style="' + (r.paye ? 'background:#e8f5e9;' : '') + '"><td>' + r.rang + '</td><td>' + dateShort(r.date) + '</td><td style="text-align:right;">' + fmtF(r.montant) + '</td><td style="text-align:right;">' + fmtF(r.cumul) + '</td><td>' + (r.paye ? '✅ Payé' : '⏳ À venir') + '</td></tr>';
+  }).join('');
+  w.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Échéancier</title><style>body{font-family:Arial,sans-serif;padding:36px;font-size:12.5px;}h1{color:#1A6B3A;font-size:16px;}table{width:100%;border-collapse:collapse;margin-top:14px;}th,td{border:1px solid #ccc;padding:6px 9px;}th{background:#1A6B3A;color:#fff;}@media print{button{display:none;}}</style></head><body>'
+    + '<div style="text-align:center;margin-bottom:8px;"><button onclick="window.print()" style="padding:8px 18px;background:#1A6B3A;color:#fff;border:none;border-radius:6px;cursor:pointer;">🖨 Imprimer</button></div>'
+    + '<h1>' + soc + ' — Échéancier de recouvrement</h1>'
+    + '<p>Acquéreur : <strong>' + (c.acquereur || '') + '</strong> · Bien : ' + (c.designation || cesSourceRef(c.source_key)) + '<br>Prix : ' + fcfa(c.prix_cession || 0) + ' · Apport : ' + fcfa((c.recouv && c.recouv.apport) || 0) + ' · ' + (c.recouv ? c.recouv.duree : 0) + ' mensualités</p>'
+    + '<table><thead><tr><th>N°</th><th>Date</th><th>Montant</th><th>Cumul</th><th>État</th></tr></thead><tbody>' + trs + '</tbody></table></body></html>');
+  try { if (typeof printQrFooter === 'function' && w.document.body) w.document.body.insertAdjacentHTML('beforeend', printQrFooter('ECH-' + c.id.slice(-6).toUpperCase())); } catch (e) {}
+  w.document.close();
+}
+
+
 /* ══════════════════════════════════════════════════════════════════
    FILIÈRE FONCIÈRE — interconnexion Opération · Parcelle · Lots · Cessions
    Niveau 1 (filiation FK) + Niveau 2 (vue chaîne) + roll-up KPIs
@@ -49797,8 +50534,16 @@ async function seedConceptionMilitaris(){
    ImmoSuite ERP v32 — SANIX Africa
    ════════════════════════════════════════════════════════════════ */
 
-/* ── Ouvrir / fermer l'overlay ─────────────────────────────────── */
-function openPrintPreview(title, html) {
+/* ── Ouvrir / fermer l'overlay (DQE & Déboursé Sec) ──────────────
+   [FIX 2026-06-30] Renommée openPrintPreviewDQE pour ne plus entrer
+   en collision avec openPrintPreview(html, titre) définie plus haut
+   dans le fichier. Les deux fonctions portaient le même nom : la
+   définition la plus basse écrasait silencieusement la première,
+   et comme leurs paramètres sont dans un ordre inversé (titre, html)
+   vs (html, titre), tous les appels du premier système recevaient
+   leurs arguments échangés → documents mal affichés à l'impression
+   dans tout le logiciel. ───────────────────────────────────────── */
+function openPrintPreviewDQE(title, html) {
   var root = document.getElementById('modal-pp-root');
   var titleEl = document.getElementById('ppt-title');
   var content = document.getElementById('ppt-content');
@@ -49812,7 +50557,11 @@ function openPrintPreview(title, html) {
   if (scroll) scroll.scrollTop = 0;
 }
 
-function closePrintPreview() {
+/* [FIX 2026-06-30] Renommée closePrintPreviewDQE pour ne plus écraser
+   la closePrintPreview du premier système d'aperçu (modal-print-preview),
+   qui ne se fermait alors plus jamais correctement et pouvait bloquer
+   le défilement de toute l'interface (overflow:hidden non réinitialisé). */
+function closePrintPreviewDQE() {
   var root = document.getElementById('modal-pp-root');
   if (root) root.classList.remove('open');
   document.body.style.overflow = '';
@@ -49823,7 +50572,7 @@ function closePrintPreview() {
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') {
     var root = document.getElementById('modal-pp-root');
-    if (root && root.classList.contains('open')) closePrintPreview();
+    if (root && root.classList.contains('open')) closePrintPreviewDQE();
   }
 });
 
@@ -49834,6 +50583,17 @@ function doPrintPreview() {
   var html = content.innerHTML;
   var w = window.open('', '_blank', 'width=960,height=860');
   if (!w) { alert('Veuillez autoriser les popups pour imprimer.'); return; }
+  /* [FIX 2026-06-30] printQrFooter sécurisée : si elle échoue ou n'est
+     pas disponible, l'impression se poursuit quand même sans le QR
+     plutôt que de planter entièrement (page blanche à l'impression). */
+  var qrFooter = '';
+  try {
+    if (typeof printQrFooter === 'function') {
+      qrFooter = printQrFooter((document.getElementById('ppt-title')||{}).textContent||'Document');
+    }
+  } catch (e) {
+    console.warn('printQrFooter indisponible, impression sans QR de pied de page :', e);
+  }
   w.document.write(
     '<!DOCTYPE html><html lang="fr"><head>'
     + '<meta charset="UTF-8">'
@@ -49854,7 +50614,7 @@ function doPrintPreview() {
     + '.pp-footer{margin-top:24px;font-size:9pt;color:#888;border-top:1px solid #ddd;padding-top:6px;page-break-before:avoid;}'
     + '@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}'
     + '</style>'
-    + '</head><body>' + html + printQrFooter((document.getElementById('ppt-title')||{}).textContent||'Document') + '</body></html>'
+    + '</head><body>' + html + qrFooter + '</body></html>'
   );
   w.document.close();
   w.focus();
@@ -49992,7 +50752,7 @@ function printPreviewDQE() {
     + '<table class="pp-recap" style="margin-top:20px;">' + recapHtml + perApptHtml + '</table>'
     + '<div class="pp-footer">Document généré par <strong>ImmoSuite ERP</strong> · ' + _ppSoc() + ' · ' + _ppDate() + '</div>';
 
-  openPrintPreview('Aperçu DQE — ' + typeLabel, html);
+  openPrintPreviewDQE('Aperçu DQE — ' + typeLabel, html);
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -50129,7 +50889,7 @@ function printPreviewDebourse(id, source) {
     + '<table class="pp-recap" style="margin-top:20px;">' + recapHtml + '</table>'
     + '<div class="pp-footer">Document généré par <strong>ImmoSuite ERP</strong> · ' + _ppSoc() + ' · ' + (e.date || _ppDate()) + '</div>';
 
-  openPrintPreview('Aperçu — Déboursé Sec : ' + (e.nom || '—'), html);
+  openPrintPreviewDQE('Aperçu — Déboursé Sec : ' + (e.nom || '—'), html);
 }
 
 /* ── Aperçu bibliothèque d'ouvrages (tous les ouvrages) ─────────── */
@@ -50170,7 +50930,7 @@ function _printPreviewBibliotheque() {
     +   '<tbody>' + rowsHtml + '</tbody>'
     + '</table>'
     + '<div class="pp-footer">Document généré par <strong>ImmoSuite ERP</strong> · ' + _ppSoc() + ' · ' + _ppDate() + '</div>';
-  openPrintPreview('Aperçu — Bibliothèque d\'ouvrages (' + ouvrages.length + ')', html);
+  openPrintPreviewDQE('Aperçu — Bibliothèque d\'ouvrages (' + ouvrages.length + ')', html);
 }
 
 
@@ -51149,7 +51909,7 @@ function finImprimerAttestationReservation(fid) {
           <span class="ppt-title" id="ppt-title">Aperçu avant impression</span>
           <span style="font-size:11px;color:var(--dim);flex-shrink:0;">Vérifiez le document puis cliquez sur Imprimer</span>
           <button class="btn btn-primary" onclick="doPrintPreview()" style="flex-shrink:0;">🖨️ Imprimer</button>
-          <button class="btn btn-secondary" onclick="closePrintPreview()" style="flex-shrink:0;">✕ Fermer</button>
+          <button class="btn btn-secondary" onclick="closePrintPreviewDQE()" style="flex-shrink:0;">✕ Fermer</button>
         </div>
         <!-- Zone de défilement avec la page A4 simulée -->
         <div class="print-preview-scroll">
@@ -54867,6 +55627,16 @@ function qrSvgTag(text){
 
 })(); /* fin IIFE simulateur */
 
+function _cyrb53(str, seed){
+  str=String(str==null?'':str); seed=seed>>>0||0;
+  var h1=0xdeadbeef^seed, h2=0x41c6ce57^seed, ch;
+  for(var i=0;i<str.length;i++){ ch=str.charCodeAt(i);
+    h1=Math.imul(h1^ch,2654435761); h2=Math.imul(h2^ch,1597334677); }
+  h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);
+  h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);
+  var n=4294967296*(2097151&h2)+(h1>>>0);
+  return n.toString(16).padStart(14,'0');
+}
 function printQrFooter(ref){
   var soc=(window.DATA&&DATA.params&&(DATA.params.societe||DATA.params.nom_societe))||'';
   ref=(ref||'DOC').toString().replace(/[<>&]/g,'').slice(0,40);
