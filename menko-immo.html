@@ -4494,18 +4494,26 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
             <!-- Matrice des accès interactive -->
             <div class="card">
-              <div class="form-section-title" style="display:flex;justify-content:space-between;align-items:center;">
+              <div class="form-section-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
                 <span>📊 Matrice des accès — tous les rôles</span>
-                <div style="display:flex;gap:8px;">
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                  <input type="text" id="matrix-search" class="form-control" placeholder="🔍 Filtrer un module…" oninput="renderRolesMatrix()" style="font-size:12px;padding:5px 10px;width:170px;">
                   <label style="font-size:11px;color:var(--blanc-dim);display:flex;align-items:center;gap:4px;">
                     <input type="checkbox" id="matrix-group-toggle" onchange="renderRolesMatrix()" checked>
                     Regrouper par catégorie
                   </label>
+                  <label style="font-size:11px;color:var(--blanc-dim);display:flex;align-items:center;gap:4px;" title="N'afficher que les modules dont l'accès diffère selon les rôles">
+                    <input type="checkbox" id="matrix-diff-toggle" onchange="renderRolesMatrix()">
+                    Différences uniquement
+                  </label>
                   <button class="btn btn-secondary btn-sm" onclick="renderRolesMatrix()">🔄</button>
                 </div>
               </div>
-              <div style="overflow-x:auto;margin-top:8px;">
-                <table style="min-width:400px;font-size:12px;">
+              <div style="margin:8px 0 0;font-size:11px;color:var(--blanc-dim);" id="matrix-hint">
+                💡 Cliquez sur une case pour activer/désactiver l'accès d'un rôle à un module (admin uniquement).
+              </div>
+              <div style="overflow:auto;margin-top:8px;max-height:560px;border:1px solid var(--bord);border-radius:8px;">
+                <table style="min-width:400px;font-size:12px;border-collapse:separate;border-spacing:0;">
                   <thead><tr id="roles-matrix-header"></tr></thead>
                   <tbody id="roles-matrix-body"></tbody>
                 </table>
@@ -21514,7 +21522,10 @@ var ALL_MODULES = [
   'Carte & Geoloc','Lots & Reservations','Souscripteurs','Paiements',
   'Relances','Comptabilite','Tresorerie',
   'RH Employes','Pointage','Paie','Conges RH','Recrutement','Formations','Livre Paie',
-  'Rapports Commerciaux','Messagerie','Parametres'
+  'Rapports Commerciaux','Messagerie','Parametres',
+  'Filiere Fonciere','Acquisition & Amenagement Foncier','Etude de Prix & Debourse',
+  'Achats & Commandes','Stock Materiaux','Validations','Reception & Livraison',
+  'Portail','Portail Apporteur'
 ];
 
 // ── Rôles système (non modifiables, non supprimables) ────────────────────────
@@ -21547,11 +21558,26 @@ function getAllRoles() {
 }
 
 // ── Charger les rôles custom depuis IndexedDB ─────────────────────────────────
+// Les rôles système modifiés sont persistés comme "surcharge" (is_override + role_id).
+// On les réapplique sur SYSTEM_ROLES au chargement plutôt que de les traiter comme un
+// rôle à part entière — sinon ils réapparaissent comme un doublon fantôme (ex: "manager_override")
+// et la personnalisation du rôle système d'origine est perdue à chaque rechargement.
 async function loadCustomRoles() {
   try {
     var rows = await dbGetAll('custom_roles');
     CUSTOM_ROLES = {};
-    rows.forEach(function(r){ CUSTOM_ROLES[r.id] = r; });
+    rows.forEach(function(r){
+      if (r.is_override && r.role_id && SYSTEM_ROLES[r.role_id]) {
+        var base = SYSTEM_ROLES[r.role_id];
+        base.permissions  = r.permissions || base.permissions;
+        base.label         = r.label || base.label;
+        base.icon          = r.icon  || base.icon;
+        base.level         = (r.level !== undefined && r.level !== null) ? r.level : base.level;
+        base.description   = (r.description !== undefined) ? r.description : base.description;
+      } else {
+        CUSTOM_ROLES[r.id] = r;
+      }
+    });
   } catch(e) { CUSTOM_ROLES = {}; }
 }
 
@@ -21596,28 +21622,40 @@ var MODULE_GROUPS = {
   general:    ['Tableau de bord','Accueil','Messagerie'],
   commercial: ['Pipeline Leads','Plan Action Commercial','Carte & Geoloc','Lots & Reservations',
                'Souscripteurs','Relances','Rapports Commerciaux'],
-  immobilier: ['Foncier','Programmes','Plans & Conception','Constructeurs','Conventions',
+  immobilier: ['Foncier','Filiere Fonciere','Acquisition & Amenagement Foncier','Programmes',
+               'Plans & Conception','Constructeurs','Conventions',
                'Suivi Chantiers','DQE & Cout de revient','Dossiers Juridiques'],
+  chantier:   ['Etude de Prix & Debourse','Achats & Commandes','Stock Materiaux','Validations','Reception & Livraison'],
   finance:    ['Paiements','Comptabilite','Tresorerie','Relances'],
   rh:         ['RH Employes','Pointage','Paie','Conges RH','Recrutement','Formations','Livre Paie'],
+  portails:   ['Portail','Portail Apporteur'],
   admin:      ['Parametres']
 };
-var GROUP_LABELS = { general:'🏠 Général', commercial:'🎯 Commercial', immobilier:'🏗️ Immobilier', finance:'💰 Finance', rh:'👥 RH & Paie', admin:'⚙️ Admin' };
-var GROUP_COLORS = { general:'#64748B', commercial:'#D97706', immobilier:'#0284C7', finance:'#059669', rh:'#7C3AED', admin:'#DC2626' };
+var GROUP_LABELS = { general:'🏠 Général', commercial:'🎯 Commercial', immobilier:'🏗️ Immobilier', chantier:'🧱 Achats & Chantier', finance:'💰 Finance', rh:'👥 RH & Paie', portails:'🌐 Portails externes', admin:'⚙️ Admin' };
+var GROUP_COLORS = { general:'#64748B', commercial:'#D97706', immobilier:'#0284C7', chantier:'#B45309', finance:'#059669', rh:'#7C3AED', portails:'#0891B2', admin:'#DC2626' };
+
+/* ── Utilitaires cases module (un module peut apparaître dans plusieurs groupes) ── */
+function _modAttr(mod) { return String(mod).replace(/"/g, '&quot;'); }
+function _modChecked(mod) {
+  var el = document.querySelector('.modchk[data-mod="'+_modAttr(mod)+'"]');
+  return !!(el && el.checked);
+}
+function _setModChecked(mod, val) {
+  document.querySelectorAll('.modchk[data-mod="'+_modAttr(mod)+'"]').forEach(function(el){ el.checked = val; });
+}
+/* Toutes les cases d'un même module restent synchronisées entre groupes */
+function _syncModChk(el) {
+  _setModChecked(el.getAttribute('data-mod'), el.checked);
+  _updateNbModules();
+}
 
 function toggleGroupModules(group, val) {
-  (MODULE_GROUPS[group]||[]).forEach(function(mod) {
-    var el = document.getElementById('mod_'+mod.replace(/[^a-zA-Z0-9]/g,'_'));
-    if (el) el.checked = val;
-  });
+  (MODULE_GROUPS[group]||[]).forEach(function(mod) { _setModChecked(mod, val); });
   _updateNbModules();
 }
 
 function _updateNbModules() {
-  var nb = ALL_MODULES.filter(function(m){
-    var el = document.getElementById('mod_'+m.replace(/[^a-zA-Z0-9]/g,'_'));
-    return el && el.checked;
-  }).length;
+  var nb = ALL_MODULES.filter(function(m){ return _modChecked(m); }).length;
   var el = document.getElementById('role-nb-modules');
   if (el) el.textContent = nb + ' module(s) sélectionné(s)';
 }
@@ -21707,9 +21745,11 @@ function buildModulesGrid(permissions) {
       +'</div></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">';
     existing.forEach(function(mod) {
       var chkd = permissions[mod] ? 'checked' : '';
-      var iid  = 'mod_'+mod.replace(/[^a-zA-Z0-9]/g,'_');
-      html += '<label style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:#fff;border:1px solid #E2E8F0;border-radius:6px;cursor:pointer;font-size:12px;color:#1E293B;">'
-        +'<input type="checkbox" id="'+iid+'" value="'+mod+'" '+chkd+' style="width:14px;height:14px;accent-color:'+color+';flex-shrink:0;" onchange="_updateNbModules()">'
+      /* id unique par occurrence (un module peut apparaître dans 2 groupes, ex: Relances) ;
+         data-mod relie toutes les occurrences entre elles pour rester synchronisées. */
+      var iid  = 'mod_'+g+'_'+mod.replace(/[^a-zA-Z0-9]/g,'_');
+      html += '<label for="'+iid+'" style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:#fff;border:1px solid #E2E8F0;border-radius:6px;cursor:pointer;font-size:12px;color:#1E293B;">'
+        +'<input type="checkbox" id="'+iid+'" class="modchk" data-mod="'+_modAttr(mod)+'" value="'+mod+'" '+chkd+' style="width:14px;height:14px;accent-color:'+color+';flex-shrink:0;" onchange="_syncModChk(this)">'
         +mod+'</label>';
     });
     html += '</div></div>';
@@ -21719,10 +21759,7 @@ function buildModulesGrid(permissions) {
 }
 
 function toggleGroupMods(mods, val) {
-  mods.forEach(function(mod) {
-    var el = document.getElementById('mod_'+mod.replace(/[^a-zA-Z0-9]/g,'_'));
-    if (el) el.checked = val;
-  });
+  mods.forEach(function(mod) { _setModChecked(mod, val); });
   _updateNbModules();
 }
 
@@ -21733,10 +21770,8 @@ function applyRolePreset() {
 }
 
 function toggleAllModules(val) {
-  ALL_MODULES.forEach(function(mod) {
-    var el = document.getElementById('mod_' + mod.replace(/[^a-zA-Z0-9]/g,'_'));
-    if (el) el.checked = val;
-  });
+  document.querySelectorAll('#role-modules-grid .modchk').forEach(function(el){ el.checked = val; });
+  _updateNbModules();
 }
 
 // ══ SAUVEGARDER UN RÔLE ═══════════════════════════════════════════════════════
@@ -21750,8 +21785,7 @@ async function saveRoleFromModal() {
 
   var permissions = {};
   ALL_MODULES.forEach(function(mod) {
-    var el = document.getElementById('mod_'+mod.replace(/[^a-zA-Z0-9]/g,'_'));
-    permissions[mod] = el ? el.checked : false;
+    permissions[mod] = _modChecked(mod);
   });
   var nb = Object.values(permissions).filter(Boolean).length;
   if (nb === 0 && !confirm('Ce rôle n\'a aucun accès. Continuer quand même ?')) return;
@@ -21816,6 +21850,46 @@ function refreshRoleSelectInModal() {
   if (current && allRoles[current]) sel.value = current;
 }
 
+function _normStr(s) {
+  return (s||'').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+}
+
+/* ── Bascule directe d'un accès depuis la matrice ─────────────── */
+function toggleMatrixPermission(mod, rid) {
+  if (!hasRole('admin')) { toast('Réservé aux administrateurs.', 'error'); return; }
+  var allRoles = getAllRoles();
+  var r = allRoles[rid]; if (!r) return;
+  var newVal = !(r.permissions && r.permissions[mod]);
+
+  if (SYSTEM_ROLES[rid]) {
+    SYSTEM_ROLES[rid].permissions = SYSTEM_ROLES[rid].permissions || {};
+    SYSTEM_ROLES[rid].permissions[mod] = newVal;
+    var overrideObj = { id: rid+'_override', role_id: rid, label: SYSTEM_ROLES[rid].label,
+      icon: SYSTEM_ROLES[rid].icon, level: SYSTEM_ROLES[rid].level,
+      description: SYSTEM_ROLES[rid].description||'', permissions: SYSTEM_ROLES[rid].permissions, is_override:true };
+    dbPut('custom_roles', overrideObj).then(function(){
+      if (typeof syncToSupabase==='function') syncToSupabase('pi_custom_roles', overrideObj);
+    });
+  } else if (CUSTOM_ROLES[rid]) {
+    CUSTOM_ROLES[rid].permissions = CUSTOM_ROLES[rid].permissions || {};
+    CUSTOM_ROLES[rid].permissions[mod] = newVal;
+    dbPut('custom_roles', CUSTOM_ROLES[rid]).then(function(){
+      if (typeof syncToSupabase==='function') syncToSupabase('pi_custom_roles', CUSTOM_ROLES[rid]);
+    });
+  } else { return; }
+
+  rebuildRoleMatrix();
+  renderRolesMatrix();
+  renderRolesList();
+  refreshRoleSelectInModal();
+  toast((newVal ? '✓ Accès accordé — ' : '⛔ Accès retiré — ') + r.label + ' / ' + mod, newVal ? 'success' : 'info');
+}
+
+function _mxColHi(rid, on) {
+  var th = document.getElementById('mxh-'+rid);
+  if (th) th.style.background = on ? '#E2E8F0' : '#F1F5F9';
+}
+
 function renderRolesMatrix() {
   rebuildRoleMatrix();
   var header = document.getElementById('roles-matrix-header');
@@ -21823,35 +21897,80 @@ function renderRolesMatrix() {
   if (!tbody) return;
   var allRoles = getAllRoles();
   var rids = Object.keys(allRoles);
-  var grouped = !!(document.getElementById('matrix-group-toggle') && document.getElementById('matrix-group-toggle').checked);
-  var chk = function(v){ return v ? '<span style="color:#059669;font-weight:700;font-size:14px;">\u2713</span>' : '<span style="color:#CBD5E1;font-size:13px;">&mdash;</span>'; };
+  var grouped  = !!(document.getElementById('matrix-group-toggle') && document.getElementById('matrix-group-toggle').checked);
+  var diffOnly = !!(document.getElementById('matrix-diff-toggle')  && document.getElementById('matrix-diff-toggle').checked);
+  var search   = _normStr((document.getElementById('matrix-search')||{}).value);
+  var canEdit  = hasRole('admin');
+
+  /* ── Filtrage des modules : recherche + différences uniquement ── */
+  var visibleModules = ALL_MODULES.filter(function(mod) {
+    if (search && _normStr(mod).indexOf(search) === -1) return false;
+    if (diffOnly) {
+      var vals = rids.map(function(rid){ return !!(ROLE_MATRIX[mod]&&ROLE_MATRIX[mod][rid]); });
+      var allSame = vals.every(function(v){ return v === vals[0]; });
+      if (allSame) return false;
+    }
+    return true;
+  });
+
+  var chk = function(mod, rid, v) {
+    var label = (v ? 'Accordé' : 'Refusé') + ' — cliquer pour basculer';
+    var inner = v
+      ? '<span style="color:#059669;font-weight:700;font-size:14px;">\u2713</span>'
+      : '<span style="color:#CBD5E1;font-size:13px;">&mdash;</span>';
+    var clickAttr = canEdit ? ' onclick="toggleMatrixPermission(\''+mod.replace(/'/g,"\\'")+'\',\''+rid+'\')" title="'+label+'" style="cursor:pointer;text-align:center;border-bottom:1px solid #E2E8F0;"'
+                             : ' title="'+(v?'Accordé':'Refusé')+'" style="text-align:center;border-bottom:1px solid #E2E8F0;"';
+    return '<td'+clickAttr+' onmouseenter="_mxColHi(\''+rid+'\',true)" onmouseleave="_mxColHi(\''+rid+'\',false)">'+inner+'</td>';
+  };
+
   if (header) {
-    header.innerHTML = '<th style="padding:8px 12px;text-align:left;background:#F1F5F9;color:#64748B;font-size:10px;text-transform:uppercase;width:160px;">Module</th>'
+    header.innerHTML = '<th style="padding:8px 12px;text-align:left;background:#F1F5F9;color:#64748B;font-size:10px;text-transform:uppercase;width:160px;position:sticky;left:0;top:0;z-index:3;">Module</th>'
       + rids.map(function(rid) {
           var r = allRoles[rid];
           var nb = ALL_MODULES.filter(function(m){ return ROLE_MATRIX[m]&&ROLE_MATRIX[m][rid]; }).length;
-          return '<th style="text-align:center;background:#F1F5F9;color:#0D2354;font-size:11px;padding:8px 10px;white-space:nowrap;">'+(r.icon||'')+' '+escHtml(r.label)
+          return '<th id="mxh-'+rid+'" style="text-align:center;background:#F1F5F9;color:#0D2354;font-size:11px;padding:8px 10px;white-space:nowrap;position:sticky;top:0;z-index:2;transition:background .12s;">'+(r.icon||'')+' '+escHtml(r.label)
             +'<div style="font-size:9px;color:#94A3B8;font-weight:400;">'+nb+'/'+ALL_MODULES.length+'</div></th>';
-        }).join('');
+        }).join('')
+      + '<th style="text-align:center;background:#F1F5F9;color:#64748B;font-size:10px;text-transform:uppercase;padding:8px 10px;white-space:nowrap;position:sticky;top:0;z-index:2;">Couverture</th>';
   }
+
+  if (!visibleModules.length) {
+    tbody.innerHTML = '<tr><td colspan="'+(rids.length+2)+'" style="padding:20px;text-align:center;color:#94A3B8;font-size:12px;">Aucun module ne correspond aux filtres.</td></tr>';
+    return;
+  }
+
+  var totalCell = function(mod) {
+    var nb = rids.filter(function(rid){ return ROLE_MATRIX[mod]&&ROLE_MATRIX[mod][rid]; }).length;
+    var pct = rids.length ? Math.round(nb/rids.length*100) : 0;
+    var color = pct === 100 ? '#059669' : (pct === 0 ? '#94A3B8' : '#D97706');
+    return '<td style="text-align:center;border-bottom:1px solid #E2E8F0;white-space:nowrap;">'
+      + '<span style="background:'+color+'15;color:'+color+';padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;">'+nb+'/'+rids.length+'</span></td>';
+  };
+
+  var moduleCell = function(mod, indent) {
+    return '<td style="padding:'+(indent?'7px 12px 7px 20px':'8px 12px')+';font-size:12px;color:#1E293B;border-bottom:1px solid #E2E8F0;white-space:nowrap;position:sticky;left:0;background:#fff;z-index:1;">'+escHtml(mod)+'</td>';
+  };
+
   if (!grouped) {
-    tbody.innerHTML = ALL_MODULES.map(function(mod) {
-      return '<tr><td style="padding:8px 12px;font-size:12px;color:#1E293B;border-bottom:1px solid #E2E8F0;white-space:nowrap;">'+escHtml(mod)+'</td>'
-        + rids.map(function(rid){ return '<td style="text-align:center;border-bottom:1px solid #E2E8F0;">'+chk(ROLE_MATRIX[mod]&&ROLE_MATRIX[mod][rid])+'</td>'; }).join('')+'</tr>';
+    tbody.innerHTML = visibleModules.map(function(mod) {
+      return '<tr>'+moduleCell(mod,false)
+        + rids.map(function(rid){ return chk(mod, rid, ROLE_MATRIX[mod]&&ROLE_MATRIX[mod][rid]); }).join('')
+        + totalCell(mod) + '</tr>';
     }).join('');
   } else {
-    var allGrouped = [];
-    Object.keys(MODULE_GROUPS).forEach(function(g){ allGrouped = allGrouped.concat(MODULE_GROUPS[g]); });
-    var ungrouped = ALL_MODULES.filter(function(m){ return allGrouped.indexOf(m)===-1; });
     var html = '';
     Object.keys(MODULE_GROUPS).concat(['autre']).forEach(function(g) {
-      var mods = (g==='autre'?ungrouped:(MODULE_GROUPS[g]||[])).filter(function(m){ return ALL_MODULES.indexOf(m)!==-1; });
+      var allGrouped = [];
+      Object.keys(MODULE_GROUPS).forEach(function(gr){ allGrouped = allGrouped.concat(MODULE_GROUPS[gr]); });
+      var ungrouped = visibleModules.filter(function(m){ return allGrouped.indexOf(m)===-1; });
+      var mods = (g==='autre' ? ungrouped : (MODULE_GROUPS[g]||[])).filter(function(m){ return visibleModules.indexOf(m)!==-1; });
       if (!mods.length) return;
       var color = GROUP_COLORS[g]||'#64748B', label = GROUP_LABELS[g]||'Autres';
-      html += '<tr><td colspan="'+(rids.length+1)+'" style="padding:5px 12px;background:'+color+'15;font-size:10px;font-weight:700;color:'+color+';text-transform:uppercase;letter-spacing:1px;">'+label+'</td></tr>';
+      html += '<tr><td colspan="'+(rids.length+2)+'" style="padding:5px 12px;background:'+color+'15;font-size:10px;font-weight:700;color:'+color+';text-transform:uppercase;letter-spacing:1px;position:sticky;left:0;">'+label+'</td></tr>';
       html += mods.map(function(mod) {
-        return '<tr><td style="padding:7px 12px 7px 20px;font-size:12px;color:#1E293B;border-bottom:1px solid #E2E8F0;">'+escHtml(mod)+'</td>'
-          +rids.map(function(rid){ return '<td style="text-align:center;border-bottom:1px solid #E2E8F0;">'+chk(ROLE_MATRIX[mod]&&ROLE_MATRIX[mod][rid])+'</td>'; }).join('')+'</tr>';
+        return '<tr>'+moduleCell(mod,true)
+          + rids.map(function(rid){ return chk(mod, rid, ROLE_MATRIX[mod]&&ROLE_MATRIX[mod][rid]); }).join('')
+          + totalCell(mod) + '</tr>';
       }).join('');
     });
     tbody.innerHTML = html;
@@ -21926,11 +22045,12 @@ function clonerRoleDirectement(rid) {
 function exportMatriceCSV() {
   var allRoles = getAllRoles();
   var rids = Object.keys(allRoles);
-  var header = ['Module'].concat(rids.map(function(rid){ return allRoles[rid].label; }));
+  var header = ['Module'].concat(rids.map(function(rid){ return allRoles[rid].label; })).concat(['Couverture']);
   var rows = [header.join(';')].concat(ALL_MODULES.map(function(mod) {
+    var nbOui = rids.filter(function(rid){ return ROLE_MATRIX[mod]&&ROLE_MATRIX[mod][rid]; }).length;
     return [mod].concat(rids.map(function(rid){
       return (ROLE_MATRIX[mod]&&ROLE_MATRIX[mod][rid]) ? 'OUI' : '';
-    })).join(';');
+    })).concat([nbOui+'/'+rids.length]).join(';');
   }));
   var b = new Blob([rows.join('\n')], {type:'text/csv;charset=utf-8;'});
   var a = document.createElement('a');
@@ -43326,7 +43446,16 @@ var PAGE_MODULE_MAP = {
   'amenagement':        'Foncier',
   'portail-souscripteur': null,  /* accès libre (portail client) */
   'archives-docs':      'Parametres',
-  'reunion-direction':  'Tableau de bord'
+  'reunion-direction':  'Tableau de bord',
+  'filiere':            'Filiere Fonciere',
+  'foncierops':         'Acquisition & Amenagement Foncier',
+  'debourse':           'Etude de Prix & Debourse',
+  'achats':             'Achats & Commandes',
+  'stock':              'Stock Materiaux',
+  'validations':        'Validations',
+  'recliv':             'Reception & Livraison',
+  'portail':            'Portail',
+  'portail-apporteur':  'Portail Apporteur'
 };
 
 /* ── 2. hasRole() corrigé — inclut manager + custom roles ── */
