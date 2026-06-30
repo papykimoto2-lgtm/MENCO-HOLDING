@@ -18332,6 +18332,7 @@ async function saveProgramme() {
   toast('Programme enregistré.', 'success');
   renderProgrammes();
   populateFilterProgrammes();
+  montageLiveRefresh('programmes');
 }
 
 function renderProgrammes() {
@@ -18398,14 +18399,34 @@ function renderProgrammes() {
 }
 
 async function deleteProgramme(id) {
-  if (!confirm('Supprimer ce programme ? Les lots, modèles et plan de morcellement associés seront aussi supprimés.')) return;
-  DATA.programmes = DATA.programmes.filter(function(p) { return p.id !== id; });
-  DATA.lots = DATA.lots.filter(function(l) { return l.programme_id !== id; });
-  DATA.modeles_logement = (DATA.modeles_logement || []).filter(function(m) { return m.programme_id !== id; });
-  DATA.plans_morcellement = (DATA.plans_morcellement || []).filter(function(p) { return p.programme_id !== id; });
-  DATA.parcelles_morcellement = (DATA.parcelles_morcellement || []).filter(function(p) { return p.programme_id !== id; });
-  await deleteRecord('programmes', id);
+  /* Garde-fou : un programme avec des conventions ou versements actifs ne doit
+     pas disparaître silencieusement (incohérence comptable/contractuelle). */
+  var nbConv = (DATA.conventions || []).filter(function(c) { return c.programme_id === id; }).length;
+  var nbVers = (DATA.versements || []).filter(function(v) { return v.programme_id === id; }).length;
+  if (nbConv || nbVers) {
+    var parts = [];
+    if (nbConv) parts.push(nbConv + ' convention(s)');
+    if (nbVers) parts.push(nbVers + ' versement(s)');
+    alert('Suppression impossible — ce programme est référencé par ' + parts.join(' et ') + '.\nSupprimez ou détachez ces éléments d\u2019abord.');
+    return;
+  }
+  if (!confirm('Supprimer ce programme ? Les lots, modèles, plan de morcellement et projets de conception associés seront aussi supprimés.')) return;
+  /* Cascade complète RAM + IndexedDB + Supabase (et non un simple filtrage RAM,
+     qui laissait ces enregistrements réapparaître après rechargement ou rester
+     visibles aux autres utilisateurs connectés). */
+  var lotsLies = DATA.lots.filter(function(l) { return l.programme_id === id; });
+  for (var i = 0; i < lotsLies.length; i++) { await deleteRecord('lots', lotsLies[i].id, { skipIntegrity: true }); }
+  var modelesLies = (DATA.modeles_logement || []).filter(function(m) { return m.programme_id === id; });
+  for (var i = 0; i < modelesLies.length; i++) { await deleteRecord('modeles_logement', modelesLies[i].id, { skipIntegrity: true }); }
+  var plansLies = (DATA.plans_morcellement || []).filter(function(p) { return p.programme_id === id; });
+  for (var i = 0; i < plansLies.length; i++) { await deleteRecord('plans_morcellement', plansLies[i].id, { skipIntegrity: true }); }
+  var parcLies = (DATA.parcelles_morcellement || []).filter(function(p) { return p.programme_id === id; });
+  for (var i = 0; i < parcLies.length; i++) { await deleteRecord('parcelles_morcellement', parcLies[i].id, { skipIntegrity: true }); }
+  var concLies = (DATA.conceptions || []).filter(function(c) { return c.programme_id === id; });
+  for (var i = 0; i < concLies.length; i++) { await deleteRecord('conceptions', concLies[i].id, { skipIntegrity: true }); }
+  await deleteRecord('programmes', id, { skipIntegrity: true });
   renderProgrammes();
+  montageLiveRefresh('programmes');
   toast('Programme supprimé.', 'info');
 }
 
@@ -19413,6 +19434,7 @@ async function deleteLot(id) {
   if (typeof renderLotsDashboard==='function') renderLotsDashboard();
   if (typeof refreshDashboard==='function') refreshDashboard();
   filiereLiveRefresh();
+  montageLiveRefresh('lots');
   toast('Lot supprimé.', 'info');
 }
 
@@ -19530,6 +19552,7 @@ async function saveLot() {
   toast('Lot enregistré.', 'success');
   renderLots();
   filiereLiveRefresh();
+  montageLiveRefresh('lots');
 }
 
 function filterLots() { renderLots(); }
@@ -30409,10 +30432,13 @@ async function saveConception(){
   var phases=collectPhasesConception();var av=phases.length?Math.round(phases.reduce(function(s,p){return s+(p.pct||0);},0)/phases.length):0;
   var c={id:APP.editingId||uid(),ref:ref,type_logements:types,nature:(document.getElementById('conc-nature')||{}).value||'villa',programme_id:document.getElementById('conc-programme').value,architecte:document.getElementById('conc-architecte').value.trim(),surface:parseFloat(document.getElementById('conc-surface').value)||0,nb_unites:parseInt(document.getElementById('conc-nb-unites').value)||0,cout:parseFloat(document.getElementById('conc-cout').value)||0,phase:document.getElementById('conc-phase').value,statut:document.getElementById('conc-statut').value,date_debut:document.getElementById('conc-date-debut').value,date_fin:document.getElementById('conc-date-fin').value,description:document.getElementById('conc-description').value.trim(),phases:phases,avancement:av,created_at:APP.editingId?undefined:today()};
   if(APP.editingId){var idx=DATA.conceptions.findIndex(function(x){return x.id===APP.editingId;});if(idx>=0)DATA.conceptions[idx]=c;}else{DATA.conceptions.push(c);APP.editingId=c.id;}
-  await dbPut('conceptions',c);closeModal('modal-conception');renderConceptionsFull();toast('Conception enregistrée.','success');
+  await dbPut('conceptions',c);
+  if (typeof syncToSupabase==='function') syncToSupabase('pi_conceptions', c);
+  closeModal('modal-conception');renderConceptionsFull();toast('Conception enregistrée.','success');
+  montageLiveRefresh('conceptions');
   }finally{APP._savingConception=false;}
 }
-async function deleteConception(id){if(!confirm('Supprimer ce projet ?'))return;if(await deleteRecord('conceptions',id)===false)return;renderConceptionsFull();toast('Supprimé.','info');}
+async function deleteConception(id){if(!confirm('Supprimer ce projet ?'))return;if(await deleteRecord('conceptions',id)===false)return;renderConceptionsFull();montageLiveRefresh('conceptions');toast('Supprimé.','info');}
 function exportConceptionCSV(){var rows=['Référence,Programme,Type,Architecte,Surface,Unités,Phase,Statut'];DATA.conceptions.forEach(function(c){var pr=DATA.programmes.find(function(p){return p.id===c.programme_id;})||{nom:''};rows.push([c.ref,pr.nom,c.type_logements,c.architecte,c.surface,c.nb_unites,c.phase,c.statut].join(','));});var b=new Blob([rows.join('\n')],{type:'text/csv'});var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='conceptions.csv';a.click();}
 function printFicheConception(id){var c=DATA.conceptions.find(function(x){return x.id===id;});if(!c)return;var pr=DATA.programmes.find(function(p){return p.id===c.programme_id;})||{nom:'—'};var win=window.open('','','width=800,height=700');win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Fiche Conception</title><style>body{font-family:Georgia,serif;padding:36px;font-size:13px;}h1{color:#1D4ED8;border-bottom:2px solid #2563EB;padding-bottom:8px;}table{border-collapse:collapse;width:100%;margin:10px 0;}td,th{border:1px solid #ccc;padding:7px 12px;}th{background:#f5f0e0;}.ph{padding:6px 12px;border-left:4px solid;margin-bottom:6px;}.pf{border-color:#2E8B57;background:#f0f9f0;}.pc{border-color:#2563EB;background:#fdf8ea;}.pa{border-color:#bbb;background:#f8f8f8;}</style></head><body><h1>📐 Fiche Conception — '+c.ref+'</h1><table><tr><th>Programme</th><td>'+pr.nom+'</td><th>Type</th><td>'+c.type_logements+'</td></tr><tr><th>Architecte</th><td>'+(c.architecte||'—')+'</td><th>Phase</th><td>'+c.phase+'</td></tr><tr><th>Surface</th><td>'+(c.surface||'—')+' m²</td><th>Statut</th><td>'+c.statut+'</td></tr></table><h3>Phases</h3>'+(c.phases||[]).map(function(p){var cls=p.statut==='termine'?'pf':p.statut==='en_cours'?'pc':'pa';return'<div class="ph '+cls+'">'+p.nom+' — '+p.pct+'% — '+p.statut+'</div>';}).join('')+'<h3>Description</h3><p>'+(c.description||'—')+'</p></body></html>');try{ if(win.document.body && !win.document.querySelector('.doc-qr')){ var _qr=(win.document.querySelector('title')||{}).textContent||'DOC'; win.document.body.insertAdjacentHTML('beforeend', printQrFooter(_qr)); } }catch(e){} win.document.close(); win.print();}
 
@@ -33620,7 +33646,7 @@ var RT_PAGE_REFRESH = {
   bons_commande:['renderBonsCommande'], factures_fournisseur:['renderFacturesFournisseur'],
   leads:['renderLeads'], commissions:['renderCommissions'],
   parcelles:['renderParcelles'], af_operations:['afRenderPipeline','afRenderDashboard'],
-  af_relances:['afRenderRelances'], conceptions:['renderConception'],
+  af_relances:['afRenderRelances'], conceptions:['renderConceptionsFull'],
   situations:['renderSituations'], stock_mouvements:['renderStock'],
   declarations:['loadDeclarations'], conges_rh:['renderConges'],
   candidats_rh:['renderCandidats'], pointages:['renderPointages'],
@@ -33655,6 +33681,10 @@ function _rtRefreshPage(store){
      reçue en temps réel d'un autre poste — si cette vue est affichée. */
   if (FILIERE_STORES.indexOf(store) !== -1 && APP.currentPage === 'filiere' && typeof filiereRender === 'function') {
     filiereRender();
+  }
+  /* Montage du Programme : idem pour Programmes / Lots / Conception / Constructeurs / Conventions. */
+  if (typeof MONTAGE_STORES !== 'undefined' && MONTAGE_STORES.indexOf(store) !== -1) {
+    montageLiveRefresh(store);
   }
 }
 
@@ -35510,7 +35540,9 @@ async function saveConstructeur() {
   if (APP.editingId){var idx=DATA.constructeurs.findIndex(function(x){return x.id===APP.editingId;});if(idx>=0)DATA.constructeurs[idx]=c;}
   else DATA.constructeurs.push(c);
   await dbPut('constructeurs', c);
+  if (typeof syncToSupabase==='function') syncToSupabase('pi_constructeurs', c);
   closeModal('modal-constructeur'); renderConstructeurs(); updateConstructeursKPIs();
+  montageLiveRefresh('constructeurs');
   toast('Constructeur enregistré.', 'success');
 }
 
@@ -35518,6 +35550,7 @@ async function deleteConstructeur(id) {
   if (!confirm('Supprimer ce constructeur ? Les conventions associées resteront.')) return;
   var ok=await deleteRecord('constructeurs', id); if(ok===false)return;
   renderConstructeurs(); updateConstructeursKPIs();
+  montageLiveRefresh('constructeurs');
   toast('Constructeur supprimé.', 'info');
 }
 
@@ -35682,6 +35715,7 @@ async function saveConvention(mode) {
     await ajouterHistorique('convention', c.id, 'creation', 'Convention créée — statut: '+c.statut, null, c);
   }
   await dbPut('conventions', c);
+  if (typeof syncToSupabase==='function') syncToSupabase('pi_conventions', c);
   if (mode === 'soumettre') {
     await ajouterHistorique('convention', c.id, 'soumission_validation', 'Soumis par '+(APP.currentUser?APP.currentUser.nom:'Utilisateur'), null, {statut:'en_attente_validation'});
     toast('📤 Convention soumise à validation.', 'success');
@@ -35691,12 +35725,14 @@ async function saveConvention(mode) {
     toast('Convention enregistrée.', 'success');
   }
   closeModal('modal-convention'); renderConventions(); updateConstructeursKPIs();
+  montageLiveRefresh('conventions');
 }
 
 async function deleteConvention(id) {
   if (!confirm('Supprimer cette convention ?')) return;
   var ok=await deleteRecord('conventions', id); if(ok===false)return;
   renderConventions(); updateConstructeursKPIs();
+  montageLiveRefresh('conventions');
   toast('Convention supprimée.', 'info');
 }
 
@@ -50538,6 +50574,40 @@ var FILIERE_STORES = ['af_operations', 'parcelles', 'lots', 'cessions_foncieres'
    provienne de cet utilisateur ou d'un autre poste connecté. */
 function filiereLiveRefresh() {
   if (APP.currentPage === 'filiere' && typeof filiereRender === 'function') filiereRender();
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   MONTAGE DU PROGRAMME — synchronisation temps réel entre
+   Programmes · Lots & Réservations · Plans & Conception ·
+   Constructeurs · Conventions
+   Chaque page de ce groupe affiche des roll-up croisés (ex : Programmes
+   compte les lots vendus, Constructeurs compte les conventions, etc.).
+   montageLiveRefresh() recalcule la page actuellement affichée dès que
+   l'un des stores dont elle dépend change — en local (saisie immédiate)
+   ou à distance (Supabase Realtime, autre poste connecté).
+══════════════════════════════════════════════════════════════════ */
+var MONTAGE_STORES = ['programmes', 'lots', 'conceptions', 'constructeurs', 'conventions'];
+var MONTAGE_PAGE_DEPS = {
+  programmes:    ['programmes', 'lots', 'conceptions', 'conventions'],
+  lots:          ['lots', 'programmes'],
+  conception:    ['conceptions', 'programmes'],
+  constructeurs: ['constructeurs', 'conventions'],
+  conventions:   ['conventions', 'constructeurs', 'programmes']
+};
+function montageLiveRefresh(store) {
+  var page = APP.currentPage;
+  var deps = MONTAGE_PAGE_DEPS[page];
+  if (!deps || deps.indexOf(store) === -1) return;
+  if (page === 'programmes' && typeof renderProgrammes === 'function') renderProgrammes();
+  else if (page === 'lots' && typeof renderLots === 'function') renderLots();
+  else if (page === 'conception' && typeof renderConceptionsFull === 'function') renderConceptionsFull();
+  else if (page === 'constructeurs') {
+    if (typeof renderConstructeurs === 'function') renderConstructeurs();
+    if (typeof updateConstructeursKPIs === 'function') updateConstructeursKPIs();
+  } else if (page === 'conventions') {
+    if (typeof renderConventions === 'function') renderConventions();
+    if (typeof updateConstructeursKPIs === 'function') updateConstructeursKPIs();
+  }
 }
 
 /* ── Liens de filiation ── */
