@@ -10566,6 +10566,13 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <input type="date" class="form-control" id="p-date-livraison">
         </div>
         <div class="form-group span-2">
+          <label>Parcelle d'origine (portefeuille foncier)</label>
+          <select class="form-control" id="p-parcelle-id">
+            <option value="">— Aucune / à rattacher plus tard —</option>
+          </select>
+          <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">Rattache le programme et ses lots à une parcelle du portefeuille. Assure la traçabilité Parcelle → Lots → Vente.</div>
+        </div>
+        <div class="form-group span-2">
           <label>Description</label>
           <textarea class="form-control" id="p-description"></textarea>
         </div>
@@ -18482,6 +18489,7 @@ function printRecu() {
 function openProgrammeModal(id) {
   APP.editingId = id || null;
   clearProgrammeForm();
+  _progPopulateParcelles();
   if (id) {
     var p = DATA.programmes.find(function(x) { return x.id === id; });
     if (!p) return;
@@ -18498,10 +18506,21 @@ function openProgrammeModal(id) {
     document.getElementById('p-date-lancement').value = p.dateLancement || p.date_lancement || '';
     document.getElementById('p-date-livraison').value = p.dateLivraison || p.date_livraison || '';
     setSelectValue('p-statut', p.statut);
+    setSelectValue('p-parcelle-id', p.parcelle_id || '');
   } else {
     document.getElementById('modal-prog-title').textContent = 'Nouveau Programme';
   }
   openModal('modal-programme');
+}
+
+function _progPopulateParcelles() {
+  var sel = document.getElementById('p-parcelle-id');
+  if (!sel) return;
+  var opts = '<option value="">— Aucune / à rattacher plus tard —</option>';
+  (DATA.parcelles || []).forEach(function(p) {
+    opts += '<option value="' + p.id + '">' + escHtml(p.ref || p.localisation || p.id) + '</option>';
+  });
+  sel.innerHTML = opts;
 }
 
 function clearProgrammeForm() {
@@ -18524,6 +18543,7 @@ async function saveProgramme() {
     statut: document.getElementById('p-statut').value,
     date_lancement: document.getElementById('p-date-lancement').value,
     date_livraison: document.getElementById('p-date-livraison').value,
+    parcelle_id: document.getElementById('p-parcelle-id').value,
     description: document.getElementById('p-description').value,
     created_at: APP.editingId ? undefined : today()
   };
@@ -18798,6 +18818,8 @@ async function deleteModele(id) {
 
 async function genererLotsDepuisModeles() {
   var progId = APP.currentProgrammeId;
+  var prog = (DATA.programmes || []).find(function(p) { return p.id === progId; });
+  var parcelleId = prog ? (prog.parcelle_id || '') : '';
   var modeles = (DATA.modeles_logement || []).filter(function(m) { return m.programme_id === progId; });
   if (!modeles.length) { toast('Aucun type défini pour ce programme.', 'error'); return; }
   var lotsCreees = 0;
@@ -18811,6 +18833,7 @@ async function genererLotsDepuisModeles() {
       var lot = {
         id: uid(),
         programme_id: progId,
+        parcelle_id: parcelleId,
         numero: m.nom.substring(0, 2).toUpperCase() + '-' + num,
         ilot: '',
         type: m.nom,
@@ -19728,10 +19751,12 @@ async function saveLot() {
   var numero = document.getElementById('l-numero').value.trim();
   if (!numero) { toast('Numéro de lot obligatoire.', 'error'); return; }
   var id = APP.editingId || uid();
+  var _progLot = (DATA.programmes || []).find(function(p) { return p.id === document.getElementById('l-programme').value; });
+  var _parcLot = (document.getElementById('l-parcelle')||{}).value || (_progLot ? (_progLot.parcelle_id||'') : '');
   var lot = {
     id: id,
     programme_id: document.getElementById('l-programme').value,
-    parcelle_id: (document.getElementById('l-parcelle')||{}).value || '',
+    parcelle_id: _parcLot,
     operation_id: (document.getElementById('l-operation')||{}).value || '',
     numero: numero,
     ilot: document.getElementById('l-ilot').value,
