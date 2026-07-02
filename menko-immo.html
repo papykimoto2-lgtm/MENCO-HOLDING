@@ -5336,6 +5336,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
             <div class="page-subtitle">Fiches du personnel et contrats</div>
           </div>
           <div class="spacer"></div>
+          <button class="btn btn-secondary btn-sm" onclick="openDivisionsModal()">🏢 Divisions</button>
           <button class="btn btn-secondary btn-sm" onclick="exportEmployes()">⬇ Export</button>
           <button class="btn btn-secondary btn-sm" id="btn-toggle-ex" onclick="toggleExEmployes()" style="background:rgba(220,50,50,0.15);border-color:var(--rouge);color:var(--rouge);">👥 Ex-employés</button>
           <button class="btn btn-primary" onclick="openEmployeModal()">+ Nouvel employé</button>
@@ -5377,6 +5378,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
             <option value="CDI">CDI</option>
             <option value="CDD">CDD</option>
             <option value="stage">Stagiaire</option>
+            <option value="journalier">Journalier</option>
+          </select>
+          <select class="filter-select" id="filter-division" onchange="filterEmployes()">
+            <option value="">Toutes divisions</option>
           </select>
         </div>
         <div class="card">
@@ -5388,6 +5393,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
                   <th>Nom & Prénoms</th>
                   <th>Poste</th>
                   <th>Département</th>
+                  <th>Division</th>
                   <th>Contrat</th>
                   <th>Date embauche</th>
                   <th>Salaire brut</th>
@@ -11594,6 +11600,35 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 </div>
 
 <!-- Modal Employé -->
+<!-- Modal Divisions (unités business du promoteur) -->
+<div class="modal-overlay" id="modal-divisions">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3>🏢 Divisions du promoteur</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-divisions')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid" style="margin-bottom:14px;">
+        <div class="form-group"><label>Nom de la division *</label><input type="text" class="form-control" id="div-nom" placeholder="Ex: Division Foncier"></div>
+        <div class="form-group"><label>Responsable</label><input type="text" class="form-control" id="div-responsable" placeholder="Nom du responsable"></div>
+        <div class="form-group span-2"><label>Description</label><input type="text" class="form-control" id="div-description" placeholder="Description courte (optionnel)"></div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+        <button class="btn btn-primary btn-sm" onclick="saveDivision()" id="btn-save-division">+ Ajouter la division</button>
+      </div>
+      <div class="table-wrap">
+        <table id="table-divisions">
+          <thead><tr><th>Nom</th><th>Responsable</th><th>Description</th><th>Effectif</th><th>Actions</th></tr></thead>
+          <tbody id="tbody-divisions"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-divisions')">Fermer</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-employe">
   <div class="modal modal-lg">
     <div class="modal-header">
@@ -11605,6 +11640,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
         <button class="tab-btn active" onclick="switchTab('modal-emp','identite')">Identité</button>
         <button class="tab-btn" onclick="switchTab('modal-emp','contrat')">Contrat & Salaire</button>
         <button class="tab-btn" onclick="switchTab('modal-emp','bancaire')">Coordonnées bancaires</button>
+        <button class="tab-btn" onclick="switchTab('modal-emp','dossier');renderEmployeeDossier()">📁 Dossier personnel</button>
         <button class="tab-btn" id="tab-btn-emp-depart" onclick="switchTab('modal-emp','depart');document.getElementById('depart-info-banner').style.display='block'">🚪 Départ</button>
       </div>
       <div class="tab-pane active" id="tab-modal-emp-identite">
@@ -11645,11 +11681,17 @@ button:focus-visible, input:focus-visible, select:focus-visible {
               <option value="comptabilite">Comptabilité</option>
             </select>
           </div>
+          <div class="form-group"><label>Division *</label>
+            <select class="form-control" id="emp-division">
+              <option value="">— Sélectionner une division —</option>
+            </select>
+          </div>
           <div class="form-group"><label>Type de contrat</label>
             <select class="form-control" id="emp-contrat">
               <option value="CDI">CDI</option>
               <option value="CDD">CDD</option>
               <option value="stage">Stagiaire</option>
+              <option value="journalier">Journalier</option>
             </select>
           </div>
           <div class="form-group"><label>Date d'embauche *</label><input type="date" class="form-control" id="emp-date-embauche"></div>
@@ -11693,6 +11735,14 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <div class="form-group"><label>N° Wave / Orange Money / MTN</label><input type="text" class="form-control" id="emp-wallet" placeholder="Ex: +225 07 XX XX XX"></div>
           <div class="form-group"><label>RIB (optionnel)</label><input type="text" class="form-control" id="emp-rib"></div>
         </div>
+      </div>
+      <div class="tab-pane" id="tab-modal-emp-dossier">
+        <div id="emp-dossier-save-notice" style="display:none;padding:10px;background:rgba(184,115,51,0.1);border-left:3px solid var(--or);border-radius:4px;margin-bottom:14px;font-size:13px;color:var(--or);">
+          ⚠️ Enregistrez d'abord la fiche employé (onglet Identité) avant de téléverser les pièces du dossier.
+        </div>
+        <div style="color:var(--blanc-dim);font-size:13px;margin-bottom:14px;">Pièces constitutives du dossier du personnel. Formats acceptés : PDF, JPG, PNG (10 Mo max par pièce).</div>
+        <input type="file" id="emp-doc-file-input" accept=".pdf,.jpg,.jpeg,.png" style="display:none;" onchange="handleEmpDocFileSelected(this)">
+        <div id="emp-dossier-list"></div>
       </div>
     </div>
       <div class="tab-pane" id="tab-modal-emp-depart">
@@ -14345,6 +14395,7 @@ var DATA = {
   users: [],
   params: { societe: 'ImmoSuite ERP', email: '', tel: '', rccm: '' },
   employes: [],
+  divisions: [],
   bulletins: [],
   declarations: [],
   // ── ERP EXPERT v2.0 ──
@@ -14422,14 +14473,14 @@ var DATA = {
    INDEXEDDB
 ────────────────────────────────────────────────────── */
 var DB_NAME = 'ImmoSuiteDB';
-var DB_VERSION = 128; /* v128: création des object stores RH/visites manquants */
+var DB_VERSION = 129; /* v129: ajout du store 'divisions' (RH — rattachement des employés aux divisions du promoteur) */
 var DEMO_DATA = false; /* PRODUCTION : aucune donnée de démonstration. Mettre true uniquement pour une démo. */
 var db = null;
 
 /* Liste COMPLÈTE et définitive de tous les stores */
 var ALL_STORES = [
   'clients','versements','programmes','lots','terrains','ecritures','relances',
-  'users','params','employes','bulletins','declarations','parcelles','mutations',
+  'users','params','employes','divisions','bulletins','declarations','parcelles','mutations',
   'dossiersJuridiques','constructeurs','conventions','situations','avenants',
   'conceptions','leads','pointages','itineraires','etapes_itineraire',
   'cr_visites','biens_amort','releves_bank','rapprochements',
@@ -14596,7 +14647,7 @@ async function saveData(store) {
 async function loadAllData() {
   var allKeys = [
     'clients','versements','programmes','lots','terrains','ecritures','relances',
-    'employes','bulletins','declarations','parcelles','mutations','dossiersJuridiques',
+    'employes','divisions','bulletins','declarations','parcelles','mutations','dossiersJuridiques',
     'constructeurs','conventions','situations','avenants','conceptions','leads',
     'pointages','itineraires','etapes_itineraire','cr_visites','biens_amort',
     'releves_bank','rapprochements','permis','plans_arch','rapports_chantier',
@@ -15011,6 +15062,7 @@ var SUPA_STORE_MAP = [
   ['pi_af_agents',       'af_agents'],
   ['pi_af_relances',     'af_relances'],
   ['pi_employes',        'employes'],
+  ['pi_divisions',       'divisions'],
   ['pi_pointages',       'pointages'],
   ['pi_bulletins',       'bulletins'],
   ['pi_declarations',    'declarations'],
@@ -15118,7 +15170,7 @@ function _libelleStore(store) {
     users:'Utilisateurs', programmes:'Programmes', lots:'Lots', terrains:'Terrains',
     modeles_logement:'Modèles de logement', clients:'Souscripteurs', versements:'Versements',
     commissions:'Commissions', leads:'Leads (pipeline)', ecritures:'Écritures comptables',
-    employes:'Employés (RH)', pointages:'Pointages', bulletins:'Bulletins de paie',
+    employes:'Employés (RH)', divisions:'Divisions', pointages:'Pointages', bulletins:'Bulletins de paie',
     declarations:'Déclarations fiscales/sociales', evenements_calendrier:'Calendrier',
     reunions_direction:'Réunions direction', actions_reunion:'Actions de réunion',
     messages:'Messages', conversations:'Conversations', apporteurs:"Apporteurs d'affaires",
@@ -16105,7 +16157,7 @@ function goTo(page) {
   if (page === 'comptabilite') { loadComptabilite(); updateCompteSuggestions(); }
   if (page === 'relances') detectRelances();
   if (page === 'parametres') loadParams();
-  if (page === 'rh-employes') { renderEmployes(); updateRHKPIs(); }
+  if (page === 'rh-employes') { populateDivisionSelects(); renderEmployes(); updateRHKPIs(); }
   if (page === 'rh-paie') { loadPaie(); }
   if (page === 'rh-declarations') { loadDeclarations(); }
   if (page === 'rh-livre-paie')   { loadLivrePaie(); }
@@ -22815,8 +22867,9 @@ function openEmployeModal(id) {
   var _eCat = id ? (DATA.employes.find(function(x){return x.id===id;})||{}).categorie : '';
   document.getElementById('emp-categorie').innerHTML = buildGrilleOptions(_eCat || '');
   var fields = ['matricule','nom','prenoms','ddn','genre','matrimonial','enfants','cnps-num','tel','email','adresse',
-    'poste','dept','contrat','date-embauche','date-fin','categorie','salaire-base','primes','transport','logement',
+    'poste','dept','division','contrat','date-embauche','date-fin','categorie','salaire-base','primes','transport','logement',
     'mode-paiement','statut','banque','compte-banque','wallet','rib'];
+  populateDivisionSelects();
   if (id) {
     var e = DATA.employes.find(function(x) { return x.id === id; });
     if (e) {
@@ -22839,6 +22892,7 @@ function openEmployeModal(id) {
     document.getElementById('emp-logement').value = '0';
   }
   calcSalaireNet();
+  renderEmployeeDossier();
   switchTab('modal-emp','identite');
   document.getElementById('modal-employe').classList.add('open');
 }
@@ -22864,7 +22918,9 @@ async function saveEmploye() {
   var matricule = document.getElementById('emp-matricule').value.trim();
   var poste = document.getElementById('emp-poste').value.trim();
   var salaireBase = parseFloat(document.getElementById('emp-salaire-base').value) || 0;
+  var division = document.getElementById('emp-division').value;
   if (!nom || !matricule) { toast('Nom et matricule obligatoires.', 'error'); return; }
+  if (DATA.divisions.length && !division) { toast('Veuillez rattacher l\'employé à une division.', 'error'); return; }
   var emp = {
     id: APP.editingId || 'emp_' + Date.now(),
     matricule: matricule,
@@ -22880,6 +22936,7 @@ async function saveEmploye() {
     adresse: document.getElementById('emp-adresse').value.trim(),
     poste: poste,
     dept: document.getElementById('emp-dept').value,
+    division: division,
     contrat: document.getElementById('emp-contrat').value,
     date_embauche: document.getElementById('emp-date-embauche').value,
     date_fin: document.getElementById('emp-date-fin').value,
@@ -22923,17 +22980,19 @@ function renderEmployes() {
   var q = (document.getElementById('search-employes').value || '').toLowerCase();
   var dept = document.getElementById('filter-dept').value;
   var contrat = document.getElementById('filter-contrat').value;
+  var divisionF = (document.getElementById('filter-division')||{}).value || '';
   var list = DATA.employes.filter(function(e) {
     var match = !q || (e.nom + ' ' + e.prenoms + ' ' + e.matricule + ' ' + e.poste).toLowerCase().includes(q);
     var matchDept = !dept || e.dept === dept;
     var matchContrat = !contrat || e.contrat === contrat;
-    return match && matchDept && matchContrat;
+    var matchDivision = !divisionF || e.division === divisionF;
+    return match && matchDept && matchContrat && matchDivision;
   });
   if (!list.length) {
     tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--blanc-dim);padding:24px;">Aucun employé enregistré</td></tr>';
     return;
   }
-  var badgeContrat = { CDI: 'badge-vert', CDD: 'badge-or', stage: 'badge-bleu' };
+  var badgeContrat = { CDI: 'badge-vert', CDD: 'badge-or', stage: 'badge-bleu', journalier: 'badge-violet' };
   var badgeStat = { actif: 'badge-vert', inactif: 'badge-rouge', suspendu: 'badge-or' };
   tbody.innerHTML = list.map(function(e) {
     var r = calcPaieEmploye(e);
@@ -22942,6 +23001,7 @@ function renderEmployes() {
       + '<td>' + e.nom + ' ' + e.prenoms + '</td>'
       + '<td>' + e.poste + '</td>'
       + '<td>' + (e.dept || '—') + '</td>'
+      + '<td>' + (e.division ? _nomDivision(e.division) : '—') + '</td>'
       + '<td><span class="badge ' + (badgeContrat[e.contrat] || 'badge-bleu') + '">' + e.contrat + '</span></td>'
       + '<td>' + (e.date_embauche ? e.date_embauche : '—') + '</td>'
       + '<td style="color:var(--or);font-weight:600;">' + fmtF(e.salaire_base) + ' FCFA</td>'
@@ -22963,15 +23023,202 @@ async function deleteEmploye(id) {
   toast('Employé supprimé.', 'info');
 }
 
+/* ── Dossier du personnel (pièces à l'enregistrement) ─────
+   Documents rattachés via le store générique 'documents' (entity_type='employe'),
+   taggés par catégorie pour former un dossier complet et vérifiable. */
+var EMP_DOC_TYPES = [
+  { code: 'cni',                     label: 'CNI (Carte Nationale d\'Identité)' },
+  { code: 'extrait_naissance',       label: 'Extrait de naissance' },
+  { code: 'certificat_nationalite',  label: 'Certificat de nationalité' },
+  { code: 'casier_judiciaire',       label: 'Casier judiciaire' },
+  { code: 'extrait_mariage',         label: 'Extrait de mariage' },
+  { code: 'extrait_enfants',         label: 'Extrait(s) de naissance des enfants' }
+];
+var _pendingEmpDocCat = null;
+
+function triggerEmpDocUpload(code) {
+  if (!APP.editingId) { toast('Enregistrez d\'abord la fiche employé.', 'error'); return; }
+  _pendingEmpDocCat = code;
+  document.getElementById('emp-doc-file-input').click();
+}
+
+function handleEmpDocFileSelected(input) {
+  var file = input.files[0];
+  if (!file) return;
+  if (file.size > 10 * 1024 * 1024) { toast('Fichier trop volumineux (max 10 Mo).', 'error'); input.value = ''; return; }
+  var cat = _pendingEmpDocCat;
+  var label = (EMP_DOC_TYPES.find(function(t) { return t.code === cat; }) || {}).label || cat;
+  var empId = APP.editingId;
+  var reader = new FileReader();
+  reader.onload = async function(e) {
+    var docs = await dbGetAll('documents');
+    var existing = docs.find(function(d) { return d.entity_type === 'employe' && d.entity_id === empId && d.doc_categorie === cat; });
+    if (existing) { await deleteRecord('documents', existing.id); }
+    var doc = {
+      id: uid(), entity_type: 'employe', entity_id: empId,
+      name: file.name, type: file.type || 'application/octet-stream', size: file.size,
+      blob: e.target.result, upload_date: today(), description: label, doc_categorie: cat
+    };
+    await dbPut('documents', doc);
+    toast('📎 ' + label + ' téléversé.', 'success');
+    input.value = '';
+    renderEmployeeDossier();
+  };
+  reader.readAsDataURL(file);
+}
+
+async function deleteEmployeDoc(docId) {
+  if (!confirm('Supprimer cette pièce du dossier ?')) return;
+  if (await deleteRecord('documents', docId) === false) return;
+  toast('Pièce supprimée.', 'info');
+  renderEmployeeDossier();
+}
+
+async function renderEmployeeDossier() {
+  var container = document.getElementById('emp-dossier-list');
+  var notice = document.getElementById('emp-dossier-save-notice');
+  if (!container) return;
+  var empId = APP.editingId;
+  if (notice) notice.style.display = empId ? 'none' : 'block';
+  var mine = [];
+  if (empId) {
+    var docs = await dbGetAll('documents');
+    mine = docs.filter(function(d) { return d.entity_type === 'employe' && d.entity_id === empId; });
+  }
+  container.innerHTML = EMP_DOC_TYPES.map(function(t) {
+    var doc = mine.find(function(d) { return d.doc_categorie === t.code; });
+    var statusBadge = doc
+      ? '<span class="badge badge-vert">✅ Fourni</span>'
+      : '<span class="badge badge-rouge">⚠️ Manquant</span>';
+    var actions = doc
+      ? ('<button class="btn btn-secondary btn-sm btn-icon" onclick="apercuDocument(\'' + doc.id + '\')" title="Aperçu">👁️</button> '
+        + '<button class="btn btn-secondary btn-sm btn-icon" onclick="telechargerDocument(\'' + doc.id + '\')" title="Télécharger">⬇</button> '
+        + '<button class="btn btn-secondary btn-sm" onclick="triggerEmpDocUpload(\'' + t.code + '\')">🔄 Remplacer</button> '
+        + '<button class="btn btn-danger btn-sm btn-icon" onclick="deleteEmployeDoc(\'' + doc.id + '\')" title="Supprimer">🗑</button>')
+      : ('<button class="btn btn-primary btn-sm" onclick="triggerEmpDocUpload(\'' + t.code + '\')" ' + (empId ? '' : 'disabled') + '>📁 Téléverser</button>');
+    return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;background:var(--card2);border-radius:var(--r);margin-bottom:8px;flex-wrap:wrap;">'
+      + '<div><div style="font-size:13px;font-weight:600;">' + t.label + '</div>'
+      + (doc ? '<div style="font-size:10px;color:var(--blanc-dim);">' + doc.name + ' · ' + dateShort(doc.upload_date) + '</div>' : '')
+      + '</div>'
+      + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' + statusBadge + actions + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+/* ── Divisions (unités business du promoteur) ────────────
+   Chaque employé est rattaché à UNE division. Gestion CRUD simple. */
+var _editingDivisionId = null;
+
+function openDivisionsModal() {
+  _editingDivisionId = null;
+  document.getElementById('div-nom').value = '';
+  document.getElementById('div-responsable').value = '';
+  document.getElementById('div-description').value = '';
+  document.getElementById('btn-save-division').textContent = '+ Ajouter la division';
+  renderDivisions();
+  document.getElementById('modal-divisions').classList.add('open');
+}
+
+async function saveDivision() {
+  var nom = document.getElementById('div-nom').value.trim();
+  if (!nom) { toast('Le nom de la division est obligatoire.', 'error'); return; }
+  var div = {
+    id: _editingDivisionId || 'div_' + Date.now(),
+    nom: nom,
+    responsable: document.getElementById('div-responsable').value.trim(),
+    description: document.getElementById('div-description').value.trim(),
+    created_at: _editingDivisionId ? undefined : new Date().toISOString()
+  };
+  if (_editingDivisionId) {
+    var idx = DATA.divisions.findIndex(function(x) { return x.id === _editingDivisionId; });
+    if (idx >= 0) DATA.divisions[idx] = div; else DATA.divisions.push(div);
+  } else {
+    DATA.divisions.push(div);
+  }
+  await dbPut('divisions', div);
+  _editingDivisionId = null;
+  document.getElementById('div-nom').value = '';
+  document.getElementById('div-responsable').value = '';
+  document.getElementById('div-description').value = '';
+  document.getElementById('btn-save-division').textContent = '+ Ajouter la division';
+  renderDivisions();
+  populateDivisionSelects();
+  toast('Division enregistrée.', 'success');
+}
+
+function editDivision(id) {
+  var d = DATA.divisions.find(function(x) { return x.id === id; });
+  if (!d) return;
+  _editingDivisionId = id;
+  document.getElementById('div-nom').value = d.nom || '';
+  document.getElementById('div-responsable').value = d.responsable || '';
+  document.getElementById('div-description').value = d.description || '';
+  document.getElementById('btn-save-division').textContent = '✓ Modifier la division';
+}
+
+async function deleteDivision(id) {
+  var enUsage = DATA.employes.some(function(e) { return e.division === id; });
+  if (enUsage && !confirm('Des employés sont rattachés à cette division. La supprimer quand même ? (leur champ Division sera vidé)')) return;
+  if (!enUsage && !confirm('Supprimer cette division ?')) return;
+  if (await deleteRecord('divisions', id) === false) return;
+  DATA.employes.forEach(function(e) { if (e.division === id) e.division = ''; });
+  renderDivisions();
+  populateDivisionSelects();
+  renderEmployes();
+  toast('Division supprimée.', 'info');
+}
+
+function renderDivisions() {
+  var tbody = document.getElementById('tbody-divisions');
+  if (!tbody) return;
+  if (!DATA.divisions.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--blanc-dim);padding:20px;">Aucune division créée</td></tr>';
+    return;
+  }
+  tbody.innerHTML = DATA.divisions.map(function(d) {
+    var effectif = DATA.employes.filter(function(e) { return e.division === d.id; }).length;
+    return '<tr>'
+      + '<td><strong>' + (d.nom || '—') + '</strong></td>'
+      + '<td>' + (d.responsable || '—') + '</td>'
+      + '<td>' + (d.description || '—') + '</td>'
+      + '<td>' + effectif + '</td>'
+      + '<td>'
+      + '<button class="btn btn-secondary btn-sm btn-icon" onclick="editDivision(\'' + d.id + '\')">✏️</button> '
+      + '<button class="btn btn-danger btn-sm btn-icon" onclick="deleteDivision(\'' + d.id + '\')">🗑</button>'
+      + '</td></tr>';
+  }).join('');
+}
+
+function populateDivisionSelects() {
+  var opts = '<option value="">— Sélectionner une division —</option>' + DATA.divisions.map(function(d) {
+    return '<option value="' + d.id + '">' + d.nom + '</option>';
+  }).join('');
+  var selEmp = document.getElementById('emp-division');
+  if (selEmp) { var cur = selEmp.value; selEmp.innerHTML = opts; selEmp.value = cur; }
+  var selFilter = document.getElementById('filter-division');
+  if (selFilter) {
+    var curF = selFilter.value;
+    selFilter.innerHTML = '<option value="">Toutes divisions</option>' + DATA.divisions.map(function(d) {
+      return '<option value="' + d.id + '">' + d.nom + '</option>';
+    }).join('');
+    selFilter.value = curF;
+  }
+}
+
+function _nomDivision(id) {
+  var d = DATA.divisions.find(function(x) { return x.id === id; });
+  return d ? d.nom : '—';
+}
+
 function voirBulletinEmploye(empId) {
   goTo('rh-paie');
   setTimeout(function() { openBulletinModal(null, empId); }, 200);
 }
 
 function exportEmployes() {
-  var rows = ['Matricule,Nom,Prénoms,Poste,Département,Contrat,Date embauche,Salaire brut,Statut'];
+  var rows = ['Matricule,Nom,Prénoms,Poste,Département,Division,Contrat,Date embauche,Salaire brut,Statut'];
   DATA.employes.forEach(function(e) {
-    rows.push([e.matricule, e.nom, e.prenoms, e.poste, e.dept, e.contrat, e.date_embauche, e.salaire_base, e.statut].join(','));
+    rows.push([e.matricule, e.nom, e.prenoms, e.poste, e.dept, _nomDivision(e.division), e.contrat, e.date_embauche, e.salaire_base, e.statut].join(','));
   });
   var blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
   var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
