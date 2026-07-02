@@ -6135,7 +6135,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <div id="ces-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px;"></div>
           <div class="card"><div style="font-size:12px;color:var(--blanc-dim);margin-bottom:8px;">Cession de la part revenant à l'entreprise (lots / portions) pour soulager la trésorerie. Chaque cession génère l'écriture SYSCOHADA et alimente la trésorerie.</div>
             <div class="table-wrap"><table>
-              <thead><tr><th>Date</th><th>Source</th><th>Désignation</th><th>Acquéreur</th><th style="text-align:right;">Superf./Lots</th><th style="text-align:right;">Prix cession</th><th style="text-align:right;">Encaissé</th><th>Statut</th><th></th></tr></thead>
+              <thead><tr><th>Date</th><th>Source</th><th>Désignation</th><th>Acquéreur</th><th style="text-align:right;">Superf./Lots</th><th style="text-align:right;">Prix cession</th><th style="text-align:right;">Coût / Marge</th><th style="text-align:right;">Encaissé</th><th>Statut</th><th></th></tr></thead>
               <tbody id="tbody-cessions"></tbody>
             </table></div>
           </div>
@@ -9652,6 +9652,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
                 <div class="form-group"><label>Propriétaires (%)</label><input type="number" id="af-cle-prop" class="form-control" value="40" step="0.1" oninput="afCalcRepartition()"></div>
                 <div class="form-group"><label>Aménageur (%)</label><input type="number" id="af-cle-amen" class="form-control" value="35" step="0.1" oninput="afCalcRepartition()"></div>
                 <div class="form-group"><label>Financier (%)</label><input type="number" id="af-cle-fin" class="form-control" value="25" step="0.1" oninput="afCalcRepartition()"></div>
+                <div class="form-group span-2"><label>Coût total de l'opération (FCFA)</label><input type="number" id="af-cout-total" class="form-control" value="0" oninput="afCalcRepartition()" placeholder="Indemnisations, démarches, aménagement — sert à valoriser la part entreprise en stock (33)"></div>
               </div>
               <div id="af-repartition-res" class="card" style="margin-top:12px;background:var(--card2);"></div>
               <div id="af-cessible-jauge" style="margin-top:12px;"></div>
@@ -9665,7 +9666,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
                 <div class="form-group"><label>Lots vendus</label><input type="number" id="af-lots-vendus" class="form-control" value="0"></div>
                 <div class="form-group"><label>Titres délivrés</label><input type="number" id="af-titres" class="form-control" value="0"></div>
               </div>
-              <div style="margin-top:10px;"><button class="btn btn-secondary btn-sm" onclick="if(_afOp&&_afOp.id){cesNewFromOperation(_afOp.id);}else{toast('Enregistrez d\'abord l\'opération','error');}">💰 Céder des lots (part entreprise)</button></div>
+              <div style="margin-top:10px;"><button class="btn btn-secondary btn-sm" onclick="cederLotsPartEntreprise()">💰 Céder des lots (part entreprise)</button></div>
               <div id="af-commercial-res" class="card" style="margin-top:12px;background:var(--card2);"></div>
             </div>
           </div>
@@ -20230,7 +20231,13 @@ function _calcResultat(year) {
   function cre(pfx){ return ec.filter(function(e){ var c=e.compte_credit||''; return pfx.some(function(p){ return c.indexOf(p)===0; }); }).reduce(function(a,e){ return a+e.montant; },0); }
   // Produits (crédits classe 7) — buckets exclusifs
   var ventes      = cre(['70']);
-  var prodStockee = cre(['71','72']);
+  /* Production stockée (71-72) = solde net crédit − débit, et non le seul crédit :
+     l'entrée en stock (crédit 712, ex. génération de lots part entreprise) augmente
+     ce produit, mais la sortie de stock (débit 712, ex. sortie à la cession) doit le
+     réduire d'autant — sinon la valeur du terrain cédé serait comptée deux fois
+     (une fois via 712 à l'entrée, une fois via 701 à la vente, sans jamais déduire
+     le stock consommé). */
+  var prodStockee = cre(['71','72']) - deb(['71','72']);
   var autresProd  = cre(['73','74','75']);
   var prodFin     = cre(['76']);
   var prodHAO     = cre(['77']);
@@ -33686,6 +33693,11 @@ function _rtRefreshPage(store){
   if (typeof MONTAGE_STORES !== 'undefined' && MONTAGE_STORES.indexOf(store) !== -1) {
     montageLiveRefresh(store);
   }
+  /* Études & Chantiers : idem pour Déboursé Sec / DQE / Aménagement Foncier / Achats / Stock /
+     Avancement / Validations / Réception & Livraison. */
+  if (typeof ETUDES_STORES !== 'undefined' && ETUDES_STORES.indexOf(store) !== -1) {
+    etudesLiveRefresh(store);
+  }
 }
 
 /* Démarrer la connexion Realtime */
@@ -39287,14 +39299,17 @@ async function amSaveAmenageur() {
   var idx = DATA.amenageurs.findIndex(function(x){ return x.id === a.id; });
   if (idx >= 0) DATA.amenageurs[idx] = a; else DATA.amenageurs.push(a);
   await dbPut('amenageurs', a);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_amenageurs', a);
   closeModal('modal-am-amenageur'); loadAmenagement();
+  etudesLiveRefresh('amenageurs');
   toast('Aménageur enregistré.', 'success');
 }
 async function amDeleteAmenageur(id) {
   if (!confirm('Supprimer cet aménageur ?')) return;
-  DATA.amenageurs = DATA.amenageurs.filter(function(x){ return x.id !== id; });
-  await dbDelete('amenageurs', id);
+  var ok = await deleteRecord('amenageurs', id);
+  if (ok === false) return;
   loadAmenagement();
+  etudesLiveRefresh('amenageurs');
   toast('Aménageur supprimé.', 'success');
 }
 function amRenderAmenageurs() {
@@ -39391,14 +39406,17 @@ async function amSaveConvention() {
   var idx = DATA.conventions_amenagement.findIndex(function(x){ return x.id === c.id; });
   if (idx >= 0) DATA.conventions_amenagement[idx] = c; else DATA.conventions_amenagement.push(c);
   await dbPut('conventions_amenagement', c);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_conventions_amenagement', c);
   closeModal('modal-am-convention'); loadAmenagement();
+  etudesLiveRefresh('conventions_amenagement');
   toast('Convention d\'aménagement enregistrée.', 'success');
 }
 async function amDeleteConvention(id) {
   if (!confirm('Supprimer cette convention ?')) return;
-  DATA.conventions_amenagement = DATA.conventions_amenagement.filter(function(x){ return x.id !== id; });
-  await dbDelete('conventions_amenagement', id);
+  var ok = await deleteRecord('conventions_amenagement', id);
+  if (ok === false) return;
   loadAmenagement();
+  etudesLiveRefresh('conventions_amenagement');
   toast('Convention supprimée.', 'success');
 }
 function amRenderConventions() {
@@ -39475,6 +39493,7 @@ async function amSaveSituation() {
   var idx = DATA.situations_amenagement.findIndex(function(x){ return x.id === s.id; });
   if (idx >= 0) DATA.situations_amenagement[idx] = s; else DATA.situations_amenagement.push(s);
   await dbPut('situations_amenagement', s);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_situations_amenagement', s);
 
   // Paiement en nature : transfert statut lots
   if (s.mode === 'nature' && s.lots_nature && s.lots_nature.length) {
@@ -39484,6 +39503,7 @@ async function amSaveSituation() {
         lot.statut = 'attribue_amenageur';
         lot.date_attribution_amenageur = s.date;
         dbPut('lots', lot);
+        if (typeof syncToSupabase === 'function') syncToSupabase('pi_lots', lot);
       }
     });
   }
@@ -39502,6 +39522,7 @@ async function amSaveSituation() {
     if (!DATA.ecritures.some(function(e){ return e.id === ecr.id; })) DATA.ecritures.push(ecr);
     else { var ei = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; }); DATA.ecritures[ei] = ecr; }
     await dbPut('ecritures', ecr);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecr);
     if (s.statut === 'payee') {
       var ep = { id: 'ecr_ampay_' + s.id, ref: 'AMG-PAY-' + s.numero, date: s.date, piece: s.numero,
         libelle: 'Règlement ' + lib, compte: '401', compte_debit: '401', compte_credit: '512',
@@ -39509,6 +39530,7 @@ async function amSaveSituation() {
       if (!DATA.ecritures.some(function(e){ return e.id === ep.id; })) DATA.ecritures.push(ep);
       else { var pi = DATA.ecritures.findIndex(function(e){ return e.id === ep.id; }); DATA.ecritures[pi] = ep; }
       await dbPut('ecritures', ep);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ep);
     }
     if (typeof buildBalance === 'function') buildBalance();
     if (typeof buildCompteResultat === 'function') buildCompteResultat();
@@ -39517,12 +39539,15 @@ async function amSaveSituation() {
     toast('Situation enregistrée.', 'success');
   }
   closeModal('modal-am-situation'); loadAmenagement();
+  etudesLiveRefresh('situations_amenagement');
+  if (s.mode === 'nature' && s.lots_nature && s.lots_nature.length) montageLiveRefresh('lots');
 }
 async function amDeleteSituation(id) {
   if (!confirm('Supprimer cette situation ?')) return;
-  DATA.situations_amenagement = DATA.situations_amenagement.filter(function(x){ return x.id !== id; });
-  await dbDelete('situations_amenagement', id);
+  var ok = await deleteRecord('situations_amenagement', id);
+  if (ok === false) return;
   loadAmenagement();
+  etudesLiveRefresh('situations_amenagement');
   toast('Situation supprimée.', 'success');
 }
 function amRenderSituations() {
@@ -39583,14 +39608,17 @@ async function amSaveAvenant() {
   var idx = DATA.avenants_amenagement.findIndex(function(x){ return x.id === a.id; });
   if (idx >= 0) DATA.avenants_amenagement[idx] = a; else DATA.avenants_amenagement.push(a);
   await dbPut('avenants_amenagement', a);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_avenants_amenagement', a);
   closeModal('modal-am-avenant'); loadAmenagement();
+  etudesLiveRefresh('avenants_amenagement');
   toast('Avenant enregistré.', 'success');
 }
 async function amDeleteAvenant(id) {
   if (!confirm('Supprimer cet avenant ?')) return;
-  DATA.avenants_amenagement = DATA.avenants_amenagement.filter(function(x){ return x.id !== id; });
-  await dbDelete('avenants_amenagement', id);
+  var ok = await deleteRecord('avenants_amenagement', id);
+  if (ok === false) return;
   loadAmenagement();
+  etudesLiveRefresh('avenants_amenagement');
   toast('Avenant supprimé.', 'success');
 }
 function amRenderAvenants() {
@@ -39640,9 +39668,11 @@ async function amLibererGarantie(convId, montant) {
     compte: '4011', compte_debit: '4011', compte_credit: '512', montant: montant, type: 'actif', mode: 'virement', created_at: today() };
   DATA.ecritures.push(ecr);
   await dbPut('ecritures', ecr);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecr);
   if (typeof buildBalance === 'function') buildBalance();
   toast('Retenue libérée — écriture 4011/512 créée.', 'success');
   loadAmenagement();
+  etudesLiveRefresh('situations_amenagement');
 }
 
 /* ================= ÉTATS PDF ================= */
@@ -45968,16 +45998,19 @@ async function edsSaveOuvrage() {
   o.ratio = parseFloat((document.getElementById('eds-o-ratio')||{}).value)||0;
   o.composants = JSON.parse(JSON.stringify(_edsComp));
   await dbPut('eds_ouvrages', o);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_ouvrages', o);
   closeModal('modal-eds-ouvrage');
   edsFillCatFilter(); edsRenderBib();
+  etudesLiveRefresh('eds_ouvrages');
   toast('Ouvrage enregistré', 'success');
 }
 
 async function edsDeleteOuvrage(id) {
   if (!confirm('Supprimer cet ouvrage ?')) return;
-  DATA.eds_ouvrages = DATA.eds_ouvrages.filter(function(x) { return x.id !== id; });
-  await dbDelete('eds_ouvrages', id);
+  var ok = await deleteRecord('eds_ouvrages', id);
+  if (ok === false) return;
   edsRenderBib();
+  etudesLiveRefresh('eds_ouvrages');
 }
 
 /* ════════════ ONGLET 2 — ÉTUDES DE PRIX ════════════ */
@@ -46117,16 +46150,19 @@ async function edsSaveEtude() {
   e.lignes = JSON.parse(JSON.stringify(_edsLignes));
   if (!e.realisations) e.realisations = [];
   await dbPut('eds_etudes', e);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_etudes', e);
   closeModal('modal-eds-etude');
   edsFillEtudeSelects(); edsRenderEtudes();
+  etudesLiveRefresh('eds_etudes');
   toast('Étude enregistrée', 'success');
 }
 
 async function edsDeleteEtude(id) {
   if (!confirm('Supprimer cette étude ?')) return;
-  DATA.eds_etudes = DATA.eds_etudes.filter(function(x) { return x.id !== id; });
-  await dbDelete('eds_etudes', id);
+  var ok = await deleteRecord('eds_etudes', id);
+  if (ok === false) return;
   edsFillEtudeSelects(); edsRenderEtudes();
+  etudesLiveRefresh('eds_etudes');
 }
 
 /* ── PDF devis (fenêtre d'impression) ── */
@@ -47370,7 +47406,7 @@ function afNewOperation() {
     village:'', commune:'', departement:'', superficie:0, lat:'', lng:'', statut_nego:'',
     proprietaires:[], documents:[], rencontres:[], prop_cle:'', accord_principe:false,
     verif_droits:'', juridique_valide:false, litiges:[], demarches:[],
-    postes_vrd:[], nb_lots:0, cle:{prop:40,amen:35,fin:25},
+    postes_vrd:[], nb_lots:0, cle:{prop:40,amen:35,fin:25}, cout_total:0,
     prix_lot:0, lots_reserves:0, lots_vendus:0, titres:0, created_at:today(), updated_at:new Date().toISOString(), stage_changed_at:new Date().toISOString() };
   afBindOperation(false);
 }
@@ -47395,6 +47431,7 @@ function afBindOperation(isEdit) {
   set('af-verif-droits',_afOp.verif_droits); set('af-juridique-valide',_afOp.juridique_valide);
   set('af-nb-lots',_afOp.nb_lots);
   set('af-cle-prop',_afOp.cle.prop); set('af-cle-amen',_afOp.cle.amen); set('af-cle-fin',_afOp.cle.fin);
+  set('af-cout-total',_afOp.cout_total||0);
   set('af-prix-lot',_afOp.prix_lot); set('af-lots-reserves',_afOp.lots_reserves); set('af-lots-vendus',_afOp.lots_vendus); set('af-titres',_afOp.titres);
   afRenderProp(); afRenderDoc(); afRenderRenc(); afRenderLit(); afRenderDem(); afRenderVrd();
   afCalcRepartition();
@@ -47497,22 +47534,38 @@ function afCalcRepartition(){
   var cf=parseFloat((document.getElementById('af-cle-fin')||{}).value)||0;
   var som=cp+ca+cf;
   var lp=Math.round(nb*cp/100), la=Math.round(nb*ca/100), lf=nb-lp-la;
+  var coutTotal=parseFloat((document.getElementById('af-cout-total')||{}).value)||0;
+  var coutPartE=coutTotal*ca/100;
+  var coutUnitaire=la>0?(coutPartE/la):0;
   var z=document.getElementById('af-repartition-res');
   if(z) z.innerHTML='<table style="width:100%;border-collapse:collapse;">'
     +'<tr><th style="text-align:left;">Partie</th><th style="text-align:right;">%</th><th style="text-align:right;">Lots</th></tr>'
     +'<tr><td>Propriétaires</td><td style="text-align:right;">'+cp+'</td><td style="text-align:right;font-weight:700;">'+lp+'</td></tr>'
-    +'<tr><td>Aménageur</td><td style="text-align:right;">'+ca+'</td><td style="text-align:right;font-weight:700;">'+la+'</td></tr>'
+    +'<tr><td>Aménageur (part entreprise)</td><td style="text-align:right;">'+ca+'</td><td style="text-align:right;font-weight:700;">'+la+'</td></tr>'
     +'<tr><td>Financier</td><td style="text-align:right;">'+cf+'</td><td style="text-align:right;font-weight:700;">'+lf+'</td></tr>'
     +'<tr style="border-top:2px solid #333;font-weight:700;"><td>TOTAL</td><td style="text-align:right;color:'+(som===100?'#1A6B3A':'#c0392b')+';">'+som+'</td><td style="text-align:right;">'+nb+'</td></tr>'
-    +'</table>'+(som!==100?'<div style="color:#c0392b;font-size:12px;margin-top:6px;">⚠️ La somme des clés doit faire 100 %.</div>':'');
+    +'</table>'+(som!==100?'<div style="color:#c0392b;font-size:12px;margin-top:6px;">⚠️ La somme des clés doit faire 100 %.</div>':'')
+    +'<div style="margin-top:12px;padding:10px;border-radius:8px;background:var(--card2);border-left:3px solid '+(coutUnitaire>0?'#8B5CF6':'#6B7280')+';">'
+    +'<div style="font-size:12px;font-weight:700;margin-bottom:4px;">📦 Valorisation comptable de la part entreprise (à la génération des lots)</div>'
+    +(coutTotal>0 && la>0
+      ? ('<div style="font-size:12px;">Coût total opération <strong>'+fmtF(Math.round(coutTotal))+' F</strong> × '+ca+'% (aménageur) = <strong>'+fmtF(Math.round(coutPartE))+' F</strong> réparti sur <strong>'+la+' lot(s)</strong></div>'
+         +'<div style="font-size:13px;margin-top:4px;">→ Coût unitaire par lot : <strong style="color:#8B5CF6;">'+fmtF(Math.round(coutUnitaire))+' F</strong></div>'
+         +'<div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">Écriture générée à la création des lots : Débit 331 / Crédit 712, montant '+fmtF(Math.round(coutPartE))+' F</div>')
+      : (coutTotal>0
+          ? '<div style="font-size:12px;color:var(--blanc-dim);">Aucun lot part entreprise à valoriser (aménageur 0% ou nombre de lots non défini).</div>'
+          : '<div style="font-size:12px;color:var(--blanc-dim);">Renseignez le « Coût total de l\u2019opération » ci-dessus pour valoriser la part entreprise en stock — sinon les lots générés resteront à coût 0 (aucun impact comptable).</div>'))
+    +'</div>';
   /* commercialisation res */
   var prix=parseFloat((document.getElementById('af-prix-lot')||{}).value)||0;
   var caTot=nb*prix;
   var vendus=parseInt((document.getElementById('af-lots-vendus')||{}).value)||0;
   var caReal=vendus*prix;
+  var margeUnitPrev = prix>0 ? (prix-coutUnitaire) : 0;
+  var tauxMargePrev = prix>0 ? Math.round(margeUnitPrev/prix*100) : 0;
   var cz=document.getElementById('af-commercial-res');
   if(cz) cz.innerHTML='CA prévisionnel : <strong>'+fmtF(caTot)+' FCFA</strong> · CA réalisé (lots vendus) : <strong>'+fmtF(caReal)+' FCFA</strong>'
-    +'<br>Quote-part théorique (prix×lots) — Propriétaires '+fmtF(lp*prix)+' · Aménageur '+fmtF(la*prix)+' · Financier '+fmtF(lf*prix)+' FCFA';
+    +'<br>Quote-part théorique (prix×lots) — Propriétaires '+fmtF(lp*prix)+' · Aménageur '+fmtF(la*prix)+' · Financier '+fmtF(lf*prix)+' FCFA'
+    +(prix>0 && coutUnitaire>0 ? ('<br>Marge prévisionnelle part entreprise / lot : <strong style="color:'+(margeUnitPrev>=0?'#1A6B3A':'#c0392b')+';">'+fmtF(Math.round(margeUnitPrev))+' FCFA ('+tauxMargePrev+' %)</strong> · sur '+la+' lots : <strong>'+fmtF(Math.round(margeUnitPrev*la))+' FCFA</strong>') : '');
   /* Jauge part cessible aux financiers */
   afRenderJaugeCessible(lf, cf);
 }
@@ -47589,6 +47642,7 @@ async function afSaveOperation(){
   _afOp.verif_droits=g('af-verif-droits'); _afOp.juridique_valide=g('af-juridique-valide');
   _afOp.nb_lots=parseInt(g('af-nb-lots'))||0;
   _afOp.cle={prop:parseFloat(g('af-cle-prop'))||0,amen:parseFloat(g('af-cle-amen'))||0,fin:parseFloat(g('af-cle-fin'))||0};
+  _afOp.cout_total=parseFloat(g('af-cout-total'))||0;
   _afOp.prix_lot=parseFloat(g('af-prix-lot'))||0; _afOp.lots_reserves=parseInt(g('af-lots-reserves'))||0;
   _afOp.lots_vendus=parseInt(g('af-lots-vendus'))||0; _afOp.titres=parseInt(g('af-titres'))||0;
   var _prev=DATA.af_operations.find(function(x){return x.id===_afOp.id;});
@@ -47852,6 +47906,27 @@ async function afTransfererFoncier(opId) {
   if (typeof afRenderPipeline === 'function' && APP.currentPage === 'foncierops') { afRenderPipeline(); afRenderDashboard(); }
   toast(isNew ? 'Parcelle créée dans le Portefeuille Foncier ✅' : 'Parcelle liée mise à jour ✅', 'success');
   filiereLiveRefresh();
+  return p;
+}
+
+/* ── Céder des lots (part entreprise) — flux obligatoire :
+   Pipeline → Portefeuille Foncier → Cession.
+   Ne crée/ouvre jamais une cession directement depuis l'opération : garantit
+   que toute cession référence un enregistrement « parcelle » traçable
+   (statut juridique, superficie cédée suivie), et non l'opération brute. ── */
+async function cederLotsPartEntreprise(opId) {
+  var op = opId ? (DATA.af_operations || []).find(function(x){ return x.id === opId; }) : _afOp;
+  if (!op || !op.id) { toast('Enregistrez d\u2019abord l\u2019opération', 'error'); return; }
+  if (op.stage !== 'commercialisation') {
+    toast('⚠️ Réservé au stade Commercialisation (lots répartis, titre en principe acquis). Avant ce stade, financez via le module 🤝 Financiers partenaires.', 'error');
+    return;
+  }
+  var p = await afTransfererFoncier(op.id);   /* crée/actualise la parcelle liée dans le Portefeuille */
+  if (!p) return;
+  if (document.getElementById('modal-af-operation') && document.getElementById('modal-af-operation').classList.contains('active')) {
+    closeModal('modal-af-operation');
+  }
+  cesNew('parcelle:' + p.id);
 }
 
 
@@ -48248,7 +48323,7 @@ async function saveStockEntree(){
       DATA.ecritures.push(e3); await dbPut('ecritures',e3); if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',e3);
     }
   }
-  closeModal('modal-stock-entree'); renderStock(); toast('Entrée enregistrée.','success');
+  closeModal('modal-stock-entree'); renderStock(); etudesLiveRefresh('stock_mouvements'); toast('Entrée enregistrée.','success');
 }
 function stockComptaCfg(){
   if(!DATA.params) DATA.params={};
@@ -48338,7 +48413,7 @@ async function saveStockRetour(){
       DATA.ecritures.push(e3); await dbPut('ecritures',e3); if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',e3);
     }
   }
-  closeModal('modal-stock-retour'); renderStock(); toast('Retour enregistré.','success');
+  closeModal('modal-stock-retour'); renderStock(); etudesLiveRefresh('stock_mouvements'); toast('Retour enregistré.','success');
 }
 /* ══════════════════════════════════════════════════════
    ACHATS — Bon de commande → Réception (BL) → [Facture]
@@ -48485,21 +48560,21 @@ async function saveBC(){
   if(APP.editingId){ var idx=DATA.bons_commande.findIndex(function(x){return x.id===APP.editingId;}); if(idx>=0){ b.created_at=DATA.bons_commande[idx].created_at; b.valide_par=DATA.bons_commande[idx].valide_par; b.valide_date=DATA.bons_commande[idx].valide_date; DATA.bons_commande[idx]=b; } }
   else DATA.bons_commande.push(b);
   await dbPut('bons_commande',b); if(typeof syncToSupabase==='function')syncToSupabase('pi_bons_commande',b);
-  closeModal('modal-bc'); renderAchats(); toast('Bon de commande enregistré.','success');
+  closeModal('modal-bc'); renderAchats(); etudesLiveRefresh('bons_commande'); toast('Bon de commande enregistré.','success');
 }
 async function validateBC(id){
   var b=DATA.bons_commande.find(function(x){return x.id===id;}); if(!b)return;
   if(!hasRole('admin') && !confirm('Valider ce bon de commande (engagement) ?')) return;
   b.statut='valide'; b.valide_par=(APP.currentUser&&APP.currentUser.nom)||'—'; b.valide_date=today();
   await dbPut('bons_commande',b); if(typeof syncToSupabase==='function')syncToSupabase('pi_bons_commande',b);
-  renderAchats(); toast('✅ BC validé.','success');
+  renderAchats(); etudesLiveRefresh('bons_commande'); toast('✅ BC validé.','success');
 }
 async function deleteBC(id){
   var b=DATA.bons_commande.find(function(x){return x.id===id;});
   if(b && (DATA.receptions||[]).some(function(r){return r.bc_id===id;})){ toast('Des réceptions existent : suppression impossible.','error'); return; }
   if(!confirm('Supprimer ce bon de commande ?'))return;
   var ok=await deleteRecord('bons_commande',id); if(ok===false)return;
-  renderAchats(); toast('Supprimé.','info');
+  renderAchats(); etudesLiveRefresh('bons_commande'); toast('Supprimé.','info');
 }
 function printBC(id){
   var b=DATA.bons_commande.find(function(x){return x.id===id;}); if(!b)return;
@@ -48578,6 +48653,7 @@ async function saveReception(){
   b.statut=complete?'receptionne':'receptionne_partiel';
   await dbPut('bons_commande',b); if(typeof syncToSupabase==='function')syncToSupabase('pi_bons_commande',b);
   closeModal('modal-reception'); renderAchats(); if(typeof renderStock==='function')renderStock();
+  etudesLiveRefresh('receptions'); etudesLiveRefresh('bons_commande'); etudesLiveRefresh('stock_mouvements');
   toast('📥 Réception '+recNum+' enregistrée (stock + 408).','success');
 }
 
@@ -48653,7 +48729,7 @@ async function saveFactureFournisseur(){
   DATA.factures_fournisseur.push(fc); await dbPut('factures_fournisseur',fc); if(typeof syncToSupabase==='function')syncToSupabase('pi_factures_fournisseur',fc);
   r.facture_id=fid; await dbPut('receptions',r); if(typeof syncToSupabase==='function')syncToSupabase('pi_receptions',r);
   (DATA.stock_mouvements||[]).forEach(function(m){ if(m.reception_id===r.id){ m.facture_id=fid; dbPut('stock_mouvements',m); } });
-  closeModal('modal-facture'); renderAchats(); toast('🧾 Facture comptabilisée (408 soldé → '+creditCompte+').','success');
+  closeModal('modal-facture'); renderAchats(); etudesLiveRefresh('factures_fournisseur'); toast('🧾 Facture comptabilisée (408 soldé → '+creditCompte+').','success');
 }
 function printFacture(id){
   var fc=(DATA.factures_fournisseur||[]).find(function(x){return x.id===id;}); if(!fc)return;
@@ -48682,6 +48758,7 @@ async function valCreate(type,refId,libelle,montant,meta){
   if(valPending(type,refId)){ toast('Déjà en attente de validation.','info'); return null; }
   var v={ id:uid(), type:type, ref_id:refId, libelle:libelle||valTypeLabel(type), montant:montant||0, meta:meta||{}, statut:'en_attente', demandeur:(APP.currentUser&&APP.currentUser.nom)||'—', date_demande:today(), valideur:null, date_decision:null, motif:'', created_at:today() };
   DATA.validations.push(v); await dbPut('validations',v); if(typeof syncToSupabase==='function')syncToSupabase('pi_validations',v);
+  etudesLiveRefresh('validations');
   return v;
 }
 async function valDecide(id,decision,motif){
@@ -48691,6 +48768,9 @@ async function valDecide(id,decision,motif){
   await dbPut('validations',v); if(typeof syncToSupabase==='function')syncToSupabase('pi_validations',v);
   await valApply(v.type,v.ref_id,decision);
   renderValidations(); if(typeof renderAchats==='function')renderAchats();
+  etudesLiveRefresh('validations');
+  if (v.type==='bon_commande') etudesLiveRefresh('bons_commande');
+  if (v.type==='reception_travaux' || v.type==='liberation_garantie') etudesLiveRefresh('receptions_travaux');
   toast(decision==='valide'?'✅ Validé.':'⛔ Rejeté.',decision==='valide'?'success':'info');
 }
 async function valApply(type,refId,decision){
@@ -48711,7 +48791,7 @@ async function valApply(type,refId,decision){
 async function submitBC(id){
   var b=(DATA.bons_commande||[]).find(function(x){return x.id===id;}); if(!b)return;
   var v=await valCreate('bon_commande', id, 'BC '+b.numero+' — '+bcFournisseurName(b.fournisseur_id), bcTotalHT(b), {chantier:b.chantier_id});
-  if(v){ b.statut='en_attente_validation'; await dbPut('bons_commande',b); if(typeof syncToSupabase==='function')syncToSupabase('pi_bons_commande',b); renderAchats(); toast('📤 Soumis à validation.','success'); }
+  if(v){ b.statut='en_attente_validation'; await dbPut('bons_commande',b); if(typeof syncToSupabase==='function')syncToSupabase('pi_bons_commande',b); renderAchats(); etudesLiveRefresh('bons_commande'); etudesLiveRefresh('validations'); toast('📤 Soumis à validation.','success'); }
 }
 var valFilter='en_attente';
 function valSetFilter(fl){ valFilter=fl; document.querySelectorAll('#page-validations .tab-btn').forEach(function(b){ b.classList.toggle('active', (b.getAttribute('onclick')||'').indexOf("'"+fl+"'")!==-1); }); renderValidations(); }
@@ -48861,22 +48941,22 @@ async function saveRect(){
   if(ex){ var i=DATA.receptions_travaux.findIndex(function(x){return x.id===APP.editingId;}); DATA.receptions_travaux[i]=r; }
   else DATA.receptions_travaux.push(r);
   await dbPut('receptions_travaux',r); if(typeof syncToSupabase==='function')syncToSupabase('pi_receptions_travaux',r);
-  closeModal('modal-rect'); renderRecliv(); toast('Réception enregistrée.','success');
+  closeModal('modal-rect'); renderRecliv(); etudesLiveRefresh('receptions_travaux'); toast('Réception enregistrée.','success');
 }
 async function submitRect(id){
   var r=DATA.receptions_travaux.find(function(x){return x.id===id;}); if(!r)return;
   if(typeof valCreate!=='function'){ toast('Module validations absent.','error'); return; }
   var v=await valCreate('reception_travaux', id, 'PV réception définitive '+r.numero+' — '+rlConstrName(r.constructeur_id), 0, {convention:r.convention_id});
-  if(v){ r.statut='en_attente_validation'; await dbPut('receptions_travaux',r); if(typeof syncToSupabase==='function')syncToSupabase('pi_receptions_travaux',r); renderRecliv(); toast('📤 Soumis à validation.','success'); }
+  if(v){ r.statut='en_attente_validation'; await dbPut('receptions_travaux',r); if(typeof syncToSupabase==='function')syncToSupabase('pi_receptions_travaux',r); renderRecliv(); etudesLiveRefresh('receptions_travaux'); etudesLiveRefresh('validations'); toast('📤 Soumis à validation.','success'); }
 }
 async function demanderLiberationGarantie(id){
   var r=DATA.receptions_travaux.find(function(x){return x.id===id;}); if(!r)return;
   var rg=parseFloat(r.retenue_garantie)||0; if(rg<=0){ toast('Aucune retenue à libérer.','info'); return; }
   if(typeof valCreate!=='function'){ toast('Module validations absent.','error'); return; }
   var v=await valCreate('liberation_garantie', id, 'Libération retenue '+fmtF(Math.round(rg))+' F — '+r.numero+' ('+rlConstrName(r.constructeur_id)+')', rg, {convention:r.convention_id});
-  if(v) toast('📤 Demande de libération soumise à validation.','success');
+  if(v){ etudesLiveRefresh('validations'); toast('📤 Demande de libération soumise à validation.','success'); }
 }
-async function deleteRect(id){ if(!confirm('Supprimer cette réception ?'))return; if(await deleteRecord('receptions_travaux',id)===false)return; renderRecliv(); toast('Supprimé.','info'); }
+async function deleteRect(id){ if(!confirm('Supprimer cette réception ?'))return; if(await deleteRecord('receptions_travaux',id)===false)return; renderRecliv(); etudesLiveRefresh('receptions_travaux'); toast('Supprimé.','info'); }
 function printRect(id){
   var r=DATA.receptions_travaux.find(function(x){return x.id===id;}); if(!r)return;
   var soc=(DATA.params&&(DATA.params.societe||DATA.params.nom_societe))||'';
@@ -48944,10 +49024,10 @@ async function saveLiv(){
   if(ex){ var i=DATA.livraisons.findIndex(function(x){return x.id===APP.editingId;}); DATA.livraisons[i]=l; }
   else DATA.livraisons.push(l);
   await dbPut('livraisons',l); if(typeof syncToSupabase==='function')syncToSupabase('pi_livraisons',l);
-  closeModal('modal-liv'); renderRecliv(); toast('Livraison enregistrée.'+(l.publie_portail?' 🌐 Publiée au portail.':''),'success');
+  closeModal('modal-liv'); renderRecliv(); etudesLiveRefresh('livraisons'); toast('Livraison enregistrée.'+(l.publie_portail?' 🌐 Publiée au portail.':''),'success');
 }
-async function toggleLivPortail(id){ var l=DATA.livraisons.find(function(x){return x.id===id;}); if(!l)return; l.publie_portail=!l.publie_portail; await dbPut('livraisons',l); if(typeof syncToSupabase==='function')syncToSupabase('pi_livraisons',l); renderRecliv(); toast(l.publie_portail?'🌐 Publié au portail.':'Retiré du portail.','info'); }
-async function deleteLiv(id){ if(!confirm('Supprimer cette livraison ?'))return; if(await deleteRecord('livraisons',id)===false)return; renderRecliv(); toast('Supprimé.','info'); }
+async function toggleLivPortail(id){ var l=DATA.livraisons.find(function(x){return x.id===id;}); if(!l)return; l.publie_portail=!l.publie_portail; await dbPut('livraisons',l); if(typeof syncToSupabase==='function')syncToSupabase('pi_livraisons',l); renderRecliv(); etudesLiveRefresh('livraisons'); toast(l.publie_portail?'🌐 Publié au portail.':'Retiré du portail.','info'); }
+async function deleteLiv(id){ if(!confirm('Supprimer cette livraison ?'))return; if(await deleteRecord('livraisons',id)===false)return; renderRecliv(); etudesLiveRefresh('livraisons'); toast('Supprimé.','info'); }
 function printLiv(id){
   var l=DATA.livraisons.find(function(x){return x.id===id;}); if(!l)return;
   var soc=(DATA.params&&(DATA.params.societe||DATA.params.nom_societe))||'';
@@ -49230,7 +49310,7 @@ async function saveStockSortie(){
     var es={ id:'ecr_sort_'+m.id, ref:pfxS+m.id.slice(-5), date:m.date, piece:pfxS+m.id.slice(-5), libelle:(perteS?'Perte/casse matériaux — ':'Consommation matériaux — ')+infoS.libelle+(convS&&convS.numero?(' / '+convS.numero):''), compte:dbtS, compte_debit:dbtS, compte_credit:cfgS.c_stock, montant:coutSortie, type:'charge', mode:'', created_at:today() };
     DATA.ecritures.push(es); await dbPut('ecritures',es); if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',es);
   }
-  closeModal('modal-stock-sortie'); renderStock(); toast('Sortie enregistrée.','success');
+  closeModal('modal-stock-sortie'); renderStock(); etudesLiveRefresh('stock_mouvements'); toast('Sortie enregistrée.','success');
 }
 function openStockInventaire(){
   stockEnsureDepots();
@@ -49273,7 +49353,7 @@ async function saveStockInventaire(){
     var ei={ id:'ecr_inv_'+m.id, ref:'INV-'+m.id.slice(-5), date:m.date, piece:'INV-'+m.id.slice(-5), libelle:'Écart d\'inventaire ('+(boni?'boni':'mali')+') — '+infoI.libelle, compte:(boni?cfgI.c_stock:cfgI.c_variation), compte_debit:(boni?cfgI.c_stock:cfgI.c_variation), compte_credit:(boni?cfgI.c_variation:cfgI.c_stock), montant:Math.abs(ecartVal), type:(boni?'produit':'charge'), mode:'', created_at:today() };
     DATA.ecritures.push(ei); await dbPut('ecritures',ei); if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',ei);
   }
-  closeModal('modal-stock-inventaire'); renderStock(); toast('Inventaire enregistré.','success');
+  closeModal('modal-stock-inventaire'); renderStock(); etudesLiveRefresh('stock_mouvements'); toast('Inventaire enregistré.','success');
 }
 function openStockTransfert(){
   stockEnsureDepots();
@@ -49307,7 +49387,7 @@ async function saveStockTransfert(){
   var m={ id:uid(), type:'transfert', res_id:(key.indexOf('res:')===0?key.slice(4):null), designation:(key.indexOf('lib:')===0?key.slice(4):''), unite:a.unite, qte:qte, pu:0, depot_source:src, depot_dest:dst, motif:document.getElementById('st-motif').value.trim(), date:document.getElementById('st-date').value||today(), created_at:new Date().toISOString() };
   DATA.stock_mouvements.push(m); await dbPut('stock_mouvements',m);
   if(typeof syncToSupabase==='function')syncToSupabase('pi_stock_mouvements',m);
-  closeModal('modal-stock-transfert'); renderStock(); toast('Transfert enregistré.','success');
+  closeModal('modal-stock-transfert'); renderStock(); etudesLiveRefresh('stock_mouvements'); toast('Transfert enregistré.','success');
 }
 function openStockDepots(){ stockEnsureDepots(); document.getElementById('dep-nom').value=''; renderDepotsListe(); document.getElementById('modal-stock-depots').classList.add('open'); }
 function renderDepotsListe(){
@@ -49335,7 +49415,7 @@ async function deleteDepot(id){
 async function deleteStockMvt(id){
   if(!confirm('Supprimer ce mouvement de stock ?')) return;
   var ok=await deleteRecord('stock_mouvements',id); if(ok===false)return;
-  renderStock(); toast('Mouvement supprimé.','info');
+  renderStock(); etudesLiveRefresh('stock_mouvements'); toast('Mouvement supprimé.','info');
 }
 
 /* ── Marge par chantier interne ── */
@@ -49581,22 +49661,39 @@ var _cesId = null;
 
 function cesSourceList() {
   var out = [];
+  /* Seul le Portefeuille Foncier (DATA.parcelles) est source de cession.
+     Une opération du pipeline doit d'abord être transférée au Portefeuille
+     (afTransfererFoncier) — cela garantit une chaîne de traçabilité propre :
+     Pipeline → Portefeuille (actif identifié, statut juridique, superficie
+     cédée suivie) → Cession (transaction). Le financement pré-titre reste
+     géré par le module dédié « 🤝 Financiers partenaires ». */
   (DATA.parcelles || []).forEach(function(p) {
-    out.push({ key:'parcelle:'+p.id, label:'🗺️ Parcelle — ' + (p.ref || p.localisation || p.id), type:'parcelle', id:p.id });
-  });
-  (DATA.af_operations || []).forEach(function(o) {
-    var partE = (o.nb_lots && o.cle) ? Math.round(o.nb_lots * (o.cle.amen||0) / 100) : 0;
-    out.push({ key:'operation:'+o.id, label:'🌍 Opération — ' + (o.nom || o.id) + (partE?(' (part entreprise ≈ '+partE+' lots)'):''), type:'operation', id:o.id });
+    var sansTitre = !p.statut || p.statut === 'sans_titre' || p.statut === 'prospection' || p.statut === 'negociation';
+    out.push({ key:'parcelle:'+p.id, label:(sansTitre?'⚠️ ':'🗺️ ')+'Parcelle — ' + (p.ref || p.localisation || p.id) + (sansTitre?' (sans titre — valeur pré-titrage)':''), type:'parcelle', id:p.id });
   });
   return out;
 }
 function cesFillSources(selected) {
   var sel = document.getElementById('ces-source'); if (!sel) return;
-  sel.innerHTML = '<option value="">— Choisir la source —</option>' + cesSourceList().map(function(s){ return '<option value="'+s.key+'"'+(selected===s.key?' selected':'')+'>'+s.label+'</option>'; }).join('');
+  var list = cesSourceList();
+  /* Cession historique créée avant restriction du circuit (source = opération
+     pipeline) : on l'ajoute en lecture, marquée « legacy », pour ne pas casser
+     l'affichage des dossiers existants — mais elle n'est plus proposée comme
+     choix pour une nouvelle cession. */
+  if (selected && selected.indexOf('operation:') === 0 && !list.some(function(x){ return x.key===selected; })) {
+    var op = (DATA.af_operations||[]).find(function(o){ return 'operation:'+o.id===selected; });
+    list = [{ key:selected, label:'🌍 Opération (legacy) — ' + (op ? op.nom : selected) }].concat(list);
+  }
+  sel.innerHTML = '<option value="">— Choisir la source —</option>' + list.map(function(s){ return '<option value="'+s.key+'"'+(selected===s.key?' selected':'')+'>'+s.label+'</option>'; }).join('');
 }
 function cesSourceRef(key) {
   var s = cesSourceList().find(function(x){ return x.key===key; });
-  return s ? s.label.replace(/^.. /,'') : '—';
+  if (s) return s.label.replace(/^.. /,'');
+  if (key && key.indexOf('operation:') === 0) {
+    var op = (DATA.af_operations||[]).find(function(o){ return 'operation:'+o.id===key; });
+    return op ? ('Opération (legacy) — ' + op.nom) : '—';
+  }
+  return '—';
 }
 
 function cesRender() {
@@ -49670,7 +49767,18 @@ function cesSync() {
   var reste=prix-enc;
   z.innerHTML='Prix de cession : <strong>'+fmtF(prix)+' FCFA</strong> · Encaissé : <strong style="color:var(--vert);">'+fmtF(enc)+'</strong>'
     +(reste>0?(' · Reste à encaisser : <strong style="color:var(--rouge);">'+fmtF(reste)+'</strong>'):'')
-    +'<br><span style="font-size:12px;color:var(--blanc-dim);">À l\u2019enregistrement : écriture de vente (4111 / 707) + encaissement ('+(((document.getElementById('ces-mode')||{}).value==='especes')?'571':'521')+' / 4111).</span>';
+    +'<br><span style="font-size:12px;color:var(--blanc-dim);">À l\u2019enregistrement : écriture de vente (4111 / 701) + encaissement ('+(((document.getElementById('ces-mode')||{}).value==='especes')?'571':'521')+' / 4111)'+(cesCoutStockPrevu()>0?' + sortie de stock (712 / 331).':'.')+'</span>';
+}
+
+/* Estime, avant enregistrement, le coût de sortie de stock (331) de la
+   parcelle/opération sélectionnée, pour affichage informatif dans l'aperçu. */
+function cesCoutStockPrevu() {
+  var sel = document.getElementById('ces-source'); if (!sel || !sel.value) return 0;
+  if (sel.value.indexOf('parcelle:') !== 0) return 0;
+  var p = (DATA.parcelles||[]).find(function(x){ return x.id === sel.value.slice(9); });
+  var op = p && p.operation_id ? (DATA.af_operations||[]).find(function(x){ return x.id === p.operation_id; }) : null;
+  var nbLots = parseInt((document.getElementById('ces-nblots')||{}).value)||1;
+  return (op && op.cout_revient_unitaire) ? Math.round(op.cout_revient_unitaire * nbLots) : 0;
 }
 
 async function cesGenererEcriture(c) {
@@ -49680,11 +49788,29 @@ async function cesGenererEcriture(c) {
   var num1=DATA.ecritures.length+1;
   var evente={ id:uid(), ref:'CESS-'+an+'-'+String(num1).padStart(4,'0'), date:c.date||today(), piece:'CESSION',
     type:'produit', libelle:'Cession foncière — '+(c.designation||'')+' à '+(c.acquereur||''),
-    compte:'707', compte_debit:'4111', compte_credit:'707', montant:c.prix_cession||0,
+    compte:'701', compte_debit:'4111', compte_credit:'701', montant:c.prix_cession||0,
     mode:'cession', programme_id:'', notes:'Cession part entreprise — '+cesSourceRef(c.source_key), source:'cession_fonciere', cession_id:c.id, created_at:today() };
   DATA.ecritures.push(evente); await dbPut('ecritures', evente);
   if (typeof syncToSupabase==='function') syncToSupabase('pi_ecritures', evente);
   c.ecriture_vente_id=evente.id;
+  /* 1bis. Sortie de stock de la part entreprise valorisée à la production (331) :
+     Débit 712 (Variation de stocks en cours) / Crédit 331 — en face du produit 701,
+     pour dégager une marge réelle au lieu d'un produit brut sans coût. */
+  if (c.source_key && c.source_key.indexOf('parcelle:') === 0) {
+    var pStk = (DATA.parcelles||[]).find(function(x){ return x.id === c.source_key.slice(9); });
+    var opStk = pStk && pStk.operation_id ? (DATA.af_operations||[]).find(function(x){ return x.id === pStk.operation_id; }) : null;
+    if (opStk && opStk.cout_revient_unitaire > 0) {
+      var montantSortie = Math.round(opStk.cout_revient_unitaire * (c.nb_lots || 1));
+      var numS = DATA.ecritures.length + 1;
+      var esortie = { id:uid(), ref:'STK-SORT-'+an+'-'+String(numS).padStart(4,'0'), date:c.date||today(), piece:'CESSION',
+        type:'produit', libelle:'Sortie de stock — '+(c.nb_lots||1)+' lot(s) part entreprise — '+(c.designation||''),
+        compte:'712', compte_debit:'712', compte_credit:'331', montant:montantSortie,
+        mode:'stock', programme_id:'', notes:'Coût de revient sorti en face de la cession '+evente.ref, source:'cession_fonciere', cession_id:c.id, created_at:today() };
+      DATA.ecritures.push(esortie); await dbPut('ecritures', esortie);
+      if (typeof syncToSupabase==='function') syncToSupabase('pi_ecritures', esortie);
+      c.ecriture_stock_id = esortie.id;
+    }
+  }
   /* 2. Encaissement : 521/571 (débit) / 4111 (crédit) */
   if ((c.montant_encaisse||0)>0) {
     var num2=DATA.ecritures.length+1;
@@ -49892,6 +50018,26 @@ async function cesSave() {
 }
 
 /* ── KPIs commerciaux pointus + table enrichie ── */
+/* Coût de revient / marge d'une cession — priorité à l'écriture de sortie de
+   stock réellement générée (source de vérité comptable, figée dans le temps) ;
+   à défaut (cession antérieure à cette fonctionnalité, ou coût opération
+   renseigné après coup), estimation live via l'opération liée. */
+function cesCoutMarge(c) {
+  var cout = 0;
+  if (c.ecriture_stock_id) {
+    var e = (DATA.ecritures||[]).find(function(x){ return x.id === c.ecriture_stock_id; });
+    if (e) cout = e.montant || 0;
+  }
+  if (!cout && c.source_key && c.source_key.indexOf('parcelle:') === 0) {
+    var p = (DATA.parcelles||[]).find(function(x){ return x.id === c.source_key.slice(9); });
+    var op = p && p.operation_id ? (DATA.af_operations||[]).find(function(x){ return x.id === p.operation_id; }) : null;
+    if (op && op.cout_revient_unitaire) cout = Math.round(op.cout_revient_unitaire * (c.nb_lots || 1));
+  }
+  var prix = c.prix_cession || 0;
+  var marge = prix - cout;
+  var tauxMarge = prix > 0 ? Math.round(marge / prix * 100) : 0;
+  return { cout: cout, marge: marge, tauxMarge: tauxMarge };
+}
 function cesRender() {
   var tb = document.getElementById('tbody-cessions'); if (!tb) return;
   var q = ((document.getElementById('ces-search')||{}).value||'').toLowerCase();
@@ -49902,6 +50048,10 @@ function cesRender() {
   tb.innerHTML = list.length ? list.map(function(c){
     var reste=(c.prix_cession||0)-(c.montant_encaisse||0);
     var at=(c.acheteur&&c.acheteur.type==='morale')?'<span class="badge badge-violet" style="font-size:9px;">PM</span>':'<span class="badge badge-neutre" style="font-size:9px;">PP</span>';
+    var cm=cesCoutMarge(c);
+    var margeCell = cm.cout>0
+      ? ('<div style="font-size:11px;color:var(--blanc-dim);">coût '+fmtF(cm.cout)+' F</div><div style="font-weight:700;color:'+(cm.marge>=0?'var(--vert)':'var(--rouge)')+';">'+(cm.marge>=0?'+':'')+fmtF(cm.marge)+' F</div><div style="font-size:10px;color:var(--blanc-dim);">('+cm.tauxMarge+' %)</div>')
+      : '<span style="color:var(--blanc-dim);font-size:11px;">— non valorisé</span>';
     return '<tr>'
       +'<td>'+(c.date||'—')+(c.notarie?' ⚖️':'')+'</td>'
       +'<td style="font-size:12px;">'+cesSourceRef(c.source_key)+'</td>'
@@ -49909,11 +50059,12 @@ function cesRender() {
       +'<td>'+at+' '+(c.acquereur||'—')+'</td>'
       +'<td style="text-align:right;">'+(c.superficie?fmtF(c.superficie)+' m²':'')+(c.nb_lots?((c.superficie?' · ':'')+c.nb_lots+' lots'):'')+'</td>'
       +'<td style="text-align:right;font-weight:700;">'+fmtF(c.prix_cession)+'</td>'
+      +'<td style="text-align:right;">'+margeCell+'</td>'
       +'<td style="text-align:right;color:var(--vert);">'+fmtF(c.montant_encaisse)+(reste>0?('<br><span style="font-size:10px;color:var(--rouge);">reste '+fmtF(reste)+'</span>'):'')+'</td>'
       +'<td><span class="badge '+(statutBadge[c.statut]||'badge-neutre')+'">'+(c.statut||'—')+'</span></td>'
       +'<td style="white-space:nowrap;"><button class="btn btn-secondary btn-sm btn-icon" title="Acte / contrat" onclick="cesGenererContrat(\''+c.id+'\')">🖨</button> <button class="btn btn-secondary btn-sm btn-icon" onclick="cesOpen(\''+c.id+'\')">✏️</button></td>'
       +'</tr>';
-  }).join('') : '<tr><td colspan="9" style="text-align:center;color:var(--blanc-dim);padding:18px;">Aucune cession.</td></tr>';
+  }).join('') : '<tr><td colspan="10" style="text-align:center;color:var(--blanc-dim);padding:18px;">Aucune cession.</td></tr>';
 
   /* KPIs */
   var nb=L.length;
@@ -49926,11 +50077,15 @@ function cesRender() {
   var notaries=L.filter(function(c){return c.notarie;}).length;
   var pctNot=nb>0?Math.round(notaries/nb*100):0;
   var soldees=L.filter(function(c){return c.statut==='soldee';}).length;
+  var margeInfo=L.reduce(function(s,c){ var cm=cesCoutMarge(c); s.cout+=cm.cout; s.marge+=cm.marge; return s; }, {cout:0,marge:0});
+  var tauxMargeGlobal=prix>0?Math.round(margeInfo.marge/prix*100):0;
   var kpi=function(t,v,c){ return '<div class="kpi-card" style="border-top-color:'+(c||'var(--vert)')+';"><div class="kpi-label">'+t+'</div><div class="kpi-value" style="font-size:16px;color:'+(c||'inherit')+';">'+v+'</div></div>'; };
   var k=document.getElementById('ces-kpis');
   if (k) k.innerHTML=
       kpi('Cessions',nb,'#3B82F6')
     + kpi('Valeur cédée',fmtF(prix)+' F','#0EA5E9')
+    + kpi('Coût de revient',fmtF(margeInfo.cout)+' F','#8B5CF6')
+    + kpi('Marge globale',fmtF(margeInfo.marge)+' F ('+tauxMargeGlobal+' %)', margeInfo.marge>=0?'#1A6B3A':'#c0392b')
     + kpi('Encaissé',fmtF(enc)+' F','#1A6B3A')
     + kpi('Reste à recouvrer',fmtF(prix-enc)+' F','#c0392b')
     + kpi('Taux recouvrement',tx+' %', tx>=80?'#1A6B3A':(tx>=50?'#B8732F':'#c0392b'))
@@ -50610,6 +50765,48 @@ function montageLiveRefresh(store) {
   }
 }
 
+/* ══════════════════════════════════════════════════════════════════
+   ÉTUDES & CHANTIERS — synchronisation temps réel entre
+   Déboursé Sec · DQE · Aménagement Foncier · Achats · Stock ·
+   Avancement Chantiers · Validations · Réception & Livraison
+   Même principe que montageLiveRefresh() : recalcule la page du groupe
+   actuellement affichée dès qu'un store dont elle dépend change — en
+   local ou reçu en temps réel d'un autre poste (Supabase Realtime).
+══════════════════════════════════════════════════════════════════ */
+var ETUDES_PAGE_DEPS = {
+  debourse:    ['eds_ouvrages', 'eds_etudes', 'eds_ressources'],
+  dqe:         ['nomenclatures', 'prix_unitaire', 'devis_fournisseurs', 'eds_ressources', 'eds_ouvrages'],
+  amenagement: ['amenageurs', 'conventions_amenagement', 'situations_amenagement', 'avenants_amenagement', 'lots'],
+  achats:      ['bons_commande', 'receptions', 'factures_fournisseur', 'fournisseurs', 'validations'],
+  stock:       ['stock_mouvements', 'depots', 'eds_ressources'],
+  avancement:  ['conventions', 'constructeurs', 'programmes', 'versements', 'terrains', 'conceptions'],
+  validations: ['validations', 'bons_commande', 'receptions_travaux'],
+  recliv:      ['receptions_travaux', 'livraisons', 'dossiersJuridiques']
+};
+var ETUDES_STORES = Object.keys(ETUDES_PAGE_DEPS).reduce(function(acc, page) {
+  ETUDES_PAGE_DEPS[page].forEach(function(s) { if (acc.indexOf(s) === -1) acc.push(s); });
+  return acc;
+}, []);
+function etudesLiveRefresh(store) {
+  var page = APP.currentPage;
+  var deps = ETUDES_PAGE_DEPS[page];
+  if (!deps || deps.indexOf(store) === -1) return;
+  if (page === 'debourse' && typeof edsRender === 'function') edsRender();
+  else if (page === 'dqe' && typeof chargerDQE === 'function') chargerDQE();
+  else if (page === 'amenagement' && typeof loadAmenagement === 'function') loadAmenagement();
+  else if (page === 'achats' && typeof renderAchats === 'function') renderAchats();
+  else if (page === 'stock') {
+    if (typeof renderStock === 'function') renderStock();
+    if (typeof renderMargeChantiers === 'function') renderMargeChantiers();
+  } else if (page === 'avancement') {
+    if (typeof renderChantiersDashboard === 'function') renderChantiersDashboard();
+    if (typeof renderGantt === 'function') renderGantt();
+    if (typeof renderRapports === 'function') renderRapports();
+    if (typeof buildCoutRevient === 'function') buildCoutRevient();
+  } else if (page === 'validations' && typeof renderValidations === 'function') renderValidations();
+  else if (page === 'recliv' && typeof renderRecliv === 'function') renderRecliv();
+}
+
 /* ── Liens de filiation ── */
 function filiereFindParcelle(op) {
   if (!op) return null;
@@ -50774,7 +50971,7 @@ function filiereRenderChain(op) {
   var s5corps = cess.length
     ? ('<strong>' + cess.length + '</strong> cession(s) · Valeur cédée ' + fmtF(caCedee) + ' F · Encaissé <span style="color:var(--vert);">' + fmtF(caCess) + ' F</span>')
     : '<span style="color:var(--blanc-dim);">Aucune cession sur cette opération.</span>';
-  var s5act = '<button class="btn btn-primary btn-sm" onclick="cesNewFromOperation(\'' + op.id + '\')">+ Céder des lots</button>'
+  var s5act = '<button class="btn btn-primary btn-sm" onclick="cederLotsPartEntreprise(\'' + op.id + '\')">+ Céder des lots</button>'
     + ' <button class="btn btn-secondary btn-sm" onclick="goTo(\'foncier\');setTimeout(function(){switchTab(\'foncier\',\'cessions\');cesRender();},150);">Voir les cessions</button>';
   var s5 = step('5', 'Cessions (part entreprise)', '#1A6B3A', s5corps, s5act);
 
@@ -50805,12 +51002,20 @@ async function filiereGenererLots(opId) {
   var progId = parcelle ? (parcelle.programme_id || '') : (op.programme_id || '');
   var prefix = (op.code || (op.nom ? op.nom.substring(0, 3).toUpperCase() : 'L'));
   var base = dejaLies;
+  /* Valorisation comptable de la part entreprise (SYSCOHADA) :
+     le terrain reçu en échange du travail d'aménagement est un actif en
+     nature — il entre en stock (331 « Lots en cours d'aménagement ») à son
+     coût, et non à zéro. Coût unitaire = (coût total de l'opération × clé
+     aménageur %) réparti sur le nombre théorique de lots part entreprise. */
+  var totalPartETheorique = Math.round((op.nb_lots || 0) * ((op.cle && op.cle.amen) || 0) / 100) || nb;
+  var coutUnitaire = (op.cout_total ? (op.cout_total * ((op.cle && op.cle.amen) || 0) / 100) / totalPartETheorique : 0);
+  op.cout_revient_unitaire = coutUnitaire;
   for (var i = 1; i <= nb; i++) {
     var lot = {
       id: uid(),
       programme_id: progId,
       numero: prefix + '-' + (base + i),
-      ilot: '', type: '', surface: 0, pieces: 0, prix: 0, cout_revient: 0,
+      ilot: '', type: '', surface: 0, pieces: 0, prix: 0, cout_revient: coutUnitaire,
       standing: '', mode_livraison: 'gros_oeuvre', statut: 'disponible', notes: 'Part entreprise — ' + (op.nom || ''),
       parcelle_id: parcelle ? parcelle.id : '',
       operation_id: op.id,
@@ -50821,12 +51026,27 @@ async function filiereGenererLots(opId) {
     await dbPut('lots', lot);
     if (typeof syncToSupabase === 'function') syncToSupabase('pi_lots', lot);
   }
+  /* Écriture d'entrée en stock — uniquement si un coût a été renseigné sur l'opération. */
+  if (coutUnitaire > 0) {
+    if (!DATA.ecritures) DATA.ecritures = [];
+    var montantStock = Math.round(coutUnitaire * nb);
+    var an = today().slice(0,4);
+    var numE = DATA.ecritures.length + 1;
+    var eStk = { id: uid(), ref: 'STK-FONC-' + an + '-' + String(numE).padStart(4,'0'), date: today(), piece: 'ENTREE STOCK',
+      type: 'produit', libelle: 'Entrée en stock — part entreprise (' + nb + ' lots) — ' + (op.nom || ''),
+      compte: '712', compte_debit: '331', compte_credit: '712', montant: montantStock,
+      mode: 'stock', programme_id: progId, notes: 'Valorisation part entreprise — coût unitaire ' + fmtF(Math.round(coutUnitaire)) + ' F/lot',
+      source: 'af_operation_stock', af_operation_id: op.id, created_at: today() };
+    DATA.ecritures.push(eStk); await dbPut('ecritures', eStk);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', eStk);
+    if (typeof buildBalance === 'function') buildBalance();
+  }
   op.lots_generes = (op.lots_generes || 0) + nb;
   await dbPut('af_operations', op);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_af_operations', op);
   filiereRender();
   if (typeof renderLots === 'function') renderLots();
-  toast(nb + ' lot(s) généré(s) et rattaché(s) à l\'opération.', 'success');
+  toast(nb + ' lot(s) généré(s) et rattaché(s) à l\'opération.' + (coutUnitaire>0?' Stock valorisé (331).':''), 'success');
 }
 
 /* ── Selects de filiation dans le modal Lot (Niveau 1) ── */
