@@ -11727,6 +11727,9 @@ button:focus-visible, input:focus-visible, select:focus-visible {
             </select>
           </div>
         </div>
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--bord);text-align:right;">
+          <button class="btn btn-secondary" type="button" onclick="imprimerContratTravail(APP.editingId)">🖨️ Aperçu avant impression — Contrat de travail</button>
+        </div>
       </div>
       <div class="tab-pane" id="tab-modal-emp-bancaire">
         <div class="form-grid">
@@ -23009,6 +23012,7 @@ function renderEmployes() {
       + '<td><span class="badge ' + (badgeStat[e.statut] || 'badge-bleu') + '">' + e.statut + '</span></td>'
       + '<td>'
       + '<button class="btn btn-secondary btn-sm btn-icon" onclick="openEmployeModal(\'' + e.id + '\')">✏️</button> '
+      + '<button class="btn btn-secondary btn-sm btn-icon" onclick="imprimerContratTravail(\'' + e.id + '\')" title="Imprimer le contrat">🖨️</button> '
       + '<button class="btn btn-secondary btn-sm btn-icon" onclick="voirBulletinEmploye(\'' + e.id + '\')">📋</button> '
       + '<button class="btn btn-danger btn-sm btn-icon" onclick="deleteEmploye(\'' + e.id + '\')">🗑</button>'
       + '</td></tr>';
@@ -23103,6 +23107,79 @@ async function renderEmployeeDossier() {
       + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' + statusBadge + actions + '</div>'
       + '</div>';
   }).join('');
+}
+
+/* ── Impression du contrat de travail (aperçu avant impression) ─── */
+function imprimerContratTravail(empId) {
+  var e = empId ? DATA.employes.find(function(x) { return x.id === empId; }) : null;
+  if (!e) { toast('Enregistrez d\'abord la fiche employé.', 'error'); return; }
+  var params = DATA.params || {};
+  var logo = getLogoForPrint ? getLogoForPrint() : '';
+  var now = new Date().toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' });
+  var nomComplet = escHtml((e.prenoms || '') + ' ' + (e.nom || ''));
+  var divisionNom = e.division ? escHtml(_nomDivision(e.division)) : '';
+
+  var typeLabel = { CDI: 'CONTRAT DE TRAVAIL À DURÉE INDÉTERMINÉE (CDI)', CDD: 'CONTRAT DE TRAVAIL À DURÉE DÉTERMINÉE (CDD)', stage: 'CONVENTION DE STAGE', journalier: 'CONTRAT DE TRAVAIL JOURNALIER' }[e.contrat] || 'CONTRAT DE TRAVAIL';
+
+  var dureeArticle;
+  if (e.contrat === 'CDD') {
+    dureeArticle = '<p>Le présent contrat est conclu pour une durée déterminée, à compter du <strong>' + dateShort(e.date_embauche) + '</strong>' + (e.date_fin ? ' jusqu\'au <strong>' + dateShort(e.date_fin) + '</strong>' : '') + ', conformément aux dispositions du Code du Travail relatives aux contrats à durée déterminée.</p>';
+  } else if (e.contrat === 'stage') {
+    dureeArticle = '<p>La présente convention est conclue à titre de stage, à compter du <strong>' + dateShort(e.date_embauche) + '</strong>' + (e.date_fin ? ' jusqu\'au <strong>' + dateShort(e.date_fin) + '</strong>' : '') + '. Elle n\'emporte pas les effets d\'un contrat de travail à durée indéterminée.</p>';
+  } else if (e.contrat === 'journalier') {
+    dureeArticle = '<p>Le présent contrat est conclu pour un engagement journalier, renouvelable au jour le jour selon les besoins du chantier/service, à compter du <strong>' + dateShort(e.date_embauche) + '</strong>. La rémunération est due pour chaque journée effectivement travaillée.</p>';
+  } else {
+    dureeArticle = '<p>Le présent contrat est conclu pour une durée indéterminée à compter du <strong>' + dateShort(e.date_embauche) + '</strong>. Il pourra y être mis fin par l\'une ou l\'autre des parties dans les conditions prévues par le Code du Travail (préavis, indemnités légales).</p>';
+  }
+
+  var salaireLabel = e.contrat === 'journalier' ? 'Taux journalier brut' : 'Salaire de base brut mensuel';
+  var totalBrut = (e.salaire_base || 0) + (e.primes || 0) + (e.transport || 0) + (e.logement || 0);
+
+  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>' + typeLabel + ' — ' + nomComplet + '</title>'
+    + '<style>body{font-family:Arial,sans-serif;font-size:12px;padding:32px;color:#1C1C2E;line-height:1.65;}'
+    + 'h1{color:#1C1C2E;font-size:17px;text-align:center;margin-bottom:4px;}'
+    + 'h2{color:#B87333;font-size:13px;margin-top:22px;border-bottom:1px solid #E0E0EA;padding-bottom:6px;}'
+    + 'p{margin:7px 0;} .header{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #B87333;padding-bottom:16px;margin-bottom:22px;}'
+    + '.sign{margin-top:56px;display:grid;grid-template-columns:1fr 1fr;gap:40px;}'
+    + '.sign-box{border-top:1px solid #1C1C2E;padding-top:8px;font-size:11px;}'
+    + '.no-print{text-align:center;margin-bottom:20px;} .no-print button{padding:9px 20px;background:#B87333;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;}'
+    + '@media print{.no-print{display:none;}body{padding:16px;}}</style>'
+    + '</head><body>'
+    + '<div class="no-print"><button onclick="window.print()">🖨️ Imprimer / Enregistrer en PDF</button></div>'
+    + '<div class="header">' + (logo ? '<img src="' + logo + '" style="height:48px;object-fit:contain;">' : '')
+    + '<div style="text-align:center;flex:1;"><h1>' + typeLabel + '</h1>'
+    + '<div style="font-size:11px;color:#6B6B9A;">Réf. : CTR-' + escHtml(e.matricule || '') + ' · Fait le ' + now + '</div></div>'
+    + '<div style="text-align:right;font-size:11px;color:#6B6B9A;">' + escHtml(params.societe || 'ImmoSuite ERP') + '<br>' + (params.tel || '') + '</div></div>'
+    + '<h2>ENTRE LES SOUSSIGNÉS</h2>'
+    + '<p><strong>L\'EMPLOYEUR :</strong> ' + escHtml(params.societe || '__________________') + ', promoteur immobilier, immatriculé sous le N° ' + escHtml(params.rccm || '__________________') + ', N° CNPS employeur ' + escHtml((document.getElementById('param-cnps') || {}).value || '__________________') + ', ayant son siège social à ' + escHtml(params.adresse || '__________________') + '. Ci-après dénommé <strong>« L\'EMPLOYEUR »</strong>.</p>'
+    + '<p><strong>ET :</strong> ' + nomComplet + ', né(e) le ' + (e.ddn ? dateShort(e.ddn) : '__________________') + ', de nationalité ' + '__________________' + ', titulaire de la pièce d\'identité N° ' + escHtml(e.cnps_num || '__________________') + ', demeurant à ' + escHtml(e.adresse || '__________________') + ', téléphone ' + escHtml(e.tel || '__________________') + '. Ci-après dénommé(e) <strong>« LE/LA SALARIÉ(E) »</strong>.</p>'
+    + '<h2>ARTICLE 1 — OBJET ET FONCTION</h2>'
+    + '<p>L\'EMPLOYEUR engage LE/LA SALARIÉ(E) en qualité de <strong>' + escHtml(e.poste || '__________________') + '</strong>' + (divisionNom ? ', au sein de la <strong>' + divisionNom + '</strong>' : '') + (e.dept ? ' (département ' + escHtml(e.dept) + ')' : '') + '. LE/LA SALARIÉ(E) exercera ses fonctions sous l\'autorité et la subordination de L\'EMPLOYEUR, dans le respect du règlement intérieur et des directives qui lui seront données.</p>'
+    + '<h2>ARTICLE 2 — DURÉE DU CONTRAT</h2>'
+    + dureeArticle
+    + '<h2>ARTICLE 3 — PÉRIODE D\'ESSAI</h2>'
+    + '<p>Le présent contrat est assorti d\'une période d\'essai conforme aux dispositions du Code du Travail applicable en Côte d\'Ivoire, durant laquelle chacune des parties pourra y mettre fin sans indemnité, sous réserve du délai de prévenance légal.</p>'
+    + '<h2>ARTICLE 4 — RÉMUNÉRATION</h2>'
+    + '<p>' + salaireLabel + ' : <strong>' + fmtF(e.salaire_base || 0) + ' FCFA</strong>' + (e.categorie ? ' (catégorie ' + escHtml(e.categorie) + ')' : '') + '.</p>'
+    + (e.primes ? '<p>Primes fixes mensuelles : <strong>' + fmtF(e.primes) + ' FCFA</strong>.</p>' : '')
+    + (e.transport ? '<p>Indemnité de transport : <strong>' + fmtF(e.transport) + ' FCFA</strong>.</p>' : '')
+    + (e.logement ? '<p>Indemnité de logement : <strong>' + fmtF(e.logement) + ' FCFA</strong>.</p>' : '')
+    + '<p>Rémunération brute totale : <strong>' + fmtF(totalBrut) + ' FCFA</strong>' + (e.contrat === 'journalier' ? ' par journée travaillée' : ' par mois') + ', payable par ' + escHtml((e.mode_paiement || 'virement bancaire').replace(/_/g, ' ')) + ', sous déduction des charges sociales et fiscales en vigueur (CNPS, ITS, CMU).</p>'
+    + '<h2>ARTICLE 5 — LIEU ET HORAIRES DE TRAVAIL</h2>'
+    + '<p>LE/LA SALARIÉ(E) exercera ses fonctions au siège de L\'EMPLOYEUR ou sur tout site/chantier désigné par celui-ci, selon les horaires en vigueur au sein de l\'entreprise et dans le respect de la durée légale du travail.</p>'
+    + '<h2>ARTICLE 6 — CONGÉS ET PROTECTION SOCIALE</h2>'
+    + '<p>LE/LA SALARIÉ(E) bénéficiera des congés payés légaux ainsi que de la couverture sociale CNPS/CMU dans les conditions prévues par la réglementation ivoirienne du travail.</p>'
+    + '<h2>ARTICLE 7 — CONFIDENTIALITÉ</h2>'
+    + '<p>LE/LA SALARIÉ(E) s\'engage à observer la plus stricte confidentialité sur l\'ensemble des informations commerciales, techniques et financières dont il/elle aura connaissance dans l\'exercice de ses fonctions, pendant la durée du contrat et après sa cessation.</p>'
+    + '<h2>ARTICLE 8 — RÉSILIATION</h2>'
+    + '<p>Le présent contrat pourra être résilié dans les conditions et selon les préavis prévus par le Code du Travail en vigueur en Côte d\'Ivoire, ainsi que par la convention collective applicable le cas échéant.</p>'
+    + '<div class="sign"><div class="sign-box"><p>Pour L\'EMPLOYEUR<br>' + escHtml(params.societe || '') + '</p><p style="margin-top:40px;">Signature et cachet :<br>___________________________</p></div>'
+    + '<div class="sign-box"><p>LE/LA SALARIÉ(E)<br>' + nomComplet + '</p><p style="margin-top:40px;">Signature précédée de<br>la mention «Lu et approuvé» :<br>___________________________</p></div></div>'
+    + '</body></html>';
+
+  var win = window.open('', '_blank');
+  win.document.write(docStamp(html));
+  win.document.close();
 }
 
 /* ── Divisions (unités business du promoteur) ────────────
