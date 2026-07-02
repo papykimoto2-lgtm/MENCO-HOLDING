@@ -5399,6 +5399,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
                   <th>Salaire brut</th>
                   <th>Catégorie CNPS</th>
                   <th>Statut</th>
+                  <th id="th-emp-date-depart" style="display:none;">Date départ</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -22871,7 +22872,10 @@ function openEmployeModal(id) {
   document.getElementById('emp-categorie').innerHTML = buildGrilleOptions(_eCat || '');
   var fields = ['matricule','nom','prenoms','ddn','genre','matrimonial','enfants','cnps-num','tel','email','adresse',
     'poste','dept','division','contrat','date-embauche','date-fin','categorie','salaire-base','primes','transport','logement',
-    'mode-paiement','statut','banque','compte-banque','wallet','rib'];
+    'mode-paiement','statut','banque','compte-banque','wallet','rib',
+    'date-depart','motif-depart','solde-tout-compte','preavis','obs-depart',
+    'jours-travailles','conges-non-pris','avances-deduire','autres-indemnites','cat-preavis'];
+  var checkFields = ['inc-preavis','inc-licenciement','inc-13mois'];
   populateDivisionSelects();
   if (id) {
     var e = DATA.employes.find(function(x) { return x.id === id; });
@@ -22880,11 +22884,21 @@ function openEmployeModal(id) {
         var el = document.getElementById('emp-' + f);
         if (el && e[f.replace(/-/g,'_')] !== undefined) el.value = e[f.replace(/-/g,'_')] || '';
       });
+      checkFields.forEach(function(f) {
+        var el = document.getElementById('emp-' + f);
+        if (el) el.checked = !!e[f.replace(/-/g,'_')];
+      });
+      var banner = document.getElementById('depart-info-banner');
+      if (banner) banner.style.display = e.date_depart ? 'none' : 'block';
     }
   } else {
     fields.forEach(function(f) {
       var el = document.getElementById('emp-' + f);
       if (el) el.value = el.defaultValue || '';
+    });
+    checkFields.forEach(function(f) {
+      var el = document.getElementById('emp-' + f);
+      if (el) el.checked = false;
     });
     document.getElementById('emp-statut').value = 'actif';
     document.getElementById('emp-contrat').value = 'CDI';
@@ -22893,6 +22907,9 @@ function openEmployeModal(id) {
     document.getElementById('emp-primes').value = '0';
     document.getElementById('emp-transport').value = '0';
     document.getElementById('emp-logement').value = '0';
+    document.getElementById('emp-jours-travailles').value = '30';
+    document.getElementById('emp-preavis').value = 'na';
+    document.getElementById('emp-cat-preavis').value = 'ouvrier';
   }
   calcSalaireNet();
   renderEmployeeDossier();
@@ -22954,6 +22971,19 @@ async function saveEmploye() {
     compte_banque: document.getElementById('emp-compte-banque').value.trim(),
     wallet: document.getElementById('emp-wallet').value.trim(),
     rib: document.getElementById('emp-rib').value.trim(),
+    date_depart: document.getElementById('emp-date-depart').value,
+    motif_depart: document.getElementById('emp-motif-depart').value,
+    solde_tout_compte: parseFloat(document.getElementById('emp-solde-tout-compte').value) || 0,
+    preavis: document.getElementById('emp-preavis').value,
+    obs_depart: document.getElementById('emp-obs-depart').value.trim(),
+    jours_travailles: parseInt(document.getElementById('emp-jours-travailles').value) || PAIE_CI.joursMois,
+    conges_non_pris: parseFloat(document.getElementById('emp-conges-non-pris').value) || 0,
+    avances_deduire: parseFloat(document.getElementById('emp-avances-deduire').value) || 0,
+    autres_indemnites: parseFloat(document.getElementById('emp-autres-indemnites').value) || 0,
+    cat_preavis: document.getElementById('emp-cat-preavis').value,
+    inc_preavis: document.getElementById('emp-inc-preavis').checked,
+    inc_licenciement: document.getElementById('emp-inc-licenciement').checked,
+    inc_13mois: document.getElementById('emp-inc-13mois').checked,
     created_at: APP.editingId ? undefined : new Date().toISOString()
   };
   if (APP.editingId) {
@@ -22973,6 +23003,23 @@ async function saveEmploye() {
   toast('Employé enregistré.', 'success');
 }
 
+var EMP_STATUTS_SORTIS = ['parti', 'inactif', 'resilie'];
+var _modeExEmployes = false;
+
+function toggleExEmployes() {
+  _modeExEmployes = !_modeExEmployes;
+  var btn = document.getElementById('btn-toggle-ex');
+  var thDepart = document.getElementById('th-emp-date-depart');
+  if (btn) {
+    btn.textContent = _modeExEmployes ? '👤 Employés actifs' : '👥 Ex-employés';
+    btn.style.background = _modeExEmployes ? 'rgba(16,185,129,0.15)' : 'rgba(220,50,50,0.15)';
+    btn.style.borderColor = _modeExEmployes ? 'var(--vert)' : 'var(--rouge)';
+    btn.style.color = _modeExEmployes ? 'var(--vert)' : 'var(--rouge)';
+  }
+  if (thDepart) thDepart.style.display = _modeExEmployes ? '' : 'none';
+  renderEmployes();
+}
+
 function filterEmployes() {
   renderEmployes();
 }
@@ -22989,16 +23036,19 @@ function renderEmployes() {
     var matchDept = !dept || e.dept === dept;
     var matchContrat = !contrat || e.contrat === contrat;
     var matchDivision = !divisionF || e.division === divisionF;
-    return match && matchDept && matchContrat && matchDivision;
+    var matchSortie = _modeExEmployes ? EMP_STATUTS_SORTIS.indexOf(e.statut) !== -1 : EMP_STATUTS_SORTIS.indexOf(e.statut) === -1;
+    return match && matchDept && matchContrat && matchDivision && matchSortie;
   });
   if (!list.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--blanc-dim);padding:24px;">Aucun employé enregistré</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="' + (_modeExEmployes ? 12 : 11) + '" style="text-align:center;color:var(--blanc-dim);padding:24px;">' + (_modeExEmployes ? 'Aucun ex-employé' : 'Aucun employé enregistré') + '</td></tr>';
     return;
   }
   var badgeContrat = { CDI: 'badge-vert', CDD: 'badge-or', stage: 'badge-bleu', journalier: 'badge-violet' };
-  var badgeStat = { actif: 'badge-vert', inactif: 'badge-rouge', suspendu: 'badge-or' };
+  var badgeStat = { actif: 'badge-vert', inactif: 'badge-rouge', suspendu: 'badge-or', parti: 'badge-violet', resilie: 'badge-rouge' };
+  var labelStat = { actif: 'Actif', inactif: 'Inactif', suspendu: 'Suspendu', parti: 'Parti', resilie: 'Résilié' };
   tbody.innerHTML = list.map(function(e) {
     var r = calcPaieEmploye(e);
+    var estSorti = EMP_STATUTS_SORTIS.indexOf(e.statut) !== -1;
     return '<tr>'
       + '<td><strong style="color:var(--or);">' + e.matricule + '</strong></td>'
       + '<td>' + e.nom + ' ' + e.prenoms + '</td>'
@@ -23009,11 +23059,13 @@ function renderEmployes() {
       + '<td>' + (e.date_embauche ? e.date_embauche : '—') + '</td>'
       + '<td style="color:var(--or);font-weight:600;">' + fmtF(e.salaire_base) + ' FCFA</td>'
       + '<td style="font-size:11px;">' + (e.categorie || '—') + '</td>'
-      + '<td><span class="badge ' + (badgeStat[e.statut] || 'badge-bleu') + '">' + e.statut + '</span></td>'
+      + '<td><span class="badge ' + (badgeStat[e.statut] || 'badge-bleu') + '">' + (labelStat[e.statut] || e.statut) + '</span></td>'
+      + (_modeExEmployes ? '<td>' + (e.date_depart || '—') + '</td>' : '')
       + '<td>'
       + '<button class="btn btn-secondary btn-sm btn-icon" onclick="openEmployeModal(\'' + e.id + '\')">✏️</button> '
       + '<button class="btn btn-secondary btn-sm btn-icon" onclick="imprimerContratTravail(\'' + e.id + '\')" title="Imprimer le contrat">🖨️</button> '
       + '<button class="btn btn-secondary btn-sm btn-icon" onclick="voirBulletinEmploye(\'' + e.id + '\')">📋</button> '
+      + (estSorti ? '<button class="btn btn-secondary btn-sm btn-icon" onclick="genererSoldeToutCompte(\'' + e.id + '\')" title="Solde de tout compte">💰</button> ' : '')
       + '<button class="btn btn-danger btn-sm btn-icon" onclick="deleteEmploye(\'' + e.id + '\')">🗑</button>'
       + '</td></tr>';
   }).join('');
@@ -23175,6 +23227,128 @@ function imprimerContratTravail(empId) {
     + '<p>Le présent contrat pourra être résilié dans les conditions et selon les préavis prévus par le Code du Travail en vigueur en Côte d\'Ivoire, ainsi que par la convention collective applicable le cas échéant.</p>'
     + '<div class="sign"><div class="sign-box"><p>Pour L\'EMPLOYEUR<br>' + escHtml(params.societe || '') + '</p><p style="margin-top:40px;">Signature et cachet :<br>___________________________</p></div>'
     + '<div class="sign-box"><p>LE/LA SALARIÉ(E)<br>' + nomComplet + '</p><p style="margin-top:40px;">Signature précédée de<br>la mention «Lu et approuvé» :<br>___________________________</p></div></div>'
+    + '</body></html>';
+
+  var win = window.open('', '_blank');
+  win.document.write(docStamp(html));
+  win.document.close();
+}
+
+/* ── Ancienneté (années/mois) entre embauche et départ ─── */
+function _ancienneteYM(dEmbauche, dDepart) {
+  if (!dEmbauche || !dDepart) return { annees: 0, mois: 0, moisTotal: 0 };
+  var d1 = new Date(dEmbauche), d2 = new Date(dDepart);
+  var mois = (d2.getFullYear() - d1.getFullYear()) * 12 + (d2.getMonth() - d1.getMonth());
+  if (d2.getDate() < d1.getDate()) mois--;
+  if (mois < 0) mois = 0;
+  return { annees: Math.floor(mois / 12), mois: mois % 12, moisTotal: mois };
+}
+
+/* ── Indemnité de licenciement — barème progressif Code du Travail CI
+   (30% du salaire mensuel moyen/an pour les 5 premières années,
+    35%/an de la 6e à la 10e, 40%/an au-delà) ─── */
+function _calcIndemniteLicenciementCI(salaireMoyen, anneesAnciennete) {
+  var total = 0, restantes = anneesAnciennete;
+  var t1 = Math.min(restantes, 5); total += t1 * 0.30 * salaireMoyen; restantes -= t1;
+  var t2 = Math.min(restantes, 5); total += t2 * 0.35 * salaireMoyen; restantes -= t2;
+  var t3 = Math.max(restantes, 0); total += t3 * 0.40 * salaireMoyen;
+  return Math.round(total);
+}
+
+/* ── Solde de Tout Compte — calcul + aperçu avant impression ─── */
+function genererSoldeToutCompte(empId) {
+  var e = empId ? DATA.employes.find(function(x) { return x.id === empId; }) : null;
+  if (!e) { toast('Enregistrez d\'abord la fiche employé.', 'error'); return; }
+  if (!e.date_depart) { toast('Renseignez la date de départ (onglet 🚪 Départ), puis Enregistrer, avant de générer le solde de tout compte.', 'error'); return; }
+
+  var params = DATA.params || {};
+  var logo = getLogoForPrint ? getLogoForPrint() : '';
+  var now = new Date().toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' });
+  var nomComplet = escHtml((e.prenoms || '') + ' ' + (e.nom || ''));
+
+  var salaireBrutMensuel = (e.salaire_base || 0) + (e.primes || 0) + (e.transport || 0) + (e.logement || 0);
+  var salaireJournalier = (e.salaire_base || 0) / PAIE_CI.joursMois;
+  var jt = (e.jours_travailles != null && e.jours_travailles !== '') ? e.jours_travailles : PAIE_CI.joursMois;
+  var soldeSalaire = Math.round(salaireBrutMensuel * jt / PAIE_CI.joursMois);
+
+  var congesNonPris = e.conges_non_pris || 0;
+  var indemniteConges = Math.round(salaireJournalier * congesNonPris);
+
+  var anc = _ancienneteYM(e.date_embauche, e.date_depart);
+  var anneesLicenciement = anc.annees + (anc.mois >= 6 ? 1 : 0);
+
+  var moisPreavis = { ouvrier: 1, maitrise: 2, cadre: 3 }[e.cat_preavis] || 1;
+  var indemnitePreavis = (e.inc_preavis && e.preavis === 'non') ? Math.round(salaireBrutMensuel * moisPreavis) : 0;
+
+  var indemniteLicenciement = e.inc_licenciement ? _calcIndemniteLicenciementCI(salaireBrutMensuel, anneesLicenciement) : 0;
+
+  var indemnite13 = 0;
+  if (e.inc_13mois) {
+    var dDep = new Date(e.date_depart);
+    var debutAnnee = new Date(dDep.getFullYear(), 0, 1);
+    var dEmb = e.date_embauche ? new Date(e.date_embauche) : debutAnnee;
+    var debutRef = dEmb > debutAnnee ? dEmb : debutAnnee;
+    var moisEcoules = (dDep.getFullYear() - debutRef.getFullYear()) * 12 + (dDep.getMonth() - debutRef.getMonth()) + 1;
+    if (moisEcoules < 0) moisEcoules = 0; if (moisEcoules > 12) moisEcoules = 12;
+    indemnite13 = Math.round((salaireBrutMensuel / 12) * moisEcoules);
+  }
+
+  var autresIndemnites = e.autres_indemnites || 0;
+  var avances = e.avances_deduire || 0;
+
+  var totalBrutSTC = soldeSalaire + indemniteConges + indemnitePreavis + indemniteLicenciement + indemnite13 + autresIndemnites;
+  var netAPayer = totalBrutSTC - avances;
+
+  var motifLabel = { demission: 'Démission', licenciement_faute: 'Licenciement pour faute', licenciement_economique: 'Licenciement économique',
+    fin_cdd: 'Fin de CDD', fin_stage: 'Fin de stage', rupture_conventionnelle: 'Rupture conventionnelle',
+    retraite: 'Départ à la retraite', deces: 'Décès', autre: 'Autre' }[e.motif_depart] || (e.motif_depart || '—');
+
+  function ligne(label, montant, note) {
+    return '<tr><td>' + label + (note ? ' <span style="color:#6B6B9A;font-size:10px;">(' + note + ')</span>' : '') + '</td>'
+      + '<td style="text-align:right;font-weight:600;">' + fmtF(montant) + ' FCFA</td></tr>';
+  }
+
+  var rows = ligne('Solde de salaire', soldeSalaire, jt + ' j / ' + PAIE_CI.joursMois);
+  if (indemniteConges > 0) rows += ligne('Indemnité compensatrice de congés payés', indemniteConges, congesNonPris + ' j');
+  if (indemnitePreavis > 0) rows += ligne('Indemnité compensatrice de préavis', indemnitePreavis, moisPreavis + ' mois');
+  if (indemniteLicenciement > 0) rows += ligne('Indemnité de licenciement', indemniteLicenciement, anc.annees + ' an(s) ' + anc.mois + ' mois d\'ancienneté');
+  if (indemnite13 > 0) rows += ligne('13ᵉ mois — prorata', indemnite13);
+  if (autresIndemnites > 0) rows += ligne('Autres indemnités', autresIndemnites);
+
+  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Solde de Tout Compte — ' + nomComplet + '</title>'
+    + '<style>body{font-family:Arial,sans-serif;font-size:12px;padding:32px;color:#1C1C2E;line-height:1.6;}'
+    + 'h1{color:#1C1C2E;font-size:17px;text-align:center;margin-bottom:4px;}'
+    + 'h2{color:#B87333;font-size:13px;margin-top:22px;border-bottom:1px solid #E0E0EA;padding-bottom:6px;}'
+    + 'p{margin:6px 0;} .header{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #B87333;padding-bottom:16px;margin-bottom:22px;}'
+    + 'table{width:100%;border-collapse:collapse;margin-top:8px;} td{padding:8px 6px;border-bottom:1px solid #E0E0EA;font-size:12px;}'
+    + '.total-row td{border-top:2px solid #1C1C2E;border-bottom:none;font-size:13px;padding-top:12px;}'
+    + '.net-box{margin-top:14px;padding:14px 18px;background:#F6F1EA;border-left:4px solid #B87333;border-radius:4px;display:flex;justify-content:space-between;align-items:center;}'
+    + '.sign{margin-top:56px;display:grid;grid-template-columns:1fr 1fr;gap:40px;}'
+    + '.sign-box{border-top:1px solid #1C1C2E;padding-top:8px;font-size:11px;}'
+    + '.no-print{text-align:center;margin-bottom:20px;} .no-print button{padding:9px 20px;background:#B87333;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;}'
+    + '@media print{.no-print{display:none;}body{padding:16px;}}</style>'
+    + '</head><body>'
+    + '<div class="no-print"><button onclick="window.print()">🖨️ Imprimer / Enregistrer en PDF</button></div>'
+    + '<div class="header">' + (logo ? '<img src="' + logo + '" style="height:48px;object-fit:contain;">' : '')
+    + '<div style="text-align:center;flex:1;"><h1>REÇU POUR SOLDE DE TOUT COMPTE</h1>'
+    + '<div style="font-size:11px;color:#6B6B9A;">Réf. : STC-' + escHtml(e.matricule || '') + ' · Fait le ' + now + '</div></div>'
+    + '<div style="text-align:right;font-size:11px;color:#6B6B9A;">' + escHtml(params.societe || 'ImmoSuite ERP') + '<br>' + (params.tel || '') + '</div></div>'
+    + '<h2>IDENTIFICATION DU SALARIÉ</h2>'
+    + '<p><strong>Nom et prénoms :</strong> ' + nomComplet + ' &nbsp; <strong>Matricule :</strong> ' + escHtml(e.matricule || '—') + '</p>'
+    + '<p><strong>Poste :</strong> ' + escHtml(e.poste || '—') + (e.division ? ' &nbsp; <strong>Division :</strong> ' + escHtml(_nomDivision(e.division)) : '') + '</p>'
+    + '<p><strong>Date d\'embauche :</strong> ' + (e.date_embauche ? dateShort(e.date_embauche) : '—') + ' &nbsp; <strong>Date de départ :</strong> ' + dateShort(e.date_depart) + '</p>'
+    + '<p><strong>Ancienneté :</strong> ' + anc.annees + ' an(s) ' + anc.mois + ' mois &nbsp; <strong>Motif du départ :</strong> ' + escHtml(motifLabel) + '</p>'
+    + '<h2>DÉCOMPTE DES SOMMES DUES</h2>'
+    + '<table>' + rows
+    + '<tr class="total-row"><td><strong>Total brut</strong></td><td style="text-align:right;"><strong>' + fmtF(totalBrutSTC) + ' FCFA</strong></td></tr>'
+    + (avances > 0 ? ligne('Moins : avances / prêts à déduire', -avances) : '')
+    + '</table>'
+    + '<div class="net-box"><strong>NET À PAYER AU SALARIÉ</strong><span style="font-size:18px;font-weight:700;color:#B87333;">' + fmtF(netAPayer) + ' FCFA</span></div>'
+    + (e.obs_depart ? '<h2>OBSERVATIONS</h2><p>' + escHtml(e.obs_depart) + '</p>' : '')
+    + '<h2>ACQUIT</h2>'
+    + '<p>Je soussigné(e) ' + nomComplet + ' reconnais avoir reçu de ' + escHtml(params.societe || 'l\'employeur') + ' la somme de <strong>' + fmtF(netAPayer) + ' FCFA</strong> au titre de solde de tout compte, pour solde de tous comptes, salaires, indemnités et accessoires de salaire, sans restriction ni réserve, conformément aux dispositions du Code du Travail en vigueur en Côte d\'Ivoire.</p>'
+    + '<div class="sign"><div class="sign-box"><p>Pour L\'EMPLOYEUR<br>' + escHtml(params.societe || '') + '</p><p style="margin-top:40px;">Signature et cachet :<br>___________________________</p></div>'
+    + '<div class="sign-box"><p>LE/LA SALARIÉ(E)<br>' + nomComplet + '</p><p style="margin-top:40px;">Signature précédée de<br>la mention «Pour acquit et solde de tout compte» :<br>___________________________</p></div></div>'
     + '</body></html>';
 
   var win = window.open('', '_blank');
