@@ -12192,6 +12192,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <div class="form-group"><label>Prix de revient total (FCFA)</label><input type="number" class="form-control" id="parc-cout-total" readonly style="color:var(--or);font-weight:bold;"></div>
         </div>
       </div>
+      <!-- Modal revue bornes extraites (scan dossier technique) -->
       <div class="tab-pane" id="tab-modal-parcelle-bornage">
         <div class="form-grid">
           <div class="form-group"><label>N° Titre Foncier</label><input type="text" class="form-control" id="parc-tf-num" placeholder="TF 21289"></div>
@@ -12210,6 +12211,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
             <button class="btn btn-secondary btn-sm" onclick="brnAdd()">+ Borne</button>
             <label class="btn btn-secondary btn-sm" style="cursor:pointer;">📥 Importer bornes CSV<input type="file" accept=".csv,.txt" style="display:none;" onchange="brnImportBornesCSV(this)"></label>
+            <label class="btn btn-primary btn-sm" style="cursor:pointer;background:var(--vert,#1A6B3A);border-color:var(--vert,#1A6B3A);">📄 Scanner dossier technique<input type="file" accept=".pdf,.png,.jpg,.jpeg" style="display:none;" onchange="brnScanDossier(this)"></label>
             <button class="btn btn-secondary btn-sm" onclick="brnApplyArea()">📐 Superficie ← bornes</button>
             <button class="btn btn-secondary btn-sm" onclick="brnPrintPlan()">🖨 Plan de bornage</button>
             <button class="btn btn-primary btn-sm" onclick="genererPlanParcellaire()">📐 Plan parcellaire</button>
@@ -47562,6 +47564,175 @@ function brnImportBornesCSV(input){
   };
   rd.readAsText(fl);
 }
+
+/* ══════════════════════════════════════════════
+   SCAN DOSSIER TECHNIQUE → extraction bornes
+   PDF texte  : pdf.js (offline, gratuit)
+   Image/scan : Claude API vision (nécessite clé IA)
+   ══════════════════════════════════════════════ */
+var _scanBornesTmp = [];
+
+function _loadPdfJs() {
+  return new Promise(function(resolve, reject){
+    if (window.pdfjsLib) return resolve(window.pdfjsLib);
+    var s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    s.onload = function(){
+      try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; } catch(e){}
+      resolve(window.pdfjsLib);
+    };
+    s.onerror = function(){ reject(new Error('Chargement pdf.js impossible (hors ligne ?).')); };
+    document.head.appendChild(s);
+  });
+}
+
+/* Parse coordonnées depuis texte brut extrait */
+function _parseCoordsFromText(txt) {
+  var pts = [];
+  var lines = txt.split(/\r?\n/);
+  var re = /\b(B\d{1,3}|S\d{1,3}|P\d{1,3}|[A-Z]{1,3}\.?\s?-?\s?\d{1,3})\b[^\d\-]{0,6}(-?\d{3,7}[.,]?\d{0,3})\s+(-?\d{3,7}[.,]?\d{0,3})(?:\s+(-?\d{1,4}[.,]?\d{0,3}))?/;
+  lines.forEach(function(l){
+    var m = l.match(re);
+    if (m) {
+      var x = parseFloat(m[2].replace(',','.'));
+      var y = parseFloat(m[3].replace(',','.'));
+      var z = m[4] ? parseFloat(m[4].replace(',','.')) : 0;
+      if (!isNaN(x) && !isNaN(y) && x > 1000 && y > 1000) {
+        pts.push({ nom: m[1].replace(/\s/g,''), x: x, y: y, z: isNaN(z)?0:z });
+      }
+    }
+  });
+  if (pts.length < 3) {
+    lines.forEach(function(l){
+      var m2 = l.match(/(-?\d{5,7}[.,]?\d{0,3})\s+(-?\d{5,7}[.,]?\d{0,3})/);
+      if (m2) {
+        var x = parseFloat(m2[1].replace(',','.')), y = parseFloat(m2[2].replace(',','.'));
+        if (!isNaN(x) && !isNaN(y) && !pts.some(function(p){ return p.x===x && p.y===y; })) {
+          pts.push({ nom: 'B'+(pts.length+1), x: x, y: y, z: 0 });
+        }
+      }
+    });
+  }
+  return pts;
+}
+
+async function brnScanDossier(input) {
+  var fl = input.files && input.files[0];
+  if (!fl) return;
+  input.value = '';
+  var isPdf = /pdf$/i.test(fl.name) || fl.type === 'application/pdf';
+  toast('Analyse du dossier en cours…', 'info');
+  try {
+    var pts = [];
+    if (isPdf) {
+      pts = await _scanPdf(fl);
+      if (pts.length < 3) {
+        toast('PDF sans texte — reconnaissance visuelle (IA)…', 'info');
+        pts = await _scanImageIA(fl, true);
+      }
+    } else {
+      pts = await _scanImageIA(fl, false);
+    }
+    if (!pts.length) { toast('Aucune coordonnée détectée. Vérifiez le document.', 'error'); return; }
+    _scanBornesTmp = pts;
+    _brnRenderScanReview(isPdf ? 'PDF' : 'Image', fl.name);
+  } catch(e) {
+    toast('Erreur scan : ' + e.message, 'error');
+  }
+}
+
+async function _scanPdf(fl) {
+  var lib = await _loadPdfJs();
+  var buf = await fl.arrayBuffer();
+  var pdf = await lib.getDocument({ data: buf }).promise;
+  var full = '';
+  for (var p = 1; p <= pdf.numPages; p++) {
+    var page = await pdf.getPage(p);
+    var tc = await page.getTextContent();
+    var items = tc.items.map(function(it){ return { s: it.str, x: it.transform[4], y: Math.round(it.transform[5]) }; });
+    var byY = {};
+    items.forEach(function(it){ (byY[it.y] = byY[it.y] || []).push(it); });
+    Object.keys(byY).sort(function(a,b){ return b-a; }).forEach(function(y){
+      full += byY[y].sort(function(a,b){ return a.x-b.x; }).map(function(it){ return it.s; }).join(' ') + '\n';
+    });
+  }
+  return _parseCoordsFromText(full);
+}
+
+async function _scanImageIA(fl, isPdfImage) {
+  if (typeof getIAConfig === 'function') getIAConfig();
+  if (!window.IA || !IA.key) {
+    throw new Error('Scan image nécessite la clé IA (Paramètres → Intelligence Artificielle). PDF texte fonctionne hors ligne.');
+  }
+  var b64 = await new Promise(function(res, rej){
+    var r = new FileReader();
+    r.onload = function(){ res(r.result.split(',')[1]); };
+    r.onerror = function(){ rej(new Error('Lecture échouée.')); };
+    r.readAsDataURL(fl);
+  });
+  var media = isPdfImage ? 'application/pdf' : (fl.type || 'image/jpeg');
+  var srcType = isPdfImage ? 'document' : 'image';
+  var prompt = 'Extrais le tableau des coordonnées de bornage de ce dossier technique de géomètre. '
+    + 'Renvoie UNIQUEMENT un JSON : {"bornes":[{"nom":"B1","x":123456.78,"y":234567.89,"z":0}]}. '
+    + 'X = Est/Easting/Abscisse, Y = Nord/Northing/Ordonnée, Z = altitude si présente sinon 0. '
+    + 'Coordonnées UTM en mètres. Aucun texte hors JSON.';
+  var resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': IA.key,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 2000,
+      messages: [{ role:'user', content: [
+        { type: srcType, source: { type:'base64', media_type: media, data: b64 } },
+        { type: 'text', text: prompt }
+      ]}]
+    })
+  });
+  if (!resp.ok) throw new Error('API vision ' + resp.status);
+  var data = await resp.json();
+  var raw = (data.content||[]).map(function(b){ return b.type==='text'?b.text:''; }).join('');
+  var jsonStr = raw.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
+  var obj;
+  try { obj = JSON.parse(jsonStr); } catch(e) { var m = jsonStr.match(/\{[\s\S]*\}/); obj = m ? JSON.parse(m[0]) : { bornes: [] }; }
+  return (obj.bornes || []).map(function(b, i){
+    return { nom: b.nom || ('B'+(i+1)), x: parseFloat(b.x)||0, y: parseFloat(b.y)||0, z: parseFloat(b.z)||0 };
+  }).filter(function(b){ return b.x && b.y; });
+}
+
+function _brnRenderScanReview(source, filename) {
+  document.getElementById('scan-bornes-info').textContent = _scanBornesTmp.length + ' borne(s) détectée(s) — source : ' + source + ' (' + filename + ')';
+  var tb = document.getElementById('tbody-scan-bornes');
+  tb.innerHTML = _scanBornesTmp.map(function(b, i){
+    return '<tr>'
+      + '<td contenteditable onblur="_scanBornesTmp['+i+'].nom=this.textContent.trim()">' + escHtml(b.nom) + '</td>'
+      + '<td contenteditable style="text-align:right;" onblur="_scanBornesTmp['+i+'].x=parseFloat(this.textContent.replace(\',\',\'.\'))||0">' + b.x + '</td>'
+      + '<td contenteditable style="text-align:right;" onblur="_scanBornesTmp['+i+'].y=parseFloat(this.textContent.replace(\',\',\'.\'))||0">' + b.y + '</td>'
+      + '<td contenteditable style="text-align:right;" onblur="_scanBornesTmp['+i+'].z=parseFloat(this.textContent.replace(\',\',\'.\'))||0">' + (b.z||0) + '</td>'
+      + '<td><button class="btn btn-danger btn-sm btn-icon" onclick="_scanBornesTmp.splice('+i+',1);_brnRenderScanReview(\''+source+'\',\''+filename.replace(/[\\\\\x27]/g,'')+'\')">🗑</button></td>'
+      + '</tr>';
+  }).join('');
+  document.getElementById('modal-scan-bornes').classList.add('open');
+}
+
+function brnInjecterScan() {
+  if (!_scanBornesTmp.length) { toast('Aucune borne à injecter.', 'error'); return; }
+  var mode = (_brnList && _brnList.length) ? confirm(
+    'Le tableau contient déjà ' + _brnList.length + ' borne(s).\n\nOK = Remplacer.\nAnnuler = Ajouter à la suite.'
+  ) : true;
+  var pts = _scanBornesTmp.map(function(b){ return { nom:b.nom, x:b.x, y:b.y, z:b.z||0, angle:0, distance:0 }; });
+  _brnList = mode ? pts : (_brnList||[]).concat(pts);
+  brnRender();
+  var area = brnArea();
+  closeModal('modal-scan-bornes');
+  _scanBornesTmp = [];
+  toast(pts.length + ' borne(s) injectée(s)' + (area>0 ? ' · superficie ' + (area/10000).toFixed(4) + ' ha' : ''), 'success');
+}
+
 function brnImportCSV(input){
   var fl=input.files&&input.files[0]; if(!fl)return;
   var rd=new FileReader();
@@ -57465,6 +57636,30 @@ function docStamp(html,ref){ try{ if(/doc-qr/.test(html))return html; var f=prin
         <option value="1">100%</option>
         <option value="1.2">120%</option>
       </select>
+    </div>
+  </div>
+</div>
+
+<!-- Modal revue bornes extraites (scan dossier technique) -->
+<div class="modal-overlay" id="modal-scan-bornes">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3>📄 Bornes extraites — Vérification</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-scan-bornes')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="scan-bornes-info" style="font-size:12px;color:var(--blanc-dim);margin-bottom:10px;"></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Borne</th><th style="text-align:right;">X</th><th style="text-align:right;">Y</th><th style="text-align:right;">Z</th><th></th></tr></thead>
+          <tbody id="tbody-scan-bornes"></tbody>
+        </table>
+      </div>
+      <div style="font-size:11px;color:var(--or,#B87333);margin-top:10px;">⚠️ Vérifiez chaque coordonnée avant injection. Corrigez les cellules (clic direct dans la cellule).</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-scan-bornes')">Annuler</button>
+      <button class="btn btn-primary" onclick="brnInjecterScan()" id="btn-injecter-scan">✓ Injecter dans le tableau</button>
     </div>
   </div>
 </div>
