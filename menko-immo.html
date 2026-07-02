@@ -7306,7 +7306,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <div class="table-wrap">
             <table>
               <thead><tr>
-                <th>N° OM</th><th>Type</th><th>Agent</th><th>Objet</th><th>Destination</th>
+                <th>N° OM</th><th>Type</th><th>Chef de mission</th><th>Équipe</th><th>Divisions</th><th>Objet</th><th>Destination</th>
                 <th>Période</th><th>Frais alloués</th><th>Statut</th><th>Actions</th>
               </tr></thead>
               <tbody id="tbody-om"></tbody>
@@ -7331,10 +7331,18 @@ button:focus-visible, input:focus-visible, select:focus-visible {
                   <option value="foncier">🗺️ Portefeuille Foncier</option>
                 </select>
               </div>
-              <div class="form-group"><label>Agent en mission *</label>
-                <select class="form-control" id="om-agent">
+              <div class="form-group span-2"><label>Chef de mission *</label>
+                <select class="form-control" id="om-chef">
                   <option value="">— Sélectionner —</option>
                 </select>
+              </div>
+              <div class="form-group span-2">
+                <label>Équipe de mission (agents participants) *</label>
+                <div id="om-equipe-list" style="max-height:160px;overflow-y:auto;border:1px solid var(--bord);border-radius:var(--r);padding:8px;display:flex;flex-direction:column;gap:4px;"></div>
+              </div>
+              <div class="form-group span-2">
+                <label>Divisions participantes *</label>
+                <div id="om-divisions-list" style="display:flex;flex-wrap:wrap;gap:10px;border:1px solid var(--bord);border-radius:var(--r);padding:10px;"></div>
               </div>
               <div class="form-group" id="om-grp-parcelle" style="display:none;">
                 <label>Parcelle concernée (portefeuille foncier)</label>
@@ -38545,8 +38553,8 @@ function loadPageOrdresMission() {
   renderOrdresMission();
 }
 
-function _omPopulateAgents(selected) {
-  var sel = document.getElementById('om-agent');
+function _omPopulateChef(selected) {
+  var sel = document.getElementById('om-chef');
   if (!sel) return;
   var opts = '<option value="">— Sélectionner —</option>';
   (DATA.employes || []).filter(function(e){ return e.statut === 'actif'; }).forEach(function(e){
@@ -38554,6 +38562,37 @@ function _omPopulateAgents(selected) {
   });
   sel.innerHTML = opts;
   sel.value = selected || '';
+}
+
+function _omPopulateEquipe(selectedIds) {
+  var box = document.getElementById('om-equipe-list');
+  if (!box) return;
+  selectedIds = selectedIds || [];
+  box.innerHTML = (DATA.employes || []).filter(function(e){ return e.statut === 'actif'; }).map(function(e){
+    var checked = selectedIds.indexOf(e.id) !== -1 ? ' checked' : '';
+    return '<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:normal;">'
+      + '<input type="checkbox" class="om-equipe-chk" value="' + e.id + '"' + checked + '> '
+      + escHtml(e.nom + ' ' + e.prenoms) + (e.poste ? ' — ' + escHtml(e.poste) : '') + '</label>';
+  }).join('') || '<div style="color:var(--blanc-dim);font-size:12px;">Aucun employé actif</div>';
+}
+
+function _omPopulateDivisions(selectedIds) {
+  var box = document.getElementById('om-divisions-list');
+  if (!box) return;
+  selectedIds = selectedIds || [];
+  box.innerHTML = (DATA.divisions || []).map(function(d){
+    var checked = selectedIds.indexOf(d.id) !== -1 ? ' checked' : '';
+    return '<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:normal;">'
+      + '<input type="checkbox" class="om-division-chk" value="' + d.id + '"' + checked + '> ' + escHtml(d.nom) + '</label>';
+  }).join('') || '<div style="color:var(--blanc-dim);font-size:12px;">Aucune division créée</div>';
+}
+
+function _omGetEquipeIds() {
+  return Array.prototype.slice.call(document.querySelectorAll('.om-equipe-chk:checked')).map(function(c){ return c.value; });
+}
+
+function _omGetDivisionIds() {
+  return Array.prototype.slice.call(document.querySelectorAll('.om-division-chk:checked')).map(function(c){ return c.value; });
 }
 
 function _omPopulateParcelles(selected) {
@@ -38584,7 +38623,9 @@ function openOrdreMission(id) {
   var o = id ? DATA.ordres_mission.find(function(x){ return x.id === id; }) : null;
   document.getElementById('om-numero').value = o ? o.numero : _omGenererNumero();
   document.getElementById('om-type').value = o ? (o.type || 'prospection') : 'prospection';
-  _omPopulateAgents(o ? o.agent_id : '');
+  _omPopulateChef(o ? o.chef_id : '');
+  _omPopulateEquipe(o ? (o.equipe_ids || []) : []);
+  _omPopulateDivisions(o ? (o.division_ids || []) : []);
   _omPopulateParcelles(o ? o.parcelle_id : '');
   onChangeTypeOM();
   document.getElementById('om-objet').value = o ? (o.objet || '') : '';
@@ -38600,12 +38641,17 @@ function openOrdreMission(id) {
 }
 
 async function saveOrdreMission() {
-  var agentId = document.getElementById('om-agent').value;
+  var chefId = document.getElementById('om-chef').value;
+  var equipeIds = _omGetEquipeIds();
+  var divisionIds = _omGetDivisionIds();
   var objet = document.getElementById('om-objet').value.trim();
   var destination = document.getElementById('om-destination').value.trim();
   var dateDebut = document.getElementById('om-date-debut').value;
   var dateFin = document.getElementById('om-date-fin').value;
-  if (!agentId) { toast('Sélectionnez l\'agent en mission.', 'error'); return; }
+  if (!chefId) { toast('Sélectionnez le chef de mission.', 'error'); return; }
+  if (!equipeIds.length) { toast('Sélectionnez au moins un agent dans l\'équipe.', 'error'); return; }
+  if (equipeIds.indexOf(chefId) === -1) equipeIds.push(chefId);
+  if (!divisionIds.length) { toast('Sélectionnez au moins une division participante.', 'error'); return; }
   if (!objet) { toast('L\'objet de la mission est obligatoire.', 'error'); return; }
   if (!destination) { toast('La destination / zone est obligatoire.', 'error'); return; }
   if (!dateDebut || !dateFin) { toast('Renseignez la période de mission.', 'error'); return; }
@@ -38614,7 +38660,9 @@ async function saveOrdreMission() {
     id: APP.editingOMId || 'om_' + Date.now(),
     numero: document.getElementById('om-numero').value,
     type: document.getElementById('om-type').value,
-    agent_id: agentId,
+    chef_id: chefId,
+    equipe_ids: equipeIds,
+    division_ids: divisionIds,
     parcelle_id: document.getElementById('om-parcelle').value,
     objet: objet,
     destination: destination,
@@ -38651,6 +38699,19 @@ function _omNomAgent(agentId) {
   return e ? (e.nom + ' ' + e.prenoms) : '—';
 }
 
+function _omNomsEquipe(ids) {
+  return (ids || []).map(_omNomAgent).join(', ');
+}
+
+function _omNomDivision(divId) {
+  var d = (DATA.divisions || []).find(function(x){ return x.id === divId; });
+  return d ? d.nom : '—';
+}
+
+function _omNomsDivisions(ids) {
+  return (ids || []).map(_omNomDivision).join(', ');
+}
+
 function renderOrdresMission() {
   var tbody = document.getElementById('tbody-om');
   if (!tbody) return;
@@ -38658,7 +38719,7 @@ function renderOrdresMission() {
   var typeF = document.getElementById('filter-om-type').value;
   var statutF = document.getElementById('filter-om-statut').value;
   var list = (DATA.ordres_mission || []).filter(function(o){
-    var hay = ((o.numero||'') + ' ' + _omNomAgent(o.agent_id) + ' ' + (o.objet||'') + ' ' + (o.destination||'')).toLowerCase();
+    var hay = ((o.numero||'') + ' ' + _omNomsEquipe(o.equipe_ids) + ' ' + (o.objet||'') + ' ' + (o.destination||'')).toLowerCase();
     var matchQ = !q || hay.indexOf(q) !== -1;
     var matchType = !typeF || o.type === typeF;
     var matchStatut = !statutF || o.statut === statutF;
@@ -38670,13 +38731,16 @@ function renderOrdresMission() {
   var statutLabel = { planifiee: 'Planifiée', en_cours: 'En cours', terminee: 'Terminée', annulee: 'Annulée' };
 
   if (!list.length) {
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--blanc-dim);padding:24px;">Aucun ordre de mission</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--blanc-dim);padding:24px;">Aucun ordre de mission</td></tr>';
   } else {
     tbody.innerHTML = list.map(function(o){
+      var nbEquipe = (o.equipe_ids || []).length;
       return '<tr>'
         + '<td><strong style="color:var(--or);">' + o.numero + '</strong></td>'
         + '<td>' + (typeLabel[o.type] || o.type) + '</td>'
-        + '<td>' + escHtml(_omNomAgent(o.agent_id)) + '</td>'
+        + '<td>' + escHtml(_omNomAgent(o.chef_id)) + '</td>'
+        + '<td><span class="badge badge-bleu">' + nbEquipe + ' agent(s)</span></td>'
+        + '<td style="font-size:11px;">' + escHtml(_omNomsDivisions(o.division_ids)) + '</td>'
         + '<td>' + escHtml(o.objet || '—') + '</td>'
         + '<td>' + escHtml(o.destination || '—') + '</td>'
         + '<td>' + dateShort(o.date_debut) + ' → ' + dateShort(o.date_fin) + '</td>'
@@ -38699,9 +38763,9 @@ function renderOrdresMission() {
 }
 
 function exportOrdresMissionCSV() {
-  var rows = ['N° OM,Type,Agent,Objet,Destination,Date début,Date fin,Frais,Statut'];
+  var rows = ['N° OM,Type,Chef mission,Équipe,Divisions,Objet,Destination,Date début,Date fin,Frais,Statut'];
   (DATA.ordres_mission||[]).forEach(function(o){
-    rows.push([o.numero, o.type, _omNomAgent(o.agent_id), o.objet, o.destination, o.date_debut, o.date_fin, o.frais, o.statut].join(','));
+    rows.push([o.numero, o.type, _omNomAgent(o.chef_id), _omNomsEquipe(o.equipe_ids), _omNomsDivisions(o.division_ids), o.objet, o.destination, o.date_debut, o.date_fin, o.frais, o.statut].join(','));
   });
   var blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
   var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
@@ -38714,22 +38778,33 @@ function exportOrdresMissionCSV() {
 function imprimerOrdreMission(id) {
   var o = id ? DATA.ordres_mission.find(function(x){ return x.id === id; }) : null;
   if (!o) { toast('Enregistrez d\'abord l\'ordre de mission.', 'error'); return; }
-  var e = (DATA.employes || []).find(function(x){ return x.id === o.agent_id; });
+  var chef = (DATA.employes || []).find(function(x){ return x.id === o.chef_id; });
+  var equipe = (o.equipe_ids || []).map(function(id2){ return (DATA.employes||[]).find(function(x){ return x.id === id2; }); }).filter(Boolean);
   var params = DATA.params || {};
   var logo = getLogoForPrint ? getLogoForPrint() : '';
   var now = new Date().toLocaleDateString('fr-FR', { year:'numeric', month:'long', day:'numeric' });
-  var nomAgent = e ? escHtml(e.nom + ' ' + e.prenoms) : '—';
+  var nomChef = chef ? escHtml(chef.nom + ' ' + chef.prenoms) : '—';
   var typeLabel = { prospection: 'Prospection commerciale', foncier: 'Portefeuille Foncier' }[o.type] || o.type;
   var transportLabel = { vehicule_societe:'Véhicule de la société', tricycle:'Tricycle', moto:'Moto', transport_commun:'Transport en commun', vehicule_personnel:'Véhicule personnel' }[o.transport] || o.transport;
   var parcelle = o.parcelle_id ? (DATA.parcelles||[]).find(function(p){ return p.id === o.parcelle_id; }) : null;
   var nbJours = Math.max(1, Math.round((new Date(o.date_fin) - new Date(o.date_debut)) / 86400000) + 1);
+  var divisionsNoms = _omNomsDivisions(o.division_ids);
+
+  var equipeRows = equipe.map(function(e){
+    return '<tr><td>' + escHtml(e.nom + ' ' + e.prenoms) + '</td><td>' + escHtml(e.matricule || '—') + '</td><td>' + escHtml(e.poste || '—') + '</td><td>' + escHtml(_omNomDivision(e.division)) + '</td></tr>';
+  }).join('');
+
+  var signBoxes = equipe.map(function(e){
+    return '<div class="sign-box"><p>' + escHtml(e.nom + ' ' + e.prenoms) + (e.id === o.chef_id ? ' (Chef de mission)' : '') + '</p><p style="margin-top:32px;">Signature :<br>___________________________</p></div>';
+  }).join('');
 
   var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Ordre de Mission ' + o.numero + '</title>'
     + '<style>body{font-family:Arial,sans-serif;font-size:12px;padding:32px;color:#1C1C2E;line-height:1.65;}'
     + 'h1{color:#1C1C2E;font-size:17px;text-align:center;margin-bottom:4px;}'
     + 'h2{color:#B87333;font-size:13px;margin-top:22px;border-bottom:1px solid #E0E0EA;padding-bottom:6px;}'
     + 'p{margin:7px 0;} .header{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #B87333;padding-bottom:16px;margin-bottom:22px;}'
-    + '.sign{margin-top:56px;display:grid;grid-template-columns:1fr 1fr;gap:40px;}'
+    + 'table{width:100%;border-collapse:collapse;margin-top:8px;} td,th{padding:6px;border-bottom:1px solid #E0E0EA;font-size:11px;text-align:left;}'
+    + '.sign{margin-top:40px;display:grid;grid-template-columns:repeat(2,1fr);gap:30px;}'
     + '.sign-box{border-top:1px solid #1C1C2E;padding-top:8px;font-size:11px;}'
     + '.no-print{text-align:center;margin-bottom:20px;} .no-print button{padding:9px 20px;background:#B87333;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;}'
     + '@media print{.no-print{display:none;}body{padding:16px;}}</style>'
@@ -38742,19 +38817,20 @@ function imprimerOrdreMission(id) {
     + '<h2>OBJET DE LA MISSION</h2>'
     + '<p><strong>Type de mission :</strong> ' + escHtml(typeLabel) + '</p>'
     + '<p><strong>Objet :</strong> ' + escHtml(o.objet) + '</p>'
+    + '<p><strong>Divisions participantes :</strong> ' + escHtml(divisionsNoms) + '</p>'
     + (parcelle ? '<p><strong>Parcelle concernée :</strong> ' + escHtml(parcelle.ref || parcelle.reference || parcelle.id) + (parcelle.localisation ? ' — ' + escHtml(parcelle.localisation) : '') + '</p>' : '')
-    + '<h2>AGENT EN MISSION</h2>'
-    + '<p><strong>Nom et prénoms :</strong> ' + nomAgent + (e && e.matricule ? ' &nbsp; <strong>Matricule :</strong> ' + escHtml(e.matricule) : '') + '</p>'
-    + '<p><strong>Poste :</strong> ' + escHtml((e && e.poste) || '—') + '</p>'
+    + '<h2>ÉQUIPE DE MISSION (' + equipe.length + ' agent(s)) — Chef : ' + nomChef + '</h2>'
+    + '<table><thead><tr><th>Nom et prénoms</th><th>Matricule</th><th>Poste</th><th>Division</th></tr></thead><tbody>' + equipeRows + '</tbody></table>'
     + '<h2>MODALITÉS DE LA MISSION</h2>'
     + '<p><strong>Destination / Zone :</strong> ' + escHtml(o.destination) + '</p>'
     + '<p><strong>Période :</strong> du ' + dateShort(o.date_debut) + ' au ' + dateShort(o.date_fin) + ' (' + nbJours + ' jour(s))</p>'
     + '<p><strong>Moyen de transport :</strong> ' + escHtml(transportLabel) + '</p>'
     + '<p><strong>Frais de mission alloués :</strong> ' + fmtF(o.frais || 0) + ' FCFA</p>'
     + (o.instructions ? '<h2>INSTRUCTIONS PARTICULIÈRES</h2><p>' + escHtml(o.instructions) + '</p>' : '')
-    + '<p style="margin-top:24px;">Le porteur du présent ordre de mission est prié de faciliter le travail de l\'intéressé(e) et de lui apporter le concours nécessaire à l\'accomplissement de sa mission.</p>'
-    + '<div class="sign"><div class="sign-box"><p>Pour L\'EMPLOYEUR<br>' + escHtml(params.societe || '') + '</p><p style="margin-top:40px;">Signature et cachet :<br>___________________________</p></div>'
-    + '<div class="sign-box"><p>L\'AGENT EN MISSION<br>' + nomAgent + '</p><p style="margin-top:40px;">Signature :<br>___________________________</p></div></div>'
+    + '<p style="margin-top:24px;">Les porteurs du présent ordre de mission sont priés de faciliter le travail des intéressés et de leur apporter le concours nécessaire à l\'accomplissement de leur mission.</p>'
+    + '<h2>SIGNATURES</h2>'
+    + '<div class="sign"><div class="sign-box"><p>Pour L\'EMPLOYEUR<br>' + escHtml(params.societe || '') + '</p><p style="margin-top:32px;">Signature et cachet :<br>___________________________</p></div>'
+    + signBoxes + '</div>'
     + '</body></html>';
 
   var win = window.open('', '_blank');
