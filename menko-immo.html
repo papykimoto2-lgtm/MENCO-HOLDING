@@ -8844,6 +8844,12 @@ button:focus-visible, input:focus-visible, select:focus-visible {
         </div>
 
         <div class="card" id="prev-results"></div>
+
+        <div class="card" style="margin-top:16px;" id="prev-ecart-card">
+          <div class="card-title">🎯 Écart Prévu / Réalisé — Année 1</div>
+          <div style="font-size:11px;color:var(--blanc-dim);margin-bottom:10px;">Compare les hypothèses du scénario au réel du programme lié (Bilan de Promotion). Nécessite un programme sélectionné.</div>
+          <div id="prev-ecart-body"></div>
+        </div>
       </div>
 
       <!-- ══ AMÉNAGEMENT FONCIER ══════════════════════════ -->
@@ -15603,7 +15609,7 @@ async function syncToSupabase(table, obj) {
      on n'écrase pas silencieusement : on journalise le conflit et on alerte.
      Ne s'active que si obj._baseModifie est fourni (édition d'un enregistrement existant) —
      une création ne peut pas être en conflit. */
-  var _STORES_CONFLIT = ['pi_ecritures','pi_factures_client','pi_financements_programme','pi_cessions_foncieres','pi_versements'];
+  var _STORES_CONFLIT = ['pi_ecritures','pi_factures_client','pi_financements_programme','pi_cessions_foncieres','pi_versements','pi_lots','pi_programmes','pi_clients'];
   if (_STORES_CONFLIT.indexOf(table) !== -1 && obj && obj.id && obj._baseModifie && !_pulling && !obj._forceCloture) {
     try {
       var remote = await sbFetch(table + '?id=eq.' + obj.id + '&select=id,_modifie', 'GET');
@@ -17647,6 +17653,7 @@ function openClientModal(id) {
   if (id) {
     var c = DATA.clients.find(function(x) { return x.id === id; });
     if (!c) return;
+    APP._clientBaseModifie = c._modifie || null;
     document.getElementById('modal-client-title').textContent = 'Modifier Souscripteur';
     fillClientForm(c);
     // Boutons documents imprimables
@@ -17797,6 +17804,7 @@ async function saveClient() {
     date_debut: document.getElementById('c-date-debut').value,
     statut: 'actif',
     dossier: _dossier,
+    _baseModifie: APP.editingId ? (APP._clientBaseModifie || null) : null,
     commercial_id: document.getElementById('c-commercial') ? document.getElementById('c-commercial').value : '',
     commercial:    (function(){ var e=document.getElementById('c-commercial'); if(!e||!e.value) return ''; var opt=e.options[e.selectedIndex]; return opt?opt.textContent.trim():''; })(),
     apporteur_id:  document.getElementById('c-apporteur') ? document.getElementById('c-apporteur').value : '',
@@ -19003,6 +19011,7 @@ function openProgrammeModal(id) {
   if (id) {
     var p = DATA.programmes.find(function(x) { return x.id === id; });
     if (!p) return;
+    APP._progBaseModifie = p._modifie || null;
     document.getElementById('modal-prog-title').textContent = 'Modifier Programme';
     ['p-nom','p-localisation','p-nb-lots','p-date-lancement','p-date-livraison','p-description'].forEach(function(field) {
       var key = field.replace('p-', '').replace(/-([a-z])/g, function(m, l) { return l.toUpperCase(); });
@@ -19055,6 +19064,7 @@ async function saveProgramme() {
     date_livraison: document.getElementById('p-date-livraison').value,
     parcelle_id: document.getElementById('p-parcelle-id').value,
     description: document.getElementById('p-description').value,
+    _baseModifie: APP.editingId ? (APP._progBaseModifie || null) : null,
     created_at: APP.editingId ? undefined : today()
   };
   if (APP.editingId) {
@@ -20189,6 +20199,7 @@ function openLotModal(id) {
   if (id) {
     var l = DATA.lots.find(function(x) { return x.id === id; });
     if (!l) return;
+    APP._lotBaseModifie = l._modifie || null;
     document.getElementById('modal-lot-title').textContent = 'Modifier Lot';
     document.getElementById('l-programme').value = l.programme_id || '';
     if (typeof filierePopulateLotSelects==='function') filierePopulateLotSelects(l.parcelle_id||'', l.operation_id||'');
@@ -20280,6 +20291,7 @@ async function saveLot() {
     nature: (document.getElementById('l-nature')||{}).value || 'villa',
     statut: document.getElementById('l-statut').value,
     notes: document.getElementById('l-notes').value,
+    _baseModifie: APP.editingId ? (APP._lotBaseModifie || null) : null,
     created_at: APP.editingId ? undefined : today()
   };
   if (APP.editingId) {
@@ -20637,7 +20649,7 @@ function renderConflitsSync() {
   var el = document.getElementById('conflits-sync-list'); if (!el) return;
   var list = (DATA.conflits_sync || []).filter(function(c){ return !c.resolu; });
   if (!list.length) { el.innerHTML = '<div style="font-size:12px;color:var(--vert);">✅ Aucun conflit en attente.</div>'; return; }
-  var reopenFn = { ecritures:'openEcritureModal', factures_client:'imprimerFactureFNE', financements_programme:'bpEditFinancement', cessions_foncieres:'cesOpen' };
+  var reopenFn = { ecritures:'openEcritureModal', factures_client:'imprimerFactureFNE', financements_programme:'bpEditFinancement', cessions_foncieres:'cesOpen', lots:'openLotModal', programmes:'openProgrammeModal', clients:'openClientModal' };
   el.innerHTML = list.map(function(c){
     var e = c.local_snapshot || {};
     var label = e.libelle || e.designation || e.client || e.numero || c.record_id;
@@ -29509,14 +29521,31 @@ function immoSocCalc(im, year) {
   var y = parseInt(year) || new Date().getFullYear();
   var base = (parseFloat(im.valeur_acquisition)||0) - (parseFloat(im.valeur_residuelle)||0);
   var duree = parseInt(im.duree_ans) || 5;
-  var dotationAnnuelle = duree > 0 ? Math.round(base / duree) : 0;
+  var methode = im.methode || 'lineaire';
   var anneesEcoulees = Math.max(0, Math.min(duree, y - anneeAcq + 1));
-  var cumulAmort = Math.min(base, dotationAnnuelle * anneesEcoulees);
-  var vnc = (parseFloat(im.valeur_acquisition)||0) - cumulAmort;
+  var dotationAnnuelle, cumulAmort;
+  if (methode === 'degressif') {
+    var coeff = duree <= 4 ? 1.5 : (duree <= 6 ? 2 : 2.5); /* barème CGI CI usuel */
+    var vnc = base, cumul = 0, dotAnnee = 0;
+    for (var yy = anneeAcq; yy <= y && yy < anneeAcq + duree; yy++) {
+      var resteAns = duree - (yy - anneeAcq);
+      var tauxDeg = Math.min(1, (1/duree) * coeff);
+      var tauxLin = 1/resteAns;
+      var taux = Math.max(tauxDeg, tauxLin); /* bascule au linéaire quand plus favorable */
+      var dot = Math.round(vnc * taux);
+      if (yy === y) dotAnnee = dot;
+      cumul += dot; vnc -= dot;
+    }
+    dotationAnnuelle = dotAnnee; cumulAmort = Math.min(base, cumul);
+  } else {
+    dotationAnnuelle = duree > 0 ? Math.round(base / duree) : 0;
+    cumulAmort = Math.min(base, dotationAnnuelle * anneesEcoulees);
+  }
+  var vncFinale = (parseFloat(im.valeur_acquisition)||0) - cumulAmort;
   var estAmortiPourAnnee = anneeAcq <= y && (y - anneeAcq) < duree;
   var dejaGenere = (im.dotations_generees||[]).indexOf(y) !== -1;
-  return { dotationAnnuelle:dotationAnnuelle, cumulAmort:cumulAmort, vnc:Math.max(0,vnc), anneesEcoulees:anneesEcoulees,
-    duree:duree, base:base, estAmortiPourAnnee:estAmortiPourAnnee, dejaGenere:dejaGenere, anneeAcq:anneeAcq };
+  return { dotationAnnuelle:dotationAnnuelle, cumulAmort:cumulAmort, vnc:Math.max(0,vncFinale), anneesEcoulees:anneesEcoulees,
+    duree:duree, base:base, methode:methode, estAmortiPourAnnee:estAmortiPourAnnee, dejaGenere:dejaGenere, anneeAcq:anneeAcq };
 }
 
 function renderImmoSociete() {
@@ -29534,7 +29563,7 @@ function renderImmoSociete() {
     totVA += parseFloat(im.valeur_acquisition)||0; totVNC += c.vnc;
     if (c.estAmortiPourAnnee) totDotAnnee += c.dotationAnnuelle;
     return '<tr>'
-      + '<td><strong>' + escHtml(im.designation) + '</strong><br><span style="font-size:10px;color:var(--dim);">Cpte ' + escHtml(im.compte||'21') + '</span></td>'
+      + '<td><strong>' + escHtml(im.designation) + '</strong><br><span style="font-size:10px;color:var(--dim);">Cpte ' + escHtml(im.compte||'21') + ' · ' + (c.methode==='degressif'?'Dégressif':'Linéaire') + '</span></td>'
       + '<td>' + dateShort(im.date_acquisition) + '</td>'
       + '<td style="text-align:right;">' + fmtF(im.valeur_acquisition) + '</td>'
       + '<td style="text-align:right;">' + c.duree + ' ans</td>'
@@ -29563,10 +29592,11 @@ function openImmoSocieteModal(id) {
     var im = (DATA.immobilisations||[]).find(function(x){ return x.id===id; }); if (!im) return;
     sv('is-designation', im.designation); sv('is-compte', im.compte); sv('is-valeur', im.valeur_acquisition);
     sv('is-date', im.date_acquisition); sv('is-duree', im.duree_ans); sv('is-residuelle', im.valeur_residuelle||0);
+    sv('is-methode', im.methode||'lineaire');
     document.getElementById('modal-immo-soc-title').textContent = 'Modifier immobilisation';
   } else {
     ['is-designation','is-compte','is-valeur','is-date','is-duree','is-residuelle'].forEach(function(i){ sv(i,''); });
-    sv('is-date', today()); sv('is-compte','21'); sv('is-residuelle','0');
+    sv('is-date', today()); sv('is-compte','21'); sv('is-residuelle','0'); sv('is-methode','lineaire');
     document.getElementById('modal-immo-soc-title').textContent = 'Nouvelle immobilisation';
   }
   document.getElementById('modal-immo-soc').classList.add('open');
@@ -29589,6 +29619,7 @@ async function saveImmoSociete() {
   im.designation = designation; im.compte = gv('is-compte') || '21';
   im.valeur_acquisition = valeur; im.date_acquisition = gv('is-date') || today();
   im.duree_ans = duree; im.valeur_residuelle = parseFloat(gv('is-residuelle')) || 0;
+  im.methode = gv('is-methode') || 'lineaire';
   await dbPut('immobilisations', im);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_immobilisations', im);
   closeModal('modal-immo-soc');
@@ -41794,6 +41825,28 @@ function _prevCompute(s) {
       van: van, tri: tri, payback: payback, roi: roi, tauxActu: rAct, capEngage: capEngage } };
 }
 
+function prevRenderEcart(s, c) {
+  var box = document.getElementById('prev-ecart-body'); if (!box) return;
+  if (!s.programme_id || typeof bpCompute !== 'function') {
+    box.innerHTML = '<div style="color:var(--dim);font-size:12px;padding:8px;">Sélectionnez un programme lié pour comparer au réel.</div>'; return;
+  }
+  var real = bpCompute(s.programme_id);
+  var y1 = c.years[0] || {};
+  var row = function(l, prevu, reel, inverse){
+    var ecart = reel - prevu;
+    var pct = prevu !== 0 ? (ecart / Math.abs(prevu) * 100) : 0;
+    var bon = inverse ? ecart <= 0 : ecart >= 0;
+    return '<tr><td>' + l + '</td><td style="text-align:right;">' + fmtF(prevu) + '</td><td style="text-align:right;font-weight:700;">' + fmtF(reel) + '</td>'
+      + '<td style="text-align:right;color:' + (bon?'var(--vert)':'var(--rouge)') + ';font-weight:700;">' + (ecart>=0?'+':'') + fmtF(ecart) + ' (' + pct.toFixed(0) + '%)</td></tr>';
+  };
+  box.innerHTML = '<div class="table-wrap"><table style="width:100%;font-size:12px;"><thead><tr><th>Indicateur</th><th style="text-align:right;">Prévu (an 1)</th><th style="text-align:right;">Réalisé (cumulé)</th><th style="text-align:right;">Écart</th></tr></thead><tbody>'
+    + row('Chiffre d\'affaires', y1.CA||0, real.produits, false)
+    + row('Coûts (foncier+travaux)', (y1.prodCost||0), real.couts, true)
+    + row('Résultat / Marge', y1.rNet||0, real.marge, false)
+    + '</tbody></table></div>'
+    + '<div style="font-size:11px;color:var(--dim);margin-top:8px;">Réalisé = cumulé depuis lancement (Bilan de Promotion). Prévu = hypothèses année 1 du scénario.</div>';
+}
+
 /* ============ UI ============ */
 function loadPrevisionnel() {
   if (!DATA.previsionnels) DATA.previsionnels = [];
@@ -42073,6 +42126,7 @@ function prevRender() {
     + 'Capacité de remboursement = ' + r.capaRemb.toFixed(2) + 'x · Capitaux engagés = ' + fmtF(r.capEngage) + ' F</div>';
 
   box.innerHTML = verdict + kpis + chartCA + chartTreso + exploit + resultat + planfin + treso + alerte + ratiosBox;
+  prevRenderEcart(s, c);
 }
 
 /* ---- Helpers PDF ---- */
@@ -60048,6 +60102,12 @@ function imprimerFactureFNE(facId) {
         <div class="form-group"><label>Date d'acquisition *</label><input type="date" class="form-control" id="is-date"></div>
         <div class="form-group"><label>Valeur d'acquisition (FCFA) *</label><input type="number" class="form-control" id="is-valeur"></div>
         <div class="form-group"><label>Durée d'amortissement (années) *</label><input type="number" class="form-control" id="is-duree" placeholder="5"></div>
+        <div class="form-group"><label>Méthode</label>
+          <select class="form-control" id="is-methode">
+            <option value="lineaire">Linéaire</option>
+            <option value="degressif">Dégressif (coeff. CGI)</option>
+          </select>
+        </div>
         <div class="form-group span-2"><label>Valeur résiduelle (FCFA)</label><input type="number" class="form-control" id="is-residuelle" value="0"></div>
       </div>
     </div>
