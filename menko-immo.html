@@ -16234,11 +16234,24 @@ function stopInactivityTimer() {
 /* ──────────────────────────────────────────────────────
    AUTH
 ────────────────────────────────────────────────────── */
-function showLogin() {
+async function showLogin() {
   document.getElementById('login-screen').style.display = 'flex';
   document.getElementById('app').style.display = 'none';
-  // Si aucun utilisateur : afficher la création du 1er admin
   var aucunUser = !DATA.users || DATA.users.length === 0;
+  /* Sécurité : base locale vide sur un nouveau navigateur ne signifie PAS
+     absence d'admin. Vérifier le cloud avant d'ouvrir la création d'admin,
+     sinon un tiers pourrait créer un admin sur une instance déjà déployée. */
+  if (aucunUser && SB.url && SB.key && navigator.onLine) {
+    try {
+      var rows = await sbFetch('pi_users?select=id&limit=1', 'GET');
+      if (rows && rows.length) {
+        aucunUser = false;
+        var errBox = document.getElementById('login-error');
+        if (errBox) { errBox.textContent = 'Compte(s) existant(s) — connectez-vous. Données en cours de synchronisation.'; errBox.style.display = 'block'; }
+        if (typeof loadAllData === 'function') { try { await loadAllData(); } catch(e){} }
+      }
+    } catch(e) {}
+  }
   var lf = document.getElementById('login-form');
   var sf = document.getElementById('setup-form');
   if (lf) lf.style.display = aucunUser ? 'none' : 'block';
@@ -46301,6 +46314,18 @@ authentifierSouscripteur = async function() {
     var show = function(m){ if(errEl){errEl.textContent=m;errEl.style.display='block';} };
     if(errEl) errEl.style.display='none';
     if (DATA.users && DATA.users.length > 0) { showLogin(); return; }
+    /* Garde anti-usurpation : refuser si admin existe déjà côté cloud */
+    if (SB.url && SB.key && navigator.onLine) {
+      try {
+        var _ex = await sbFetch('pi_users?select=id&limit=1', 'GET');
+        if (_ex && _ex.length) {
+          show('Un administrateur existe déjà. Connectez-vous.');
+          if (typeof loadAllData === 'function') { try { await loadAllData(); } catch(e){} }
+          showLogin();
+          return;
+        }
+      } catch(e) {}
+    }
     var nom   = ((document.getElementById('setup-nom')||{}).value||'').trim();
     var login = ((document.getElementById('setup-login')||{}).value||'').trim();
     var p1    = (document.getElementById('setup-pass')||{}).value||'';
