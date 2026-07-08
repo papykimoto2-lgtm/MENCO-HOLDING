@@ -6541,6 +6541,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
         <div class="tab-pane" id="tab-foncier-cessions">
           <div class="filters-bar" style="margin-bottom:12px;">
             <input type="text" class="search-input" placeholder="🔍 Acquéreur, source, désignation..." id="ces-search" oninput="cesRender()" style="flex:1;min-width:160px;">
+            <button class="btn btn-secondary btn-sm" onclick="backfillEcrituresCessions()" title="Génère les écritures comptables manquantes pour les cessions déjà saisies">🧾 Générer écritures manquantes</button>
             <button class="btn btn-primary btn-sm" onclick="cesNew()">+ Nouvelle cession</button>
           </div>
           <div id="ces-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px;"></div>
@@ -53288,6 +53289,24 @@ async function cesGenererEcriture(c) {
     if (typeof syncToSupabase==='function') syncToSupabase('pi_ecritures', eenc);
     c.ecriture_enc_id=eenc.id;
   }
+}
+
+/* ── RATTRAPAGE : génère les écritures manquantes pour les cessions saisies AVANT ce correctif ── */
+async function backfillEcrituresCessions() {
+  var manquantes = (DATA.cessions_foncieres || []).filter(function(c) { return !c.ecriture_vente_id; });
+  if (!manquantes.length) { toast('Aucune écriture manquante — tout est déjà à jour.', 'success'); return; }
+  if (!confirm(manquantes.length + ' cession(s) sans écriture comptable détectée(s).\nGénérer les écritures (4111/701 + encaissement + sortie de stock) maintenant ?')) return;
+  for (var i = 0; i < manquantes.length; i++) {
+    await cesGenererEcriture(manquantes[i]);
+    await dbPut('cessions_foncieres', manquantes[i]);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_cessions_foncieres', manquantes[i]);
+  }
+  if (typeof filterEcritures === 'function') filterEcritures();
+  if (typeof buildBalance === 'function') buildBalance();
+  if (typeof buildGrandLivre === 'function') buildGrandLivre();
+  if (typeof buildBilan === 'function') buildBilan();
+  if (typeof buildCompteResultat === 'function') buildCompteResultat();
+  toast(manquantes.length + ' écriture(s) générée(s) — Journal, Balance, Bilan et Grand Livre mis à jour.', 'success');
 }
 
 async function cesSave() {
