@@ -2792,12 +2792,19 @@ button:focus-visible, input:focus-visible, select:focus-visible {
         <div class="tab-pane" id="tab-compta-versements">
           <div class="card" style="margin-bottom:12px;">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
-              <div><strong>Versements souscripteurs</strong><div style="font-size:12px;color:var(--blanc-dim);">Modifier un versement recalcule automatiquement les commissions liées (extourne + régénération).</div></div>
-              <input type="text" class="search-input" id="compta-vers-search" placeholder="🔍 Réf, souscripteur..." oninput="renderComptaVersements()" style="min-width:200px;">
+              <div><strong>Versements souscripteurs</strong><div style="font-size:12px;color:var(--blanc-dim);">Modifier un versement recalcule automatiquement les commissions liées (extourne + régénération). Vue unifiée : versements sur lots (programmes) et encaissements sur cessions foncières.</div></div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                <select class="filter-select" id="compta-vers-filtre" onchange="renderComptaVersements()">
+                  <option value="">Tous les versements</option>
+                  <option value="lot">🏠 Lots (programmes)</option>
+                  <option value="cession">🏞️ Foncier (cessions)</option>
+                </select>
+                <input type="text" class="search-input" id="compta-vers-search" placeholder="🔍 Réf, souscripteur / acquéreur..." oninput="renderComptaVersements()" style="min-width:200px;">
+              </div>
             </div>
           </div>
           <div class="card"><div class="table-wrap"><table>
-            <thead><tr><th>Réf</th><th>Date</th><th>Souscripteur</th><th>Type</th><th style="text-align:right;">Montant</th><th>Mode</th><th>Commissions liées</th><th></th></tr></thead>
+            <thead><tr><th>Réf</th><th>Date</th><th>Souscripteur / Acquéreur</th><th>Type</th><th style="text-align:right;">Montant</th><th>Mode</th><th>Commissions liées</th><th></th></tr></thead>
             <tbody id="tbody-compta-versements"></tbody>
           </table></div></div>
         </div>
@@ -51467,45 +51474,107 @@ function editVersement(id) {
 /* ══════════════════════════════════════════════════════════
    COMPTABILITÉ — Onglet Versements souscripteurs (éditable)
    Modifier ici recalcule les commissions liées (extourne + régén.)
+   Vue unifiée depuis v6.1 : inclut aussi les encaissements sur
+   cessions foncières (DATA.cessions_foncieres[].paiements), qui
+   étaient auparavant invisibles dans cet onglet (store séparé,
+   commissions liées via cession_id et non versement_id).
 ══════════════════════════════════════════════════════════ */
 function renderComptaVersements() {
   var tb = document.getElementById('tbody-compta-versements');
   if (!tb) return;
   var q = ((document.getElementById('compta-vers-search') || {}).value || '').toLowerCase();
+  var filtreSrc = (document.getElementById('compta-vers-filtre') || {}).value || '';
   var typeLabels = { frais_souscription:'Frais souscription', apport:'Apport', mensualite:'Mensualité', regularisation:'Régularisation', autre:'Autre' };
   var modeLabels = { especes:'Espèces', virement:'Virement', cheque:'Chèque', mobile_money:'Mobile Money' };
   var fmt = (typeof fcfa === 'function') ? fcfa : function(n){ return fmtF(n) + ' FCFA'; };
   var dts = (typeof dateShort === 'function') ? dateShort : function(d){ return d || '—'; };
 
-  var list = (DATA.versements || []).filter(function(v) {
-    var cl = (DATA.clients || []).find(function(c){ return c.id === v.client_id; });
-    var nom = cl ? (cl.nom + ' ' + (cl.prenoms || '')).toLowerCase() : '';
-    return !q || nom.indexOf(q) !== -1 || (v.ref || '').toLowerCase().indexOf(q) !== -1;
-  }).sort(function(a, b){ return new Date(b.date) - new Date(a.date); });
-
-  if (!list.length) { tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--blanc-dim);padding:20px;">Aucun versement</td></tr>'; return; }
-
-  tb.innerHTML = list.map(function(v) {
+  /* ── 1) Versements souscripteurs de lots (programmes) ── */
+  var lignesLot = (DATA.versements || []).map(function(v) {
     var cl = (DATA.clients || []).find(function(c){ return c.id === v.client_id; });
     var nom = cl ? (cl.nom + ' ' + (cl.prenoms || '')) : '—';
     var comms = (DATA.commissions || []).filter(function(c){ return c.versement_id === v.id && c.statut !== 'annulee'; });
     var totComm = comms.reduce(function(s, c){ return s + (c.montant_comm || 0); }, 0);
     var payee = comms.some(function(c){ return c.statut === 'payee'; });
-    var commTxt = comms.length
-      ? (fmt(totComm) + ' <span style="font-size:11px;color:var(--blanc-dim);">(' + comms.length + ')' + (payee ? ' 🔒payée' : '') + '</span>')
+    return {
+      ref: v.ref, date: v.date, nom: nom,
+      typeTxt: typeLabels[v.type] || v.type || '—', typeBadge: 'badge-bleu',
+      montant: parseFloat(v.montant) || 0, mode: modeLabels[v.mode] || v.mode || '—',
+      commCount: comms.length, commTot: totComm, commPayee: payee, commNote: '',
+      source: 'lot', srcIcon: '🏠', srcTitle: 'Souscripteur — lot / programme',
+      editAction: "editVersement('" + v.id + "')",
+      editTitle: 'Modifier (recalcule les commissions)'
+    };
+  });
+
+  /* ── 2) Encaissements sur cessions foncières (acquéreurs de parcelles/lots) ──
+     Les commissions d'une cession sont calculées une seule fois sur le prix
+     total de cession (cesGenererCommissions, clé cession_id), pas versement
+     par versement. On les affiche donc uniquement sur le dernier paiement
+     enregistré pour la cession, avec la mention « · cession », pour éviter
+     tout double comptage visuel. */
+  var lignesFoncier = [];
+  (DATA.cessions_foncieres || []).forEach(function(c) {
+    var ps = (c.paiements || []).slice().sort(function(a, b){ return new Date(a.date) - new Date(b.date); });
+    if (!ps.length) return;
+    var commsCession = (DATA.commissions || []).filter(function(x){ return x.cession_id === c.id && x.statut !== 'annulee'; });
+    var totCommCession = commsCession.reduce(function(s, x){ return s + (x.montant_comm || 0); }, 0);
+    var payeeCession = commsCession.some(function(x){ return x.statut === 'payee'; });
+    ps.forEach(function(p, idx) {
+      var dernier = (idx === ps.length - 1);
+      lignesFoncier.push({
+        ref: p.ref || ('CES-' + String(c.id).slice(-6).toUpperCase()), date: p.date,
+        nom: c.acquereur || '—', typeTxt: 'Cession foncière', typeBadge: 'badge-violet',
+        montant: parseFloat(p.montant) || 0, mode: modeLabels[p.mode] || p.mode || '—',
+        commCount: dernier ? commsCession.length : 0,
+        commTot: dernier ? totCommCession : 0,
+        commPayee: payeeCession, commNote: dernier && commsCession.length ? ' · cession' : '',
+        source: 'cession', srcIcon: '🏞️', srcTitle: 'Acquéreur — cession foncière',
+        editAction: "editCessionPaiement('" + c.id + "','" + p.id + "')",
+        editTitle: 'Ouvrir dans Foncier › Recouvrement'
+      });
+    });
+  });
+
+  var base = filtreSrc === 'lot' ? lignesLot
+           : filtreSrc === 'cession' ? lignesFoncier
+           : lignesLot.concat(lignesFoncier);
+
+  var list = base.filter(function(r) {
+    return !q || (r.nom || '').toLowerCase().indexOf(q) !== -1 || (r.ref || '').toLowerCase().indexOf(q) !== -1;
+  }).sort(function(a, b){ return new Date(b.date) - new Date(a.date); });
+
+  if (!list.length) { tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--blanc-dim);padding:20px;">Aucun versement</td></tr>'; return; }
+
+  tb.innerHTML = list.map(function(r) {
+    var commTxt = r.commCount
+      ? (fmt(r.commTot) + ' <span style="font-size:11px;color:var(--blanc-dim);">(' + r.commCount + ')' + (r.commPayee ? ' 🔒payée' : '') + r.commNote + '</span>')
       : '<span style="color:var(--blanc-dim);">—</span>';
     return '<tr>'
-      + '<td><strong>' + (v.ref || '—') + '</strong></td>'
-      + '<td>' + dts(v.date) + '</td>'
-      + '<td>' + nom + '</td>'
-      + '<td><span class="badge badge-bleu">' + (typeLabels[v.type] || v.type || '—') + '</span></td>'
-      + '<td style="text-align:right;color:var(--vert);font-weight:bold;">' + fmt(v.montant) + '</td>'
-      + '<td>' + (modeLabels[v.mode] || v.mode || '—') + '</td>'
+      + '<td><span title="' + r.srcTitle + '">' + r.srcIcon + '</span> <strong>' + (r.ref || '—') + '</strong></td>'
+      + '<td>' + dts(r.date) + '</td>'
+      + '<td>' + r.nom + '</td>'
+      + '<td><span class="badge ' + r.typeBadge + '">' + r.typeTxt + '</span></td>'
+      + '<td style="text-align:right;color:var(--vert);font-weight:bold;">' + fmt(r.montant) + '</td>'
+      + '<td>' + r.mode + '</td>'
       + '<td style="font-size:12px;">' + commTxt + '</td>'
       + '<td style="white-space:nowrap;text-align:right;">'
-      + '<button class="btn btn-secondary btn-sm btn-icon" onclick="editVersement(\'' + v.id + '\')" title="Modifier (recalcule les commissions)">✎</button>'
+      + '<button class="btn btn-secondary btn-sm btn-icon" onclick="' + r.editAction + '" title="' + r.editTitle + '">✎</button>'
       + '</td></tr>';
   }).join('');
+}
+
+/* Ouvre le paiement d'une cession foncière depuis la vue unifiée.
+   Contrairement à editVersement (lots), une cession n'a pas de recalcul de
+   commission par versement individuel : la commission est fixée une seule
+   fois sur le prix total de cession. On redirige donc vers l'échéancier
+   de la cession (Foncier › Recouvrement), où le versement peut être
+   consulté / supprimé si besoin. */
+function editCessionPaiement(cessionId, paiementId) {
+  goTo('foncier');
+  if (typeof switchTab === 'function') switchTab('foncier', 'recouvrement');
+  if (typeof crecRender === 'function') crecRender();
+  if (typeof crecOpenPlan === 'function') crecOpenPlan(cessionId);
 }
 
 
