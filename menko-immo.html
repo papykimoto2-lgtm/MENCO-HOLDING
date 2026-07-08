@@ -17158,8 +17158,12 @@ function refreshDashboard() {
     new Date().toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
   var _pmin = getDashPeriodeFilter();
-  var totalVerse = DATA.versements.filter(function(v){return !_pmin || (v.date||'')>=_pmin;}).reduce(function(a,v){return a+(parseFloat(v.montant)||0);},0);
-  var totalDu    = DATA.clients.reduce(function(a,c){return a+(parseFloat(c.montant_total)||0);},0);
+  var _cesAll = DATA.cessions_foncieres || [];
+  var totalVerseVte = DATA.versements.filter(function(v){return !_pmin || (v.date||'')>=_pmin;}).reduce(function(a,v){return a+(parseFloat(v.montant)||0);},0);
+  var totalVerseCes = typeof calcCessionsTotal==='function' ? calcCessionsTotal('montant_encaisse', function(c){return !_pmin || (c.date||'')>=_pmin;}) : 0;
+  var totalVerse = totalVerseVte + totalVerseCes;
+  var totalDu    = DATA.clients.reduce(function(a,c){return a+(parseFloat(c.montant_total)||0);},0)
+                  + _cesAll.reduce(function(a,c){return a+(parseFloat(c.prix_cession)||0);},0);
   var encours    = Math.max(0, totalDu-totalVerse);
   var lotsVendus = DATA.lots.filter(function(l){return l.statut==='vendu';}).length;
   var lotsDispo  = DATA.lots.filter(function(l){return l.statut==='disponible';}).length;
@@ -17170,8 +17174,10 @@ function refreshDashboard() {
   var now = new Date(); var prev = new Date(now.getFullYear(),now.getMonth()-1,1);
   var moisCourant = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
   var moisPrec    = prev.getFullYear()+'-'+String(prev.getMonth()+1).padStart(2,'0');
-  var caM  = DATA.versements.filter(function(v){return (v.date||'').startsWith(moisCourant);}).reduce(function(s,v){return s+v.montant;},0);
-  var caMP = DATA.versements.filter(function(v){return (v.date||'').startsWith(moisPrec);}).reduce(function(s,v){return s+v.montant;},0);
+  var caM  = DATA.versements.filter(function(v){return (v.date||'').startsWith(moisCourant);}).reduce(function(s,v){return s+v.montant;},0)
+           + (typeof calcCessionsTotal==='function' ? calcCessionsTotal('montant_encaisse', function(c){return (c.date||'').startsWith(moisCourant);}) : 0);
+  var caMP = DATA.versements.filter(function(v){return (v.date||'').startsWith(moisPrec);}).reduce(function(s,v){return s+v.montant;},0)
+           + (typeof calcCessionsTotal==='function' ? calcCessionsTotal('montant_encaisse', function(c){return (c.date||'').startsWith(moisPrec);}) : 0);
   var deltaCA = caMP>0?Math.round((caM-caMP)/caMP*100):0;
 
   // Remplir KPI grid dynamiquement
@@ -17179,8 +17185,8 @@ function refreshDashboard() {
   if (kpiEl) kpiEl.innerHTML = [
     {l:'CA Encaissé total', v:fmtF(totalVerse)+' FCFA', i:'💰', c:'kpi-green',
      d:(deltaCA>=0?'▲ +':'▼ ')+Math.abs(deltaCA)+'% vs mois préc.'},
-    {l:'Encours clients (411)', v:fmtF(encours)+' FCFA', i:'⏳', c:encours>100000000?'kpi-red':'',
-     d:DATA.clients.length+' souscripteurs actifs'},
+    {l:'Encours global (411+4111)', v:fmtF(encours)+' FCFA', i:'⏳', c:encours>100000000?'kpi-red':'',
+     d:DATA.clients.length+' souscripteurs + '+_cesAll.length+' cession(s)'},
     {l:'Lots vendus', v:lotsVendus+' / '+DATA.lots.length, i:'🏠', c:'kpi-copper',
      d:lotsDispo+' lots encore disponibles'},
     {l:'Taux de recouvrement', v:tauxRecouv+'%', i:'📈', c:tauxRecouv>=50?'kpi-green':tauxRecouv>=30?'':'kpi-red',
