@@ -6604,10 +6604,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
         </div>
       </div>
 
-      <!-- ── MODAL : Encaisser un versement ── -->
+      <!-- ── MODAL : Encaisser / Modifier un versement ── -->
       <div class="modal-overlay" id="modal-crec-paiement">
         <div class="modal" style="max-width:520px;">
-          <div class="modal-header"><div class="modal-title">💵 Encaisser — <span id="crecp-acq"></span></div><button class="modal-close" onclick="closeModal('modal-crec-paiement')">✕</button></div>
+          <div class="modal-header"><div class="modal-title" id="crecp-modal-title">💵 Encaisser — <span id="crecp-acq"></span></div><button class="modal-close" onclick="closeModal('modal-crec-paiement')">✕</button></div>
           <div class="modal-body">
             <div class="alert alert-info" style="margin-bottom:12px;">Reste à recouvrer : <strong id="crecp-reste"></strong></div>
             <div class="form-grid">
@@ -6620,7 +6620,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal('modal-crec-paiement')">Annuler</button>
-            <button class="btn btn-primary" onclick="crecSavePaiement()">💾 Encaisser + écriture</button>
+            <button class="btn btn-primary" id="btn-save-crecp" onclick="crecSavePaiement()">💾 Encaisser + écriture</button>
           </div>
         </div>
       </div>
@@ -39845,6 +39845,19 @@ function _a360Metrics() {
   var parcelles = DATA.parcelles || [];
   var valeurFoncier = parcelles.reduce(function(s,p){ return s+((p.prix_acq||0)+(p.frais_mutation||0)+(p.frais_bornage||0)+(p.frais_notaire||0)); }, 0);
 
+  /* ── Fusion des totaux lots + foncier ──
+     caPortef/encaisse/txRecouv (et le poids paie qui en dépend) sont
+     désormais des totaux GLOBAUX incluant les cessions foncières, dont
+     l'encaissement réel est suivi via c.montant_encaisse (maintenu à jour
+     par crecSavePaiement). Le détail lots-seul reste disponible via
+     caPortefLots / encaisseLots / txRecouvLots pour qui veut la distinction. */
+  var encaisseCessions = cessions.reduce(function(s,c){ return s+(parseFloat(c.montant_encaisse)||0); }, 0);
+  var caPortefLots = caPortef, encaisseLots = encaisse, txRecouvLots = txRecouv;
+  caPortef = caPortefLots + caCessions;
+  encaisse = encaisseLots + encaisseCessions;
+  txRecouv = caPortef > 0 ? Math.round(encaisse / caPortef * 100) : 0;
+  poidsSalaireEncaisse = encaisse > 0 ? Math.round(ms.coutEmployeur / encaisse * 100) : 0;
+
   var facturesFNE = DATA.factures_client || [];
   var fneACertifier = facturesFNE.filter(function(f){ return f.statut_fne === 'a_certifier'; }).length;
   var fneActif = (DATA.params||{}).fne_actif === 'oui';
@@ -39862,6 +39875,7 @@ function _a360Metrics() {
   return {
     nbClients: clients.length, nbLeads: leads.length, leadsActifs: leadsActifs,
     caPortef: caPortef, encaisse: encaisse, txRecouv: txRecouv, txConv: txConv,
+    caPortefLots: caPortefLots, encaisseLots: encaisseLots, txRecouvLots: txRecouvLots,
     nbRetard: retard.length, montantRetard: montantRetard, topRetard: retard.slice().sort(function(a,b){return b.montantDu-a.montantDu;}).slice(0,5),
     convEnCours: convEnCours.length, chantiersRetard: chantiersRetard.length, avgAvancement: avgAvancement,
     lotsVendus: lotsVendus, lotsTotal: lotsTotal, tauxVente: tauxVente, progInvendus: progInvendus, nbProgrammes: programmes.length,
@@ -39873,7 +39887,7 @@ function _a360Metrics() {
     coutEmployeur: ms.coutEmployeur, poidsSalaireEncaisse: poidsSalaireEncaisse,
     /* v132 */
     progDeficitaires: progDeficitaires, cashNetGlobal: cashNetGlobal, couvFinanceMin: Math.round(couvFinanceMin),
-    caCessions: caCessions, nbCessions: cessions.length, valeurFoncier: valeurFoncier, nbParcelles: parcelles.length,
+    caCessions: caCessions, encaisseCessions: encaisseCessions, nbCessions: cessions.length, valeurFoncier: valeurFoncier, nbParcelles: parcelles.length,
     fneACertifier: fneACertifier, fneActif: fneActif, nbFactures: facturesFNE.length,
     coutJournaliers: coutJournaliers, nbQuinzMois: quinzMois.length, contratsExp30: contratsExp30
   };
@@ -40021,10 +40035,16 @@ function buildAnalyse360() {
     // Tableau de bord 360
     +'<div style="font-size:13px;font-weight:700;color:#1C1C2E;margin-bottom:10px;">📊 Tableau de bord 360°</div>'
     +'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px;">'
-    +kpi('CA portefeuille', fmtF(m.caPortef)+' F', '#B87333')
-    +kpi('Encaissé', fmtF(m.encaisse)+' F', '#10B981')
+    +kpi('CA portefeuille', fmtF(m.caPortef)+' F', '#B87333', 'lots + foncier')
+    +kpi('Encaissé', fmtF(m.encaisse)+' F', '#10B981', 'lots + foncier')
     +kpi('Taux recouvrement', m.txRecouv+'%', m.txRecouv>=70?'#10B981':m.txRecouv>=50?'#B87333':'#EF4444')
     +kpi('Résultat', fmtF(m.resultat)+' F', m.resultat>=0?'#10B981':'#EF4444', 'marge '+m.margePct+'%')
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px;">'
+    +kpi('CA lots', fmtF(m.caPortefLots)+' F', '#B87333', 'hors foncier · '+(m.txRecouvLots)+'% recouvré')
+    +kpi('CA cessions foncières', fmtF(m.caCessions)+' F', '#0284C7', m.nbCessions+' cession(s)')
+    +kpi('Encaissé foncier', fmtF(m.encaisseCessions)+' F', '#0284C7', 'sur '+fmtF(m.caCessions)+' F dus')
+    +kpi('Valeur foncier en stock', fmtF(m.valeurFoncier)+' F', '#7C3AED', m.nbParcelles+' parcelle(s) · coût acquis.')
     +'</div>'
     +'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px;">'
     +kpi('Clients', m.nbClients, '#3B82F6')
@@ -40042,7 +40062,7 @@ function buildAnalyse360() {
     +kpi('Effectif actif', m.effectif, '#3B82F6', m.nbCommerciaux+' commercial(aux)')
     +kpi('Masse salariale (mois)', fmtF(m.masseBrute)+' F', '#B87333')
     +kpi('Charges patronales', fmtF(m.chargesPat)+' F', '#8B5CF6', 'coût '+fmtF(m.coutEmployeur)+' F')
-    +kpi('Poids paie / encaissé', m.poidsSalaireEncaisse+'%', m.poidsSalaireEncaisse>40?'#EF4444':m.poidsSalaireEncaisse>25?'#B87333':'#10B981')
+    +kpi('Poids paie / encaissé', m.poidsSalaireEncaisse+'%', m.poidsSalaireEncaisse>40?'#EF4444':m.poidsSalaireEncaisse>25?'#B87333':'#10B981', 'lots + foncier')
     +'</div>'
     +'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px;">'
     +kpi('Cash net programmes', fmtF(m.cashNetGlobal)+' F', m.cashNetGlobal>=0?'#10B981':'#EF4444', m.progDeficitaires+' prog. déficitaire(s)')
@@ -40083,6 +40103,8 @@ function imprimerAnalyse360() {
     +'<h2>Indicateurs clés</h2><table>'
     +'<tr><th>CA portefeuille</th><td>'+fmtF(m.caPortef)+' F</td><th>Encaissé</th><td>'+fmtF(m.encaisse)+' F</td></tr>'
     +'<tr><th>Taux recouvrement</th><td>'+m.txRecouv+'%</td><th>Résultat</th><td>'+fmtF(m.resultat)+' F (marge '+m.margePct+'%)</td></tr>'
+    +'<tr><th>dont CA lots / foncier</th><td>'+fmtF(m.caPortefLots)+' F / '+fmtF(m.caCessions)+' F</td><th>dont Encaissé lots / foncier</th><td>'+fmtF(m.encaisseLots)+' F / '+fmtF(m.encaisseCessions)+' F</td></tr>'
+    +'<tr><th>Valeur foncier en stock</th><td>'+fmtF(m.valeurFoncier)+' F ('+m.nbParcelles+' parcelle(s))</td><th>Cessions foncières</th><td>'+m.nbCessions+' cession(s)</td></tr>'
     +'<tr><th>Clients / Prospects actifs</th><td>'+m.nbClients+' / '+m.leadsActifs+'</td><th>Taux conversion</th><td>'+m.txConv+'%</td></tr>'
     +'<tr><th>Impayés</th><td>'+fmtF(m.montantRetard)+' F ('+m.nbRetard+')</td><th>Commissions dues</th><td>'+fmtF(m.commDues)+' F</td></tr>'
     +'<tr><th>Chantiers en cours / retard</th><td>'+m.convEnCours+' / '+m.chantiersRetard+'</td><th>Vente lots</th><td>'+m.tauxVente+'% ('+m.lotsVendus+'/'+m.lotsTotal+')</td></tr>'
@@ -51531,7 +51553,7 @@ function renderComptaVersements() {
         commPayee: payeeCession, commNote: dernier && commsCession.length ? ' · cession' : '',
         source: 'cession', srcIcon: '🏞️', srcTitle: 'Acquéreur — cession foncière',
         editAction: "editCessionPaiement('" + c.id + "','" + p.id + "')",
-        editTitle: 'Ouvrir dans Foncier › Recouvrement'
+        editTitle: 'Modifier ce versement (recalcule le solde et l\u2019écriture liée)'
       });
     });
   });
@@ -51564,17 +51586,17 @@ function renderComptaVersements() {
   }).join('');
 }
 
-/* Ouvre le paiement d'une cession foncière depuis la vue unifiée.
-   Contrairement à editVersement (lots), une cession n'a pas de recalcul de
-   commission par versement individuel : la commission est fixée une seule
-   fois sur le prix total de cession. On redirige donc vers l'échéancier
-   de la cession (Foncier › Recouvrement), où le versement peut être
-   consulté / supprimé si besoin. */
+/* Ouvre le paiement d'une cession foncière depuis la vue unifiée pour
+   modification directe (montant, date, mode). Le solde encaissé, le statut
+   de la cession et l'écriture SYSCOHADA liée sont recalculés automatiquement.
+   NB : la commission d'une cession est fixée une seule fois sur le prix
+   total (cesGenererCommissions, clé cession_id) — elle n'est donc pas
+   recalculée versement par versement comme pour les lots. */
 function editCessionPaiement(cessionId, paiementId) {
   goTo('foncier');
   if (typeof switchTab === 'function') switchTab('foncier', 'recouvrement');
   if (typeof crecRender === 'function') crecRender();
-  if (typeof crecOpenPlan === 'function') crecOpenPlan(cessionId);
+  if (typeof crecEditPaiement === 'function') crecEditPaiement(cessionId, paiementId);
 }
 
 
@@ -54065,45 +54087,133 @@ function crecRenderPaiements(c) {
   box.innerHTML = '<table style="width:100%;font-size:12px;"><thead><tr><th>Date</th><th>Montant</th><th>Mode</th><th>Réf.</th><th></th></tr></thead><tbody>'
     + (ps.length ? ps.map(function (p) {
         return '<tr><td>' + dateShort(p.date) + '</td><td style="text-align:right;color:var(--vert);">' + fmtF(p.montant) + '</td><td>' + (p.mode || '—') + '</td><td>' + (p.ref || '—') + '</td>'
-          + '<td><button class="btn btn-danger btn-sm btn-icon" onclick="crecDeletePaiement(\'' + c.id + '\',\'' + p.id + '\')">🗑</button></td></tr>';
+          + '<td style="white-space:nowrap;">'
+          + '<button class="btn btn-secondary btn-sm btn-icon" title="Modifier" onclick="closeModal(\'modal-crec-plan\');crecEditPaiement(\'' + c.id + '\',\'' + p.id + '\')">✎</button> '
+          + '<button class="btn btn-danger btn-sm btn-icon" title="Supprimer" onclick="crecDeletePaiement(\'' + c.id + '\',\'' + p.id + '\')">🗑</button></td></tr>';
       }).join('') : '<tr><td colspan="5" style="text-align:center;color:var(--blanc-dim);padding:8px;">Aucun versement enregistré.</td></tr>')
     + '</tbody></table>';
 }
 
 /* ── Encaissement d'un versement (+ écriture SYSCOHADA) ── */
+var _crecEditPaiementId = null;
 function crecEncaisser(id) {
   var c = (DATA.cessions_foncieres || []).find(function (x) { return x.id === id; });
   if (!c) return;
   _crecId = id;
+  _crecEditPaiementId = null;
   var set = function (i, v) { var e = document.getElementById(i); if (e) e.value = v; };
-  set('crecp-acq', c.acquereur || '—');
-  set('crecp-reste', fmtF(crecReste(c)) + ' FCFA');
   set('crecp-date', today());
   set('crecp-montant', '');
   set('crecp-mode', 'virement');
   set('crecp-ref', '');
   set('crecp-notes', '');
+  var acqEl = document.getElementById('crecp-acq'); if (acqEl) acqEl.textContent = c.acquereur || '—';
+  var resteEl = document.getElementById('crecp-reste'); if (resteEl) resteEl.textContent = fmtF(crecReste(c)) + ' FCFA';
+  var t = document.getElementById('crecp-modal-title'); if (t) t.innerHTML = '💵 Encaisser — <span id="crecp-acq">' + (c.acquereur || '—') + '</span>';
+  var b = document.getElementById('btn-save-crecp'); if (b) b.textContent = '💾 Encaisser + écriture';
   openModal('modal-crec-paiement');
 }
+
+/* Ouvre le même modal en mode édition, pré-rempli avec un versement existant.
+   Utilisé depuis Foncier › Recouvrement (crecRenderPaiements) et depuis la
+   vue unifiée Comptabilité › Versements souscripteurs. */
+function crecEditPaiement(cessionId, paiementId) {
+  var c = (DATA.cessions_foncieres || []).find(function (x) { return x.id === cessionId; });
+  if (!c) return;
+  var p = (c.paiements || []).find(function (x) { return x.id === paiementId; });
+  if (!p) { toast('Versement introuvable', 'error'); return; }
+  _crecId = cessionId;
+  _crecEditPaiementId = paiementId;
+  var set = function (i, v) { var e = document.getElementById(i); if (e) e.value = v; };
+  set('crecp-date', p.date || today());
+  set('crecp-montant', p.montant || 0);
+  set('crecp-mode', p.mode || 'virement');
+  set('crecp-ref', p.ref || '');
+  set('crecp-notes', p.notes || '');
+  var acqEl = document.getElementById('crecp-acq'); if (acqEl) acqEl.textContent = c.acquereur || '—';
+  var resteAvant = crecReste(c) + (parseFloat(p.montant) || 0);
+  var resteEl = document.getElementById('crecp-reste'); if (resteEl) resteEl.textContent = fmtF(resteAvant) + ' FCFA (hors ce versement)';
+  var t = document.getElementById('crecp-modal-title'); if (t) t.innerHTML = '✏️ Modifier — <span id="crecp-acq">' + (c.acquereur || '—') + '</span>';
+  var b = document.getElementById('btn-save-crecp'); if (b) b.textContent = '💾 Enregistrer les modifications';
+  openModal('modal-crec-paiement');
+}
+
 async function crecSavePaiement() {
   var c = (DATA.cessions_foncieres || []).find(function (x) { return x.id === _crecId; });
   if (!c) return;
   var montant = parseFloat((document.getElementById('crecp-montant') || {}).value) || 0;
   if (montant <= 0) { toast('Montant invalide', 'error'); return; }
+
+  /* ── Mode édition d'un versement existant ──
+     Le montant total encaissé (c.montant_encaisse) et le statut sont
+     recalculés à partir de l'écart entre ancien et nouveau montant.
+     L'écriture SYSCOHADA déjà liée (p.ecriture_id) est mise à jour plutôt
+     que recréée, pour ne pas dupliquer le mouvement de trésorerie.
+     NB : les commissions liées à la cession (cesGenererCommissions) sont
+     calculées une seule fois sur le prix total de cession, pas versement
+     par versement — elles ne sont donc pas affectées par cette édition. */
+  if (_crecEditPaiementId) {
+    var p = (c.paiements || []).find(function (x) { return x.id === _crecEditPaiementId; });
+    if (!p) { toast('Versement introuvable', 'error'); return; }
+    var ancienMontant = parseFloat(p.montant) || 0;
+    var resteHorsCe = crecReste(c) + ancienMontant;
+    if (montant > resteHorsCe + 1) { if (!confirm('Le montant dépasse le reste dû (' + fmtF(resteHorsCe) + ' F). Continuer ?')) return; }
+
+    p.date = (document.getElementById('crecp-date') || {}).value || p.date;
+    p.mode = (document.getElementById('crecp-mode') || {}).value || p.mode;
+    p.ref = ((document.getElementById('crecp-ref') || {}).value || '').trim();
+    p.notes = ((document.getElementById('crecp-notes') || {}).value || '').trim();
+    p.montant = montant;
+
+    c.montant_encaisse = Math.max(0, crecVerse(c) - ancienMontant + montant);
+    if (c.montant_encaisse >= (c.prix_cession || 0)) c.statut = 'soldee';
+    else if (c.statut === 'soldee') c.statut = 'cedee';
+
+    if (p.ecriture_id && DATA.ecritures) {
+      var e = DATA.ecritures.find(function (x) { return x.id === p.ecriture_id; });
+      if (e) {
+        var compteTreso = (p.mode === 'especes') ? '571' : (p.mode === 'mobile_money' ? '531' : '521');
+        e.date = p.date; e.montant = montant; e.mode = p.mode;
+        e.compte = compteTreso; e.compte_debit = compteTreso;
+        e.libelle = 'Recouvrement acquéreur foncier — ' + (c.acquereur || '') + ' (modifié)';
+        await dbPut('ecritures', e);
+        if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', e);
+      } else {
+        await crecGenEcriture(c, p);
+      }
+    } else {
+      await crecGenEcriture(c, p);
+    }
+
+    await dbPut('cessions_foncieres', c);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_cessions_foncieres', c);
+    closeModal('modal-crec-paiement');
+    toast('Versement modifié — solde et écriture mis à jour', 'success');
+    _crecEditPaiementId = null;
+    crecRenderPaiements(c); crecRender();
+    if (typeof cesRender === 'function') cesRender();
+    if (typeof filterEcritures === 'function') filterEcritures();
+    if (typeof buildTresorerie === 'function') buildTresorerie();
+    if (typeof renderComptaVersements === 'function') renderComptaVersements();
+    filiereLiveRefresh();
+    return;
+  }
+
+  /* ── Mode ajout d'un nouveau versement (comportement original) ── */
   var reste = crecReste(c);
   if (montant > reste + 1) { if (!confirm('Le montant dépasse le reste dû (' + fmtF(reste) + ' F). Continuer ?')) return; }
-  var p = {
+  var p2 = {
     id: uid(), date: (document.getElementById('crecp-date') || {}).value || today(),
     montant: montant, mode: (document.getElementById('crecp-mode') || {}).value || 'virement',
     ref: ((document.getElementById('crecp-ref') || {}).value || '').trim(),
     notes: ((document.getElementById('crecp-notes') || {}).value || '').trim()
   };
   if (!c.paiements) c.paiements = [];
-  c.paiements.push(p);
+  c.paiements.push(p2);
   c.montant_encaisse = crecVerse(c) + montant;
   if (c.montant_encaisse >= (c.prix_cession || 0)) c.statut = 'soldee';
   else if (c.statut === 'promesse') c.statut = 'cedee';
-  await crecGenEcriture(c, p);
+  await crecGenEcriture(c, p2);
   await dbPut('cessions_foncieres', c);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_cessions_foncieres', c);
   closeModal('modal-crec-paiement');
@@ -54112,6 +54222,7 @@ async function crecSavePaiement() {
   if (typeof cesRender === 'function') cesRender();
   if (typeof filterEcritures === 'function') filterEcritures();
   if (typeof buildTresorerie === 'function') buildTresorerie();
+  if (typeof renderComptaVersements === 'function') renderComptaVersements();
   filiereLiveRefresh();
 }
 async function crecGenEcriture(c, p) {
