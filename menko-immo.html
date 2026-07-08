@@ -17043,11 +17043,18 @@ function buildDashTabCommercial() {
   var totalLots = DATA.lots.length;
   var vendus    = DATA.lots.filter(function(l){ return l.statut === 'vendu'; }).length;
   var leads     = (DATA.leads||[]).length;
+  var cessions   = DATA.cessions_foncieres || [];
+  var caCessions = cessions.reduce(function(a,c){return a+(parseFloat(c.prix_cession)||0);},0);
+  var encCessions= typeof calcCessionsTotal==='function' ? calcCessionsTotal('montant_encaisse') : cessions.reduce(function(a,c){return a+(parseFloat(c.montant_encaisse)||0);},0);
+  var totalActesCommerciaux = vendus + cessions.length;
   var el = document.getElementById('kpi-grid-commercial');
   if (el) el.innerHTML = [
     {l:'Programmes actifs',  v:progs.length,             i:'🏗️', c:'',         d:DATA.programmes.length+' total'},
     {l:'Lots vendus',        v:vendus+'/'+totalLots,     i:'🏠', c:'kpi-green', d:Math.round(vendus/Math.max(totalLots,1)*100)+'% de taux de vente'},
     {l:'Lots disponibles',   v:totalLots-vendus,         i:'📋', c:'',          d:'à commercialiser'},
+    {l:'Cessions foncières', v:cessions.length,          i:'🏞️', c:'kpi-green', d:fmtF(caCessions)+' FCFA valorisés'},
+    {l:'Encaissé cessions',  v:fmtF(encCessions)+' FCFA', i:'💰', c:'',         d:cessions.length+' cession(s)'},
+    {l:'Total actes vente',  v:totalActesCommerciaux,    i:'📈', c:'kpi-green', d:'lots + parcelles cédées'},
     {l:'Leads pipeline',     v:leads,                    i:'🎯', c:'',          d:'prospects en cours'},
   ].map(function(k){
     return '<div class="kpi-card '+k.c+'" data-icon="'+k.i+'"><div class="kpi-label">'+k.l+'</div>'
@@ -17136,11 +17143,22 @@ function buildDashTabVue() {
   if (eSrc && eDst) eDst.innerHTML = eSrc.innerHTML;
 }
 
+function getDashPeriodeFilter() {
+  var sel = document.getElementById('dash-periode');
+  var v = sel ? sel.value : '';
+  var now = new Date();
+  if (v === 'mois') { return now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-01'; }
+  if (v === 'trim') { var q=Math.floor(now.getMonth()/3)*3; return now.getFullYear()+'-'+String(q+1).padStart(2,'0')+'-01'; }
+  if (v === 'annee'){ return now.getFullYear()+'-01-01'; }
+  return null;
+}
+
 function refreshDashboard() {
   document.getElementById('dash-date').textContent =
     new Date().toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
-  var totalVerse = DATA.versements.reduce(function(a,v){return a+(parseFloat(v.montant)||0);},0);
+  var _pmin = getDashPeriodeFilter();
+  var totalVerse = DATA.versements.filter(function(v){return !_pmin || (v.date||'')>=_pmin;}).reduce(function(a,v){return a+(parseFloat(v.montant)||0);},0);
   var totalDu    = DATA.clients.reduce(function(a,c){return a+(parseFloat(c.montant_total)||0);},0);
   var encours    = Math.max(0, totalDu-totalVerse);
   var lotsVendus = DATA.lots.filter(function(l){return l.statut==='vendu';}).length;
@@ -17289,6 +17307,8 @@ function buildDonut() {
   if (!Object.keys(types).length) {
     DATA.clients.forEach(function(c){ var t=c.type_logement||'Standard'; types[t]=(types[t]||0)+1; });
   }
+  var _ces = (DATA.cessions_foncieres||[]).length;
+  if (_ces>0) types['Parcelles cédées'] = _ces;
   var keys = Object.keys(types).sort(function(a,b){ return types[b]-types[a]; });
   var total = keys.reduce(function(s,k){ return s+types[k]; },0)||1;
   var colors = ['#2563EB','#4AC47A','#4A94E0','#8A52E0','#E05252','#E08B4A','#52C4C4','#C44A8A'];
