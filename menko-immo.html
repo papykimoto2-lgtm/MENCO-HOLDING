@@ -17005,21 +17005,30 @@ function switchDashTab(tab) {
 }
 
 function buildDashTabFinance() {
-  var totalVerse = DATA.versements.reduce(function(a,v){return a+(parseFloat(v.montant)||0);},0);
-  var totalDu    = DATA.clients.reduce(function(a,c){return a+(parseFloat(c.montant_total)||0);},0);
-  var encours    = Math.max(0, totalDu-totalVerse);
-  var tauxRecouv = totalDu>0 ? Math.round((totalVerse/totalDu)*100) : 0;
-  var retard     = getRetardataires().length;
-  var now        = new Date();
-  var moisCourant = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
-  var caM = DATA.versements.filter(function(v){return (v.date||'').startsWith(moisCourant);})
+  var cessions      = DATA.cessions_foncieres || [];
+  var totalVerseVte = DATA.versements.reduce(function(a,v){return a+(parseFloat(v.montant)||0);},0);
+  var totalVerseCes = cessions.reduce(function(a,c){return a+(parseFloat(c.montant_encaisse)||0);},0);
+  var totalVerse    = totalVerseVte + totalVerseCes; /* CA global = lots (souscripteurs) + cessions foncières */
+  var totalDuVte    = DATA.clients.reduce(function(a,c){return a+(parseFloat(c.montant_total)||0);},0);
+  var totalDuCes    = cessions.reduce(function(a,c){return a+(parseFloat(c.prix_cession)||0);},0);
+  var totalDu       = totalDuVte + totalDuCes;
+  var encours       = Math.max(0, totalDu-totalVerse);
+  var tauxRecouv    = totalDu>0 ? Math.round((totalVerse/totalDu)*100) : 0;
+  var retard        = getRetardataires().length;
+  var now           = new Date();
+  var moisCourant   = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+  var caMVte  = DATA.versements.filter(function(v){return (v.date||'').startsWith(moisCourant);})
                            .reduce(function(s,v){return s+(parseFloat(v.montant)||0);},0);
+  var caMCes  = cessions.filter(function(c){return (c.date||'').startsWith(moisCourant);})
+                           .reduce(function(s,c){return s+(parseFloat(c.montant_encaisse)||0);},0);
+  var caM = caMVte + caMCes;
   var el = document.getElementById('kpi-grid-finance');
   if (!el) return;
   el.innerHTML = [
-    {l:'CA Encaissé total',        v:fmtF(totalVerse)+' FCFA', i:'💰', c:'kpi-green', d:'Cumul depuis le début'},
+    {l:'CA Encaissé total',        v:fmtF(totalVerse)+' FCFA', i:'💰', c:'kpi-green', d:'Lots + cessions foncières'},
     {l:'CA Mois en cours',         v:fmtF(caM)+' FCFA',        i:'📆', c:'',         d:'Encaissements du mois'},
-    {l:'Encours clients (411)',     v:fmtF(encours)+' FCFA',    i:'⏳', c:encours>100000000?'kpi-red':'', d:DATA.clients.length+' souscripteurs'},
+    {l:'dont Cessions foncières',  v:fmtF(totalVerseCes)+' FCFA', i:'🏞️', c:'',      d:cessions.length+' cession(s)'},
+    {l:'Encours global (411+4111)', v:fmtF(encours)+' FCFA',   i:'⏳', c:encours>100000000?'kpi-red':'', d:DATA.clients.length+' souscripteurs + '+cessions.length+' cession(s)'},
     {l:'Taux de recouvrement',      v:tauxRecouv+'%',           i:'📈', c:tauxRecouv>=50?'kpi-green':'kpi-red', d:fmtF(totalVerse)+' / '+fmtF(totalDu)},
     {l:'Clients en retard',         v:retard,                   i:'⚠️', c:retard>0?'kpi-red':'kpi-green', d:retard+' dossiers à relancer'},
     {l:'Lots vendus',              v:DATA.lots.filter(function(l){return l.statut==='vendu';}).length+' / '+DATA.lots.length, i:'🏠', c:'', d:DATA.lots.filter(function(l){return l.statut==='disponible';}).length+' disponibles'},
