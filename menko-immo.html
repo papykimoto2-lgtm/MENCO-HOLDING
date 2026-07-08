@@ -17214,6 +17214,28 @@ function refreshDashboard() {
    KPIs · Graphiques · Alertes · Objectifs · Activité
 ══════════════════════════════════════════════════════ */
 
+/* ── Encaissements des cessions foncières (acquéreurs de parcelles/lots) ──
+   Reconstitue une liste de versements datés à partir de :
+   - c.paiements[] (versements granulaires enregistrés via le module Recouvrement)
+   - le solde éventuel de c.montant_encaisse non couvert par c.paiements
+     (cas d'un encaissement saisi directement à la création de la cession,
+     daté à c.date), pour ne rien perdre sans compter deux fois le même F CFA. */
+function getCessionsPaiements() {
+  var out = [];
+  (DATA.cessions_foncieres || []).forEach(function(c) {
+    var ps = c.paiements || [];
+    var sommeP = ps.reduce(function(s,p){ return s+(parseFloat(p.montant)||0); },0);
+    ps.forEach(function(p) {
+      out.push({ date:p.date||c.date, montant:parseFloat(p.montant)||0, mode:p.mode||'virement', cession:c });
+    });
+    var diff = (parseFloat(c.montant_encaisse)||0) - sommeP;
+    if (diff > 0.01) {
+      out.push({ date:c.date||today(), montant:diff, mode:c.mode||'virement', cession:c });
+    }
+  });
+  return out;
+}
+
 function buildBarChart() {
   var months = [];
   var now = new Date();
@@ -17221,8 +17243,11 @@ function buildBarChart() {
     var d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     months.push({ label: d.toLocaleDateString('fr-FR',{month:'short'}).slice(0,3), key: d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0') });
   }
+  var cesPaiements = getCessionsPaiements();
   var totals = months.map(function(m) {
-    return DATA.versements.filter(function(v){ return v.date && v.date.startsWith(m.key); }).reduce(function(a,v){ return a+(parseFloat(v.montant)||0); },0);
+    var vte = DATA.versements.filter(function(v){ return v.date && v.date.startsWith(m.key); }).reduce(function(a,v){ return a+(parseFloat(v.montant)||0); },0);
+    var ces = cesPaiements.filter(function(p){ return p.date && p.date.startsWith(m.key); }).reduce(function(a,p){ return a+p.montant; },0);
+    return vte + ces; /* Encaissements lots (souscripteurs) + cessions foncières */
   });
   var max = Math.max.apply(null,totals)||1;
   var chartEl = document.getElementById('chart-encaissements');
@@ -17411,18 +17436,28 @@ function buildAlertes() {
 function buildRecentPayments() {
   var el = document.getElementById('dash-recent-payments');
   if (!el) return;
-  var recent = DATA.versements.slice().sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); }).slice(0,8);
+  var modeIcon = {wave:'📱',orange_money:'🔶',mtn:'🟡',virement:'🏦',cheque:'📝',especes:'💵'};
+  // Versements souscripteurs (lots)
+  var lignesVte = DATA.versements.map(function(v) {
+    var client = DATA.clients.find(function(c){ return c.id===v.client_id; });
+    var nom = client ? client.nom+' '+client.prenoms : 'Client inconnu';
+    var prog = client ? DATA.programmes.find(function(p){return p.id===client.programme_id;})||{nom:'—'} : {nom:'—'};
+    return { date:v.date, montant:parseFloat(v.montant)||0, nom:nom, detail:prog.nom, mode:v.mode, icon:'🏠' };
+  });
+  // Paiements cessions foncières (acquéreurs de parcelles/lots)
+  var lignesCes = getCessionsPaiements().map(function(p) {
+    return { date:p.date, montant:p.montant, nom:(p.cession.acquereur||'Acquéreur inconnu'), detail:'Cession foncière', mode:p.mode, icon:'🏞️' };
+  });
+  var recent = lignesVte.concat(lignesCes)
+    .sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); }).slice(0,8);
   if (!recent.length) { el.innerHTML='<div style="color:var(--blanc-dim);font-size:13px;padding:10px;">Aucun versement enregistré.</div>'; return; }
   el.innerHTML = '<div style="display:flex;flex-direction:column;gap:0;">'
     +recent.map(function(v) {
-      var client = DATA.clients.find(function(c){ return c.id===v.client_id; });
-      var nom = client ? client.nom+' '+client.prenoms : 'Client inconnu';
-      var prog = client ? DATA.programmes.find(function(p){return p.id===client.programme_id;})||{nom:'—'} : {nom:'—'};
-      var modeIcon = {wave:'📱',orange_money:'🔶',mtn:'🟡',virement:'🏦',cheque:'📝',especes:'💵'}[v.mode]||'💳';
+      var mIcon = modeIcon[v.mode]||'💳';
       return '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:9px 0;border-bottom:1px solid rgba(51,51,80,0.3);">'
         +'<div style="flex:1;">'
-          +'<div style="font-weight:600;color:var(--blanc);">'+nom+'</div>'
-          +'<div style="font-size:10px;color:var(--blanc-dim);">'+dateShort(v.date)+' · '+prog.nom+' '+modeIcon+'</div>'
+          +'<div style="font-weight:600;color:var(--blanc);">'+v.icon+' '+v.nom+'</div>'
+          +'<div style="font-size:10px;color:var(--blanc-dim);">'+dateShort(v.date)+' · '+v.detail+' '+mIcon+'</div>'
         +'</div>'
         +'<div style="color:var(--vert);font-weight:700;font-size:13px;">+'+fmtF(v.montant)+' FCFA</div>'
       +'</div>';
@@ -17509,6 +17544,20 @@ function buildDashEcheances() {
     items.push({date:moisKey+'-28',label:c.nom+' '+c.prenoms,detail:'Mensualité '+fmtF(c.mensualite)+' FCFA',type:'paiement',color:'var(--or)'});
   });
 
+  // Échéances des cessions foncières (acquéreurs de parcelles/lots)
+  var in30Str = in30.toISOString().slice(0,10);
+  (DATA.cessions_foncieres||[]).filter(function(c){ return (c.prix_cession||0)>0 && crecReste(c)>0; }).forEach(function(c){
+    if (c.recouv && c.recouv.actif && c.recouv.duree>0) {
+      var rows = crecEcheancier(c);
+      var next = rows.find(function(r){ return !r.paye; });
+      if (next && next.date<=in30Str) {
+        items.push({date:next.date,label:'Cession — '+(c.acquereur||'—'),detail:'Mensualité '+fmtF(crecMensualite(c))+' FCFA',type:'cession',color:'var(--or)'});
+      }
+    } else if (c.echeance && c.echeance<=in30Str) {
+      items.push({date:c.echeance,label:'Cession — '+(c.acquereur||'—'),detail:'Solde '+fmtF(crecReste(c))+' FCFA',type:'cession',color:'var(--or)'});
+    }
+  });
+
   // Fins de chantiers proches
   DATA.conventions.filter(function(c){ return c.date_fin_prev && c.date_fin_prev<=in30.toISOString().slice(0,10) && c.statut==='en_cours'; }).forEach(function(c){
     var constr=DATA.constructeurs.find(function(x){return x.id===c.constructeur_id;})||{raison_sociale:'?'};
@@ -17540,7 +17589,7 @@ function buildDashEcheances() {
   if(!items.length){ el.innerHTML='<div style="color:var(--blanc-dim);font-size:12px;padding:8px;">Aucune échéance dans les 30 prochains jours.</div>'; return; }
 
   el.innerHTML = items.slice(0,8).map(function(item){
-    var iconMap={paiement:'💳',chantier:'🏗️',permis:'📜',autre:'📌'};
+    var iconMap={paiement:'💳',cession:'🏞️',chantier:'🏗️',permis:'📜',autre:'📌'};
     return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(51,51,80,0.3);">'
       +'<div style="font-size:16px;">'+( iconMap[item.type]||'📌')+'</div>'
       +'<div style="flex:1;">'
