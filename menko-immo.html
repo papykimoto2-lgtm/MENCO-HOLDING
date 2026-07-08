@@ -17007,10 +17007,10 @@ function switchDashTab(tab) {
 function buildDashTabFinance() {
   var cessions      = DATA.cessions_foncieres || [];
   var totalVerseVte = DATA.versements.reduce(function(a,v){return a+(parseFloat(v.montant)||0);},0);
-  var totalVerseCes = cessions.reduce(function(a,c){return a+(parseFloat(c.montant_encaisse)||0);},0);
+  var totalVerseCes = calcCessionsTotal('montant_encaisse');
   var totalVerse    = totalVerseVte + totalVerseCes; /* CA global = lots (souscripteurs) + cessions foncières */
   var totalDuVte    = DATA.clients.reduce(function(a,c){return a+(parseFloat(c.montant_total)||0);},0);
-  var totalDuCes    = cessions.reduce(function(a,c){return a+(parseFloat(c.prix_cession)||0);},0);
+  var totalDuCes    = calcCessionsTotal('prix_cession');
   var totalDu       = totalDuVte + totalDuCes;
   var encours       = Math.max(0, totalDu-totalVerse);
   var tauxRecouv    = totalDu>0 ? Math.round((totalVerse/totalDu)*100) : 0;
@@ -17019,8 +17019,7 @@ function buildDashTabFinance() {
   var moisCourant   = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
   var caMVte  = DATA.versements.filter(function(v){return (v.date||'').startsWith(moisCourant);})
                            .reduce(function(s,v){return s+(parseFloat(v.montant)||0);},0);
-  var caMCes  = cessions.filter(function(c){return (c.date||'').startsWith(moisCourant);})
-                           .reduce(function(s,c){return s+(parseFloat(c.montant_encaisse)||0);},0);
+  var caMCes  = calcCessionsTotal('montant_encaisse', function(c){return (c.date||'').startsWith(moisCourant);});
   var caM = caMVte + caMCes;
   var el = document.getElementById('kpi-grid-finance');
   if (!el) return;
@@ -21248,6 +21247,18 @@ function buildBilan() {
 
 /* ── COMPTE DE RÉSULTAT SYSCOHADA ────────────────────── */
 /* ── SOURCE DE CALCUL UNIQUE DU RÉSULTAT (sans chevauchement) ── */
+/* ── Utilitaire partagé : somme sur DATA.cessions_foncieres ──────────────
+   field  : 'montant_encaisse' (trésorerie réellement encaissée)
+            ou 'prix_cession'  (produit comptable / valeur contractuelle)
+   filterFn : optionnel, ex. function(c){ return c.programme_id===id; }
+   Ne PAS utiliser pour mélanger encaissé et facturé dans un même total :
+   ce sont deux notions comptables distinctes (trésorerie vs produits). */
+function calcCessionsTotal(field, filterFn) {
+  var list = DATA.cessions_foncieres || [];
+  if (filterFn) list = list.filter(filterFn);
+  return list.reduce(function(s,c){ return s + (parseFloat(c[field])||0); }, 0);
+}
+
 function _calcResultat(year) {
   var ec = DATA.ecritures.filter(function(e){ return e.date && e.date.startsWith(year); });
   function deb(pfx){ var t=0; ec.forEach(function(e){ ecrLignes(e).forEach(function(l){ if (l.sens==='D' && pfx.some(function(p){ return (l.compte||'').indexOf(p)===0; })) t += (parseFloat(l.montant)||0); }); }); return t; }
@@ -25815,11 +25826,17 @@ function bpCompute(progId) {
   var cessions = (DATA.cessions_foncieres || []).filter(function(c){
     return parcelleId && (c.source_key||'').indexOf(parcelleId) !== -1;
   });
-  var caCessions = cessions.reduce(function(s,c){ return s + (parseFloat(c.prix_cession)||0); }, 0);
+  var caCessions = calcCessionsTotal('prix_cession', function(c){
+    return parcelleId && (c.source_key||'').indexOf(parcelleId) !== -1;
+  });
 
-  /* Encaissé : versements du programme */
-  var encaisse = (DATA.versements || []).filter(function(v){ return v.programme_id === progId; })
+  /* Encaissé : versements du programme + cessions foncières encaissées de la parcelle */
+  var encaisseVte = (DATA.versements || []).filter(function(v){ return v.programme_id === progId; })
     .reduce(function(s,v){ return s + (parseFloat(v.montant)||0); }, 0);
+  var encaisseCes = calcCessionsTotal('montant_encaisse', function(c){
+    return parcelleId && (c.source_key||'').indexOf(parcelleId) !== -1;
+  });
+  var encaisse = encaisseVte + encaisseCes;
 
   /* Coût foncier : parcelle d'origine (acquisition + frais) */
   var parc = parcelleId ? (DATA.parcelles || []).find(function(p){ return p.id === parcelleId; }) : null;
@@ -54224,7 +54241,7 @@ function filiereRenderGlobal() {
   var supTot = ops.reduce(function(s, o) { return s + (o.superficie || 0); }, 0);
   var lotsVendus = lots.filter(function(l) { return l.statut === 'vendu'; }).length;
   var lotsCedes = cess.reduce(function(s, c) { return s + (c.nb_lots || 0); }, 0);
-  var caCess = cess.reduce(function(s, c) { return s + (c.montant_encaisse || 0); }, 0);
+  var caCess = calcCessionsTotal('montant_encaisse');
 
   var k = document.getElementById('fil-kpis');
   if (k) k.innerHTML =
