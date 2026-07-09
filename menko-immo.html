@@ -17122,24 +17122,20 @@ function switchDashTab(tab) {
 
 function buildDashTabFinance() {
   var cessions      = DATA.cessions_foncieres || [];
-  var totalVerseVte = DATA.versements.reduce(function(a,v){return a+(parseFloat(v.montant)||0);},0);
-  var totalVerseCes = calcCessionsTotal('montant_encaisse');
-  var totalVerse    = totalVerseVte + totalVerseCes; /* CA global = lots (souscripteurs) + cessions foncières */
-  var totalDuVte    = DATA.clients.reduce(function(a,c){return a+(parseFloat(c.montant_total)||0);},0);
-  var totalDuCes    = calcCessionsTotal('prix_cession');
-  var totalDu       = totalDuVte + totalDuCes;
-  var encours       = Math.max(0, totalDu-totalVerse);
-  var tauxRecouv    = totalDu>0 ? Math.round((totalVerse/totalDu)*100) : 0;
+  var _core         = dashFinanceCore(null);
+  var totalVerse    = _core.encaisse; /* CA global = lots (encaissé sur prix) + cessions foncières */
+  var totalVerseCes = _core.encCes;
+  var totalDu       = _core.du;
+  var encours       = _core.encours;
+  var tauxRecouv    = _core.tauxRecouv;
   var retard        = getRetardataires().length;
   var now           = new Date();
   var moisCourant   = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
-  var caMVte  = DATA.versements.filter(function(v){return (v.date||'').startsWith(moisCourant);})
-                           .reduce(function(s,v){return s+(parseFloat(v.montant)||0);},0);
-  var caMCes  = calcCessionsTotal('montant_encaisse', function(c){return (c.date||'').startsWith(moisCourant);});
-  var caM = caMVte + caMCes;
-  var totalDec = DATA.ecritures.filter(function(e){return e.type==='charge';}).reduce(function(a,e){return a+(parseFloat(e.montant)||0);},0);
-  var decM = DATA.ecritures.filter(function(e){return e.type==='charge'&&(e.date||'').startsWith(moisCourant);}).reduce(function(a,e){return a+(parseFloat(e.montant)||0);},0);
-  var soldeNet = totalVerse - totalDec;
+  var caM = dashEncaisseLots(function(v){return (v.date||'').startsWith(moisCourant);})
+          + calcCessionsTotal('montant_encaisse', function(c){return (c.date||'').startsWith(moisCourant);});
+  var totalDec = _core.decaisse;
+  var decM = dashDecaissements(function(e){return (e.date||'').startsWith(moisCourant);});
+  var soldeNet = _core.soldeNet;
   var el = document.getElementById('kpi-grid-finance');
   if (!el) return;
   el.innerHTML = [
@@ -17149,7 +17145,7 @@ function buildDashTabFinance() {
     {l:'Décaissements total',      v:fmtF(totalDec)+' FCFA',   i:'💸', c:'kpi-red',  d:'Charges enregistrées'},
     {l:'Décaissements du mois',    v:fmtF(decM)+' FCFA',       i:'📉', c:'',         d:'Charges du mois en cours'},
     {l:'Solde net (Enc. − Déc.)',  v:fmtF(soldeNet)+' FCFA',   i:'📊', c:soldeNet>=0?'kpi-green':'kpi-red', d:soldeNet>=0?'Trésorerie positive':'Attention : tension trésorerie'},
-    {l:'Encours global (411+4111)', v:fmtF(encours)+' FCFA',   i:'⏳', c:encours>100000000?'kpi-red':'', d:DATA.clients.length+' souscripteurs + '+cessions.length+' cession(s)'},
+    {l:'Reste à recouvrer', v:fmtF(encours)+' FCFA',   i:'⏳', c:encours>100000000?'kpi-red':'', d:DATA.clients.length+' souscripteurs + '+cessions.length+' cession(s)'},
     {l:'Taux de recouvrement',      v:tauxRecouv+'%',           i:'📈', c:tauxRecouv>=50?'kpi-green':'kpi-red', d:fmtF(totalVerse)+' / '+fmtF(totalDu)},
     {l:'Clients en retard',         v:retard,                   i:'⚠️', c:retard>0?'kpi-red':'kpi-green', d:retard+' dossiers à relancer'},
     {l:'Lots vendus',              v:DATA.lots.filter(function(l){return l.statut==='vendu';}).length+' / '+DATA.lots.length, i:'🏠', c:'', d:DATA.lots.filter(function(l){return l.statut==='disponible';}).length+' disponibles'},
@@ -17168,7 +17164,12 @@ function buildDashTabCommercial() {
   var cessions   = DATA.cessions_foncieres || [];
   var caCessions = cessions.reduce(function(a,c){return a+(parseFloat(c.prix_cession)||0);},0);
   var encCessions= typeof calcCessionsTotal==='function' ? calcCessionsTotal('montant_encaisse') : cessions.reduce(function(a,c){return a+(parseFloat(c.montant_encaisse)||0);},0);
-  var totalActesCommerciaux = vendus + cessions.length;
+  /* Dédoublonnage : une cession portant sur un lot déjà compté « vendu »
+     ne doit pas être re-comptée comme acte distinct. */
+  var lotsVendusIds = {};
+  DATA.lots.forEach(function(l){ if (l.statut==='vendu') lotsVendusIds[l.id]=1; });
+  var cessionsHorsLotVendu = cessions.filter(function(c){ return !(c.lot_id && lotsVendusIds[c.lot_id]); }).length;
+  var totalActesCommerciaux = vendus + cessionsHorsLotVendu;
   var el = document.getElementById('kpi-grid-commercial');
   if (el) el.innerHTML = [
     {l:'Programmes actifs',  v:progs.length,             i:'🏗️', c:'',         d:DATA.programmes.length+' total'},
@@ -17281,25 +17282,23 @@ function refreshDashboard() {
 
   var _pmin = getDashPeriodeFilter();
   var _cesAll = DATA.cessions_foncieres || [];
-  var totalVerseVte = DATA.versements.filter(function(v){return !_pmin || (v.date||'')>=_pmin;}).reduce(function(a,v){return a+(parseFloat(v.montant)||0);},0);
-  var totalVerseCes = typeof calcCessionsTotal==='function' ? calcCessionsTotal('montant_encaisse', function(c){return !_pmin || (c.date||'')>=_pmin;}) : 0;
-  var totalVerse = totalVerseVte + totalVerseCes;
-  var totalDu    = DATA.clients.reduce(function(a,c){return a+(parseFloat(c.montant_total)||0);},0)
-                  + _cesAll.reduce(function(a,c){return a+(parseFloat(c.prix_cession)||0);},0);
-  var encours    = Math.max(0, totalDu-totalVerse);
+  var _core = dashFinanceCore(_pmin);
+  var totalVerse = _core.encaisse;
+  var totalDu    = _core.du;
+  var encours    = _core.encours;
   var lotsVendus = DATA.lots.filter(function(l){return l.statut==='vendu';}).length;
   var lotsDispo  = DATA.lots.filter(function(l){return l.statut==='disponible';}).length;
   var retardataires = getRetardataires().length;
-  var tauxRecouv = totalDu>0 ? Math.round((totalVerse/totalDu)*100) : 0;
+  var tauxRecouv = _core.tauxRecouv;
 
-  // Variation mois precedent
+  // Variation mois precedent (encaissé sur prix + cessions, cohérent avec le CA affiché)
   var now = new Date(); var prev = new Date(now.getFullYear(),now.getMonth()-1,1);
   var moisCourant = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
   var moisPrec    = prev.getFullYear()+'-'+String(prev.getMonth()+1).padStart(2,'0');
-  var caM  = DATA.versements.filter(function(v){return (v.date||'').startsWith(moisCourant);}).reduce(function(s,v){return s+v.montant;},0)
-           + (typeof calcCessionsTotal==='function' ? calcCessionsTotal('montant_encaisse', function(c){return (c.date||'').startsWith(moisCourant);}) : 0);
-  var caMP = DATA.versements.filter(function(v){return (v.date||'').startsWith(moisPrec);}).reduce(function(s,v){return s+v.montant;},0)
-           + (typeof calcCessionsTotal==='function' ? calcCessionsTotal('montant_encaisse', function(c){return (c.date||'').startsWith(moisPrec);}) : 0);
+  var caM  = dashEncaisseLots(function(v){return (v.date||'').startsWith(moisCourant);})
+           + calcCessionsTotal('montant_encaisse', function(c){return (c.date||'').startsWith(moisCourant);});
+  var caMP = dashEncaisseLots(function(v){return (v.date||'').startsWith(moisPrec);})
+           + calcCessionsTotal('montant_encaisse', function(c){return (c.date||'').startsWith(moisPrec);});
   var deltaCA = caMP>0?Math.round((caM-caMP)/caMP*100):0;
 
   // Remplir KPI grid dynamiquement
@@ -17307,7 +17306,7 @@ function refreshDashboard() {
   if (kpiEl) kpiEl.innerHTML = [
     {l:'CA Encaissé total', v:fmtF(totalVerse)+' FCFA', i:'💰', c:'kpi-green',
      d:(deltaCA>=0?'▲ +':'▼ ')+Math.abs(deltaCA)+'% vs mois préc.'},
-    {l:'Encours global (411+4111)', v:fmtF(encours)+' FCFA', i:'⏳', c:encours>100000000?'kpi-red':'',
+    {l:'Reste à recouvrer', v:fmtF(encours)+' FCFA', i:'⏳', c:encours>100000000?'kpi-red':'',
      d:DATA.clients.length+' souscripteurs + '+_cesAll.length+' cession(s)'},
     {l:'Lots vendus', v:lotsVendus+' / '+DATA.lots.length, i:'🏠', c:'kpi-copper',
      d:lotsDispo+' lots encore disponibles'},
@@ -17431,7 +17430,7 @@ function buildBarChart() {
 function buildDonut() {
   // Regrouper par type de logement avec les lots ET les clients
   var types = {};
-  DATA.lots.forEach(function(l){ var t=l.type||l.standing||'Autre'; types[t]=(types[t]||0)+1; });
+  DATA.lots.forEach(function(l){ var t=l.type_logement||l.type||l.standing||'Autre'; types[t]=(types[t]||0)+1; });
   if (!Object.keys(types).length) {
     DATA.clients.forEach(function(c){ var t=c.type_logement||'Standard'; types[t]=(types[t]||0)+1; });
   }
@@ -17480,7 +17479,7 @@ function buildDonut() {
   var sub = document.createElementNS('http://www.w3.org/2000/svg','text');
   sub.setAttribute('x',cx); sub.setAttribute('y',cy+16);
   sub.setAttribute('text-anchor','middle'); sub.setAttribute('fill','rgba(154,149,160,0.7)');
-  sub.setAttribute('font-size','8'); sub.textContent = 'lots';
+  sub.setAttribute('font-size','8'); sub.textContent = _ces>0 ? 'biens' : 'lots';
   svg.appendChild(sub);
 }
 
@@ -21454,6 +21453,52 @@ function calcCessionsTotal(field, filterFn) {
   var list = DATA.cessions_foncieres || [];
   if (filterFn) list = list.filter(filterFn);
   return list.reduce(function(s,c){ return s + (parseFloat(c[field])||0); }, 0);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   INDICATEURS CANONIQUES DU TABLEAU DE BORD
+   Source unique de vérité — élimine les divergences entre onglets.
+   « Encaissé sur prix » exclut partout les frais de souscription
+   (non remboursables, produit 7088, hors dette 4111/411).
+   ══════════════════════════════════════════════════════════════ */
+
+/* Encaissé souscripteurs imputé sur le PRIX (exclut frais_souscription). */
+function dashEncaisseLots(filterFn) {
+  return (DATA.versements || [])
+    .filter(function(v){ return _versementSurPrix(v) && (!filterFn || filterFn(v)); })
+    .reduce(function(s,v){ return s + (parseFloat(v.montant)||0); }, 0);
+}
+
+/* Décaissements réels = somme des débits de classe 6 (charges),
+   indépendant du champ e.type qui n'est pas fiable selon le point d'entrée. */
+function dashDecaissements(filterFn) {
+  var t = 0;
+  (DATA.ecritures || []).forEach(function(e){
+    if (filterFn && !filterFn(e)) return;
+    ecrLignes(e).forEach(function(l){
+      if (l.sens === 'D' && (l.compte||'').charAt(0) === '6') t += (parseFloat(l.montant)||0);
+    });
+  });
+  return t;
+}
+
+/* Bloc trésorerie/recouvrement cohérent, réutilisé par tous les onglets. */
+function dashFinanceCore(pmin) {
+  var fPeriode = function(x){ return !pmin || (x.date||'') >= pmin; };
+  var encLots = dashEncaisseLots(fPeriode);
+  var encCes  = calcCessionsTotal('montant_encaisse', function(c){ return fPeriode(c); });
+  var encaisse = encLots + encCes;
+  /* Dû sur prix : clients = montant_total ; cessions = prix_cession */
+  var duLots = (DATA.clients||[]).reduce(function(a,c){ return a + (parseFloat(c.montant_total)||0); }, 0);
+  var duCes  = calcCessionsTotal('prix_cession');
+  var du = duLots + duCes;
+  var decaisse = dashDecaissements(fPeriode);
+  return {
+    encaisse: encaisse, encLots: encLots, encCes: encCes,
+    du: du, encours: Math.max(0, du - encaisse),
+    decaisse: decaisse, soldeNet: encaisse - decaisse,
+    tauxRecouv: du > 0 ? Math.round((encaisse/du)*100) : 0
+  };
 }
 
 function _calcResultat(year) {
@@ -50964,11 +51009,13 @@ async function afArchiverOperation(opId, silencieux) {
   if (!op) return;
   op.archived = true;
   op.archived_at = new Date().toISOString();
+  op._modifie = new Date().toISOString();
   var idx = DATA.af_operations.findIndex(function(x){ return x.id===op.id; });
   if (idx>=0) DATA.af_operations[idx]=op;
+  if (_afOp && _afOp.id===op.id) { _afOp.archived=true; _afOp.archived_at=op.archived_at; }
   await dbPut('af_operations', op);
   if (typeof syncToSupabase==='function') syncToSupabase('pi_af_operations', op);
-  if (!silencieux) { toast('Opération archivée 📦', 'success'); afRenderPipeline(); filiereLiveRefresh(); }
+  if (!silencieux) { toast('Opération archivée 📦', 'success'); closeModal('modal-af-operation'); afRenderPipeline(); filiereLiveRefresh(); }
 }
 
 async function afDesarchiverOperation(opId) {
@@ -50976,11 +51023,14 @@ async function afDesarchiverOperation(opId) {
   if (!op) return;
   op.archived = false;
   op.archived_at = null;
+  op._modifie = new Date().toISOString();
   var idx = DATA.af_operations.findIndex(function(x){ return x.id===op.id; });
   if (idx>=0) DATA.af_operations[idx]=op;
+  if (_afOp && _afOp.id===op.id) { _afOp.archived=false; _afOp.archived_at=null; }
   await dbPut('af_operations', op);
   if (typeof syncToSupabase==='function') syncToSupabase('pi_af_operations', op);
   toast('Opération réactivée 📂', 'success');
+  closeModal('modal-af-operation');
   afRenderPipeline();
   filiereLiveRefresh();
 }
