@@ -2107,6 +2107,9 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 </style>
 <!-- EmailJS SDK -->
 <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+<!-- jsPDF + autotable (états de caisse en PDF) -->
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 </head>
 <body>
@@ -63157,6 +63160,7 @@ function caisseOuvrirBonModal(caisseId, type) {
   document.getElementById('cb-type').value = type;
   document.getElementById('cb-date').value = today();
   document.getElementById('cb-montant').value = 0;
+  document.getElementById('cb-piece').value = '';
   document.getElementById('cb-motif').value = '';
   document.getElementById('cb-beneficiaire').value = '';
   document.getElementById('cb-edit-warn').style.display = 'none';
@@ -63188,6 +63192,7 @@ function caisseEditBonModal(mvtId) {
   document.getElementById('cb-type').value = m.type;
   document.getElementById('cb-date').value = (m.date||'').slice(0,10) || today();
   document.getElementById('cb-montant').value = m.montant || 0;
+  document.getElementById('cb-piece').value = m.piece_ref || '';
   document.getElementById('cb-motif').value = m.motif || '';
   document.getElementById('cb-beneficiaire').value = m.beneficiaire || '';
   var warn = document.getElementById('cb-edit-warn');
@@ -63208,6 +63213,7 @@ async function caisseSaveBon() {
   var montant = parseFloat(document.getElementById('cb-montant').value) || 0;
   var motif = document.getElementById('cb-motif').value.trim();
   var beneficiaire = document.getElementById('cb-beneficiaire').value.trim();
+  var piece = document.getElementById('cb-piece').value.trim();
 
   if (montant <= 0) { toast('Le montant doit être supérieur à zéro.', 'error'); return; }
   if (!motif) { toast('Le motif est obligatoire.', 'error'); return; }
@@ -63232,6 +63238,7 @@ async function caisseSaveBon() {
     var compteV = mvt.compte_ventile;
     mvt.type = type; mvt.date = date + (mvt.date && mvt.date.indexOf('T')>=0 ? mvt.date.slice(10) : 'T' + new Date().toISOString().slice(11,19));
     mvt.montant = montant; mvt.motif = motif; mvt.beneficiaire = beneficiaire;
+    mvt.piece_ref = piece;
     mvt.modifie_par = (APP.currentUser && APP.currentUser.nom) || '—';
     mvt.modifie_le = new Date().toISOString();
 
@@ -63272,6 +63279,7 @@ async function caisseSaveBon() {
     id: uid(), session_id: session.id, caisse_id: caisseId,
     date: date + 'T' + new Date().toISOString().slice(11,19), numero: numero,
     type: type, montant: montant, motif: motif, beneficiaire: beneficiaire,
+    piece_ref: piece,
     statut: 'a_ventiler', compte_ventile: null, ecriture_id: null,
     ventile_par: null, ventile_le: null,
     created_by: (APP.currentUser && APP.currentUser.nom) || '—', created_at: new Date().toISOString()
@@ -63366,6 +63374,7 @@ function caisseImprimerBon(mvtId) {
     + '<div style="text-align:center;font-size:18px;font-weight:800;border:2px solid #333;padding:8px;margin-bottom:16px;">' + titre + '</div>'
     + '<table style="width:100%;border-collapse:collapse;font-size:13px;">'
     + '<tr><td style="padding:6px 0;width:40%;color:#666;">N° du bon</td><td style="padding:6px 0;font-weight:700;">' + escHtml(m.numero) + '</td></tr>'
+    + '<tr><td style="padding:6px 0;color:#666;">N° pièce justificative</td><td style="padding:6px 0;">' + escHtml(m.piece_ref || '—') + '</td></tr>'
     + '<tr><td style="padding:6px 0;color:#666;">Caisse</td><td style="padding:6px 0;">' + escHtml(c ? c.nom : '') + ' (compte ' + escHtml(c ? c.compte : '') + ')</td></tr>'
     + '<tr><td style="padding:6px 0;color:#666;">Date</td><td style="padding:6px 0;">' + (m.date||'').replace('T',' ').slice(0,16) + '</td></tr>'
     + '<tr><td style="padding:6px 0;color:#666;">Motif</td><td style="padding:6px 0;">' + escHtml(m.motif) + '</td></tr>'
@@ -63506,13 +63515,13 @@ async function caisseGetOrCreateConversation(c) {
   return conv;
 }
 
-async function caisseEnvoyerMessageInterne(c, texte) {
+async function caisseEnvoyerMessageInterne(c, texte, fichiers) {
   var conv = await caisseGetOrCreateConversation(c);
   if (!conv) return false;
   var msg = {
     id: uid(), conversation_id: conv.id,
     expediteur_id: (APP.currentUser && APP.currentUser.id) || 'system',
-    contenu: texte, date: new Date().toISOString(), lu: false, fichiers: []
+    contenu: texte, date: new Date().toISOString(), lu: false, fichiers: fichiers || []
   };
   DATA.messages.push(msg);
   await dbPut('messages', msg);
@@ -63521,17 +63530,86 @@ async function caisseEnvoyerMessageInterne(c, texte) {
   return true;
 }
 
-function caisseEnvoyerEmail(destinataires, sujet, corps) {
+/* Ajoute des participants (ids users) à la conversation de la caisse. */
+async function caisseAjouterParticipants(c, ids) {
+  var conv = await caisseGetOrCreateConversation(c);
+  if (!conv) return null;
+  var manquants = (ids || []).filter(function(id){ return id && conv.participants.indexOf(id) < 0; });
+  if (manquants.length) {
+    conv.participants = conv.participants.concat(manquants);
+    await dbPut('conversations', conv);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_conversations', conv);
+  }
+  return conv;
+}
+
+/* Email avec pièce jointe PDF optionnelle.
+   pdf = { filename, base64 } où base64 est un dataURI (data:application/pdf;base64,...).
+   L'attachement n'est transmis que si le template EmailJS possède une variable
+   de type « Attachment ». Sinon le corps part seul (dégradation propre). */
+function caisseEnvoyerEmail(destinataires, sujet, corps, pdf) {
   var p = DATA.params || {};
   if (!destinataires || !destinataires.length) return;
   if (!p.emailjs_service || !p.emailjs_template || !p.emailjs_key || typeof emailjs === 'undefined') return;
   emailjs.init(p.emailjs_key);
+  var params = {
+    to_name: 'Hiérarchie', subject: sujet, message: corps,
+    from_name: p.societe || 'ImmoSuite ERP', reply_to: p.email || ''
+  };
+  if (pdf && pdf.base64) {
+    var pur = pdf.base64.indexOf(',') >= 0 ? pdf.base64.split(',')[1] : pdf.base64;
+    params.attachments = [{ name: pdf.filename || 'etat-caisse.pdf', data: pur }];
+    params.content = pur; params.filename = pdf.filename || 'etat-caisse.pdf';
+  }
   destinataires.forEach(function(email) {
-    emailjs.send(p.emailjs_service, p.emailjs_template, {
-      to_email: email, to_name: 'Hiérarchie', subject: sujet, message: corps,
-      from_name: p.societe || 'ImmoSuite ERP', reply_to: p.email || ''
-    }).catch(function(){ /* échec silencieux — l'état interne reste transmis */ });
+    var pp = Object.assign({ to_email: email }, params);
+    emailjs.send(p.emailjs_service, p.emailjs_template, pp).catch(function(){ /* échec silencieux */ });
   });
+}
+
+/* ── Génération PDF de l'état de caisse (jsPDF + autotable) ────────────── */
+function caisseGenererPdfEtat(session) {
+  if (!(window.jspdf && window.jspdf.jsPDF)) return null;
+  var c = (DATA.caisses || []).find(function(x){ return x.id === session.caisse_id; });
+  var p = DATA.params || {};
+  var doc = new window.jspdf.jsPDF();
+  doc.setFontSize(14); doc.text(String(p.societe || 'ImmoSuite ERP'), 14, 16);
+  if (p.adresse) { doc.setFontSize(9); doc.setTextColor(120); doc.text(String(p.adresse), 14, 21); doc.setTextColor(0); }
+  doc.setFontSize(15); doc.text('Brouillard journalier de caisse', 14, 30);
+  doc.setFontSize(10); doc.text((c ? c.nom : '') + '  —  ' + session.date, 14, 37);
+
+  var mvts = (DATA.caisse_mouvements || []).filter(function(m){ return m.session_id === session.id; })
+    .sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
+  var solde = parseFloat(session.fond_ouverture) || 0;
+  var body = [['', 'Fond d\'ouverture', '', '', fmtF(solde)]];
+  mvts.forEach(function(m){
+    solde += m.type === 'entree' ? (parseFloat(m.montant)||0) : -(parseFloat(m.montant)||0);
+    body.push([(m.date||'').slice(11,16), (m.numero||'') + ' — ' + (m.motif||'') + (m.beneficiaire?(' — '+m.beneficiaire):'') + (m.piece_ref?('  [pièce '+m.piece_ref+']'):''),
+      m.type==='entree'?fmtF(m.montant):'', m.type==='sortie'?fmtF(m.montant):'', fmtF(solde)]);
+  });
+  var totE = mvts.filter(function(m){return m.type==='entree';}).reduce(function(s,m){return s+(parseFloat(m.montant)||0);},0);
+  var totS = mvts.filter(function(m){return m.type==='sortie';}).reduce(function(s,m){return s+(parseFloat(m.montant)||0);},0);
+
+  doc.autoTable({
+    startY: 42, head: [['Heure','Libellé','Entrée','Sortie','Solde']], body: body,
+    styles: { fontSize: 8, cellPadding: 2 }, headStyles: { fillColor: [184,115,51] },
+    columnStyles: { 2:{halign:'right'}, 3:{halign:'right'}, 4:{halign:'right'} },
+    foot: [['', 'Totaux', fmtF(totE), fmtF(totS), fmtF(solde)]],
+    footStyles: { fillColor: [240,240,240], textColor: 20, fontStyle: 'bold', halign: 'right' }
+  });
+  var y = (doc.lastAutoTable ? doc.lastAutoTable.finalY : 60) + 8;
+  doc.setFontSize(9);
+  if (session.statut === 'cloturee') {
+    doc.text('Fond réel compté : ' + fmtF(session.fond_cloture_reel) + ' FCFA   ·   Écart : ' + fmtF(session.ecart||0) + ' FCFA', 14, y); y += 6;
+  } else { doc.text('(caisse encore ouverte)', 14, y); y += 6; }
+  y += 18;
+  doc.text('Caissière : ' + (session.ouverte_par||''), 14, y);
+  doc.text('Vérifié par (Comptabilité) :', 120, y);
+  doc.text('_______________________', 14, y+6);
+  doc.text('_______________________', 120, y+6);
+
+  var safe = ((c?c.nom:'caisse') + '-' + session.date).replace(/[^\w\-]+/g, '_');
+  return { doc: doc, base64: doc.output('datauristring'), blob: doc.output('blob'), filename: 'Etat-caisse-' + safe + '.pdf' };
 }
 
 function _caisseTexteJournalier(session, c) {
@@ -63559,8 +63637,10 @@ async function caisseEnvoyerEtatJournalier(sessionId, manuel) {
   if (session.envoye_journalier && !manuel) return; /* déjà transmis automatiquement */
 
   var texte = _caisseTexteJournalier(session, c);
-  var okInterne = await caisseEnvoyerMessageInterne(c, texte);
-  caisseEnvoyerEmail(c.destinataires_email, 'État journalier de caisse — ' + c.nom + ' — ' + session.date, texte);
+  var pdf = (typeof caisseGenererPdfEtat === 'function') ? caisseGenererPdfEtat(session) : null;
+  var fichiers = pdf ? [{ id:'f_'+uid(), nom:pdf.filename, type:'application/pdf', taille:(pdf.blob?pdf.blob.size:0), data:pdf.base64 }] : [];
+  var okInterne = await caisseEnvoyerMessageInterne(c, texte, fichiers);
+  caisseEnvoyerEmail(c.destinataires_email, 'État journalier de caisse — ' + c.nom + ' — ' + session.date, texte, pdf);
 
   session.envoye_journalier = true;
   session.envoye_journalier_le = new Date().toISOString();
@@ -63611,7 +63691,99 @@ async function caisseEnvoyerEtatMensuel(caisseId, manuel, moisStr) {
 function caisseEnvoyerEtatManuel() {
   var session = (DATA.caisse_sessions || []).find(function(s){ return s.id === CAISSE_UI.brouillardSessionId; });
   if (!session) { toast('Aucune session sélectionnée.', 'error'); return; }
-  caisseEnvoyerEtatJournalier(session.id, true);
+  caisseOuvrirEnvoiModal(session.id);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ENVOI CIBLÉ — sélection de plusieurs destinataires (interne + email) + PDF
+══════════════════════════════════════════════════════════════════════════ */
+/* Carnet d'emails : users + personnel (employés) ayant un email, dédoublonné. */
+function _caisseCarnetEmails() {
+  var out = [], vus = {};
+  (DATA.users || []).forEach(function(u){
+    var e = (u.email||'').trim(); if (e && !vus[e.toLowerCase()]) { vus[e.toLowerCase()]=1; out.push({ email:e, nom:(u.nom||'')+' · '+(u.role||'user') }); }
+  });
+  (DATA.employes || []).forEach(function(emp){
+    var e = (emp.email||'').trim(); if (e && !vus[e.toLowerCase()]) { vus[e.toLowerCase()]=1; out.push({ email:e, nom:((emp.prenoms?emp.prenoms+' ':'')+(emp.nom||''))+(emp.poste?(' · '+emp.poste):'') }); }
+  });
+  return out;
+}
+
+function caisseOuvrirEnvoiModal(sessionId) {
+  var session = (DATA.caisse_sessions || []).find(function(s){ return s.id === sessionId; });
+  if (!session) { toast('Session introuvable.', 'error'); return; }
+  var c = (DATA.caisses || []).find(function(x){ return x.id === session.caisse_id; });
+  CAISSE_UI.envoiSessionId = sessionId;
+
+  document.getElementById('ce-titre').textContent = '✉️ Envoyer l\'état — ' + (c?c.nom:'') + ' · ' + session.date;
+
+  /* Destinataires internes (users) — défaut = config caisse + caissières + moi */
+  var defautInt = [].concat(c.destinataires_internes||[], c.caissiere_ids||[], (APP.currentUser?[APP.currentUser.id]:[]));
+  document.getElementById('ce-internes').innerHTML = (DATA.users||[]).map(function(u){
+    var chk = defautInt.indexOf(u.id) >= 0 ? ' checked' : '';
+    return '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px;cursor:pointer;">'
+      + '<input type="checkbox" class="ce-int" value="'+u.id+'"'+chk+'> '
+      + escHtml(u.nom||'') + ' <span style="color:var(--blanc-dim);">('+escHtml(u.role||'')+')</span></label>';
+  }).join('') || '<div style="color:var(--blanc-dim);font-size:12px;">Aucun utilisateur.</div>';
+
+  /* Destinataires email (carnet users+personnel) — défaut = emails configurés */
+  var defautMail = (c.destinataires_email||[]).map(function(e){ return (e||'').toLowerCase(); });
+  document.getElementById('ce-emails').innerHTML = _caisseCarnetEmails().map(function(x){
+    var chk = defautMail.indexOf(x.email.toLowerCase()) >= 0 ? ' checked' : '';
+    return '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px;cursor:pointer;">'
+      + '<input type="checkbox" class="ce-mail" value="'+escHtml(x.email)+'"'+chk+'> '
+      + escHtml(x.email) + ' <span style="color:var(--blanc-dim);">— '+escHtml(x.nom)+'</span></label>';
+  }).join('') || '<div style="color:var(--blanc-dim);font-size:12px;">Aucun email au carnet. Saisissez-en un ci-dessous.</div>';
+
+  /* Emails configurés absents du carnet → pré-remplir la saisie manuelle */
+  var carnetSet = {}; _caisseCarnetEmails().forEach(function(x){ carnetSet[x.email.toLowerCase()]=1; });
+  var horsCarnet = (c.destinataires_email||[]).filter(function(e){ return e && !carnetSet[e.toLowerCase()]; });
+  document.getElementById('ce-emails-manuel').value = horsCarnet.join(', ');
+
+  document.getElementById('ce-joindre-pdf').checked = true;
+  openModal('modal-caisse-envoi');
+}
+
+async function caisseEnvoyerEtatConfirm() {
+  var sessionId = CAISSE_UI.envoiSessionId;
+  var session = (DATA.caisse_sessions || []).find(function(s){ return s.id === sessionId; });
+  if (!session) { toast('Session introuvable.', 'error'); return; }
+  var c = (DATA.caisses || []).find(function(x){ return x.id === session.caisse_id; });
+
+  var internes = Array.from(document.querySelectorAll('.ce-int:checked')).map(function(i){ return i.value; });
+  var emails = Array.from(document.querySelectorAll('.ce-mail:checked')).map(function(i){ return i.value; });
+  var manuel = (document.getElementById('ce-emails-manuel').value||'').split(/[,;\n]/).map(function(s){ return s.trim(); }).filter(Boolean);
+  emails = emails.concat(manuel).filter(function(v,i,a){ return v && a.indexOf(v)===i; });
+  var joindre = document.getElementById('ce-joindre-pdf').checked;
+
+  if (!internes.length && !emails.length) { toast('Sélectionnez au moins un destinataire.', 'error'); return; }
+
+  var texte = _caisseTexteJournalier(session, c);
+  var pdf = joindre && typeof caisseGenererPdfEtat === 'function' ? caisseGenererPdfEtat(session) : null;
+  var fichiers = pdf ? [{ id:'f_'+uid(), nom:pdf.filename, type:'application/pdf', taille:(pdf.blob?pdf.blob.size:0), data:pdf.base64 }] : [];
+
+  var okInterne = false;
+  if (internes.length) {
+    await caisseAjouterParticipants(c, internes);
+    okInterne = await caisseEnvoyerMessageInterne(c, texte, fichiers);
+  }
+  if (emails.length) {
+    caisseEnvoyerEmail(emails, 'État de caisse — ' + (c?c.nom:'') + ' — ' + session.date, texte, pdf);
+  }
+
+  /* Filet de sécurité : si un PDF est demandé, on le met aussi à disposition en local
+     (utile si le template EmailJS n'accepte pas les pièces jointes). */
+  if (pdf && emails.length) { try { pdf.doc.save(pdf.filename); } catch(e){} }
+
+  session.envoye_journalier = true;
+  session.envoye_journalier_le = new Date().toISOString();
+  await dbPut('caisse_sessions', session);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_sessions', session);
+
+  closeModal('modal-caisse-envoi');
+  toast('✉️ État transmis' + (internes.length?' · '+internes.length+' interne(s)':'') + (emails.length?' · '+emails.length+' email(s)':'') + (pdf?' · PDF joint':'') + '.', 'success');
+  caisseRenderListe();
+  if (CAISSE_UI.brouillardSessionId === sessionId) caisseRenderBrouillardSession(sessionId);
 }
 
 /* ── Vérification automatique (appelée au login + toutes les 30 min) ───── */
@@ -63678,7 +63850,7 @@ function caisseRenderVentilation() {
         + '<td>' + escHtml(m.motif||'') + (m.beneficiaire ? ' — ' + escHtml(m.beneficiaire) : '') + '</td>'
         + '<td style="text-align:right;">' + fmtF(m.montant) + '</td>'
         + '<td><select class="form-control" id="cv-compte-' + m.id + '" style="min-width:220px;"><option value="">— choisir —</option>' + _caisseCompteOptionsHtml('') + '</select></td>'
-        + '<td><button class="btn btn-secondary btn-sm btn-icon" title="Modifier avant ventilation" onclick="caisseEditBonModal(\'' + m.id + '\')">✏️</button> <button class="btn btn-primary btn-sm" onclick="caisseVentilerLigne(\'' + m.id + '\')">✅ Ventiler</button></td>'
+        + '<td><button class="btn btn-secondary btn-sm btn-icon" title="Imprimer le bon" onclick="caisseImprimerBon(\'' + m.id + '\')">🖨️</button> <button class="btn btn-secondary btn-sm btn-icon" title="Modifier avant ventilation" onclick="caisseEditBonModal(\'' + m.id + '\')">✏️</button> <button class="btn btn-primary btn-sm" onclick="caisseVentilerLigne(\'' + m.id + '\')">✅ Ventiler</button></td>'
         + '</tr>';
     });
     html += '</tbody></table></div>';
@@ -63693,7 +63865,7 @@ async function genererEcritureCaisseMouvement(mvt, compteContrepartie) {
   var libelle = (mvt.type === 'entree' ? 'Entrée caisse' : 'Sortie caisse') + ' — ' + (mvt.motif || '') + (mvt.beneficiaire ? ' — ' + mvt.beneficiaire : '');
   var ecr = {
     id: 'ecr_cse_' + mvt.id, ref: mvt.numero || mvt.id, date: (mvt.date || '').slice(0,10) || today(),
-    piece: mvt.numero || '', libelle: libelle,
+    piece: mvt.piece_ref || mvt.numero || '', libelle: libelle,
     compte_debit: mvt.type === 'entree' ? compteCaisse : compteContrepartie,
     compte_credit: mvt.type === 'entree' ? compteContrepartie : compteCaisse,
     compte: compteCaisse, montant: parseFloat(mvt.montant) || 0, type: 'actif', mode: 'especes',
@@ -64330,6 +64502,7 @@ function caisseEcartNonRegularise(){
       <div class="form-grid">
         <div class="form-group"><label>Date *</label><input type="date" class="form-control" id="cb-date"></div>
         <div class="form-group"><label>Montant (FCFA) *</label><input type="number" class="form-control" id="cb-montant" value="0"></div>
+        <div class="form-group span-2"><label>N° de pièce justificative (facture, reçu…)</label><input class="form-control" id="cb-piece" placeholder="Ex : FAC-2026-0148, reçu n°037"></div>
         <div class="form-group span-2"><label>Motif / libellé *</label><input class="form-control" id="cb-motif" placeholder="Achat fournitures bureau, remboursement transport..."></div>
         <div class="form-group span-2"><label>Bénéficiaire / tiers (optionnel)</label><input class="form-control" id="cb-beneficiaire" placeholder="Nom du bénéficiaire ou du fournisseur"></div>
       </div>
@@ -64337,6 +64510,42 @@ function caisseEcartNonRegularise(){
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-caisse-bon')">Annuler</button>
       <button class="btn btn-primary" onclick="caisseSaveBon()">💾 Enregistrer le bon</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Envoi ciblé de l'état de caisse (multi-destinataires + PDF) -->
+<div class="modal-overlay" id="modal-caisse-envoi">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3 id="ce-titre">✉️ Envoyer l'état de caisse</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-caisse-envoi')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="form-group span-2">
+          <label>👥 Destinataires internes (messagerie)</label>
+          <div id="ce-internes" style="max-height:160px;overflow:auto;border:1px solid var(--bord);border-radius:8px;padding:8px 12px;"></div>
+        </div>
+        <div class="form-group span-2">
+          <label>📧 Destinataires email (personnel &amp; utilisateurs)</label>
+          <div id="ce-emails" style="max-height:160px;overflow:auto;border:1px solid var(--bord);border-radius:8px;padding:8px 12px;"></div>
+        </div>
+        <div class="form-group span-2">
+          <label>➕ Autres emails (saisie manuelle, séparés par des virgules)</label>
+          <textarea class="form-control" id="ce-emails-manuel" rows="2" placeholder="dg@societe.ci, comptable@societe.ci"></textarea>
+        </div>
+        <div class="form-group span-2">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="ce-joindre-pdf" checked style="accent-color:var(--or,#B87333);"> 📎 Joindre le brouillard en PDF
+          </label>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--blanc-dim);margin-top:6px;">Le PDF est toujours joint au message interne. Pour l'email, l'attachement dépend d'un template EmailJS acceptant les pièces jointes ; à défaut, le PDF est téléchargé localement pour être joint à la main.</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-caisse-envoi')">Annuler</button>
+      <button class="btn btn-primary" onclick="caisseEnvoyerEtatConfirm()">✉️ Envoyer</button>
     </div>
   </div>
 </div>
