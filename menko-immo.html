@@ -6678,6 +6678,12 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <div class="card-title">🚨 Alertes de l'opération</div>
           <div id="bp-alertes"></div>
         </div>
+
+        <div class="card" style="margin-top:16px;">
+          <div class="card-title">🏆 Classement rentabilité — tous programmes</div>
+          <div style="font-size:11px;color:var(--dim);margin-bottom:8px;">Comparaison de la performance de l'ensemble du portefeuille de promotion.</div>
+          <div id="bp-comparatif"></div>
+        </div>
       </div>
 
       <!-- ════════ FILIÈRE FONCIÈRE — hub d'interconnexion ════════ -->
@@ -9794,6 +9800,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
               <option value="F4">F4</option>
               <option value="VILLA">Villa</option>
             </select>
+            <button class="btn btn-secondary btn-sm" onclick="dqeAjouterTypePerso()" title="Ajouter un type de logement personnalisé">➕ Type</button>
             <button class="btn btn-secondary btn-sm" onclick="ajouterPosteNomenclature()">+ Ajouter poste</button>
             <button class="btn btn-secondary btn-sm" onclick="exporterNomenclatureCSV()">⬇ CSV</button>
             <button class="btn btn-secondary btn-sm" onclick="printPreviewDQE()" title="Aperçu avant impression">🖨️ Aperçu & imprimer</button>
@@ -11214,6 +11221,19 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           </select>
           <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">Rattache le programme et ses lots à une parcelle du portefeuille. Assure la traçabilité Parcelle → Lots → Vente.</div>
         </div>
+        <div class="form-group span-2" style="border-top:1px solid var(--bord);padding-top:12px;margin-top:4px;">
+          <label style="font-weight:700;color:var(--or);">📊 Paramètres du bilan de promotion</label>
+          <div style="font-size:11px;color:var(--blanc-dim);margin-top:2px;">Taux appliqués au calcul de rentabilité (honoraires techniques et aléas). Laisser à 0 si non applicable.</div>
+        </div>
+        <div class="form-group">
+          <label>Honoraires techniques (% du coût travaux)</label>
+          <input type="number" class="form-control" id="p-pct-honoraires-tech" value="0" min="0" step="0.5" placeholder="Ex : 8 (archi + BET)">
+          <div id="p-honoraires-note" style="font-size:11px;color:var(--blanc-dim);margin-top:4px;"></div>
+        </div>
+        <div class="form-group">
+          <label>Aléas / divers (% foncier + travaux)</label>
+          <input type="number" class="form-control" id="p-pct-aleas" value="0" min="0" step="0.5" placeholder="Ex : 5">
+        </div>
         <div class="form-group span-2">
           <label>Description</label>
           <textarea class="form-control" id="p-description"></textarea>
@@ -12492,6 +12512,13 @@ button:focus-visible, input:focus-visible, select:focus-visible {
             </select>
           </div>
           <div class="form-group"><label>Salaire de base brut (FCFA) *</label><input type="number" class="form-control" id="emp-salaire-base" oninput="calcSalaireNet()"></div>
+          <div class="form-group"><label>Mode de rémunération</label>
+            <select class="form-control" id="emp-mode-remun" onchange="onEmpModeRemun()">
+              <option value="mensuel">Forfait mensuel (cadres, agents fixes — non impacté par le pointage)</option>
+              <option value="horaire">Horaire / journalier (payé selon présence pointée)</option>
+            </select>
+          </div>
+          <div class="form-group" id="emp-taux-horaire-wrap" style="display:none;"><label>Taux horaire (FCFA/h)</label><input type="number" class="form-control" id="emp-taux-horaire" value="0" title="Laisser vide pour dériver du salaire de base / 173,33 h"></div>
           <div class="form-group"><label>Primes fixes mensuelles (FCFA)</label><input type="number" class="form-control" id="emp-primes" value="0" oninput="calcSalaireNet()"></div>
           <div class="form-group"><label>Indemnité transport (FCFA)</label><input type="number" class="form-control" id="emp-transport" value="0" oninput="calcSalaireNet()"></div>
           <div class="form-group"><label>Indemnité logement (FCFA)</label><input type="number" class="form-control" id="emp-logement" value="0" oninput="calcSalaireNet()"></div>
@@ -19802,10 +19829,36 @@ function openProgrammeModal(id) {
     document.getElementById('p-date-livraison').value = p.dateLivraison || p.date_livraison || '';
     setSelectValue('p-statut', p.statut);
     setSelectValue('p-parcelle-id', p.parcelle_id || '');
+    document.getElementById('p-pct-honoraires-tech').value = p.pct_honoraires_tech || 0;
+    document.getElementById('p-pct-aleas').value = p.pct_aleas || 0;
+    _progMajNoteHonoraires(id);
   } else {
     document.getElementById('modal-prog-title').textContent = 'Nouveau Programme';
+    _progMajNoteHonoraires(null);
   }
   openModal('modal-programme');
+}
+
+/* Réconcilie la saisie du % honoraires avec le coût de conception réel :
+   si des conceptions chiffrées existent pour le programme, le % est neutralisé
+   (le bilan utilisera le coût réel) et l'utilisateur en est informé. */
+function _progMajNoteHonoraires(progId){
+  var note=document.getElementById('p-honoraires-note');
+  var inp=document.getElementById('p-pct-honoraires-tech');
+  if(!note||!inp) return;
+  var coutConcept = progId ? (DATA.conceptions||[]).filter(function(c){return c.programme_id===progId;})
+    .reduce(function(s,c){return s+(parseFloat(c.cout)||0);},0) : 0;
+  if(coutConcept>0){
+    inp.disabled=true;
+    inp.style.opacity='0.5';
+    note.innerHTML='ℹ️ Coût de conception réel saisi ('+fmtF(coutConcept)+' F) — ce montant sera utilisé dans le bilan. Le % est ignoré pour éviter le double comptage.';
+    note.style.color='var(--bleu)';
+  } else {
+    inp.disabled=false;
+    inp.style.opacity='1';
+    note.innerHTML='Utilisé uniquement si aucun coût de conception n\'est saisi dans le module Conception.';
+    note.style.color='var(--blanc-dim)';
+  }
 }
 
 function _progPopulateParcelles() {
@@ -19824,6 +19877,8 @@ function clearProgrammeForm() {
     if (el) el.value = '';
   });
   document.getElementById('p-nb-lots').value = '0';
+  var _h=document.getElementById('p-pct-honoraires-tech'); if(_h)_h.value='0';
+  var _a=document.getElementById('p-pct-aleas'); if(_a)_a.value='0';
 }
 
 async function saveProgramme() {
@@ -19839,6 +19894,9 @@ async function saveProgramme() {
     date_lancement: document.getElementById('p-date-lancement').value,
     date_livraison: document.getElementById('p-date-livraison').value,
     parcelle_id: document.getElementById('p-parcelle-id').value,
+    pct_honoraires_tech: parseFloat(document.getElementById('p-pct-honoraires-tech').value) || 0,
+    pct_aleas: parseFloat(document.getElementById('p-pct-aleas').value) || 0,
+    date_debut: document.getElementById('p-date-lancement').value,
     description: document.getElementById('p-description').value,
     _baseModifie: APP.editingId ? (APP._progBaseModifie || null) : null,
     created_at: APP.editingId ? undefined : today()
@@ -24753,11 +24811,15 @@ function calcCNPSSalarie(brutTotal) {
 /* ── Construit une entrée de paie complète à partir d'une fiche employé ── */
 function paieInputFromEmploye(e) {
   e = e || {};
-  /* Déduction des absences non justifiées du mois courant : le nombre de jours
-     payés = 30 − jours d'absence, ce qui proratise automatiquement tous les gains. */
-  var moisCourant = new Date().toISOString().slice(0,7);
-  var abs = (typeof rhJoursAbsence==='function') ? rhJoursAbsence(e.id, moisCourant) : 0;
-  var joursPayes = Math.max(0, PAIE_CI.joursMois - abs);
+  /* Déduction des absences UNIQUEMENT pour les employés payés à l'heure/journée.
+     Les cadres et agents au forfait mensuel ne sont pas impactés par le pointage. */
+  var mode = e.mode_remuneration || 'mensuel';
+  var joursPayes = PAIE_CI.joursMois, abs = 0;
+  if (mode === 'horaire') {
+    var moisCourant = new Date().toISOString().slice(0,7);
+    abs = (typeof rhJoursAbsence==='function') ? rhJoursAbsence(e.id, moisCourant) : 0;
+    joursPayes = Math.max(0, PAIE_CI.joursMois - abs);
+  }
   return {
     salaireCategoriel: e.salaire_categoriel != null ? e.salaire_categoriel : (e.salaire_base || 0),
     sursalaire: e.sursalaire || 0,
@@ -24769,7 +24831,8 @@ function paieInputFromEmploye(e) {
     parts: calcPartsFiscales(e.matrimonial, e.enfants),
     cmuPersonnes: 1 + (parseInt(e.enfants) || 0) + (e.matrimonial === 'marie' ? 1 : 0),
     jours: joursPayes,
-    _absences: abs
+    _absences: abs,
+    _mode: mode
   };
 }
 
@@ -24833,6 +24896,9 @@ function openEmployeModal(id) {
       });
       var banner = document.getElementById('depart-info-banner');
       if (banner) banner.style.display = e.date_depart ? 'none' : 'block';
+      var _mr=document.getElementById('emp-mode-remun'); if(_mr) _mr.value = e.mode_remuneration || 'mensuel';
+      var _th=document.getElementById('emp-taux-horaire'); if(_th) _th.value = e.taux_horaire || 0;
+      if(typeof onEmpModeRemun==='function') onEmpModeRemun();
     }
   } else {
     fields.forEach(function(f) {
@@ -24853,11 +24919,20 @@ function openEmployeModal(id) {
     document.getElementById('emp-jours-travailles').value = '30';
     document.getElementById('emp-preavis').value = 'na';
     document.getElementById('emp-cat-preavis').value = 'ouvrier';
+    var _mrN=document.getElementById('emp-mode-remun'); if(_mrN) _mrN.value='mensuel';
+    var _thN=document.getElementById('emp-taux-horaire'); if(_thN) _thN.value='0';
   }
+  if(typeof onEmpModeRemun==='function') onEmpModeRemun();
   calcSalaireNet();
   renderEmployeeDossier();
   switchTab('modal-emp','identite');
   document.getElementById('modal-employe').classList.add('open');
+}
+
+function onEmpModeRemun(){
+  var mode=(document.getElementById('emp-mode-remun')||{}).value;
+  var wrap=document.getElementById('emp-taux-horaire-wrap');
+  if(wrap) wrap.style.display = (mode==='horaire')?'':'none';
 }
 
 function calcSalaireNet() {
@@ -24906,6 +24981,8 @@ async function saveEmploye() {
     secteur: document.getElementById('emp-secteur').value || 'btp',
     categorie: document.getElementById('emp-categorie').value,
     salaire_base: salaireBase,
+    mode_remuneration: (document.getElementById('emp-mode-remun')||{}).value || 'mensuel',
+    taux_horaire: parseFloat((document.getElementById('emp-taux-horaire')||{}).value) || 0,
     primes: parseFloat(document.getElementById('emp-primes').value) || 0,
     transport: parseFloat(document.getElementById('emp-transport').value) || 0,
     logement: parseFloat(document.getElementById('emp-logement').value) || 0,
@@ -26957,22 +27034,44 @@ function bpCompute(progId) {
   var parc = parcelleId ? (DATA.parcelles || []).find(function(p){ return p.id === parcelleId; }) : null;
   var coutFoncier = parc ? ((parseFloat(parc.prix_acq)||0)+(parseFloat(parc.frais_mutation)||0)+(parseFloat(parc.frais_bornage)||0)+(parseFloat(parc.frais_notaire)||0)) : 0;
 
-  /* Coût travaux : conventions du programme */
+  /* Coût travaux : conventions du programme (montant_ht = marché HT) */
   var convs = (DATA.conventions || []).filter(function(c){ return c.programme_id === progId; });
-  var coutTravaux = convs.reduce(function(s,c){ return s + (parseFloat(c.montant_marche)||0); }, 0);
+  var coutTravaux = convs.reduce(function(s,c){ return s + (parseFloat(c.montant_ht)||parseFloat(c.montant_marche)||0); }, 0);
 
-  /* Payé sur travaux : situations validées/payées */
+  /* Payé sur travaux : situations validées/payées (montant_ht) */
   var convIds = convs.map(function(c){ return c.id; });
   var situationsPayees = (DATA.situations || []).filter(function(s){
     return convIds.indexOf(s.convention_id) !== -1 && (s.statut === 'payee' || s.statut === 'validee');
-  }).reduce(function(s,x){ return s + (parseFloat(x.montant)||0); }, 0);
+  }).reduce(function(s,x){ return s + (parseFloat(x.montant_ht)||parseFloat(x.montant)||0); }, 0);
+
+  /* ── Coûts annexes de promotion (postes réels d'un bilan promoteur) ── */
+  /* Honoraires techniques : études EDS liées + % configurable du coût travaux. */
+  /* Honoraires techniques : coût de conception RÉEL saisi (module Conception)
+     en priorité ; à défaut, estimation en % du coût travaux. */
+  var coutConceptionReel = (DATA.conceptions||[]).filter(function(c){ return c.programme_id===progId; })
+    .reduce(function(s,c){ return s + (parseFloat(c.cout)||0); }, 0);
+  var pHonoTech = parseFloat(prog.pct_honoraires_tech)||0;
+  var coutHonoTech = coutConceptionReel>0 ? coutConceptionReel : Math.round(coutTravaux * pHonoTech/100);
+  /* Frais commerciaux : commissions apporteurs d'affaires liées aux lots du programme. */
+  var lotIds = lots.map(function(l){return l.id;});
+  var coutCommercial = (DATA.commissions_apporteurs || DATA.apporteurs_commissions || []).filter(function(cm){
+    return (cm.programme_id===progId) || (cm.lot_id && lotIds.indexOf(cm.lot_id)>=0);
+  }).reduce(function(s,cm){ return s + (parseFloat(cm.montant)||0); }, 0);
+  /* Frais financiers : intérêts des financements du programme. */
+  var coutFinancier = (DATA.financements_programme || []).filter(function(f){return f.programme_id===progId;})
+    .reduce(function(s,f){ return s + (parseFloat(f.interets)||parseFloat(f.cout_financier)||0); }, 0);
+  /* Aléas / divers : % configurable. */
+  var pAleas = parseFloat(prog.pct_aleas)||0;
+  var coutAleas = Math.round((coutFoncier+coutTravaux)*pAleas/100);
+  var coutsAnnexes = coutHonoTech + coutCommercial + coutFinancier + coutAleas;
 
   var produits = caLotsVendus + caCessions;
   var produitsPotentiel = caLotsPotentiel + caCessions;
-  var couts = coutFoncier + coutTravaux;
+  var couts = coutFoncier + coutTravaux + coutsAnnexes;
   var marge = produits - couts;
   var margePot = produitsPotentiel - couts;
   var tauxMarge = produits > 0 ? (marge / produits * 100) : 0;
+  var tauxMargePot = produitsPotentiel > 0 ? (margePot / produitsPotentiel * 100) : 0;
   var resteEncaisser = produits - encaisse;
   var resteDecaisser = coutTravaux - situationsPayees;
   var cashNet = encaisse - coutFoncier - situationsPayees;
@@ -26982,11 +27081,29 @@ function bpCompute(progId) {
   var lotsSeuilBrut = prixMoyenLot > 0 ? Math.ceil((couts - caCessions) / prixMoyenLot) : 0;
   var lotsSeuil = Math.max(0, lotsSeuilBrut);
 
+  /* ── Indicateurs experts promoteur ── */
+  var coutParLot = lots.length ? Math.round(couts / lots.length) : 0;
+  var surfaceTotale = lots.reduce(function(s,l){ return s + (parseFloat(l.surface)||parseFloat(l.superficie)||0); }, 0);
+  var prixRevientM2 = surfaceTotale>0 ? Math.round(couts / surfaceTotale) : 0;
+  var prixVenteM2 = surfaceTotale>0 ? Math.round(caLotsPotentiel / surfaceTotale) : 0;
+  /* ROI = marge potentielle / coûts (rendement de l'opération). */
+  var roi = couts>0 ? (margePot / couts * 100) : 0;
+  /* Durée de l'opération (mois) : de la date début programme à la fin prévue des conventions. */
+  var dDeb = prog.date_debut ? new Date(prog.date_debut) : null;
+  var dFin = null;
+  convs.forEach(function(c){ if(c.date_fin_prev){ var d=new Date(c.date_fin_prev); if(!dFin||d>dFin) dFin=d; } });
+  var dureeMois = (dDeb&&dFin) ? Math.max(1, Math.round((dFin-dDeb)/(1000*3600*24*30.44))) : 0;
+  /* TRI annualisé approché : (1+ROI)^(12/durée) − 1. Simplifié pour opération courte. */
+  var triAnnuel = (dureeMois>0 && roi>-100) ? (Math.pow(1+roi/100, 12/dureeMois)-1)*100 : 0;
+
   return { prog:prog, lots:lots, lotsVendus:lotsVendus, caLotsVendus:caLotsVendus, caLotsPotentiel:caLotsPotentiel,
     cessions:cessions, caCessions:caCessions, encaisse:encaisse, coutFoncier:coutFoncier, coutTravaux:coutTravaux,
+    coutHonoTech:coutHonoTech, coutCommercial:coutCommercial, coutFinancier:coutFinancier, coutAleas:coutAleas, coutsAnnexes:coutsAnnexes,
     situationsPayees:situationsPayees, produits:produits, produitsPotentiel:produitsPotentiel, couts:couts,
-    marge:marge, margePot:margePot, tauxMarge:tauxMarge, resteEncaisser:resteEncaisser, resteDecaisser:resteDecaisser,
-    cashNet:cashNet, prixMoyenLot:prixMoyenLot, lotsSeuil:lotsSeuil, parcelle:parc };
+    marge:marge, margePot:margePot, tauxMarge:tauxMarge, tauxMargePot:tauxMargePot, resteEncaisser:resteEncaisser, resteDecaisser:resteDecaisser,
+    cashNet:cashNet, prixMoyenLot:prixMoyenLot, lotsSeuil:lotsSeuil, parcelle:parc,
+    coutParLot:coutParLot, surfaceTotale:surfaceTotale, prixRevientM2:prixRevientM2, prixVenteM2:prixVenteM2,
+    roi:roi, dureeMois:dureeMois, triAnnuel:triAnnuel };
 }
 
 function bpRender() {
@@ -27004,9 +27121,13 @@ function bpRender() {
   var kpi = function(l,v,c,d){ return '<div class="kpi-card" style="border-top:3px solid '+c+';"><div class="kpi-label">'+l+'</div><div class="kpi-value" style="font-size:17px;color:'+c+';">'+v+'</div>'+(d?'<div class="kpi-delta">'+d+'</div>':'')+'</div>'; };
   elK.innerHTML =
     kpi('Produits engagés', fmtF(b.produits)+' F', 'var(--vert)', b.lotsVendus.length+' lot(s) vendu(s)/réservé(s)')
-    + kpi('Coûts opération', fmtF(b.couts)+' F', 'var(--rouge)', 'foncier + travaux')
+    + kpi('Coûts opération', fmtF(b.couts)+' F', 'var(--rouge)', 'foncier+travaux+annexes')
     + kpi('Marge actuelle', fmtF(b.marge)+' F', b.marge>=0?'var(--vert)':'var(--rouge)', b.tauxMarge.toFixed(1)+'% du CA')
-    + kpi('Marge potentielle', fmtF(b.margePot)+' F', b.margePot>=0?'var(--bleu)':'var(--rouge)', 'si 100% lots vendus')
+    + kpi('Marge potentielle', fmtF(b.margePot)+' F', b.margePot>=0?'var(--bleu)':'var(--rouge)', b.tauxMargePot.toFixed(1)+'% si 100% vendu')
+    + kpi('ROI opération', b.roi.toFixed(1)+'%', b.roi>=20?'var(--vert)':b.roi>=0?'var(--or)':'var(--rouge)', 'marge/coûts investis')
+    + kpi('TRI annualisé', b.dureeMois>0?b.triAnnuel.toFixed(1)+'%':'—', b.triAnnuel>=15?'var(--vert)':'var(--or)', b.dureeMois>0?('sur '+b.dureeMois+' mois'):'durée non définie')
+    + kpi('Coût / lot', fmtF(b.coutParLot)+' F', 'var(--rouge)', b.lots.length+' lots')
+    + kpi('Prix revient / m²', b.prixRevientM2>0?fmtF(b.prixRevientM2)+' F':'—', 'var(--or)', b.prixVenteM2>0?('vente '+fmtF(b.prixVenteM2)+' F/m²'):'superficie non saisie')
     + kpi('Cash net', fmtF(b.cashNet)+' F', b.cashNet>=0?'var(--vert)':'var(--or)', 'encaissé − décaissé');
 
   var row = function(l,v,col,bold){ return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--bord);'+(bold?'font-weight:800;font-size:14px;':'')+'"><span>'+l+'</span><span style="color:'+(col||'var(--blanc)')+';">'+v+'</span></div>'; };
@@ -27021,6 +27142,10 @@ function bpRender() {
   document.getElementById('bp-couts').innerHTML =
     row('Foncier (acquisition + frais)', fmtF(b.coutFoncier)+' F', 'var(--rouge)')
     + row('Marchés travaux (conventions)', fmtF(b.coutTravaux)+' F', 'var(--rouge)')
+    + (b.coutHonoTech>0 ? row('Conception / honoraires techniques', fmtF(b.coutHonoTech)+' F', 'var(--rouge)') : '')
+    + (b.coutCommercial>0 ? row('Frais commerciaux (commissions)', fmtF(b.coutCommercial)+' F', 'var(--rouge)') : '')
+    + (b.coutFinancier>0 ? row('Frais financiers (intérêts)', fmtF(b.coutFinancier)+' F', 'var(--rouge)') : '')
+    + (b.coutAleas>0 ? row('Aléas / divers', fmtF(b.coutAleas)+' F', 'var(--rouge)') : '')
     + row('Coût total opération', fmtF(b.couts)+' F', 'var(--rouge)', true)
     + row('Travaux payés (situations)', fmtF(b.situationsPayees)+' F', 'var(--or)')
     + row('Reste à décaisser travaux', fmtF(b.resteDecaisser)+' F', 'var(--or)');
@@ -27068,6 +27193,35 @@ function bpRender() {
 
   bpRenderFinancement(progId, b);
   bpRenderPrevisionnel(progId, b);
+  bpRenderComparatif();
+}
+
+/* Classement de tous les programmes par rentabilité (ROI). */
+function bpRenderComparatif(){
+  var host=document.getElementById('bp-comparatif'); if(!host) return;
+  var progs=(DATA.programmes||[]).filter(function(p){return p.statut!=='archive';});
+  if(!progs.length){ host.innerHTML='<div style="color:var(--dim);font-size:12px;padding:12px;">Aucun programme.</div>'; return; }
+  var rows=progs.map(function(p){ var b=bpCompute(p.id); return {p:p, b:b}; })
+    .sort(function(a,z){ return z.b.roi-a.b.roi; });
+  var maxROI=Math.max.apply(null,rows.map(function(r){return Math.abs(r.b.roi);}).concat([1]));
+  host.innerHTML='<div class="table-wrap"><table style="width:100%;font-size:12px;border-collapse:collapse;">'
+    +'<thead><tr style="color:var(--dim);font-size:10px;text-transform:uppercase;text-align:right;">'
+      +'<th style="text-align:left;">Programme</th><th>Lots v/tot</th><th>Coûts</th><th>Marge pot.</th><th>Taux</th><th>ROI</th><th>TRI/an</th></tr></thead><tbody>'
+    +rows.map(function(r,i){
+      var b=r.b; var med=['🥇','🥈','🥉'][i]||('#'+(i+1));
+      var roiCol=b.roi>=20?'var(--vert)':b.roi>=0?'var(--or)':'var(--rouge)';
+      var w=Math.round(Math.abs(b.roi)/maxROI*100);
+      return '<tr style="border-top:1px solid var(--bord);cursor:pointer;" onclick="document.getElementById(\'bp-programme\').value=\''+r.p.id+'\';bpRender();window.scrollTo(0,0);">'
+        +'<td style="padding:7px 0;"><span style="margin-right:6px;">'+med+'</span>'+escHtml(r.p.nom||r.p.id)+'</td>'
+        +'<td style="text-align:right;">'+b.lotsVendus.length+'/'+b.lots.length+'</td>'
+        +'<td style="text-align:right;">'+fmtF(Math.round(b.couts))+'</td>'
+        +'<td style="text-align:right;color:'+(b.margePot>=0?'var(--vert)':'var(--rouge)')+';font-weight:600;">'+fmtF(Math.round(b.margePot))+'</td>'
+        +'<td style="text-align:right;">'+b.tauxMargePot.toFixed(0)+'%</td>'
+        +'<td style="text-align:right;font-weight:700;color:'+roiCol+';">'+b.roi.toFixed(0)+'%<div style="height:3px;background:var(--card2);border-radius:2px;margin-top:2px;"><div style="height:100%;width:'+w+'%;background:'+roiCol+';border-radius:2px;"></div></div></td>'
+        +'<td style="text-align:right;color:'+roiCol+';">'+(b.dureeMois>0?b.triAnnuel.toFixed(0)+'%':'—')+'</td>'
+      +'</tr>';
+    }).join('')
+    +'</tbody></table></div>';
 }
 
 function bpRenderPrevisionnel(progId, b) {
@@ -40782,7 +40936,12 @@ function buildEcartDQE() {
 
 function _typeKey(type) {
   if (!type) return 'F2';
-  var t = (type||'').toUpperCase();
+  var raw = (type||'').trim();
+  /* Si une nomenclature (ou un type personnalisé) existe pour ce type exact, le respecter. */
+  if ((DATA.nomenclatures||[]).some(function(n){ return n.type_logement === raw; })) return raw;
+  if (((DATA.params&&DATA.params.dqe_types_custom)||[]).indexOf(raw) >= 0) return raw;
+  /* Sinon, repli sur le mapping classique des 4 modèles par défaut. */
+  var t = raw.toUpperCase();
   if (t.includes('VILLA') || t.includes('V1') || t.includes('V2')) return 'VILLA';
   if (t.includes('F4') || t.includes('F5') || t.includes('F6')) return 'F4';
   if (t.includes('F3')) return 'F3';
@@ -50834,6 +50993,10 @@ function edsCalcEtude(e) {
 function cgCoutHoraire(empId){
   var e=(DATA.employes||[]).find(function(x){return x.id===empId;});
   if(!e) return 0;
+  /* Priorité au taux horaire explicitement saisi (employés horaires). */
+  if(e.mode_remuneration==='horaire' && parseFloat(e.taux_horaire)>0){
+    return parseFloat(e.taux_horaire)*1.25; /* + charges patronales approximées sur le taux */
+  }
   var coutMensuel=0;
   try {
     if(typeof calcPaieEmploye==='function'){
@@ -50842,7 +51005,6 @@ function cgCoutHoraire(empId){
     }
   } catch(err){ coutMensuel=0; }
   if(!coutMensuel){
-    /* Repli : approximation si la paie n'a pas pu être calculée. */
     var base=parseFloat(e.salaire_categoriel!=null?e.salaire_categoriel:e.salaire_base)||0;
     coutMensuel=base*1.25;
   }
@@ -56810,11 +56972,39 @@ function dqePopulateTypeLogement(){
     types.forEach(function(t){ seen[t]=true; var u=(c.nature==='immeuble')?' (appartement vendu)':''; html+='<option value="'+escHtml(t)+'">'+escHtml(t)+u+'</option>'; });
     html+='</optgroup>';
   });
+  var lotTypes={};
+  (DATA.lots||[]).forEach(function(l){ var t=(l.type_logement||l.type||'').trim(); if(t && !seen[t]) lotTypes[t]=true; });
+  var lotList=Object.keys(lotTypes);
+  if(lotList.length){ html+='<optgroup label="Types pr\u00e9sents sur les lots">'+lotList.map(function(t){seen[t]=true;return '<option value="'+escHtml(t)+'">'+escHtml(t)+'</option>';}).join('')+'</optgroup>'; }
+  var custom=((DATA.params&&DATA.params.dqe_types_custom)||[]).filter(function(t){return t && !seen[t];});
+  if(custom.length){ html+='<optgroup label="Types personnalis\u00e9s">'+custom.map(function(t){seen[t]=true;return '<option value="'+escHtml(t)+'">'+escHtml(t)+'</option>';}).join('')+'</optgroup>'; }
+  var nomTypes={};
+  (DATA.nomenclatures||[]).forEach(function(n){ if(n.type_logement && !seen[n.type_logement]) nomTypes[n.type_logement]=true; });
+  var nomList=Object.keys(nomTypes);
+  if(nomList.length){ html+='<optgroup label="Types chiffr\u00e9s">'+nomList.map(function(t){seen[t]=true;return '<option value="'+escHtml(t)+'">'+escHtml(t)+'</option>';}).join('')+'</optgroup>'; }
   var def=Object.keys(NOMENCLATURES_PAR_DEFAUT||{}).filter(function(t){return !seen[t];});
   if(def.length) html+='<optgroup label="Mod\u00e8les par d\u00e9faut">'+def.map(function(t){return '<option value="'+escHtml(t)+'">'+escHtml(t)+'</option>';}).join('')+'</optgroup>';
+  ['F2','F3','F4','VILLA'].forEach(function(t){ if(!seen[t]){ html+='<option value="'+t+'">'+t+'</option>'; seen[t]=true; } });
   if(!html) html=['F2','F3','F4','VILLA'].map(function(t){return '<option value="'+t+'">'+t+'</option>';}).join('');
   sel.innerHTML=html;
   if(cur) sel.value=cur;
+}
+
+async function dqeAjouterTypePerso(){
+  var t=prompt('Nom du nouveau type de logement (ex : F5, Studio, Duplex, Magasin, Bureau) :');
+  if(!t) return;
+  t=t.trim(); if(!t) return;
+  DATA.params=DATA.params||{};
+  DATA.params.dqe_types_custom=DATA.params.dqe_types_custom||[];
+  if(DATA.params.dqe_types_custom.indexOf(t)>=0 || ['F2','F3','F4','VILLA'].indexOf(t.toUpperCase())>=0){ toast('Ce type existe deja.','info'); }
+  else {
+    DATA.params.dqe_types_custom.push(t);
+    if(typeof dbPut==='function') await dbPut('params', DATA.params);
+    if(typeof syncToSupabase==='function') syncToSupabase('pi_params', DATA.params);
+  }
+  dqePopulateTypeLogement();
+  var sel=document.getElementById('dqe-type-logement'); if(sel){ sel.value=t; chargerNomenclature(); }
+  toast('Type ajoute. Composez sa nomenclature.','success');
 }
 /* Le type sélectionné appartient-il à un immeuble (→ coût par appartement) ? */
 function dqeImmeubleInfo(type){
