@@ -9090,6 +9090,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <button class="btn btn-secondary btn-sm" id="btn-caisse-nouvelle" onclick="caisseConfigModal(null)" style="display:none;">➕ Nouvelle caisse</button>
         </div>
 
+        <div id="caisse-sync-banner"></div>
+
         <div id="caisse-dashboard-box" style="margin-bottom:22px;"></div>
 
         <div id="caisse-liste" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;margin-bottom:20px;"></div>
@@ -63005,8 +63007,63 @@ function caisseNomUser(userId) {
   return u ? u.nom : userId;
 }
 
+/* ── Intégrité de synchronisation caisse (garde-fou comptable) ──────────
+   Empêche qu'une saisie non montée au cloud passe inaperçue : un poste qui
+   n'arrive pas à synchroniser ses écritures de caisse doit le signaler
+   fortement — en comptabilité, une donnée « locale seulement » n'existe pas
+   pour les autres postes. */
+
+/* Un enregistrement est en attente s'il figure dans la file d'attente cloud. */
+function _caissePending(id) {
+  try { return (typeof _outboxRead === 'function') && (_outboxRead() || []).some(function(e){ return e && e.id === id; }); }
+  catch(e) { return false; }
+}
+
+/* Vérifie l'accès réel aux tables caisse côté cloud. Met à jour CAISSE_UI.cloudKo. */
+async function caisseSyncPreflight() {
+  CAISSE_UI.cloudKo = false; CAISSE_UI.cloudKoRaison = '';
+  if (typeof getSBConfig === 'function') { try { getSBConfig(); } catch(e){} }
+  if (!SB.url || !SB.key) { CAISSE_UI.cloudKo = true; CAISSE_UI.cloudKoRaison = 'Cloud non configuré sur ce poste (URL/clé Supabase absente).'; return; }
+  if (!navigator.onLine) { CAISSE_UI.cloudKo = true; CAISSE_UI.cloudKoRaison = 'Poste hors ligne — impossible de confirmer le partage des écritures.'; return; }
+  window._lastSupaError = '';
+  var r = await sbFetch('pi_caisse_mouvements?select=id&limit=1', 'GET');
+  if (r === null) {
+    var e = String(window._lastSupaError || '');
+    if (/42501|permission denied|HTTP 401/i.test(e)) CAISSE_UI.cloudKoRaison = 'Droits cloud manquants (GRANT anon). Exécuter fix_sync_caisse.sql.';
+    else if (/PGRST205|does not exist|HTTP 404/i.test(e)) CAISSE_UI.cloudKoRaison = 'Tables caisse absentes côté cloud. Exécuter fix_sync_caisse.sql.';
+    else CAISSE_UI.cloudKoRaison = 'Cloud injoignable : ' + (e || 'raison inconnue') + '.';
+    CAISSE_UI.cloudKo = true;
+  }
+}
+
+/* Bannière d'alerte affichée en tête du module Caisse. */
+function caisseRenderSyncBanner() {
+  var el = document.getElementById('caisse-sync-banner');
+  if (!el) return;
+  var enAttente = (typeof _outboxRead === 'function') ? (_outboxRead() || []).filter(function(e){
+    return e && e.table && e.table.indexOf('pi_caisse') === 0;
+  }).length : 0;
+
+  if (CAISSE_UI.cloudKo) {
+    el.innerHTML = '<div style="background:rgba(220,38,38,0.12);border:1px solid var(--rouge,#dc2626);border-radius:10px;padding:12px 14px;margin-bottom:16px;">'
+      + '<div style="font-weight:800;color:var(--rouge,#dc2626);font-size:14px;">⛔ Synchronisation caisse indisponible</div>'
+      + '<div style="font-size:12.5px;color:var(--blanc-dim);margin-top:4px;">' + escHtml(CAISSE_UI.cloudKoRaison || '')
+      + '<br><strong>Vos saisies restent sur ce poste et ne sont PAS partagées avec les autres postes ni comptabilisées ailleurs.</strong>'
+      + (enAttente ? ' ' + enAttente + ' écriture(s) de caisse en attente d\'envoi.' : '')
+      + '</div></div>';
+    return;
+  }
+  if (enAttente) {
+    el.innerHTML = '<div style="background:rgba(234,88,12,0.12);border:1px solid var(--or,#B87333);border-radius:10px;padding:10px 14px;margin-bottom:16px;">'
+      + '<span style="font-weight:700;color:var(--or,#B87333);font-size:13px;">⏳ ' + enAttente + ' écriture(s) de caisse en attente d\'envoi au cloud.</span> '
+      + '<span style="font-size:12px;color:var(--blanc-dim);">Non encore confirmées — Paramètres → Sync → Réessayer la file.</span></div>';
+    return;
+  }
+  el.innerHTML = '';
+}
+
 /* ── Entrée sur la page ──────────────────────────────────────────────── */
-function caisseEnter() {
+async function caisseEnter() {
   var btnNew = document.getElementById('btn-caisse-nouvelle');
   if (btnNew) btnNew.style.display = caisseRoleAdminLike() ? '' : 'none';
   caisseRenderDashboard();
@@ -63014,6 +63071,69 @@ function caisseEnter() {
   document.getElementById('caisse-brouillard-box').innerHTML = '';
   caisseRenderEcarts();
   caisseRenderVentilation();
+  try { await caisseSyncPreflight(); } catch(e){}
+  caisseRenderSyncBanner();
+}
+
+/* ── Suppression caisse (cascade 3-couches + écritures SYSCOHADA liées) ──
+   Chaque mouvement ventilé porte ecriture_id : on supprime l'écriture 571/531
+   en même temps que le mouvement pour ne pas désynchroniser le grand-livre.
+   Le verrou d'exercice clos (deleteRecord/ecritures) bloque toute suppression
+   d'un mouvement ventilé sur un exercice comptable clôturé. */
+
+async function _caisseDelMvt(mvt) {
+  if (mvt.ecriture_id) {
+    if (await deleteRecord('ecritures', mvt.ecriture_id) === false) return false; // exercice clos
+  }
+  await deleteRecord('caisse_mouvements', mvt.id);
+  return true;
+}
+
+/* 1) Supprimer un mouvement (bon E/S) + son écriture liée */
+async function caisseSupprimerMouvement(mvtId) {
+  var m = (DATA.caisse_mouvements||[]).find(function(x){ return x.id===mvtId; });
+  if (!m) return;
+  if (!caisseRoleAdminLike()) { toast('Droit refusé.','error'); return; }
+  if (!confirm('Supprimer le mouvement ' + (m.numero||'') + ' (' + fmtF(m.montant) + ' FCFA) ?'
+    + (m.ecriture_id ? '\nL\'écriture comptable liée sera aussi supprimée.' : ''))) return;
+  if (await _caisseDelMvt(m) === false) { toast('🔒 Exercice clôturé — suppression bloquée.','error'); return; }
+  toast('Mouvement supprimé.','info');
+  caisseRenderListe();
+  if (typeof caisseRenderDashboard==='function') caisseRenderDashboard();
+  if (CAISSE_UI.brouillardCaisseId===m.caisse_id) caisseAfficherBrouillard(m.caisse_id);
+}
+
+/* 2) Vider une caisse : purge sessions + mouvements + écritures (garde la config) */
+async function caisseViderCaisse(caisseId) {
+  if (!caisseRoleAdminLike()) { toast('Droit refusé.','error'); return false; }
+  if (caisseGetSessionOuverte(caisseId)) { toast('🔒 Clôturez la session ouverte d\'abord.','error'); return false; }
+  var mvts = (DATA.caisse_mouvements||[]).filter(function(m){ return m.caisse_id===caisseId; });
+  var sess = (DATA.caisse_sessions||[]).filter(function(s){ return s.caisse_id===caisseId; });
+  if (!mvts.length && !sess.length) { toast('Rien à supprimer.','info'); return true; }
+  if (!confirm('Vider cette caisse ?\n' + mvts.length + ' mouvement(s) + ' + sess.length
+    + ' session(s) + écritures liées seront supprimés.\nAction irréversible.')) return false;
+  var ko = 0;
+  for (var i=0;i<mvts.length;i++){ if (await _caisseDelMvt(mvts[i]) === false) ko++; }
+  for (var j=0;j<sess.length;j++){ await deleteRecord('caisse_sessions', sess[j].id); }
+  toast('Caisse vidée' + (ko ? ' (' + ko + ' mvt conservé(s) — exercice clos)' : '') + '.','info');
+  caisseRenderListe();
+  if (typeof caisseRenderDashboard==='function') caisseRenderDashboard();
+  if (CAISSE_UI.brouillardCaisseId===caisseId) caisseAfficherBrouillard(caisseId);
+  return ko === 0;
+}
+
+/* 3) Supprimer une caisse complète : config + cascade enfants */
+async function caisseSupprimerCaisse(caisseId) {
+  var c = (DATA.caisses||[]).find(function(x){ return x.id===caisseId; });
+  if (!c) return;
+  if (!caisseRoleAdminLike()) { toast('Droit refusé.','error'); return; }
+  if (caisseGetSessionOuverte(caisseId)) { toast('🔒 Session ouverte — clôturez avant suppression.','error'); return; }
+  if (!confirm('Supprimer définitivement la caisse « ' + (c.nom||'') + ' » et tout son historique ?')) return;
+  var okPurge = await caisseViderCaisse(caisseId);
+  if (okPurge === false) { toast('Suppression annulée — historique partiellement bloqué (exercice clos).','error'); return; }
+  await deleteRecord('caisses', caisseId);
+  toast('Caisse « ' + (c.nom||'') + ' » supprimée.','info');
+  caisseRenderListe();
 }
 
 /* ── Liste des caisses (cartes) ──────────────────────────────────────── */
@@ -63046,7 +63166,9 @@ function caisseRenderListe() {
     }
     if (caisseRoleAdminLike()) {
       actions += '<button class="btn btn-secondary btn-sm btn-icon" title="Configurer" onclick="caisseConfigModal(\'' + c.id + '\')">⚙️</button>';
-      if (!ouverte) actions += '<button class="btn btn-secondary btn-sm btn-icon" title="Historique" onclick="caisseAfficherBrouillard(\'' + c.id + '\')">🗂️</button>';
+      if (!ouverte) actions += '<button class="btn btn-secondary btn-sm btn-icon" title="Historique" onclick="caisseAfficherBrouillard(\'' + c.id + '\')">🗂️</button>'
+        + '<button class="btn btn-danger btn-sm btn-icon" title="Vider l\'historique (sessions + mouvements)" onclick="caisseViderCaisse(\'' + c.id + '\')">🧹</button>'
+        + '<button class="btn btn-danger btn-sm btn-icon" title="Supprimer la caisse" onclick="caisseSupprimerCaisse(\'' + c.id + '\')">🗑️</button>';
     }
     return '<div class="card" style="padding:16px;">'
       + '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">'
@@ -63342,7 +63464,9 @@ function caisseRenderBrouillardSession(sessionId) {
       + '<td>'
       + (caisseCanEditBon(m) ? '<button class="btn btn-secondary btn-sm btn-icon" title="Modifier le bon" onclick="caisseEditBonModal(\'' + m.id + '\')">✏️</button> ' : '')
       + '<button class="btn btn-secondary btn-sm btn-icon" title="Imprimer le bon" onclick="caisseImprimerBon(\'' + m.id + '\')">🖨️</button>'
+      + (caisseRoleAdminLike() ? ' <button class="btn btn-danger btn-sm btn-icon" title="Supprimer le mouvement" onclick="caisseSupprimerMouvement(\'' + m.id + '\')">🗑️</button>' : '')
       + (m.statut === 'ventile' ? '<span title="Ventilé" style="margin-left:4px;color:var(--vert);">✓</span>' : '<span title="En attente de ventilation" style="margin-left:4px;color:var(--dim);">⏳</span>')
+      + (_caissePending(m.id) ? '<span title="Non synchronisé au cloud — écriture locale seulement" style="margin-left:4px;color:var(--rouge,#dc2626);font-weight:700;">☁✗</span>' : '')
       + (m.modifie_le ? '<span title="Modifié le ' + (m.modifie_le||'').slice(0,16).replace('T',' ') + ' par ' + escHtml(m.modifie_par||'') + '" style="margin-left:4px;color:var(--or,#B87333);">✎</span>' : '')
       + '</td>'
       + '</tr>';
@@ -63637,22 +63761,38 @@ async function caisseEnvoyerEtatJournalier(sessionId, manuel) {
   if (!c) return;
   if (session.envoye_journalier && !manuel) return; /* déjà transmis automatiquement */
 
+  /* Garde-fou comptable : un état n'est « transmis » que si ses écritures sont
+     réellement confirmées au cloud (partagées + auditables ailleurs). Sinon
+     l'état part marqué PROVISOIRE et la session n'est PAS figée en « transmis ». */
+  try { await caisseSyncPreflight(); } catch(e){}
+  var _mvtsSess = (DATA.caisse_mouvements || []).filter(function(m){ return m.session_id === sessionId; });
+  var _provisoire = CAISSE_UI.cloudKo || _caissePending(sessionId) || _mvtsSess.some(function(m){ return _caissePending(m.id); });
+
   var texte = _caisseTexteJournalier(session, c);
+  if (_provisoire) {
+    texte = '⚠️ ÉTAT PROVISOIRE — écritures non confirmées au cloud au moment de l\'envoi.\n'
+      + 'Ne pas comptabiliser tant que la synchronisation n\'est pas rétablie et l\'état renvoyé.\n\n' + texte;
+  }
   var pdf = (typeof caisseGenererPdfEtat === 'function') ? caisseGenererPdfEtat(session) : null;
   var fichiers = pdf ? [{ id:'f_'+uid(), nom:pdf.filename, type:'application/pdf', taille:(pdf.blob?pdf.blob.size:0), data:pdf.base64 }] : [];
   var okInterne = await caisseEnvoyerMessageInterne(c, texte, fichiers);
-  caisseEnvoyerEmail(c.destinataires_email, 'État journalier de caisse — ' + c.nom + ' — ' + session.date, texte, pdf);
+  caisseEnvoyerEmail(c.destinataires_email, (_provisoire ? '[PROVISOIRE] ' : '') + 'État journalier de caisse — ' + c.nom + ' — ' + session.date, texte, pdf);
 
-  session.envoye_journalier = true;
-  session.envoye_journalier_le = new Date().toISOString();
-  await dbPut('caisse_sessions', session);
-  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_sessions', session);
+  /* On ne fige « transmis » que si l'état est confirmé au cloud → sinon renvoi manuel requis. */
+  if (!_provisoire) {
+    session.envoye_journalier = true;
+    session.envoye_journalier_le = new Date().toISOString();
+    await dbPut('caisse_sessions', session);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_sessions', session);
+  }
 
-  if (manuel) {
-    toast(okInterne ? '✉️ État journalier transmis à la hiérarchie.' : '⚠️ Aucun destinataire configuré pour cette caisse (voir ⚙️ Configurer).', okInterne ? 'success' : 'error');
+  if (manuel || _provisoire) {
+    if (_provisoire) toast('⚠️ État envoyé en PROVISOIRE — écritures non synchronisées. Rétablissez la sync puis renvoyez.', 'error');
+    else toast(okInterne ? '✉️ État journalier transmis à la hiérarchie.' : '⚠️ Aucun destinataire configuré pour cette caisse (voir ⚙️ Configurer).', okInterne ? 'success' : 'error');
   }
   caisseRenderListe();
   if (CAISSE_UI.brouillardSessionId === sessionId) caisseRenderBrouillardSession(sessionId);
+  caisseRenderSyncBanner();
 }
 
 async function caisseEnvoyerEtatMensuel(caisseId, manuel, moisStr) {
