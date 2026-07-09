@@ -17563,6 +17563,8 @@ function buildDashTabFinance() {
     {l:'Décaissements total',      v:fmtF(totalDec)+' FCFA',   i:'💸', c:'kpi-red',  d:'Charges enregistrées'},
     {l:'Décaissements du mois',    v:fmtF(decM)+' FCFA',       i:'📉', c:'',         d:'Charges du mois en cours'},
     {l:'Solde net (Enc. − Déc.)',  v:fmtF(soldeNet)+' FCFA',   i:'📊', c:soldeNet>=0?'kpi-green':'kpi-red', d:soldeNet>=0?'Trésorerie positive':'Attention : tension trésorerie'},
+    (function(){ var s=(typeof caisseSoldeGlobalTempsReel==='function')?caisseSoldeGlobalTempsReel():0; return {l:'Espèces en caisse', v:fmtF(s)+' FCFA', i:'💵', c:'kpi-copper', d:'Sessions ouvertes · temps réel'}; })(),
+    (function(){ var st=(typeof caisseAVentilerStats==='function')?caisseAVentilerStats():{nb:0,montant:0}; return {l:'Caisse — à ventiler', v:st.nb+' mvt', i:'🧾', c:st.nb?'kpi-red':'kpi-green', d:fmtF(st.montant)+' FCFA en attente'}; })(),
     {l:'Reste à recouvrer', v:fmtF(encours)+' FCFA',   i:'⏳', c:encours>100000000?'kpi-red':'', d:DATA.clients.length+' souscripteurs + '+cessions.length+' cession(s)'},
     {l:'Taux de recouvrement',      v:tauxRecouv+'%',           i:'📈', c:tauxRecouv>=50?'kpi-green':'kpi-red', d:fmtF(totalVerse)+' / '+fmtF(totalDu)},
     {l:'Clients en retard',         v:retard,                   i:'⚠️', c:retard>0?'kpi-red':'kpi-green', d:retard+' dossiers à relancer'},
@@ -18132,6 +18134,9 @@ function refreshDashboard() {
     (function(){ var ms = calcMasseSalariale(); return {
       l:'Masse salariale (mois)', v:fmtF(ms.masseBrute)+' FCFA', i:'👥', c:'',
       d:ms.effectif+' actifs · coût '+fmtF(ms.coutEmployeur)+' F'}; })(),
+    (function(){ var s=(typeof caisseSoldeGlobalTempsReel==='function')?caisseSoldeGlobalTempsReel():0; var st=(typeof caisseAVentilerStats==='function')?caisseAVentilerStats():{nb:0}; return {
+      l:'Espèces en caisse', v:fmtF(s)+' FCFA', i:'💵', c:'kpi-copper',
+      d:(st.nb? st.nb+' mvt à ventiler':'Sessions ouvertes · temps réel')}; })(),
   ].map(function(k){
     return '<div class="kpi-card '+k.c+'" data-icon="'+k.i+'">'
       +'<div class="kpi-label">'+k.l+'</div>'
@@ -42122,7 +42127,12 @@ function _a360Metrics() {
     progDeficitaires: progDeficitaires, cashNetGlobal: cashNetGlobal, couvFinanceMin: Math.round(couvFinanceMin),
     caCessions: caCessions, encaisseCessions: encaisseCessions, nbCessions: cessions.length, valeurFoncier: valeurFoncier, nbParcelles: parcelles.length,
     fneACertifier: fneACertifier, fneActif: fneActif, nbFactures: facturesFNE.length,
-    coutJournaliers: coutJournaliers, nbQuinzMois: quinzMois.length, contratsExp30: contratsExp30
+    coutJournaliers: coutJournaliers, nbQuinzMois: quinzMois.length, contratsExp30: contratsExp30,
+    /* Caisse (module trésorerie espèces) */
+    caisseSolde: (typeof caisseSoldeGlobalTempsReel==='function') ? caisseSoldeGlobalTempsReel() : 0,
+    caisseAVentiler: (typeof caisseAVentilerStats==='function') ? caisseAVentilerStats().nb : 0,
+    caisseAVentilerMt: (typeof caisseAVentilerStats==='function') ? caisseAVentilerStats().montant : 0,
+    caisseEcartNonReg: (typeof caisseEcartNonRegularise==='function') ? caisseEcartNonRegularise() : 0
   };
 }
 
@@ -42151,6 +42161,7 @@ function _a360Diagnostic(m) {
   if (m.poidsSalaireEncaisse > 40 && m.encaisse > 0) faiblesses.push('Masse salariale lourde : coût employeur = '+m.poidsSalaireEncaisse+'% des encaissements.');
   if (!m.fneActif && m.nbFactures > 0) faiblesses.push('FNE non activée alors que des factures sont émises : risque de non-conformité DGI.');
   if (m.contratsExp30 > 0) faiblesses.push(m.contratsExp30+' contrat(s) employé(s) expirant sous 30 jours : renouveler ou anticiper.');
+  if (m.caisseAVentiler > 0) faiblesses.push(m.caisseAVentiler+' mouvement(s) de caisse non ventilé(s) ('+fmtF(m.caisseAVentilerMt)+' F) : comptabilité en retard sur la trésorerie espèces.');
 
   // ── Risques ──
   if (m.resultat < 0) risques.push('Résultat négatif ('+fmtF(m.resultat)+' F) : rentabilité menacée.');
@@ -42161,6 +42172,7 @@ function _a360Diagnostic(m) {
   if (m.progDeficitaires > 0) risques.push(m.progDeficitaires+' programme(s) à marge potentielle négative : perte assurée même à 100% vendu.');
   if (m.cashNetGlobal < 0) risques.push('Cash net global négatif ('+fmtF(m.cashNetGlobal)+' F) : décaissements en avance sur les encaissements.');
   if (m.couvFinanceMin < 80 && m.nbProgrammes > 0) risques.push('Couverture de financement insuffisante sur au moins un programme ('+m.couvFinanceMin+'%).');
+  if (m.caisseEcartNonReg > 0) risques.push('Écart de caisse non régularisé ('+fmtF(m.caisseEcartNonReg)+' F) : contrôle interne espèces à renforcer, risque de fraude/erreur.');
 
   // ── Opportunités ──
   if (m.leadsActifs > 0) opportunites.push(m.leadsActifs+' prospect(s) actif(s) à convertir.');
@@ -42217,6 +42229,10 @@ function _a360Diagnostic(m) {
     plan.operationnel.push({ p:'Moyenne', t:'Émettre les paiements de commissions', d:'Traiter les commissions dues depuis le module Commissions.' });
   if (m.chantiersRetard > 0)
     plan.operationnel.push({ p:'Haute', t:'Contacter les constructeurs en retard', d:'Demander un rapport de chantier actualisé sous 48h.' });
+  if (m.caisseAVentiler > 0)
+    plan.operationnel.push({ p:'Haute', t:'Ventiler les mouvements de caisse', d:m.caisseAVentiler+' bon(s) ('+fmtF(m.caisseAVentilerMt)+' F) en attente dans le module Caisse → section Ventilation.' });
+  if (m.caisseEcartNonReg > 0)
+    plan.operationnel.push({ p:'Critique', t:'Régulariser les écarts de caisse', d:'Passer les écritures 658/758 ('+fmtF(m.caisseEcartNonReg)+' F) via le module Caisse → Écarts à régulariser.' });
   if (!plan.operationnel.length)
     plan.operationnel.push({ p:'Basse', t:'Suivi quotidien', d:'Aucune action urgente détectée. Maintenir le reporting régulier.' });
 
@@ -42302,6 +42318,14 @@ function buildAnalyse360() {
     +kpi('Couverture financement', m.couvFinanceMin+'%', m.couvFinanceMin>=100?'#10B981':m.couvFinanceMin>=80?'#B87333':'#EF4444', 'minimum constaté')
     +kpi('Cessions foncières', fmtF(m.caCessions)+' F', '#0284C7', m.nbCessions+' cession(s) · '+m.nbParcelles+' parcelle(s)')
     +kpi('FNE', m.fneActif?'Activée':'Inactive', m.fneActif?'#10B981':'#EA580C', m.nbFactures+' facture(s)'+(m.fneACertifier?' · '+m.fneACertifier+' à certifier':''))
+    +'</div>'
+
+    // Trésorerie espèces (caisse)
+    +'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px;">'
+    +kpi('Espèces en caisse', fmtF(m.caisseSolde)+' F', '#B87333', 'sessions ouvertes · temps réel')
+    +kpi('Caisse à ventiler', m.caisseAVentiler+' mvt', m.caisseAVentiler?'#EF4444':'#10B981', fmtF(m.caisseAVentilerMt)+' F en attente')
+    +kpi('Écart caisse non régularisé', fmtF(m.caisseEcartNonReg)+' F', m.caisseEcartNonReg?'#EF4444':'#10B981', m.caisseEcartNonReg?'à passer en 658/758':'caisse alignée')
+    +kpi('Discipline caisse', (m.caisseAVentiler===0 && m.caisseEcartNonReg===0)?'OK':'À traiter', (m.caisseAVentiler===0 && m.caisseEcartNonReg===0)?'#10B981':'#EA580C', 'ventilation + écarts')
     +'</div>'
 
     // SWOT
@@ -63128,17 +63152,56 @@ function caisseOuvrirBonModal(caisseId, type) {
   if (!session) { toast('Cette caisse n\'est pas ouverte.', 'error'); return; }
   var c = (DATA.caisses || []).find(function(x){ return x.id === caisseId; });
   document.getElementById('cb-modal-title').textContent = type === 'entree' ? '📥 Bon d\'entrée de caisse' : '📤 Bon de sortie de caisse';
+  document.getElementById('cb-mvt-id').value = '';
   document.getElementById('cb-caisse-id').value = caisseId;
   document.getElementById('cb-type').value = type;
   document.getElementById('cb-date').value = today();
   document.getElementById('cb-montant').value = 0;
   document.getElementById('cb-motif').value = '';
   document.getElementById('cb-beneficiaire').value = '';
+  document.getElementById('cb-edit-warn').style.display = 'none';
   document.getElementById('cb-solde-actuel').textContent = 'Solde actuel de la caisse « ' + (c?c.nom:'') + ' » : ' + fmtF(caisseSoldeSession(session)) + ' FCFA';
   openModal('modal-caisse-bon');
 }
 
+/* Qui peut modifier un mouvement ?
+   - ventilé            → comptabilité seule (correction = régénère l'écriture)
+   - à ventiler, ouvert → créateur (caissière) ou comptabilité
+   - à ventiler, clôturé→ comptabilité seule (session déjà transmise) */
+function caisseCanEditBon(mvt) {
+  if (!mvt || !APP.currentUser) return false;
+  if (caisseRoleAdminLike()) return true;
+  if (mvt.statut === 'ventile') return false;
+  var s = (DATA.caisse_sessions||[]).find(function(x){ return x.id===mvt.session_id; });
+  if (!s || s.statut !== 'ouverte') return false;
+  return mvt.created_by === ((APP.currentUser && APP.currentUser.nom) || '');
+}
+
+function caisseEditBonModal(mvtId) {
+  var m = (DATA.caisse_mouvements||[]).find(function(x){ return x.id===mvtId; });
+  if (!m) return;
+  if (!caisseCanEditBon(m)) { toast('Modification non autorisée pour ce mouvement.', 'error'); return; }
+  var c = (DATA.caisses||[]).find(function(x){ return x.id===m.caisse_id; });
+  document.getElementById('cb-modal-title').textContent = '✏️ Modifier — ' + (m.numero||'');
+  document.getElementById('cb-mvt-id').value = m.id;
+  document.getElementById('cb-caisse-id').value = m.caisse_id;
+  document.getElementById('cb-type').value = m.type;
+  document.getElementById('cb-date').value = (m.date||'').slice(0,10) || today();
+  document.getElementById('cb-montant').value = m.montant || 0;
+  document.getElementById('cb-motif').value = m.motif || '';
+  document.getElementById('cb-beneficiaire').value = m.beneficiaire || '';
+  var warn = document.getElementById('cb-edit-warn');
+  if (m.statut === 'ventile') {
+    warn.style.display = '';
+    warn.innerHTML = '⚠️ Mouvement déjà ventilé (compte ' + escHtml(m.compte_ventile||'') + '). '
+      + 'Enregistrer régénère l\'écriture comptable ' + escHtml(m.ecriture_id||'') + ' avec les nouvelles valeurs.';
+  } else { warn.style.display = 'none'; }
+  document.getElementById('cb-solde-actuel').textContent = 'Caisse « ' + (c?c.nom:'') + ' » · bon ' + (m.type==='entree'?'d\'entrée':'de sortie');
+  openModal('modal-caisse-bon');
+}
+
 async function caisseSaveBon() {
+  var editId = document.getElementById('cb-mvt-id').value;
   var caisseId = document.getElementById('cb-caisse-id').value;
   var type = document.getElementById('cb-type').value;
   var date = document.getElementById('cb-date').value || today();
@@ -63149,10 +63212,49 @@ async function caisseSaveBon() {
   if (montant <= 0) { toast('Le montant doit être supérieur à zéro.', 'error'); return; }
   if (!motif) { toast('Le motif est obligatoire.', 'error'); return; }
 
+  var c = (DATA.caisses || []).find(function(x){ return x.id === caisseId; });
+
+  /* ── MODE ÉDITION ─────────────────────────────────────────────────────── */
+  if (editId) {
+    var mvt = (DATA.caisse_mouvements||[]).find(function(x){ return x.id===editId; });
+    if (!mvt) { toast('Mouvement introuvable.', 'error'); closeModal('modal-caisse-bon'); return; }
+    if (!caisseCanEditBon(mvt)) { toast('Modification non autorisée.', 'error'); closeModal('modal-caisse-bon'); return; }
+
+    /* Contrôle de solde (sortie) sur session ouverte, hors ce mouvement. */
+    var sEdit = (DATA.caisse_sessions||[]).find(function(x){ return x.id===mvt.session_id; });
+    if (type === 'sortie' && sEdit && sEdit.statut === 'ouverte') {
+      var effAncien = (mvt.type==='entree' ? (parseFloat(mvt.montant)||0) : -(parseFloat(mvt.montant)||0));
+      var soldeHors = caisseSoldeSession(sEdit) - effAncien;
+      if (montant > soldeHors && !confirm('⚠️ Solde insuffisant hors ce bon (' + fmtF(soldeHors) + ' FCFA). Confirmer la modification ?')) return;
+    }
+
+    var etaitVentile = (mvt.statut === 'ventile');
+    var compteV = mvt.compte_ventile;
+    mvt.type = type; mvt.date = date + (mvt.date && mvt.date.indexOf('T')>=0 ? mvt.date.slice(10) : 'T' + new Date().toISOString().slice(11,19));
+    mvt.montant = montant; mvt.motif = motif; mvt.beneficiaire = beneficiaire;
+    mvt.modifie_par = (APP.currentUser && APP.currentUser.nom) || '—';
+    mvt.modifie_le = new Date().toISOString();
+
+    if (etaitVentile && compteV) {
+      /* Régénère l'écriture (même id → upsert) avec les nouvelles valeurs. */
+      await genererEcritureCaisseMouvement(mvt, compteV);
+    } else {
+      await dbPut('caisse_mouvements', mvt);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', mvt);
+    }
+    closeModal('modal-caisse-bon');
+    toast('✅ Bon ' + (mvt.numero||'') + ' modifié' + (etaitVentile ? ' — écriture régénérée.' : '.'), 'success');
+    caisseRenderListe();
+    if (typeof caisseRenderDashboard === 'function') caisseRenderDashboard();
+    if (typeof caisseRenderVentilation === 'function') caisseRenderVentilation();
+    if (CAISSE_UI.brouillardCaisseId === caisseId) caisseAfficherBrouillard(caisseId);
+    if (typeof buildBalance === 'function') buildBalance();
+    return;
+  }
+
+  /* ── MODE CRÉATION ────────────────────────────────────────────────────── */
   var session = caisseGetSessionOuverte(caisseId);
   if (!session) { toast('La caisse a été clôturée entre-temps — impossible d\'enregistrer ce bon.', 'error'); closeModal('modal-caisse-bon'); return; }
-
-  var c = (DATA.caisses || []).find(function(x){ return x.id === caisseId; });
 
   if (type === 'sortie') {
     var soldeCourant = caisseSoldeSession(session);
@@ -63166,7 +63268,7 @@ async function caisseSaveBon() {
   var count = (DATA.caisse_mouvements || []).filter(function(m){ return m.caisse_id === caisseId && m.type === type && (m.date||'').slice(0,10) === date; }).length + 1;
   var numero = prefix + '-' + (c && c.compte ? c.compte : 'CSE') + '-' + dateStr + '-' + _caissePad3(count);
 
-  var mvt = {
+  var nouveau = {
     id: uid(), session_id: session.id, caisse_id: caisseId,
     date: date + 'T' + new Date().toISOString().slice(11,19), numero: numero,
     type: type, montant: montant, motif: motif, beneficiaire: beneficiaire,
@@ -63174,9 +63276,9 @@ async function caisseSaveBon() {
     ventile_par: null, ventile_le: null,
     created_by: (APP.currentUser && APP.currentUser.nom) || '—', created_at: new Date().toISOString()
   };
-  DATA.caisse_mouvements.push(mvt);
-  await dbPut('caisse_mouvements', mvt);
-  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', mvt);
+  DATA.caisse_mouvements.push(nouveau);
+  await dbPut('caisse_mouvements', nouveau);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', nouveau);
   closeModal('modal-caisse-bon');
   toast('✅ ' + (type === 'entree' ? 'Bon d\'entrée' : 'Bon de sortie') + ' ' + numero + ' enregistré.', 'success');
   caisseRenderListe();
@@ -63228,8 +63330,12 @@ function caisseRenderBrouillardSession(sessionId) {
       + '<td style="text-align:right;color:var(--vert);">' + (m.type==='entree' ? fmtF(m.montant) : '') + '</td>'
       + '<td style="text-align:right;color:var(--rouge);">' + (m.type==='sortie' ? fmtF(m.montant) : '') + '</td>'
       + '<td style="text-align:right;">' + fmtF(solde) + '</td>'
-      + '<td><button class="btn btn-secondary btn-sm btn-icon" title="Imprimer le bon" onclick="caisseImprimerBon(\'' + m.id + '\')">🖨️</button>'
-      + (m.statut === 'ventile' ? '<span title="Ventilé" style="margin-left:4px;color:var(--vert);">✓</span>' : '<span title="En attente de ventilation" style="margin-left:4px;color:var(--dim);">⏳</span>') + '</td>'
+      + '<td>'
+      + (caisseCanEditBon(m) ? '<button class="btn btn-secondary btn-sm btn-icon" title="Modifier le bon" onclick="caisseEditBonModal(\'' + m.id + '\')">✏️</button> ' : '')
+      + '<button class="btn btn-secondary btn-sm btn-icon" title="Imprimer le bon" onclick="caisseImprimerBon(\'' + m.id + '\')">🖨️</button>'
+      + (m.statut === 'ventile' ? '<span title="Ventilé" style="margin-left:4px;color:var(--vert);">✓</span>' : '<span title="En attente de ventilation" style="margin-left:4px;color:var(--dim);">⏳</span>')
+      + (m.modifie_le ? '<span title="Modifié le ' + (m.modifie_le||'').slice(0,16).replace('T',' ') + ' par ' + escHtml(m.modifie_par||'') + '" style="margin-left:4px;color:var(--or,#B87333);">✎</span>' : '')
+      + '</td>'
       + '</tr>';
   });
 
@@ -63572,7 +63678,7 @@ function caisseRenderVentilation() {
         + '<td>' + escHtml(m.motif||'') + (m.beneficiaire ? ' — ' + escHtml(m.beneficiaire) : '') + '</td>'
         + '<td style="text-align:right;">' + fmtF(m.montant) + '</td>'
         + '<td><select class="form-control" id="cv-compte-' + m.id + '" style="min-width:220px;"><option value="">— choisir —</option>' + _caisseCompteOptionsHtml('') + '</select></td>'
-        + '<td><button class="btn btn-primary btn-sm" onclick="caisseVentilerLigne(\'' + m.id + '\')">✅ Ventiler</button></td>'
+        + '<td><button class="btn btn-secondary btn-sm btn-icon" title="Modifier avant ventilation" onclick="caisseEditBonModal(\'' + m.id + '\')">✏️</button> <button class="btn btn-primary btn-sm" onclick="caisseVentilerLigne(\'' + m.id + '\')">✅ Ventiler</button></td>'
         + '</tr>';
     });
     html += '</tbody></table></div>';
@@ -63910,6 +64016,35 @@ async function caisseRegulariserTousEcarts(){
   if (typeof caisseRenderDashboard==='function') caisseRenderDashboard();
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   HELPERS AGRÉGÉS CAISSE — consommés par le dashboard central et l'analyse 360
+══════════════════════════════════════════════════════════════════════════ */
+function caisseSoldeGlobalTempsReel(){
+  return (DATA.caisses||[]).reduce(function(s,c){
+    var sess = caisseGetSessionOuverte(c.id);
+    return s + (sess ? caisseSoldeSession(sess) : 0);
+  }, 0);
+}
+function caisseFluxPeriode(deb, fin){
+  var mv = (DATA.caisse_mouvements||[]).filter(function(m){ var j=(m.date||'').slice(0,10); return j>=deb && j<=fin; });
+  var e = mv.filter(function(m){return m.type==='entree';}).reduce(function(a,m){return a+(parseFloat(m.montant)||0);},0);
+  var d = mv.filter(function(m){return m.type==='sortie';}).reduce(function(a,m){return a+(parseFloat(m.montant)||0);},0);
+  return { entrees:e, sorties:d, net:e-d, nb:mv.length };
+}
+function caisseAVentilerStats(){
+  var clot = (DATA.caisse_mouvements||[]).filter(function(m){
+    if (m.statut==='ventile') return false;
+    var s=(DATA.caisse_sessions||[]).find(function(x){ return x.id===m.session_id; });
+    return s && s.statut==='cloturee';
+  });
+  return { nb:clot.length, montant:clot.reduce(function(a,m){return a+(parseFloat(m.montant)||0);},0) };
+}
+function caisseEcartNonRegularise(){
+  return (DATA.caisse_sessions||[]).filter(function(s){
+    return s.statut==='cloturee' && (parseFloat(s.ecart)||0)!==0 && !s.ecart_regularise;
+  }).reduce(function(a,s){ return a+Math.abs(parseFloat(s.ecart)||0); }, 0);
+}
+
 </script>
 <!-- ══ APERÇU AVANT IMPRESSION ══════════════════════════════════════════ -->
 <div class="modal-overlay" id="modal-print-preview" style="display:none;z-index:9999;">
@@ -64189,7 +64324,9 @@ async function caisseRegulariserTousEcarts(){
     <div class="modal-body">
       <input type="hidden" id="cb-caisse-id">
       <input type="hidden" id="cb-type">
+      <input type="hidden" id="cb-mvt-id">
       <div id="cb-solde-actuel" style="font-size:12px;color:var(--blanc-dim);margin-bottom:10px;"></div>
+      <div id="cb-edit-warn" style="display:none;font-size:12px;background:rgba(184,115,51,.12);border:1px solid var(--or,#B87333);color:var(--or,#B87333);border-radius:6px;padding:8px 10px;margin-bottom:10px;"></div>
       <div class="form-grid">
         <div class="form-group"><label>Date *</label><input type="date" class="form-control" id="cb-date"></div>
         <div class="form-group"><label>Montant (FCFA) *</label><input type="number" class="form-control" id="cb-montant" value="0"></div>
