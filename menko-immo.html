@@ -7431,6 +7431,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           </div>
         </div>
         <div class="tab-pane" id="tab-conventions-situations">
+          <div id="situ-synthese-conv"></div>
           <div class="card">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
               <div class="card-title">📊 Situations de travaux mensuelles</div>
@@ -7438,7 +7439,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
             </div>
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Date</th><th>Convention</th><th>Constructeur</th><th>N° Situation</th><th>Montant HT</th><th>Retenue 10%</th><th>Net à payer</th><th>Statut</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Date</th><th>Convention</th><th>Constructeur</th><th>N° Situation</th><th>Montant HT</th><th>Retenue</th><th>Net à payer</th><th>Statut</th><th>Actions</th></tr></thead>
                 <tbody id="tbody-situations"></tbody>
               </table>
             </div>
@@ -7484,6 +7485,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <button class="tab-btn" onclick="switchTab('chantiers','gantt')">📅 Planning Gantt</button>
           <button class="tab-btn" onclick="switchTab('chantiers','rapports')">📋 Rapports hebdomadaires</button>
           <button class="tab-btn" onclick="switchTab('chantiers','cout')">💰 Coût de revient</button>
+          <button class="tab-btn" onclick="switchTab('chantiers','controle')">🎯 Contrôle budget/réel</button>
         </div>
 
         <div class="tab-pane active" id="tab-chantiers-dashboard">
@@ -7516,6 +7518,13 @@ button:focus-visible, input:focus-visible, select:focus-visible {
         <div class="tab-pane" id="tab-chantiers-cout">
           <div class="kpi-grid" id="cout-kpi" style="margin-bottom:16px;"></div>
           <div id="cout-revient-detail"></div>
+        </div>
+
+        <div class="tab-pane" id="tab-chantiers-controle">
+          <div class="alert alert-info" style="margin-bottom:14px;">
+            🎯 <strong>Contrôle de gestion chantier</strong> — compare le budget d'objectif (issu de l'étude de prix) au réalisé automatique : matériaux (sorties de stock affectées), main-d'œuvre (pointages affectés), sous-traitance (situations). Projection du coût final par la méthode de la valeur acquise (EVM).
+          </div>
+          <div id="cg-content"></div>
         </div>
       </div>
 
@@ -13656,6 +13665,14 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <input type="number" class="form-control" id="pt-heures-supp" value="0" min="0" max="8" step="0.5">
         </div>
         <div class="form-group">
+          <label>Chantier affecté (imputation MO)</label>
+          <select class="form-control" id="pt-chantier"><option value="">— Non affecté (frais généraux) —</option></select>
+        </div>
+        <div class="form-group">
+          <label>Ouvrage / tâche (optionnel)</label>
+          <input type="text" class="form-control" id="pt-tache" placeholder="Ex : Élévation R+1, coffrage...">
+        </div>
+        <div class="form-group">
           <label>Justificatif fourni</label>
           <select class="form-control" id="pt-justifie">
             <option value="1">Oui — justifié</option>
@@ -14275,8 +14292,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     </div>
     <div class="modal-body">
       <div class="alert alert-info" style="margin-bottom:14px;">
-        📌 Comptabilisation automatique : <strong>Débit 401</strong> (Fournisseurs) / <strong>Crédit 512</strong> (Banque) lors du paiement.
+        📌 Décompte à l'avancement. Comptabilisation SYSCOHADA automatique (HT 6111 / TVA déductible 4452 / dette 401 · retenue isolée en 4017 · net réglé en 401→trésorerie).
       </div>
+      <!-- Bandeau récap convention (marché / facturé / reste) -->
+      <div id="situ-recap-conv" style="display:none;background:var(--card2);border:1px solid var(--bord);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;"></div>
       <div class="form-grid">
         <div class="form-group"><label>Convention *</label>
           <select class="form-control" id="situ-convention" onchange="onSelectConventionSitu()">
@@ -14286,13 +14305,24 @@ button:focus-visible, input:focus-visible, select:focus-visible {
         <div class="form-group"><label>N° Situation *</label><input type="text" class="form-control" id="situ-numero" placeholder="SIT-001"></div>
         <div class="form-group"><label>Date situation *</label><input type="date" class="form-control" id="situ-date"></div>
         <div class="form-group"><label>Période couverte</label><input type="text" class="form-control" id="situ-periode" placeholder="Janvier 2025"></div>
-        <div class="form-group"><label>Montant HT *</label><input type="number" class="form-control" id="situ-montant-ht" oninput="calcSituTotaux()" value="0"></div>
-        <div class="form-group"><label>TVA (%)</label><input type="number" class="form-control" id="situ-tva" value="18" oninput="calcSituTotaux()"></div>
+
+        <div class="form-group span-2"><label>Mode de décompte</label>
+          <select class="form-control" id="situ-mode-decompte" onchange="onSituModeDecompte()">
+            <option value="avancement">À l'avancement (je saisis l'avancement cumulé %, le HT période est calculé)</option>
+            <option value="direct">Montant direct (je saisis le HT de la période)</option>
+          </select>
+        </div>
+
+        <div class="form-group" id="situ-wrap-avct"><label>Avancement cumulé (%)</label><input type="number" class="form-control" id="situ-avancement" min="0" max="100" value="0" oninput="calcSituDecompte()"></div>
+        <div class="form-group"><label>Cumul HT antérieur</label><input type="number" class="form-control" id="situ-cumul-prec" readonly style="color:var(--blanc-dim);"></div>
+        <div class="form-group"><label>Montant HT période *</label><input type="number" class="form-control" id="situ-montant-ht" oninput="calcSituDecompte()" value="0"></div>
+        <div class="form-group"><label>TVA (%)</label><input type="number" class="form-control" id="situ-tva" value="18" oninput="calcSituDecompte()"></div>
         <div class="form-group"><label>Montant TTC (auto)</label><input type="number" class="form-control" id="situ-montant-ttc" readonly style="color:var(--or);font-weight:700;"></div>
-        <div class="form-group"><label>Retenue garantie 10% (auto)</label><input type="number" class="form-control" id="situ-retenue" readonly style="color:var(--rouge);"></div>
+
+        <div class="form-group"><label>Avance à récupérer (auto)</label><input type="number" class="form-control" id="situ-avance-recup" readonly style="color:var(--bleu);" title="Remboursement au prorata de l'avance de démarrage"></div>
+        <div class="form-group"><label>Retenue garantie (auto)</label><input type="number" class="form-control" id="situ-retenue" readonly style="color:var(--rouge);"></div>
         <div class="form-group"><label>Net à payer (auto)</label><input type="number" class="form-control" id="situ-net" readonly style="color:var(--vert);font-weight:700;font-size:15px;"></div>
-        <div class="form-group"><label>Avancement convention (%)</label><input type="number" class="form-control" id="situ-avancement" min="0" max="100" value="0" oninput="calcSituCumul()"></div>
-        <div class="form-group"><label>Cumul situations précédentes</label><input type="number" class="form-control" id="situ-cumul-prec" readonly></div>
+
         <div class="form-group"><label>Mode règlement</label>
           <select class="form-control" id="situ-mode">
             <option value="virement">Virement bancaire</option>
@@ -14303,8 +14333,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
         <div class="form-group"><label>Statut</label>
           <select class="form-control" id="situ-statut">
             <option value="soumise">Soumise</option>
-            <option value="validee">Validée</option>
-            <option value="payee">Payée</option>
+            <option value="validee">Validée (comptabilise HT/TVA/retenue)</option>
+            <option value="payee">Payée (comptabilise + règlement du net)</option>
             <option value="contestee">Contestée</option>
           </select>
         </div>
@@ -17096,6 +17126,8 @@ function switchTab(context, tab) {
   if (tabEl) tabEl.classList.add('active');
 
   if (context === 'declarations' && tab === 'teledeclaration' && typeof renderTeledeclaration === 'function') renderTeledeclaration();
+  if (context === 'chantiers' && tab === 'controle' && typeof renderControleGestion === 'function') renderControleGestion();
+  if (context === 'chantiers' && tab === 'cout' && typeof buildCoutRevient === 'function') buildCoutRevient();
 
   /* Mettre à jour les boutons .tab-btn du même contexte */
   document.querySelectorAll('.tab-btn').forEach(function(b) {
@@ -21229,6 +21261,9 @@ function saveComptesDefaut() {
     paie_its:            document.getElementById('cd-paie-its').value.trim() || '447',
     tva_collectee:       document.getElementById('cd-tva-collectee').value.trim() || '443',
     tva_deductible:      document.getElementById('cd-tva-deductible').value.trim() || '444',
+    tva_deductible_travaux: (document.getElementById('cd-tva-ded-travaux')||{}).value ? document.getElementById('cd-tva-ded-travaux').value.trim() : ((DATA.params&&DATA.params.comptes_defaut&&DATA.params.comptes_defaut.tva_deductible_travaux)||'4452'),
+    retenue_garantie:    (document.getElementById('cd-retenue-garantie')||{}).value ? document.getElementById('cd-retenue-garantie').value.trim() : ((DATA.params&&DATA.params.comptes_defaut&&DATA.params.comptes_defaut.retenue_garantie)||'4017'),
+    avance_fournisseur:  (document.getElementById('cd-avance-fournisseur')||{}).value ? document.getElementById('cd-avance-fournisseur').value.trim() : ((DATA.params&&DATA.params.comptes_defaut&&DATA.params.comptes_defaut.avance_fournisseur)||'4091'),
     cession_produit:     document.getElementById('cd-cession-produit').value.trim() || '701',
     amort_dotation:      document.getElementById('cd-amort-dotation').value.trim() || '681',
     amort_cumul:         document.getElementById('cd-amort-cumul').value.trim() || '28'
@@ -29697,6 +29732,8 @@ function ouvrirSaisiePointage(empId, date) {
     document.getElementById('pt-pause').value=existing.pause||60;
     document.getElementById('pt-justifie').value=existing.justifie||'1';
     document.getElementById('pt-notes').value=existing.notes||'';
+    var ptc=document.getElementById('pt-chantier'); if(ptc){ptc.innerHTML=stockChantierOptions();ptc.value=existing.chantier_id||'';}
+    var ptt=document.getElementById('pt-tache'); if(ptt)ptt.value=existing.tache||'';
     APP.editingId=existing.id;
   } else {
     document.getElementById('pt-statut').value='P';
@@ -29705,6 +29742,8 @@ function ouvrirSaisiePointage(empId, date) {
     document.getElementById('pt-heures-supp').value=0;
     document.getElementById('pt-pause').value=60;
     document.getElementById('pt-notes').value='';
+    var ptcN=document.getElementById('pt-chantier'); if(ptcN){ptcN.innerHTML=stockChantierOptions();ptcN.value='';}
+    var pttN=document.getElementById('pt-tache'); if(pttN)pttN.value='';
   }
   togglePointageFields();
   updatePointageImpactPreview();
@@ -29757,13 +29796,19 @@ async function savePointage() {
     heure_sortie:document.getElementById('pt-heure-sortie').value,
     pause:parseInt(document.getElementById('pt-pause').value)||60,
     heures_supp:parseFloat(document.getElementById('pt-heures-supp').value)||0,
+    chantier_id:(document.getElementById('pt-chantier')||{}).value||null,
+    tache:((document.getElementById('pt-tache')||{}).value||'').trim(),
     justifie:document.getElementById('pt-justifie').value,
     notes:document.getElementById('pt-notes').value.trim(),
     created_at:new Date().toISOString().slice(0,10),
   };
+  /* Coût MO imputé au chantier : heures travaillées × coût horaire employeur. */
+  pt.heures_travaillees = cgHeuresTravaillees(pt);
+  pt.cout_mo = pt.chantier_id ? Math.round(pt.heures_travaillees * cgCoutHoraire(empId)) : 0;
   var idx=DATA.pointages.findIndex(function(p){return p.employe_id===empId&&p.date===date;});
   if (idx>=0) DATA.pointages[idx]=pt; else DATA.pointages.push(pt);
   await dbPut('pointages',pt);
+  if(typeof syncToSupabase==='function')syncToSupabase('pi_pointages',pt);
   closeModal('modal-pointage');
   renderPointageJour(); buildPointageMensuel(); buildImpactPaie(); renderAbsences(); checkPointageBadge();
   toast('Pointage enregistré.','success');
@@ -33280,58 +33325,262 @@ async function deletePermis(id){if(!confirm('Supprimer ce permis ?'))return;if(a
 /* fonction v1 remplacée par v2 */
 
 /* ─── Situations de travaux ───────────────────────── */
-function onSelectConventionSitu(){var id=document.getElementById('situ-convention').value;if(!id)return;var conv=DATA.conventions.find(function(c){return c.id===id;});if(!conv)return;document.getElementById('situ-avancement').value=conv.avancement||0;var cumul=DATA.situations.filter(function(s){return s.convention_id===id&&s.statut!=='contestee';}).reduce(function(s,x){return s+(x.montant_ht||0);},0);document.getElementById('situ-cumul-prec').value=cumul;var nb=DATA.situations.filter(function(s){return s.convention_id===id;}).length+1;document.getElementById('situ-numero').value='SIT-'+String(nb).padStart(3,'0');}
-function calcSituTotaux(){var ht=parseFloat(document.getElementById('situ-montant-ht').value)||0;var tva=parseFloat(document.getElementById('situ-tva').value)||18;var ttc=Math.round(ht*(1+tva/100));var ret=Math.round(ttc*0.1);var net=ttc-ret;document.getElementById('situ-montant-ttc').value=ttc;document.getElementById('situ-retenue').value=ret;document.getElementById('situ-net').value=net;}
+/* ══════════════════════════════════════════════════════════════
+   DÉCOMPTE DES SITUATIONS DE TRAVAUX (moteur BTP)
+   Cumul contrôlé · double mode · avance récupérable · retenue auto
+   ══════════════════════════════════════════════════════════════ */
+
+/* Cumul HT des situations antérieures d'une convention (hors contestées et hors la situation en cours d'édition). */
+function situCumulAnterieur(convId, exclureId) {
+  return (DATA.situations||[]).filter(function(s){
+    return s.convention_id===convId && s.statut!=='contestee' && s.id!==exclureId;
+  }).reduce(function(a,x){ return a+(parseFloat(x.montant_ht)||0); }, 0);
+}
+/* Montant HT du marché (convention + avenants signés déjà répercutés sur conv.montant_ht). */
+function situMarcheHT(conv){ return conv ? (parseFloat(conv.montant_ht)||0) : 0; }
+
+function onSituModeDecompte(){
+  var mode=(document.getElementById('situ-mode-decompte')||{}).value;
+  var wrap=document.getElementById('situ-wrap-avct');
+  var htEl=document.getElementById('situ-montant-ht');
+  if (mode==='avancement'){ if(wrap)wrap.style.display=''; if(htEl)htEl.readOnly=true; if(htEl)htEl.style.background='var(--card2)'; }
+  else { if(htEl)htEl.readOnly=false; if(htEl)htEl.style.background=''; }
+  calcSituDecompte();
+}
+
+function onSelectConventionSitu(){
+  var id=document.getElementById('situ-convention').value;
+  var recap=document.getElementById('situ-recap-conv');
+  if(!id){ if(recap)recap.style.display='none'; return; }
+  var conv=DATA.conventions.find(function(c){return c.id===id;});
+  if(!conv) return;
+  var marche=situMarcheHT(conv);
+  var cumul=situCumulAnterieur(id, APP.editingId);
+  var reste=Math.max(0, marche-cumul);
+  document.getElementById('situ-cumul-prec').value=Math.round(cumul);
+  if(!APP.editingId){
+    document.getElementById('situ-avancement').value=marche>0?Math.round(cumul/marche*100):0;
+    var nb=(DATA.situations||[]).filter(function(s){return s.convention_id===id;}).length+1;
+    document.getElementById('situ-numero').value='SIT-'+String(nb).padStart(3,'0');
+    /* TVA/retenue/avance par défaut depuis la convention */
+    document.getElementById('situ-tva').value=conv.tva_pct||18;
+  }
+  /* Récap visuel marché */
+  if(recap){
+    var pctFact=marche>0?Math.round(cumul/marche*100):0;
+    var avance=parseFloat(conv.avance_montant)||0;
+    recap.style.display='';
+    recap.innerHTML='<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;text-align:center;">'
+      +'<div><div style="color:var(--blanc-dim);font-size:10px;">MARCHÉ HT</div><div style="font-weight:700;color:var(--or);">'+fmtF(marche)+'</div></div>'
+      +'<div><div style="color:var(--blanc-dim);font-size:10px;">DÉJÀ FACTURÉ</div><div style="font-weight:700;">'+fmtF(Math.round(cumul))+' <span style="font-size:10px;color:var(--blanc-dim);">('+pctFact+'%)</span></div></div>'
+      +'<div><div style="color:var(--blanc-dim);font-size:10px;">RESTE À FACTURER</div><div style="font-weight:700;color:var(--vert);">'+fmtF(Math.round(reste))+'</div></div>'
+      +'<div><div style="color:var(--blanc-dim);font-size:10px;">RET. '+(conv.retenue_pct||10)+'% · AV. '+(conv.avance_pct||0)+'%</div><div style="font-weight:700;color:var(--bleu);">'+(avance>0?fmtF(avance):'—')+'</div></div>'
+    +'</div>';
+  }
+  calcSituDecompte();
+}
+
+/* Cœur : calcule HT période, TTC, avance récupérée, retenue, net. */
+function calcSituDecompte(){
+  var convId=(document.getElementById('situ-convention')||{}).value;
+  var conv=DATA.conventions.find(function(c){return c.id===convId;})||{};
+  var marche=situMarcheHT(conv);
+  var cumulAnt=situCumulAnterieur(convId, APP.editingId);
+  var mode=(document.getElementById('situ-mode-decompte')||{}).value||'direct';
+  var htEl=document.getElementById('situ-montant-ht');
+  var ht;
+
+  if(mode==='avancement'){
+    var pct=Math.min(100, Math.max(0, parseFloat((document.getElementById('situ-avancement')||{}).value)||0));
+    var cumulCible=Math.round(marche*pct/100);
+    ht=Math.max(0, cumulCible-cumulAnt);   /* HT période = cumul cible − déjà facturé */
+    if(htEl) htEl.value=ht;
+  } else {
+    ht=parseFloat(htEl?htEl.value:0)||0;
+    /* Reflète l'avancement induit par le montant direct */
+    if(marche>0){ var av=document.getElementById('situ-avancement'); if(av) av.value=Math.round((cumulAnt+ht)/marche*100); }
+  }
+
+  var tvaPct=parseFloat((document.getElementById('situ-tva')||{}).value)||0;
+  var ttc=Math.round(ht*(1+tvaPct/100));
+
+  /* Avance de démarrage récupérée au prorata : avance_pct % du HT période. */
+  var avancePct=parseFloat(conv.avance_pct)||0;
+  var avanceRecup=avancePct>0?Math.round(ht*avancePct/100):0;
+
+  /* Retenue de garantie : retenue_pct % du HT période (assiette HT, standard marché). */
+  var retPct=parseFloat(conv.retenue_pct); if(isNaN(retPct)) retPct=10;
+  var retenue=Math.round(ht*retPct/100);
+
+  var net=ttc-retenue-avanceRecup;
+
+  var set=function(id,v){var e=document.getElementById(id);if(e)e.value=v;};
+  set('situ-montant-ttc',ttc);
+  set('situ-avance-recup',avanceRecup);
+  set('situ-retenue',retenue);
+  set('situ-net',net);
+
+  /* Alerte dépassement marché */
+  var recap=document.getElementById('situ-recap-conv');
+  if(recap && marche>0 && (cumulAnt+ht) > marche*1.0001){
+    var dep=Math.round(cumulAnt+ht-marche);
+    if(!recap.querySelector('.situ-depass')){
+      recap.insertAdjacentHTML('beforeend','<div class="situ-depass" style="margin-top:8px;padding:6px 8px;background:rgba(224,82,82,.12);border-radius:6px;color:var(--rouge);font-weight:600;">⚠️ Dépassement du marché de '+fmtF(dep)+' FCFA — un avenant est requis.</div>');
+    } else { recap.querySelector('.situ-depass').innerHTML='⚠️ Dépassement du marché de '+fmtF(dep)+' FCFA — un avenant est requis.'; }
+  } else if(recap){ var d=recap.querySelector('.situ-depass'); if(d)d.remove(); }
+}
 
 function renderSituations(){
   var tbody=document.getElementById('tbody-situations');if(!tbody)return;
-  var list=DATA.situations||[];if(!list.length){tbody.innerHTML='<tr><td colspan="9" style="text-align:center;padding:20px;color:var(--blanc-dim);">Aucune situation. Cliquez <strong>+ Nouvelle situation</strong>.</td></tr>';return;}
+  var list=DATA.situations||[];
+  /* ── Synthèse cumulée par convention (pilotage BTP) ── */
+  var synth=document.getElementById('situ-synthese-conv');
+  if(synth){
+    var convIds={}; list.forEach(function(s){ convIds[s.convention_id]=1; });
+    var cards=Object.keys(convIds).map(function(cid){
+      var conv=DATA.conventions.find(function(c){return c.id===cid;});if(!conv)return '';
+      var constr=DATA.constructeurs.find(function(c){return c.id===conv.constructeur_id;})||{raison_sociale:'—'};
+      var ss=list.filter(function(s){return s.convention_id===cid && s.statut!=='contestee';});
+      var marche=situMarcheHT(conv);
+      var factureHT=ss.reduce(function(a,s){return a+(parseFloat(s.montant_ht)||0);},0);
+      var reste=Math.max(0,marche-factureHT);
+      var paye=ss.filter(function(s){return s.statut==='payee';}).reduce(function(a,s){return a+(parseFloat(s.net)||0);},0);
+      var retenue=ss.reduce(function(a,s){return a+(parseFloat(s.retenue)||0);},0);
+      var pctF=marche>0?Math.round(factureHT/marche*100):0;
+      var pctPhys=conv.avancement||0;
+      var ecart=pctPhys-pctF;   /* physique − financier : + = sous-facturé, − = sur-facturé */
+      return '<div class="card" style="margin-bottom:10px;border-left:4px solid '+(reste<=0?'var(--vert)':'var(--or)')+';">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">'
+          +'<div><span style="font-family:monospace;color:var(--bleu);font-size:12px;">'+conv.numero+'</span> <strong>'+escHtml(constr.raison_sociale)+'</strong></div>'
+          +'<div style="font-size:11px;">'+ss.length+' situation(s) · '+(conv.retenue_pct||10)+'% retenue</div>'
+        +'</div>'
+        +'<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;font-size:11px;text-align:center;">'
+          +'<div><div style="color:var(--blanc-dim);">Marché HT</div><div style="font-weight:700;color:var(--or);">'+fmtF(marche)+'</div></div>'
+          +'<div><div style="color:var(--blanc-dim);">Facturé HT</div><div style="font-weight:700;">'+fmtF(Math.round(factureHT))+' ('+pctF+'%)</div></div>'
+          +'<div><div style="color:var(--blanc-dim);">Reste</div><div style="font-weight:700;color:var(--vert);">'+fmtF(Math.round(reste))+'</div></div>'
+          +'<div><div style="color:var(--blanc-dim);">Payé net</div><div style="font-weight:700;color:var(--vert);">'+fmtF(Math.round(paye))+'</div></div>'
+          +'<div><div style="color:var(--blanc-dim);">Retenue</div><div style="font-weight:700;color:var(--rouge);">'+fmtF(Math.round(retenue))+'</div></div>'
+          +'<div><div style="color:var(--blanc-dim);">Phys/Fin</div><div style="font-weight:700;color:'+(Math.abs(ecart)<=5?'var(--vert)':'var(--rouge)')+';">'+pctPhys+'/'+pctF+'% '+(Math.abs(ecart)>5?(ecart>0?'⚠️sous-fact.':'⚠️sur-fact.'):'✓')+'</div></div>'
+        +'</div>'
+        +'<div class="avancement-barre" style="margin-top:8px;height:7px;"><div class="avancement-fill" style="width:'+pctF+'%;"></div></div>'
+      +'</div>';
+    }).filter(Boolean).join('');
+    synth.innerHTML = cards ? ('<div style="margin-bottom:14px;"><div class="card-title" style="margin-bottom:8px;">🎯 Suivi financier par convention</div>'+cards+'</div>') : '';
+  }
+
+  if(!list.length){tbody.innerHTML='<tr><td colspan="9" style="text-align:center;padding:20px;color:var(--blanc-dim);">Aucune situation. Cliquez <strong>+ Nouvelle situation</strong>.</td></tr>';return;}
   var sC={soumise:'badge-bleu',validee:'badge-or',payee:'badge-vert',contestee:'badge-rouge'};
   tbody.innerHTML=list.sort(function(a,b){return(b.date||'').localeCompare(a.date||'');}).map(function(s){var conv=DATA.conventions.find(function(c){return c.id===s.convention_id;})||{numero:'—'};var constr=DATA.constructeurs.find(function(c){return c.id===conv.constructeur_id;})||{raison_sociale:'—'};return'<tr><td>'+s.date+'</td><td style="font-family:monospace;color:var(--or);font-size:11px;">'+conv.numero+'</td><td style="font-size:12px;">'+constr.raison_sociale+'</td><td style="font-family:monospace;color:var(--bleu);">'+s.numero+'</td><td>'+fmtF(s.montant_ht||0)+' FCFA</td><td style="color:var(--rouge);">'+fmtF(s.retenue||0)+' FCFA</td><td style="font-weight:700;color:var(--vert);">'+fmtF(s.net||0)+' FCFA</td><td><span class="badge '+(sC[s.statut]||'badge-bleu')+'">'+s.statut+'</span></td><td><button class="btn btn-secondary btn-sm btn-icon" onclick="openSituationEdit(\''+s.id+'\')">✏️</button> <button class="btn btn-secondary btn-sm btn-icon" onclick="printSituation(\''+s.id+'\')">🖨️</button> <button class="btn btn-danger btn-sm btn-icon" onclick="deleteSituation(\''+s.id+'\')">🗑</button></td></tr>';}).join('');
 }
 
 function openSituation(convId){
-  APP.editingId=null;var cSel=document.getElementById('situ-convention');if(cSel&&cSel.options.length<=1)DATA.conventions.forEach(function(c){var o=document.createElement('option');o.value=c.id;o.textContent=c.numero+' — '+(DATA.constructeurs.find(function(x){return x.id===c.constructeur_id;})||{raison_sociale:'?'}).raison_sociale;cSel.appendChild(o);});
+  APP.editingId=null;var cSel=document.getElementById('situ-convention');
+  if(cSel){ cSel.innerHTML='<option value="">— Sélectionner —</option>'; DATA.conventions.forEach(function(c){var o=document.createElement('option');o.value=c.id;o.textContent=c.numero+' — '+(DATA.constructeurs.find(function(x){return x.id===c.constructeur_id;})||{raison_sociale:'?'}).raison_sociale;cSel.appendChild(o);}); }
   ['situ-numero','situ-periode','situ-travaux','situ-observations'].forEach(function(f){var e=document.getElementById(f);if(e)e.value='';});
   document.getElementById('situ-date').value=today();document.getElementById('situ-montant-ht').value='0';document.getElementById('situ-tva').value='18';document.getElementById('situ-montant-ttc').value='0';document.getElementById('situ-retenue').value='0';document.getElementById('situ-net').value='0';document.getElementById('situ-statut').value='soumise';
+  var md=document.getElementById('situ-mode-decompte'); if(md)md.value='avancement';
+  var ar=document.getElementById('situ-avance-recup'); if(ar)ar.value='0';
+  var rc=document.getElementById('situ-recap-conv'); if(rc)rc.style.display='none';
+  onSituModeDecompte();
   if(convId){setTimeout(function(){var s=document.getElementById('situ-convention');if(s){s.value=convId;onSelectConventionSitu();}},80);}
   document.getElementById('situ-modal-title').textContent='Nouvelle situation de travaux';
   document.getElementById('modal-situation').classList.add('open');
 }
 function openSituationForConv(convId){openSituation(convId);}
-function openSituationEdit(id){APP.editingId=id;openSituation();setTimeout(function(){var s=DATA.situations.find(function(x){return x.id===id;});if(!s)return;var el=function(eid,v){var e=document.getElementById(eid);if(e)e.value=v||'';};el('situ-convention',s.convention_id);el('situ-numero',s.numero);el('situ-date',s.date);el('situ-periode',s.periode);el('situ-montant-ht',s.montant_ht);el('situ-tva',s.tva||18);el('situ-montant-ttc',s.montant_ttc);el('situ-retenue',s.retenue);el('situ-net',s.net);el('situ-avancement',s.avancement);el('situ-mode',s.mode);el('situ-statut',s.statut);el('situ-travaux',s.travaux);el('situ-observations',s.observations);document.getElementById('situ-modal-title').textContent='Modifier situation';},100);}
+function openSituationEdit(id){APP.editingId=id;openSituation();setTimeout(function(){var s=DATA.situations.find(function(x){return x.id===id;});if(!s)return;var el=function(eid,v){var e=document.getElementById(eid);if(e)e.value=(v===undefined||v===null)?'':v;};el('situ-convention',s.convention_id);el('situ-numero',s.numero);el('situ-date',s.date);el('situ-periode',s.periode);el('situ-mode-decompte',s.mode_decompte||'direct');el('situ-montant-ht',s.montant_ht);el('situ-tva',s.tva||18);el('situ-montant-ttc',s.montant_ttc);el('situ-avance-recup',s.avance_recup||0);el('situ-retenue',s.retenue);el('situ-net',s.net);el('situ-avancement',s.avancement);el('situ-mode',s.mode);el('situ-statut',s.statut);el('situ-travaux',s.travaux);el('situ-observations',s.observations);onSituModeDecompte();onSelectConventionSitu();document.getElementById('situ-modal-title').textContent='Modifier situation';},100);}
 
 async function saveSituationAndCompta(){
-  var convId=document.getElementById('situ-convention').value;var num=document.getElementById('situ-numero').value.trim();var ht=parseFloat(document.getElementById('situ-montant-ht').value)||0;if(!convId||!num||!ht){toast('Convention, numéro et montant HT obligatoires.','error');return;}
-  var s={id:APP.editingId||uid(),convention_id:convId,numero:num,date:document.getElementById('situ-date').value,periode:document.getElementById('situ-periode').value.trim(),montant_ht:ht,tva:parseFloat(document.getElementById('situ-tva').value)||18,montant_ttc:parseFloat(document.getElementById('situ-montant-ttc').value)||0,retenue:parseFloat(document.getElementById('situ-retenue').value)||0,net:parseFloat(document.getElementById('situ-net').value)||0,avancement:parseInt(document.getElementById('situ-avancement').value)||0,mode:document.getElementById('situ-mode').value,statut:document.getElementById('situ-statut').value,travaux:document.getElementById('situ-travaux').value.trim(),observations:document.getElementById('situ-observations').value.trim(),created_at:APP.editingId?undefined:today()};
+  var convId=document.getElementById('situ-convention').value;
+  var num=document.getElementById('situ-numero').value.trim();
+  var ht=parseFloat(document.getElementById('situ-montant-ht').value)||0;
+  if(!convId||!num||!ht){toast('Convention, numéro et montant HT obligatoires.','error');return;}
+  var conv=DATA.conventions.find(function(c){return c.id===convId;})||{};
+
+  /* Garde-fou dépassement marché (bloquant sauf avenant couvrant). */
+  var marche=situMarcheHT(conv);
+  var cumulAnt=situCumulAnterieur(convId, APP.editingId);
+  if(marche>0 && (cumulAnt+ht) > marche*1.0001){
+    if(!confirm('⚠️ Le cumul facturé ('+fmtF(Math.round(cumulAnt+ht))+' FCFA) dépasse le marché ('+fmtF(marche)+' FCFA).\n\nNormalement un avenant doit couvrir ce surplus. Enregistrer quand même ?')) return;
+  }
+
+  var s={
+    id:APP.editingId||uid(), convention_id:convId, numero:num,
+    date:document.getElementById('situ-date').value,
+    periode:document.getElementById('situ-periode').value.trim(),
+    mode_decompte:(document.getElementById('situ-mode-decompte')||{}).value||'direct',
+    montant_ht:ht,
+    tva:parseFloat(document.getElementById('situ-tva').value)||18,
+    montant_ttc:parseFloat(document.getElementById('situ-montant-ttc').value)||0,
+    avance_recup:parseFloat(document.getElementById('situ-avance-recup').value)||0,
+    retenue:parseFloat(document.getElementById('situ-retenue').value)||0,
+    net:parseFloat(document.getElementById('situ-net').value)||0,
+    avancement:parseInt(document.getElementById('situ-avancement').value)||0,
+    mode:document.getElementById('situ-mode').value,
+    statut:document.getElementById('situ-statut').value,
+    travaux:document.getElementById('situ-travaux').value.trim(),
+    observations:document.getElementById('situ-observations').value.trim(),
+    created_at:APP.editingId?undefined:today()
+  };
   if(APP.editingId){var idx=DATA.situations.findIndex(function(x){return x.id===APP.editingId;});if(idx>=0)DATA.situations[idx]=s;}else DATA.situations.push(s);
   await dbPut('situations',s);
-  var conv=DATA.conventions.find(function(c){return c.id===convId;});if(conv&&s.avancement>(conv.avancement||0)){conv.avancement=s.avancement;await dbPut('conventions',conv);}
+  if(typeof syncToSupabase==='function') syncToSupabase('pi_situations',s);
+
+  /* Avancement convention aligné sur le cumul financier réel. */
+  var cumulTot=cumulAnt+ht;
+  var avPct=marche>0?Math.min(100,Math.round(cumulTot/marche*100)):s.avancement;
+  if(conv&&avPct>(conv.avancement||0)){conv.avancement=avPct;conv._modifie=new Date().toISOString();await dbPut('conventions',conv);if(typeof syncToSupabase==='function')syncToSupabase('pi_conventions',conv);}
+
+  /* ── Nettoyage idempotent : on retire les écritures de cette situation
+       avant de les régénérer selon le nouveau statut (évite les orphelines). ── */
+  var prefixes=['ecr_situ_','ecr_tva_','ecr_ret_','ecr_avr_','ecr_enc_','ecr_pay_'];
+  var aPurger=DATA.ecritures.filter(function(e){ return prefixes.some(function(p){return e.id===p+s.id;}); });
+  for(var pi=0;pi<aPurger.length;pi++){ try{ await deleteRecord('ecritures',aPurger[pi].id); }catch(e){} }
+
   if(s.statut==='validee'||s.statut==='payee'){
-    var constr=DATA.constructeurs.find(function(c){return c.id===(conv?conv.constructeur_id:'');})||{raison_sociale:'Constructeur'};
+    var constr=DATA.constructeurs.find(function(c){return c.id===(conv?conv.constructeur_id:'');})||{raison_sociale:'Constructeur',interne:false};
+    var cd=(DATA.params&&DATA.params.comptes_defaut)||{};
     var _sync=function(o){ if(typeof syncToSupabase==='function') syncToSupabase('pi_ecritures',o); };
     var tvaMt=Math.max(0,(parseFloat(s.montant_ttc)||0)-ht);
     var moLib=(conv&&conv.maitre_ouvrage)?conv.maitre_ouvrage:'Client';
+    var cptTreso=(s.mode==='especes')?(cd.treso_caisse||'571'):(s.mode==='cheque'?(cd.treso_banque||'521'):(cd.treso_banque||'521'));
+    var cptRetenue=cd.retenue_garantie||'4017';   /* dette de retenue de garantie */
+
     if(constr.interne){
-      var _cdCfg = (DATA.params && DATA.params.comptes_defaut) || {};
-      var _cptClient = _cdCfg.client_lots || '4111';
-      var _cptTva = _cdCfg.tva_collectee || '4431';
-      var _cptTreso = (s.mode==='especes') ? (_cdCfg.treso_caisse||'571') : (_cdCfg.treso_banque||'521');
-      /* Département de construction INTERNE rémunéré → PRODUIT pour la société */
-      var ev={id:'ecr_situ_'+s.id,ref:'SIT-'+s.numero,date:s.date,piece:num,libelle:'Travaux facturés '+num+' — '+(conv?conv.numero:'')+' — '+moLib,compte:_cptClient,compte_debit:_cptClient,compte_credit:'705',montant:ht,type:'produit',mode:s.mode,notes:'Dépt interne · Avancement '+s.avancement+'%',created_at:today()};
+      /* ── DÉPARTEMENT INTERNE : la société se facture à elle-même → PRODUIT ── */
+      var cptClient=cd.client_lots||'4111';
+      var cptTvaColl=cd.tva_collectee||'4431';
+      var ev={id:'ecr_situ_'+s.id,ref:'SIT-'+s.numero,date:s.date,piece:num,libelle:'Travaux facturés '+num+' — '+(conv?conv.numero:'')+' — '+moLib,compte:cptClient,compte_debit:cptClient,compte_credit:'705',montant:ht,type:'produit',mode:s.mode,source:'situation',situation_id:s.id,notes:'Dépt interne · Avancement '+avPct+'%',created_at:today()};
       DATA.ecritures.push(ev);await dbPut('ecritures',ev);_sync(ev);
-      if(tvaMt>0){var et={id:'ecr_tva_'+s.id,ref:'TVA-'+s.numero,date:s.date,piece:num,libelle:'TVA collectée s/ travaux '+num,compte:_cptTva,compte_debit:_cptClient,compte_credit:_cptTva,montant:tvaMt,type:'produit',mode:s.mode,created_at:today()};DATA.ecritures.push(et);await dbPut('ecritures',et);_sync(et);}
-      if(s.statut==='payee'){var enc={id:'ecr_enc_'+s.id,ref:'ENC-'+s.numero,date:s.date,piece:num,libelle:'Encaissement '+num+' — '+moLib,compte:_cptTreso,compte_debit:_cptTreso,compte_credit:_cptClient,montant:s.net,type:'actif',mode:s.mode,created_at:today()};DATA.ecritures.push(enc);await dbPut('ecritures',enc);_sync(enc);}
-      toast('✅ Situation + produit ('+_cptClient+'/705) — département interne rémunéré.','success');
+      if(tvaMt>0){var et={id:'ecr_tva_'+s.id,ref:'TVA-'+s.numero,date:s.date,piece:num,libelle:'TVA collectée s/ travaux '+num,compte:cptTvaColl,compte_debit:cptClient,compte_credit:cptTvaColl,montant:tvaMt,type:'produit',source:'situation',situation_id:s.id,mode:s.mode,created_at:today()};DATA.ecritures.push(et);await dbPut('ecritures',et);_sync(et);}
+      if(s.statut==='payee'){var enc={id:'ecr_enc_'+s.id,ref:'ENC-'+s.numero,date:s.date,piece:num,libelle:'Encaissement '+num+' — '+moLib,compte:cptTreso,compte_debit:cptTreso,compte_credit:cptClient,montant:s.net,type:'actif',source:'situation',situation_id:s.id,mode:s.mode,created_at:today()};DATA.ecritures.push(enc);await dbPut('ecritures',enc);_sync(enc);}
+      toast('✅ Situation interne comptabilisée (705 + TVA'+(s.statut==='payee'?' + encaissement':'')+').','success');
     } else {
-      /* Constructeur EXTERNE → CHARGE (sous-traitance) */
-      var ecr={id:'ecr_situ_'+s.id,ref:'SIT-'+s.numero,date:s.date,piece:num,libelle:'Situation travaux '+num+' — '+(conv?conv.numero:'')+' — '+constr.raison_sociale,compte:'401',compte_debit:'6111',compte_credit:'401',montant:ht,type:'charge',mode:s.mode,notes:'Avancement '+s.avancement+'%',created_at:today()};
+      /* ── CONSTRUCTEUR EXTERNE : sous-traitance → CHARGE ──
+         Facturation : D 6111 (HT) + D 4452 (TVA déd.) / C 401 (TTC)
+         Retenue     : D 401 (retenue) / C 4017 (dette de retenue isolée)
+         Avance récup: D 401 (avance) / C 4091 (avance déjà versée)  [si avance]
+         Règlement   : D 401 (net) / C trésorerie                    [si payée] */
+      var cptFour=cd.fournisseur||'401';
+      var cptTvaDed=cd.tva_deductible_travaux||'4452';
+      var cptAvance=cd.avance_fournisseur||'4091';
+
+      /* 1. Charge HT */
+      var ecr={id:'ecr_situ_'+s.id,ref:'SIT-'+s.numero,date:s.date,piece:num,libelle:'Situation travaux '+num+' — '+(conv?conv.numero:'')+' — '+constr.raison_sociale,compte:cptFour,compte_debit:'6111',compte_credit:cptFour,montant:ht,type:'charge',mode:s.mode,source:'situation',situation_id:s.id,notes:'Avancement '+avPct+'%',created_at:today()};
       DATA.ecritures.push(ecr);await dbPut('ecritures',ecr);_sync(ecr);
-      if(s.statut==='payee'){var ep={id:'ecr_pay_'+s.id,ref:'PAY-'+s.numero,date:s.date,piece:num,libelle:'Règlement '+num,compte:'401',compte_debit:'401',compte_credit:'512',montant:s.net,type:'actif',mode:s.mode,created_at:today()};DATA.ecritures.push(ep);await dbPut('ecritures',ep);_sync(ep);}
-      toast('✅ Situation + écriture 6111/401 créée.','success');
+      /* 2. TVA déductible */
+      if(tvaMt>0){var etd={id:'ecr_tva_'+s.id,ref:'TVA-'+s.numero,date:s.date,piece:num,libelle:'TVA déductible s/ situation '+num,compte:cptTvaDed,compte_debit:cptTvaDed,compte_credit:cptFour,montant:tvaMt,type:'charge',source:'situation',situation_id:s.id,mode:s.mode,created_at:today()};DATA.ecritures.push(etd);await dbPut('ecritures',etd);_sync(etd);}
+      /* 3. Retenue de garantie isolée (réduit la dette 401, crédite 4017) */
+      if((s.retenue||0)>0){var ergt={id:'ecr_ret_'+s.id,ref:'RG-'+s.numero,date:s.date,piece:num,libelle:'Retenue de garantie '+(conv.retenue_pct||10)+'% s/ situation '+num,compte:cptRetenue,compte_debit:cptFour,compte_credit:cptRetenue,montant:s.retenue,type:'passif',source:'situation',situation_id:s.id,mode:s.mode,created_at:today()};DATA.ecritures.push(ergt);await dbPut('ecritures',ergt);_sync(ergt);}
+      /* 4. Récupération avance de démarrage */
+      if((s.avance_recup||0)>0){var eavr={id:'ecr_avr_'+s.id,ref:'AVR-'+s.numero,date:s.date,piece:num,libelle:'Récupération avance démarrage s/ situation '+num,compte:cptAvance,compte_debit:cptFour,compte_credit:cptAvance,montant:s.avance_recup,type:'actif',source:'situation',situation_id:s.id,mode:s.mode,created_at:today()};DATA.ecritures.push(eavr);await dbPut('ecritures',eavr);_sync(eavr);}
+      /* 5. Règlement du net */
+      if(s.statut==='payee'&&(s.net||0)>0){var ep={id:'ecr_pay_'+s.id,ref:'PAY-'+s.numero,date:s.date,piece:num,libelle:'Règlement net situation '+num+' — '+constr.raison_sociale,compte:cptFour,compte_debit:cptFour,compte_credit:cptTreso,montant:s.net,type:'actif',source:'situation',situation_id:s.id,mode:s.mode,created_at:today()};DATA.ecritures.push(ep);await dbPut('ecritures',ep);_sync(ep);}
+      toast('✅ Situation comptabilisée (6111+4452 / 401 · retenue 4017'+((s.avance_recup||0)>0?' · avance 4091':'')+(s.statut==='payee'?' · règlement':'')+').','success');
     }
-  } else toast('Situation enregistrée.','success');
+  } else toast('Situation enregistrée (non comptabilisée — statut '+s.statut+').','info');
   closeModal('modal-situation');renderSituations();renderConventions();
+  if(typeof renderChantiersDashboard==='function')renderChantiersDashboard();
+  if(typeof filterEcritures==='function')filterEcritures();
 }
 async function deleteSituation(id){if(!confirm('Supprimer ?'))return;if(await deleteRecord('situations',id)===false)return;renderSituations();toast('Supprimé.','info');}
 function printSituation(id){var s=DATA.situations.find(function(x){return x.id===id;});if(!s)return;var conv=DATA.conventions.find(function(c){return c.id===s.convention_id;})||{numero:'—'};var constr=DATA.constructeurs.find(function(c){return c.id===conv.constructeur_id;})||{raison_sociale:'—'};var win=window.open('','','width=800,height=700');win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Situation '+s.numero+'</title><style>body{font-family:Georgia,serif;padding:36px;font-size:13px;}h1{color:#1A6B3A;border-bottom:2px solid #1A6B3A;padding-bottom:8px;}table{width:100%;border-collapse:collapse;margin:14px 0;}td,th{border:1px solid #ccc;padding:8px 12px;}th{background:#E8F4EE;}.sig{display:flex;justify-content:space-between;margin-top:50px;}.sb{border-top:1px solid #999;width:40%;padding-top:8px;font-size:12px;color:#666;}</style></head><body><h1>SITUATION DE TRAVAUX N° '+s.numero+'</h1><table><tr><td><strong>Maître d\'ouvrage:</strong> '+(DATA.params.societe||'ImmoSuite ERP')+'</td><td><strong>Constructeur:</strong> '+constr.raison_sociale+'</td></tr><tr><td><strong>Convention:</strong> '+conv.numero+'</td><td><strong>Date:</strong> '+s.date+'</td></tr></table><h3>Travaux réalisés</h3><p style="border:1px solid #ddd;padding:12px;">'+(s.travaux||'—')+'</p><table><tr><th>Désignation</th><th style="text-align:right;">Montant (FCFA)</th></tr><tr><td>Montant HT</td><td style="text-align:right;">'+fmtF(s.montant_ht||0)+'</td></tr><tr><td>TVA</td><td style="text-align:right;">'+fmtF((s.montant_ttc||0)-(s.montant_ht||0))+'</td></tr><tr><td><strong>Montant TTC</strong></td><td style="text-align:right;font-weight:700;">'+fmtF(s.montant_ttc||0)+'</td></tr><tr style="color:#c0392b;"><td>Retenue garantie 10%</td><td style="text-align:right;">− '+fmtF(s.retenue||0)+'</td></tr><tr><td><strong>NET À PAYER</strong></td><td style="text-align:right;font-size:17px;font-weight:bold;color:#1A6B3A;">'+fmtF(s.net||0)+' FCFA</td></tr></table><div class="sig"><div class="sb">LE CONSTRUCTEUR<br><br><br>Signature</div><div class="sb" style="text-align:right;">LE MAÎTRE D\'OUVRAGE<br><br><br>Signature</div></div></body></html>');try{ if(win.document.body && !win.document.querySelector('.doc-qr')){ var _qr=(win.document.querySelector('title')||{}).textContent||'DOC'; win.document.body.insertAdjacentHTML('beforeend', printQrFooter(_qr)); } }catch(e){} win.document.close(); win.print();}
@@ -33347,14 +33596,69 @@ async function deleteAvenant(id){if(!confirm('Supprimer ?'))return;if(await dele
 
 /* ─── Retenues de garantie ────────────────────────── */
 function renderGaranties(){var tbody=document.getElementById('tbody-garanties');if(!tbody)return;var retenues=DATA.situations.filter(function(s){return s.retenue&&s.retenue>0&&(s.statut==='validee'||s.statut==='payee');});if(!retenues.length){tbody.innerHTML='<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--blanc-dim);">Aucune retenue constituée.</td></tr>';return;}var byConv={};retenues.forEach(function(s){if(!byConv[s.convention_id])byConv[s.convention_id]={total:0};byConv[s.convention_id].total+=s.retenue||0;});tbody.innerHTML=Object.keys(byConv).map(function(convId){var conv=DATA.conventions.find(function(c){return c.id===convId;})||{numero:'—'};var constr=DATA.constructeurs.find(function(c){return c.id===conv.constructeur_id;})||{raison_sociale:'—'};var r=byConv[convId];var lib=conv.statut==='reception_definitive';return'<tr style="'+(lib?'background:rgba(74,196,122,0.05);':'')+'"><td style="font-family:monospace;color:var(--or);">'+conv.numero+'</td><td style="font-size:12px;">'+constr.raison_sociale+'</td><td style="font-weight:700;color:var(--rouge);">'+fmtF(r.total)+' FCFA</td><td>'+(conv.date_fin_prev||'—')+'</td><td style="font-size:11px;">Levée des réserves + réception définitive</td><td><span class="badge '+(lib?'badge-vert':'badge-or')+'">'+(lib?'Libérable':'Bloquée')+'</span></td><td>'+(lib?'<button class="btn btn-primary btn-sm" onclick="libererGarantie(\''+convId+'\','+r.total+')">💰 Libérer</button>':'<button class="btn btn-secondary btn-sm btn-icon" disabled style="opacity:.4;">🔒</button>')+'</td></tr>';}).join('');}
-async function libererGarantie(convId,montant){if(!confirm('Libérer '+fmtF(montant)+' FCFA ? Écriture 401/512 créée.'))return;var conv=DATA.conventions.find(function(c){return c.id===convId;})||{};var constr=DATA.constructeurs.find(function(c){return c.id===conv.constructeur_id;})||{raison_sociale:'Constructeur'};var ecr={id:'ecr_gar_'+convId+'_'+Date.now(),ref:'GAR-'+conv.numero,date:today(),piece:'GAR/'+conv.numero,libelle:'Libération retenue garantie — '+constr.raison_sociale,compte:'401',compte_debit:'401',compte_credit:'512',montant:montant,type:'actif',mode:'virement',created_at:today()};DATA.ecritures.push(ecr);await dbPut('ecritures',ecr);toast('✅ Retenue libérée — Écriture 401/512.','success');renderGaranties();}
+async function libererGarantie(convId,montant){
+  var conv=DATA.conventions.find(function(c){return c.id===convId;})||{};
+  if(conv.statut!=='reception_definitive'){
+    if(!confirm('⚠️ La réception définitive n\'est pas prononcée pour cette convention.\n\nLa retenue de garantie se libère normalement après la réception définitive et l\'expiration du délai de garantie. Libérer quand même ?')) return;
+  }
+  if(!confirm('Libérer '+fmtF(montant)+' FCFA de retenue de garantie ?\nÉcriture : Débit 4017 (dette de retenue) / Crédit trésorerie.')) return;
+  var constr=DATA.constructeurs.find(function(c){return c.id===conv.constructeur_id;})||{raison_sociale:'Constructeur'};
+  var cd=(DATA.params&&DATA.params.comptes_defaut)||{};
+  var cptRetenue=cd.retenue_garantie||'4017';
+  var cptTreso=cd.treso_banque||'521';
+  var ecr={id:'ecr_gar_'+convId+'_'+Date.now(),ref:'GAR-'+conv.numero,date:today(),piece:'GAR/'+conv.numero,libelle:'Libération retenue de garantie — '+constr.raison_sociale,compte:cptRetenue,compte_debit:cptRetenue,compte_credit:cptTreso,montant:montant,type:'passif',mode:'virement',source:'garantie',convention_id:convId,created_at:today()};
+  DATA.ecritures.push(ecr);await dbPut('ecritures',ecr);
+  if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',ecr);
+  /* Marque les situations de la convention comme retenue libérée. */
+  (DATA.situations||[]).filter(function(s){return s.convention_id===convId;}).forEach(function(s){ s.retenue_liberee=true; dbPut('situations',s); });
+  toast('✅ Retenue libérée — Écriture '+cptRetenue+'/'+cptTreso+'.','success');
+  renderGaranties();
+}
+
+/* ══════════════════════════════════════════════════════════════
+   PÉNALITÉS DE RETARD (marché travaux)
+   Calcul : penalites % / semaine de retard × montant HT marché,
+   souvent plafonné (5% du marché en pratique CI). Écriture SYSCOHADA :
+   Débit 401 (réduit la dette fournisseur) / Crédit 7078 (produit accessoire)
+   ══════════════════════════════════════════════════════════════ */
+function calcPenalitesRetard(conv){
+  if(!conv || !conv.date_fin_prev) return {jours:0, semaines:0, montant:0};
+  var fin=new Date(conv.date_fin_prev);
+  var ref=(conv.avancement>=100 && conv.date_reception)?new Date(conv.date_reception):new Date();
+  var jours=Math.max(0, Math.floor((ref-fin)/(1000*3600*24)));
+  var semaines=Math.floor(jours/7);
+  var pct=parseFloat(conv.penalites); if(isNaN(pct))pct=0.5;
+  var marche=parseFloat(conv.montant_ht)||0;
+  var montant=Math.round(marche*(pct/100)*semaines);
+  /* Plafond 5% du marché (usage BTP courant, paramétrable). */
+  var plafond=Math.round(marche*0.05);
+  if(montant>plafond) montant=plafond;
+  return {jours:jours, semaines:semaines, montant:montant, plafonne:(marche*(pct/100)*semaines)>plafond};
+}
+async function appliquerPenalites(convId){
+  var conv=DATA.conventions.find(function(c){return c.id===convId;});if(!conv)return;
+  var p=calcPenalitesRetard(conv);
+  if(p.montant<=0){toast('Aucune pénalité : chantier non en retard.','info');return;}
+  if(!confirm('Appliquer '+fmtF(p.montant)+' FCFA de pénalités de retard ?\n('+p.semaines+' semaine(s), '+(conv.penalites||0.5)+'%/sem'+(p.plafonne?', plafonné à 5%':'')+')\n\nÉcriture : Débit 401 / Crédit 7078 (produit accessoire).')) return;
+  var constr=DATA.constructeurs.find(function(c){return c.id===conv.constructeur_id;})||{raison_sociale:'Constructeur'};
+  var cd=(DATA.params&&DATA.params.comptes_defaut)||{};
+  var cptFour=cd.fournisseur||'401';
+  var ecr={id:'ecr_pen_'+convId+'_'+Date.now(),ref:'PEN-'+conv.numero,date:today(),piece:'PEN/'+conv.numero,libelle:'Pénalités de retard '+p.semaines+' sem. — '+constr.raison_sociale,compte:cptFour,compte_debit:cptFour,compte_credit:'7078',montant:p.montant,type:'produit',mode:'compensation',source:'penalite',convention_id:convId,created_at:today()};
+  DATA.ecritures.push(ecr);await dbPut('ecritures',ecr);
+  if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',ecr);
+  conv.penalites_appliquees=(conv.penalites_appliquees||0)+p.montant;conv._modifie=new Date().toISOString();
+  await dbPut('conventions',conv);if(typeof syncToSupabase==='function')syncToSupabase('pi_conventions',conv);
+  toast('✅ Pénalités appliquées ('+cptFour+'/7078). La dette fournisseur est réduite d\'autant.','success');
+  if(typeof renderChantiersDashboard==='function')renderChantiersDashboard();
+  renderConventions();
+}
 
 /* ─── Chantiers dashboard ──────────────────────────── */
 function renderChantiersDashboard(){
   var box=document.getElementById('chantiers-dashboard');if(!box)return;
   var chantiers=DATA.conventions.filter(function(c){return['signe','en_cours','reception_provisoire'].indexOf(c.statut)>=0;});
   if(!chantiers.length){box.innerHTML='<div class="card"><div style="padding:24px;text-align:center;color:var(--blanc-dim);">Aucun chantier en cours.</div></div>';return;}
-  box.innerHTML=chantiers.map(function(c){var constr=DATA.constructeurs.find(function(x){return x.id===c.constructeur_id;})||{raison_sociale:'—'};var prog=DATA.programmes.find(function(x){return x.id===c.programme_id;})||{nom:'—'};var retard=c.date_fin_prev&&c.date_fin_prev<today()&&c.statut==='en_cours';var av=c.avancement||0;var situs=DATA.situations.filter(function(s){return s.convention_id===c.id;});var paye=situs.filter(function(s){return s.statut==='payee';}).reduce(function(s,x){return s+(x.net||0);},0);var reten=situs.reduce(function(s,x){return s+(x.retenue||0);},0);var rpts=DATA.rapports_chantier.filter(function(r){return r.convention_id===c.id;});var last=rpts.sort(function(a,b){return(b.date_debut||'').localeCompare(a.date_debut||'');}).slice(0,1)[0];return'<div class="constructeur-card" style="margin-bottom:16px;"><div style="display:grid;grid-template-columns:1fr auto;gap:12px;align-items:flex-start;"><div><div style="display:flex;gap:8px;margin-bottom:4px;"><span class="badge '+(retard?'badge-rouge':c.statut==='reception_provisoire'?'badge-or':'badge-vert')+'">'+c.statut.replace(/_/g,' ')+'</span><span style="font-family:monospace;font-size:11px;color:var(--bleu);">'+c.numero+'</span></div><div style="font-weight:700;font-size:16px;">'+prog.nom+'</div><div style="font-size:12px;color:var(--blanc-dim);">'+c.objet+'</div><div style="font-size:12px;color:var(--blanc-dim);">👷 '+constr.raison_sociale+'</div></div><div style="text-align:right;"><div style="font-size:28px;font-weight:700;color:'+(av>=100?'var(--vert)':retard?'var(--rouge)':'var(--or)')+';">'+av+'%</div>'+(retard?'<div class="badge badge-rouge">⚠️ RETARD</div>':'')+'</div></div><div class="avancement-barre" style="margin:10px 0;height:10px;"><div class="avancement-fill '+(retard?'retard':'')+'" style="width:'+av+'%;"></div></div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;font-size:12px;margin-bottom:12px;"><div style="background:var(--card2);border-radius:var(--r);padding:8px;text-align:center;"><div style="color:var(--blanc-dim);font-size:10px;">Montant TTC</div><div style="font-weight:700;color:var(--or);">'+fmtF(c.montant_ttc||0)+'</div></div><div style="background:var(--card2);border-radius:var(--r);padding:8px;text-align:center;"><div style="color:var(--blanc-dim);font-size:10px;">Payé</div><div style="font-weight:700;color:var(--vert);">'+fmtF(paye)+'</div></div><div style="background:var(--card2);border-radius:var(--r);padding:8px;text-align:center;"><div style="color:var(--blanc-dim);font-size:10px;">Retenues</div><div style="font-weight:700;color:var(--rouge);">'+fmtF(reten)+'</div></div><div style="background:var(--card2);border-radius:var(--r);padding:8px;text-align:center;"><div style="color:var(--blanc-dim);font-size:10px;">Fin prévue</div><div style="font-weight:700;color:'+(retard?'var(--rouge)':'var(--blanc)')+';">'+(c.date_fin_prev||'—')+'</div></div></div>'+(last?'<div style="background:var(--card2);border-radius:var(--r);padding:10px;font-size:12px;margin-bottom:10px;border-left:3px solid var(--bleu);"><strong style="color:var(--bleu);">Dernier rapport</strong> — '+last.date_debut+' — <strong>'+last.avancement+'%</strong><br><span style="color:var(--blanc-dim);">'+(last.travaux_realises||'').slice(0,100)+'</span></div>':'')+'<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-secondary btn-sm" onclick="openConvention(\''+c.id+'\')">✏️ Convention</button><button class="btn btn-secondary btn-sm" onclick="openRapportChantierForConv(\''+c.id+'\')">📋 Rapport</button><button class="btn btn-secondary btn-sm" onclick="openSituationForConv(\''+c.id+'\')">📊 Situation</button><button class="btn btn-secondary btn-sm" onclick="printConventionId(\''+c.id+'\')">🖨️</button></div></div>';}).join('');
+  box.innerHTML=chantiers.map(function(c){var constr=DATA.constructeurs.find(function(x){return x.id===c.constructeur_id;})||{raison_sociale:'—'};var prog=DATA.programmes.find(function(x){return x.id===c.programme_id;})||{nom:'—'};var retard=c.date_fin_prev&&c.date_fin_prev<today()&&c.statut==='en_cours';var av=c.avancement||0;var situs=DATA.situations.filter(function(s){return s.convention_id===c.id;});var paye=situs.filter(function(s){return s.statut==='payee';}).reduce(function(s,x){return s+(x.net||0);},0);var reten=situs.reduce(function(s,x){return s+(x.retenue||0);},0);var rpts=DATA.rapports_chantier.filter(function(r){return r.convention_id===c.id;});var last=rpts.sort(function(a,b){return(b.date_debut||'').localeCompare(a.date_debut||'');}).slice(0,1)[0];return'<div class="constructeur-card" style="margin-bottom:16px;"><div style="display:grid;grid-template-columns:1fr auto;gap:12px;align-items:flex-start;"><div><div style="display:flex;gap:8px;margin-bottom:4px;"><span class="badge '+(retard?'badge-rouge':c.statut==='reception_provisoire'?'badge-or':'badge-vert')+'">'+c.statut.replace(/_/g,' ')+'</span><span style="font-family:monospace;font-size:11px;color:var(--bleu);">'+c.numero+'</span></div><div style="font-weight:700;font-size:16px;">'+prog.nom+'</div><div style="font-size:12px;color:var(--blanc-dim);">'+c.objet+'</div><div style="font-size:12px;color:var(--blanc-dim);">👷 '+constr.raison_sociale+'</div></div><div style="text-align:right;"><div style="font-size:28px;font-weight:700;color:'+(av>=100?'var(--vert)':retard?'var(--rouge)':'var(--or)')+';">'+av+'%</div>'+(retard?'<div class="badge badge-rouge">⚠️ RETARD</div>':'')+'</div></div><div class="avancement-barre" style="margin:10px 0;height:10px;"><div class="avancement-fill '+(retard?'retard':'')+'" style="width:'+av+'%;"></div></div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;font-size:12px;margin-bottom:12px;"><div style="background:var(--card2);border-radius:var(--r);padding:8px;text-align:center;"><div style="color:var(--blanc-dim);font-size:10px;">Montant TTC</div><div style="font-weight:700;color:var(--or);">'+fmtF(c.montant_ttc||0)+'</div></div><div style="background:var(--card2);border-radius:var(--r);padding:8px;text-align:center;"><div style="color:var(--blanc-dim);font-size:10px;">Payé</div><div style="font-weight:700;color:var(--vert);">'+fmtF(paye)+'</div></div><div style="background:var(--card2);border-radius:var(--r);padding:8px;text-align:center;"><div style="color:var(--blanc-dim);font-size:10px;">Retenues</div><div style="font-weight:700;color:var(--rouge);">'+fmtF(reten)+'</div></div><div style="background:var(--card2);border-radius:var(--r);padding:8px;text-align:center;"><div style="color:var(--blanc-dim);font-size:10px;">Fin prévue</div><div style="font-weight:700;color:'+(retard?'var(--rouge)':'var(--blanc)')+';">'+(c.date_fin_prev||'—')+'</div></div></div>'+(last?'<div style="background:var(--card2);border-radius:var(--r);padding:10px;font-size:12px;margin-bottom:10px;border-left:3px solid var(--bleu);"><strong style="color:var(--bleu);">Dernier rapport</strong> — '+last.date_debut+' — <strong>'+last.avancement+'%</strong><br><span style="color:var(--blanc-dim);">'+(last.travaux_realises||'').slice(0,100)+'</span></div>':'')+'<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-secondary btn-sm" onclick="openConvention(\''+c.id+'\')">✏️ Convention</button><button class="btn btn-secondary btn-sm" onclick="openRapportChantierForConv(\''+c.id+'\')">📋 Rapport</button><button class="btn btn-secondary btn-sm" onclick="openSituationForConv(\''+c.id+'\')">📊 Situation</button>'+(retard?'<button class="btn btn-danger btn-sm" onclick="appliquerPenalites(\''+c.id+'\')" title="Calculer et appliquer les pénalités de retard">⏰ Pénalités</button>':'')+'<button class="btn btn-secondary btn-sm" onclick="printConventionId(\''+c.id+'\')">🖨️</button></div></div>';}).join('');
 }
 function openRapportChantierForConv(convId){openRapportChantier(convId);}
 
@@ -49834,6 +50138,189 @@ function edsCalcEtude(e) {
   return { debSec: debSec, fg: fg, aleas: aleas, prixRevient: prixRevient, marge: marge, prixVente: prixVente, parPoste: parPoste };
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   CONTRÔLE DE GESTION CHANTIER (cœur ERP BTP)
+   Budget d'objectif (issu de l'étude) → Réel automatique (MO+matériaux+ST)
+   → Écart par poste → Reste à terminaison (EVM)
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* Coût horaire employeur d'un salarié. Base 173,33 h/mois (39h/sem légal CI).
+   Majoration employeur ~1,25 (CNPS patronale) appliquée en approximation. */
+function cgCoutHoraire(empId){
+  var e=(DATA.employes||[]).find(function(x){return x.id===empId;});
+  if(!e) return 0;
+  var base=parseFloat(e.salaire_categoriel!=null?e.salaire_categoriel:e.salaire_base)||0;
+  var chargesPatronales=1.25;   /* CNPS + prestations ~25% (paramétrable si besoin) */
+  return (base/173.33)*chargesPatronales;
+}
+/* Heures effectivement travaillées d'un pointage (normales + supp), déduites de la pause. */
+function cgHeuresTravaillees(pt){
+  if(!pt || (pt.statut && pt.statut!=='present' && pt.statut!=='P' && pt.statut!=='H')) {
+    /* absent/congé/maladie → 0 h chantier */
+    if(pt.statut && ['A','C','M','AT','CM'].indexOf(pt.statut)>=0) return 0;
+  }
+  if(pt.heure_entree && pt.heure_sortie){
+    var toMin=function(h){var p=(h||'').split(':');return (parseInt(p[0])||0)*60+(parseInt(p[1])||0);};
+    var diff=(toMin(pt.heure_sortie)-toMin(pt.heure_entree)-(parseInt(pt.pause)||0))/60;
+    return Math.max(0, diff) + (parseFloat(pt.heures_supp)||0);
+  }
+  return (parseFloat(pt.heures_supp)||0);
+}
+
+/* Budget d'objectif : ventilation du déboursé de l'étude par poste. */
+function cgBudgetDepuisEtude(etude){
+  var b={materiau:0, mo:0, materiel:0, st:0, total:0, parOuvrage:[]};
+  (etude.lignes||[]).forEach(function(l){
+    var o=(DATA.eds_ouvrages||[]).find(function(x){return x.id===l.ouvrage_id;});
+    if(!o) return;
+    var d=edsDebourse(o); var q=parseFloat(l.qte)||0;
+    b.materiau+=d.materiau*q; b.mo+=d.mo*q; b.materiel+=d.materiel*q; b.st+=(d.st||0)*q;
+    b.total+=d.total*q;
+    b.parOuvrage.push({code:o.code, designation:o.designation, unite:o.unite, qte:q,
+      pu_debourse:d.total, total:d.total*q, categorie:o.categorie||'Divers'});
+  });
+  return b;
+}
+
+/* Réel consommé sur une convention/chantier, ventilé par poste. */
+function cgRealiseChantier(convId){
+  var r={materiau:0, mo:0, st:0, autre:0, total:0};
+  /* 1. Matériaux : sorties de stock affectées (hors pertes). */
+  (DATA.stock_mouvements||[]).forEach(function(m){
+    if(m.type==='sortie' && m.chantier_id===convId && m.sortie_nature!=='perte'){
+      r.materiau += (parseFloat(m.cout)||parseFloat(m._val)||0);
+    }
+  });
+  /* 2. Main-d'œuvre : pointages affectés. */
+  (DATA.pointages||[]).forEach(function(p){
+    if(p.chantier_id===convId){ r.mo += (parseFloat(p.cout_mo)|| (p.chantier_id?Math.round(cgHeuresTravaillees(p)*cgCoutHoraire(p.employe_id)):0)); }
+  });
+  /* 3. Sous-traitance : situations validées/payées de la convention (HT). */
+  (DATA.situations||[]).forEach(function(s){
+    if(s.convention_id===convId && (s.statut==='validee'||s.statut==='payee')){
+      r.st += (parseFloat(s.montant_ht)||0);
+    }
+  });
+  r.total = r.materiau + r.mo + r.st + r.autre;
+  return r;
+}
+
+/* Analyse complète budget vs réel + EVM pour un chantier. */
+function cgAnalyseChantier(conv){
+  if(!conv) return null;
+  var etude = conv.etude_budget_id ? (DATA.eds_etudes||[]).find(function(e){return e.id===conv.etude_budget_id;}) : null;
+  var budget = etude ? cgBudgetDepuisEtude(etude) : (conv.budget_objectif||null);
+  var reel = cgRealiseChantier(conv.id);
+  var av = (conv.avancement||0)/100;
+
+  var res = { budget:budget, reel:reel, avancement:conv.avancement||0, ecarts:null, evm:null };
+  if(budget && budget.total>0){
+    /* Écarts par poste (MO+matériaux : ST comparée séparément). */
+    res.ecarts = {
+      materiau:{budget:budget.materiau, reel:reel.materiau, ecart:reel.materiau-budget.materiau*av},
+      mo:{budget:budget.mo, reel:reel.mo, ecart:reel.mo-budget.mo*av},
+      st:{budget:budget.st, reel:reel.st, ecart:reel.st-budget.st*av},
+      total:{budget:budget.total, reel:reel.total, ecart:reel.total-budget.total*av}
+    };
+    /* EVM — Earned Value Management :
+       BAC = budget à terminaison (coût étudié total)
+       VA (CBTE) = valeur acquise = BAC × avancement physique
+       CR (CRTE) = coût réel = réel total
+       IPC = VA/CR (>1 = sous budget) ; CFE = BAC/IPC (coût final estimé) */
+    var BAC=budget.total;
+    var VA=BAC*av;
+    var CR=reel.total;
+    var IPC = CR>0 ? VA/CR : 1;
+    var CFE = IPC>0 ? BAC/IPC : BAC;
+    res.evm = { BAC:BAC, VA:VA, CR:CR, IPC:IPC, CFE:CFE, ecartFinal:BAC-CFE,
+      resteADepenser: Math.max(0, CFE-CR) };
+  }
+  return res;
+}
+
+/* Affecte une étude comme budget d'objectif d'une convention (chantier). */
+async function cgAffecterBudget(etudeId){
+  var etude=(DATA.eds_etudes||[]).find(function(e){return e.id===etudeId;});
+  if(!etude){toast('Étude introuvable.','error');return;}
+  var convs=(DATA.conventions||[]).filter(function(c){return c.statut!=='brouillon';});
+  if(!convs.length){toast('Aucune convention disponible. Créez d\'abord une convention de travaux.','error');return;}
+  var opts=convs.map(function(c){var cs=DATA.constructeurs.find(function(x){return x.id===c.constructeur_id;})||{};return c.numero+' — '+(cs.raison_sociale||'?');});
+  var choix=prompt('Affecter l\'étude « '+etude.nom+' » comme budget d\'objectif de quelle convention ?\n\n'+convs.map(function(c,i){return (i+1)+'. '+opts[i];}).join('\n')+'\n\nEntrez le numéro (1-'+convs.length+') :');
+  var idx=parseInt(choix)-1;
+  if(isNaN(idx)||idx<0||idx>=convs.length){toast('Affectation annulée.','info');return;}
+  var conv=convs[idx];
+  var budget=cgBudgetDepuisEtude(etude);
+  conv.etude_budget_id=etude.id;
+  conv.budget_objectif=budget;       /* snapshot figé du budget au moment de l'affectation */
+  conv.budget_date=today();
+  conv._modifie=new Date().toISOString();
+  await dbPut('conventions',conv);
+  if(typeof syncToSupabase==='function')syncToSupabase('pi_conventions',conv);
+  toast('🎯 Budget d\'objectif affecté à '+conv.numero+' ('+fmtF(budget.total)+' FCFA déboursé).','success');
+  if(typeof renderControleGestion==='function')renderControleGestion();
+  renderConventions();
+}
+
+/* Rendu du tableau de contrôle de gestion (onglet Suivi chantiers). */
+function renderControleGestion(){
+  var box=document.getElementById('cg-content');
+  if(!box) return;
+  var convs=(DATA.conventions||[]).filter(function(c){return c.etude_budget_id||c.budget_objectif;});
+  if(!convs.length){
+    box.innerHTML='<div class="card"><div style="padding:24px;text-align:center;color:var(--blanc-dim);">'
+      +'Aucun chantier budgété.<br><br>Rendez-vous dans <strong>Étude de Prix & Déboursé Sec</strong>, ouvrez une étude et cliquez sur 🎯 pour l\'affecter comme budget d\'objectif d\'une convention.'
+      +'</div></div>';
+    return;
+  }
+  box.innerHTML=convs.map(function(conv){
+    var a=cgAnalyseChantier(conv);
+    if(!a||!a.budget) return '';
+    var constr=DATA.constructeurs.find(function(c){return c.id===conv.constructeur_id;})||{raison_sociale:'—'};
+    var e=a.evm||{};
+    var ipcCol = e.IPC>=1 ? 'var(--vert)' : e.IPC>=0.9 ? 'var(--or)' : 'var(--rouge)';
+    var poste=function(lbl, o){
+      var depasse=o.ecart>0;
+      var pctConso=o.budget>0?Math.round(o.reel/o.budget*100):0;
+      return '<tr>'
+        +'<td>'+lbl+'</td>'
+        +'<td style="text-align:right;">'+fmtF(Math.round(o.budget))+'</td>'
+        +'<td style="text-align:right;font-weight:600;">'+fmtF(Math.round(o.reel))+'</td>'
+        +'<td style="text-align:right;">'+pctConso+'%</td>'
+        +'<td style="text-align:right;font-weight:700;color:'+(depasse?'var(--rouge)':'var(--vert)')+';">'+(depasse?'+':'')+fmtF(Math.round(o.ecart))+'</td>'
+      +'</tr>';
+    };
+    return '<div class="card" style="margin-bottom:16px;border-left:4px solid '+ipcCol+';">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;">'
+        +'<div><span style="font-family:monospace;color:var(--bleu);font-size:12px;">'+conv.numero+'</span> <strong>'+escHtml(constr.raison_sociale)+'</strong>'
+          +'<div style="font-size:11px;color:var(--blanc-dim);">Budget figé le '+(conv.budget_date||'—')+' · avancement '+a.avancement+'%</div></div>'
+        +'<div style="text-align:right;"><div style="font-size:11px;color:var(--blanc-dim);">Indice de perf. coût (IPC)</div>'
+          +'<div style="font-size:22px;font-weight:800;color:'+ipcCol+';">'+(e.IPC||0).toFixed(2)+'</div></div>'
+      +'</div>'
+      /* Tableau écart par poste */
+      +'<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:12px;">'
+        +'<thead><tr style="color:var(--blanc-dim);font-size:10px;text-transform:uppercase;text-align:right;">'
+          +'<th style="text-align:left;">Poste</th><th>Budget (avct)</th><th>Réel</th><th>Conso.</th><th>Écart</th></tr></thead><tbody>'
+        +poste('🧱 Matériaux', a.ecarts.materiau)
+        +poste('👷 Main-d\'œuvre', a.ecarts.mo)
+        +poste('🤝 Sous-traitance', a.ecarts.st)
+        +'<tr style="border-top:2px solid var(--bord);font-weight:700;"><td>TOTAL</td>'
+          +'<td style="text-align:right;">'+fmtF(Math.round(a.ecarts.total.budget))+'</td>'
+          +'<td style="text-align:right;">'+fmtF(Math.round(a.ecarts.total.reel))+'</td>'
+          +'<td style="text-align:right;">'+(a.ecarts.total.budget>0?Math.round(a.ecarts.total.reel/a.ecarts.total.budget*100):0)+'%</td>'
+          +'<td style="text-align:right;color:'+(a.ecarts.total.ecart>0?'var(--rouge)':'var(--vert)')+';">'+(a.ecarts.total.ecart>0?'+':'')+fmtF(Math.round(a.ecarts.total.ecart))+'</td></tr>'
+        +'</tbody></table>'
+      /* EVM — projection à terminaison */
+      +'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;font-size:11px;text-align:center;background:var(--card2);padding:10px;border-radius:8px;">'
+        +'<div><div style="color:var(--blanc-dim);">Budget total (BAC)</div><div style="font-weight:700;color:var(--or);">'+fmtF(Math.round(e.BAC||0))+'</div></div>'
+        +'<div><div style="color:var(--blanc-dim);">Coût réel à ce jour</div><div style="font-weight:700;">'+fmtF(Math.round(e.CR||0))+'</div></div>'
+        +'<div><div style="color:var(--blanc-dim);">Coût final estimé</div><div style="font-weight:700;color:'+ipcCol+';">'+fmtF(Math.round(e.CFE||0))+'</div></div>'
+        +'<div><div style="color:var(--blanc-dim);">Écart final projeté</div><div style="font-weight:700;color:'+((e.ecartFinal||0)>=0?'var(--vert)':'var(--rouge)')+';">'+((e.ecartFinal||0)>=0?'+':'')+fmtF(Math.round(e.ecartFinal||0))+'</div></div>'
+      +'</div>'
+      +(e.IPC<0.9?'<div style="margin-top:10px;padding:8px 10px;background:rgba(224,82,82,.10);border-radius:6px;color:var(--rouge);font-size:12px;font-weight:600;">⚠️ Dérive budgétaire : au rythme actuel, dépassement final projeté de '+fmtF(Math.round(Math.abs(e.ecartFinal||0)))+' FCFA. Action corrective requise.</div>':'')
+    +'</div>';
+  }).filter(Boolean).join('');
+}
+
 function edsRenderEtudes() {
   var tb = document.getElementById('tbody-eds-etudes');
   if (!tb) return;
@@ -49850,6 +50337,7 @@ function edsRenderEtudes() {
       '<td style="text-align:right;font-weight:700;color:var(--vert,#1A6B3A);">' + fmtF(c.prixVente) + '</td>' +
       '<td style="text-align:right;color:#B8732F;">' + fmtF(c.marge) + '</td>' +
       '<td><button class="btn btn-secondary btn-sm" onclick="edsOpenEtude(\'' + e.id + '\')">✎</button> ' +
+      '<button class="btn btn-secondary btn-sm" onclick="cgAffecterBudget(\'' + e.id + '\')" title="Affecter cette étude comme budget d\'objectif d\'un chantier">🎯</button> ' +
       '<button class="btn btn-secondary btn-sm" onclick="printPreviewDebourse(\'' + e.id + '\')" title="Aperçu avant impression">👁</button> ' +
       '<button class="btn btn-secondary btn-sm" onclick="edsExportPDF(\'' + e.id + '\')">🖨</button> ' +
       '<button class="btn btn-secondary btn-sm" onclick="edsDeleteEtude(\'' + e.id + '\')">🗑</button></td>' +
