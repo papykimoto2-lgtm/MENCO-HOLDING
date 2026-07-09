@@ -50144,14 +50144,25 @@ function edsCalcEtude(e) {
    → Écart par poste → Reste à terminaison (EVM)
    ══════════════════════════════════════════════════════════════════════ */
 
-/* Coût horaire employeur d'un salarié. Base 173,33 h/mois (39h/sem légal CI).
-   Majoration employeur ~1,25 (CNPS patronale) appliquée en approximation. */
+/* Coût horaire employeur EXACT, dérivé du moteur de paie (calcPaieEmploye).
+   coutTotal = brut + CNPS (retraite pat. + AT + PF) + ITS pat. + FDFP + CMU pat.
+   Base 173,33 h/mois (39 h/sem légal CI). Repli sur salaire_base×1,25 si paie indisponible. */
 function cgCoutHoraire(empId){
   var e=(DATA.employes||[]).find(function(x){return x.id===empId;});
   if(!e) return 0;
-  var base=parseFloat(e.salaire_categoriel!=null?e.salaire_categoriel:e.salaire_base)||0;
-  var chargesPatronales=1.25;   /* CNPS + prestations ~25% (paramétrable si besoin) */
-  return (base/173.33)*chargesPatronales;
+  var coutMensuel=0;
+  try {
+    if(typeof calcPaieEmploye==='function'){
+      var r=calcPaieEmploye(e);
+      coutMensuel=(r && r.coutTotal)?r.coutTotal:0;
+    }
+  } catch(err){ coutMensuel=0; }
+  if(!coutMensuel){
+    /* Repli : approximation si la paie n'a pas pu être calculée. */
+    var base=parseFloat(e.salaire_categoriel!=null?e.salaire_categoriel:e.salaire_base)||0;
+    coutMensuel=base*1.25;
+  }
+  return coutMensuel/173.33;
 }
 /* Heures effectivement travaillées d'un pointage (normales + supp), déduites de la pause. */
 function cgHeuresTravaillees(pt){
@@ -50261,6 +50272,47 @@ async function cgAffecterBudget(etudeId){
   renderConventions();
 }
 
+/* Écart au niveau ouvrage.
+   Le réel fin par ouvrage n'est pas tracé nativement (les sorties stock et
+   pointages ne pointent pas vers un ouvrage précis). On ventile donc le réel
+   total au prorata du poids budgétaire de chaque ouvrage, SAUF pour la MO dont
+   une partie peut être rattachée par la « tâche » du pointage si elle contient
+   le code ou la désignation de l'ouvrage. Hypothèse affichée à l'utilisateur. */
+function cgEcartParOuvrage(conv){
+  var etude = conv.etude_budget_id ? (DATA.eds_etudes||[]).find(function(e){return e.id===conv.etude_budget_id;}) : null;
+  var budget = etude ? cgBudgetDepuisEtude(etude) : (conv.budget_objectif||null);
+  if(!budget || !budget.parOuvrage || !budget.parOuvrage.length) return [];
+  var reel = cgRealiseChantier(conv.id);
+  var av = (conv.avancement||0)/100;
+  var budgetTotal = budget.total||1;
+
+  /* MO rattachée explicitement à un ouvrage via la tâche du pointage. */
+  var moParOuvrage = {};
+  (DATA.pointages||[]).forEach(function(p){
+    if(p.chantier_id!==conv.id || !p.tache) return;
+    var t=(p.tache||'').toLowerCase();
+    var match=budget.parOuvrage.find(function(o){
+      return t.indexOf((o.code||'').toLowerCase())>=0 || (o.designation && t.indexOf(o.designation.toLowerCase().slice(0,12))>=0);
+    });
+    if(match){ var c=parseFloat(p.cout_mo)||0; moParOuvrage[match.code]=(moParOuvrage[match.code]||0)+c; }
+  });
+  var moRattachee=Object.keys(moParOuvrage).reduce(function(a,k){return a+moParOuvrage[k];},0);
+  var moDiffuse=Math.max(0, reel.mo - moRattachee);  /* MO non rattachée → prorata */
+  var reelDiffus = reel.materiau + reel.st + moDiffuse; /* réel à ventiler au prorata */
+
+  return budget.parOuvrage.map(function(o){
+    var poids = o.total/budgetTotal;
+    var budgetAvct = o.total*av;
+    var reelOuvrage = (moParOuvrage[o.code]||0) + reelDiffus*poids;
+    return {
+      code:o.code, designation:o.designation, categorie:o.categorie,
+      unite:o.unite, qte:o.qte, budget:o.total, budgetAvct:budgetAvct,
+      reel:reelOuvrage, ecart:reelOuvrage-budgetAvct,
+      moExplicite:!!moParOuvrage[o.code]
+    };
+  }).sort(function(a,b){ return b.ecart-a.ecart; });  /* pires écarts en tête */
+}
+
 /* Rendu du tableau de contrôle de gestion (onglet Suivi chantiers). */
 function renderControleGestion(){
   var box=document.getElementById('cg-content');
@@ -50317,6 +50369,26 @@ function renderControleGestion(){
         +'<div><div style="color:var(--blanc-dim);">Écart final projeté</div><div style="font-weight:700;color:'+((e.ecartFinal||0)>=0?'var(--vert)':'var(--rouge)')+';">'+((e.ecartFinal||0)>=0?'+':'')+fmtF(Math.round(e.ecartFinal||0))+'</div></div>'
       +'</div>'
       +(e.IPC<0.9?'<div style="margin-top:10px;padding:8px 10px;background:rgba(224,82,82,.10);border-radius:6px;color:var(--rouge);font-size:12px;font-weight:600;">⚠️ Dérive budgétaire : au rythme actuel, dépassement final projeté de '+fmtF(Math.round(Math.abs(e.ecartFinal||0)))+' FCFA. Action corrective requise.</div>':'')
+      /* Détail par ouvrage (dépliable) */
+      +(function(){
+        var ouvrages=cgEcartParOuvrage(conv);
+        if(!ouvrages.length) return '';
+        var rows=ouvrages.map(function(o){
+          var dep=o.ecart>0;
+          return '<tr>'
+            +'<td style="font-family:monospace;font-size:10px;color:var(--bleu);">'+escHtml(o.code)+'</td>'
+            +'<td style="font-size:11px;">'+escHtml(o.designation)+(o.moExplicite?' <span title="MO rattachée par tâche" style="color:var(--vert);">•</span>':'')+'</td>'
+            +'<td style="text-align:right;font-size:11px;">'+fmtF(Math.round(o.budgetAvct))+'</td>'
+            +'<td style="text-align:right;font-size:11px;font-weight:600;">'+fmtF(Math.round(o.reel))+'</td>'
+            +'<td style="text-align:right;font-size:11px;font-weight:700;color:'+(dep?'var(--rouge)':'var(--vert)')+';">'+(dep?'+':'')+fmtF(Math.round(o.ecart))+'</td>'
+          +'</tr>';
+        }).join('');
+        return '<details style="margin-top:10px;"><summary style="cursor:pointer;font-size:12px;color:var(--or);font-weight:600;">🔍 Détail écart par ouvrage ('+ouvrages.length+')</summary>'
+          +'<div style="font-size:10px;color:var(--blanc-dim);margin:6px 0;">Réel ventilé au prorata budgétaire · MO avec • = rattachée par tâche de pointage</div>'
+          +'<table style="width:100%;border-collapse:collapse;margin-top:4px;">'
+          +'<thead><tr style="color:var(--blanc-dim);font-size:9px;text-transform:uppercase;text-align:right;"><th style="text-align:left;">Code</th><th style="text-align:left;">Ouvrage</th><th>Budget</th><th>Réel</th><th>Écart</th></tr></thead>'
+          +'<tbody>'+rows+'</tbody></table></details>';
+      })()
     +'</div>';
   }).filter(Boolean).join('');
 }
