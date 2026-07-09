@@ -630,6 +630,7 @@ textarea.form-control { resize:vertical; min-height:90px; }
 /* Dashboard */
 .chart-row { display:grid; grid-template-columns:1fr; gap:12px; margin-bottom:16px; }
 .chart-box { background:var(--card); border:1px solid var(--bord); border-radius:var(--r2); padding:16px; }
+@media (max-width:820px){ .dash-cmrc-row{ grid-template-columns:1fr !important; } }
 .chart-box h4 { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; margin-bottom:14px; font-weight:700; }
 .mini-bar-chart { display:flex; align-items:flex-end; gap:5px; height:80px; }
 .mini-bar { flex:1; background:linear-gradient(to top,#8B5520,#B87333); border-radius:3px 3px 0 0; min-height:4px; transition:height .5s; opacity:.85; }
@@ -2580,20 +2581,60 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
         <!-- ══ TAB : COMMERCIAL ════════════════════════════════════════════ -->
         <div id="dpane-commercial" style="display:none;">
-          <div class="kpi-grid" id="kpi-grid-commercial" style="margin-bottom:24px;"></div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+          <div class="kpi-grid" id="kpi-grid-commercial" style="margin-bottom:20px;"></div>
+
+          <!-- Ligne 1 : Funnel de conversion + Prévisionnel pondéré -->
+          <div style="display:grid;grid-template-columns:1.15fr 0.85fr;gap:16px;margin-bottom:16px;" class="dash-cmrc-row">
             <div class="chart-box">
-              <h4>🎯 Objectifs commerciaux</h4>
+              <h4>🫙 Entonnoir de conversion <span id="cmrc-funnel-conv" style="font-weight:400;font-size:11px;color:var(--blanc-dim);"></span></h4>
+              <div id="cmrc-funnel" style="margin-top:10px;"></div>
+            </div>
+            <div class="chart-box">
+              <h4>🔮 Pipeline pondéré <span style="font-weight:400;font-size:11px;color:var(--blanc-dim);">(prév. probabilisé)</span></h4>
+              <div id="cmrc-forecast" style="margin-top:10px;"></div>
+            </div>
+          </div>
+
+          <!-- Ligne 2 : ROI par source + Leaderboard commerciaux -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;" class="dash-cmrc-row">
+            <div class="chart-box">
+              <h4>📡 Performance par canal <span style="font-weight:400;font-size:11px;color:var(--blanc-dim);">(source → conversion)</span></h4>
+              <div id="cmrc-sources" style="margin-top:10px;"></div>
+            </div>
+            <div class="chart-box">
+              <h4>🏆 Classement commerciaux</h4>
+              <div id="cmrc-agents" style="margin-top:10px;"></div>
+            </div>
+          </div>
+
+          <!-- Ligne 3 : Objectifs + Répartition programme -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;" class="dash-cmrc-row">
+            <div class="chart-box">
+              <h4>🎯 Objectifs du mois</h4>
               <div id="dash-objectifs" style="display:flex;flex-direction:column;gap:8px;margin-top:8px;"></div>
             </div>
             <div class="chart-box">
-              <h4>🏠 Répartition par programme</h4>
+              <h4>🏠 Absorption par programme <span style="font-weight:400;font-size:11px;color:var(--blanc-dim);">(rythme de vente)</span></h4>
               <div id="dash-prog-repartition" style="display:flex;flex-direction:column;gap:8px;margin-top:8px;"></div>
             </div>
           </div>
-          <div class="card">
-            <div class="card-title">🔔 Activité récente</div>
-            <div id="dash-activite"></div>
+
+          <!-- Ligne 4 : Actions prioritaires (le cœur "quoi faire") -->
+          <div class="card" style="border-left:3px solid var(--or);margin-bottom:16px;">
+            <div class="card-title">⚡ Actions commerciales prioritaires</div>
+            <div id="cmrc-actions"></div>
+          </div>
+
+          <!-- Ligne 5 : tendance 6 mois + activité -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;" class="dash-cmrc-row">
+            <div class="chart-box">
+              <h4>📈 Tendance ventes & leads <span style="font-weight:400;font-size:11px;color:var(--blanc-dim);">(6 mois)</span></h4>
+              <div id="cmrc-trend" style="margin-top:10px;"></div>
+            </div>
+            <div class="card" style="margin:0;">
+              <div class="card-title">🔔 Activité récente</div>
+              <div id="dash-activite"></div>
+            </div>
           </div>
         </div>
 
@@ -17156,46 +17197,337 @@ function buildDashTabFinance() {
   }).join('');
 }
 
+/* ══════════════════════════════════════════════════════════════
+   DASHBOARD COMMERCIAL — Suite CRM immobilier
+   Funnel · Forecast pondéré · ROI canaux · Leaderboard · Actions
+   ══════════════════════════════════════════════════════════════ */
+
+/* Ordre + probabilité de conversion par stade (pondération du forecast).
+   Aligné sur le pipeline défini dans la fiche lead. */
+var CMRC_STADES = [
+  {k:'prospect',     label:'Prospect froid',   proba:0.05, color:'#94A3B8'},
+  {k:'contact',      label:'Contact établi',   proba:0.15, color:'#3B82F6'},
+  {k:'visite',       label:'Visite planifiée', proba:0.30, color:'#6366F1'},
+  {k:'visite_faite', label:'Visite effectuée', proba:0.50, color:'#8B5CF6'},
+  {k:'negociation',  label:'En négociation',   proba:0.75, color:'#C5A880'},
+  {k:'reservation',  label:'Réservé',          proba:0.95, color:'#10B981'}
+];
+function _cmrcStade(k){ return CMRC_STADES.find(function(s){return s.k===k;}) || CMRC_STADES[0]; }
+
+/* Budget estimé d'un lead → sert au forecast. Repli : ticket moyen des ventes. */
+function _cmrcTicketMoyen() {
+  var vendus = DATA.lots.filter(function(l){ return l.statut==='vendu' && (parseFloat(l.prix)||0)>0; });
+  if (vendus.length) return vendus.reduce(function(s,l){return s+(parseFloat(l.prix)||0);},0)/vendus.length;
+  var avecPrix = DATA.lots.filter(function(l){ return (parseFloat(l.prix)||0)>0; });
+  if (avecPrix.length) return avecPrix.reduce(function(s,l){return s+(parseFloat(l.prix)||0);},0)/avecPrix.length;
+  return 0;
+}
+function _cmrcLeadValeur(l, ticketMoyen){ return (parseFloat(l.budget)||0) > 0 ? parseFloat(l.budget) : ticketMoyen; }
+
 function buildDashTabCommercial() {
-  var progs = DATA.programmes.filter(function(p){ return p.statut !== 'termine'; });
-  var totalLots = DATA.lots.length;
-  var vendus    = DATA.lots.filter(function(l){ return l.statut === 'vendu'; }).length;
-  var leads     = (DATA.leads||[]).length;
+  var progs      = DATA.programmes.filter(function(p){ return p.statut !== 'termine'; });
+  var totalLots  = DATA.lots.length;
+  var vendus     = DATA.lots.filter(function(l){ return l.statut === 'vendu'; }).length;
+  var reserves   = DATA.lots.filter(function(l){ return l.statut === 'reserve'; }).length;
+  var leadsAll   = DATA.leads || [];
+  var leadsOuverts = leadsAll.filter(function(l){ return l.stade !== 'reservation' && l.statut !== 'perdu'; });
   var cessions   = DATA.cessions_foncieres || [];
   var caCessions = cessions.reduce(function(a,c){return a+(parseFloat(c.prix_cession)||0);},0);
-  var encCessions= typeof calcCessionsTotal==='function' ? calcCessionsTotal('montant_encaisse') : cessions.reduce(function(a,c){return a+(parseFloat(c.montant_encaisse)||0);},0);
-  /* Dédoublonnage : une cession portant sur un lot déjà compté « vendu »
-     ne doit pas être re-comptée comme acte distinct. */
-  var lotsVendusIds = {};
-  DATA.lots.forEach(function(l){ if (l.statut==='vendu') lotsVendusIds[l.id]=1; });
-  var cessionsHorsLotVendu = cessions.filter(function(c){ return !(c.lot_id && lotsVendusIds[c.lot_id]); }).length;
-  var totalActesCommerciaux = vendus + cessionsHorsLotVendu;
+  var ticketMoyen = _cmrcTicketMoyen();
+
+  /* Taux de conversion global lead → souscripteur (réservé). */
+  var convertis = leadsAll.filter(function(l){ return l.stade === 'reservation'; }).length;
+  var tauxConv  = leadsAll.length > 0 ? Math.round(convertis / leadsAll.length * 100) : 0;
+
+  /* Valeur pipeline pondérée (forecast). */
+  var forecastPondere = leadsOuverts.reduce(function(s,l){
+    return s + _cmrcLeadValeur(l, ticketMoyen) * _cmrcStade(l.stade).proba;
+  }, 0);
+  var pipelineBrut = leadsOuverts.reduce(function(s,l){ return s + _cmrcLeadValeur(l, ticketMoyen); }, 0);
+
+  /* Vélocité : durée moyenne premier contact → réservation (jours). */
+  var dureesVente = leadsAll.filter(function(l){ return l.stade==='reservation' && l.date_contact && l._modifie; })
+    .map(function(l){ return (Date.parse(l._modifie)-Date.parse(l.date_contact))/(1000*3600*24); })
+    .filter(function(d){ return d>=0 && d<3650; });
+  var velocite = dureesVente.length ? Math.round(dureesVente.reduce(function(a,b){return a+b;},0)/dureesVente.length) : 0;
+
+  /* Stock à écouler / rythme d'absorption sur 90 j (mois de stock restant). */
+  var now = new Date();
+  var d90 = new Date(now.getFullYear(), now.getMonth()-3, now.getDate()).toISOString().slice(0,10);
+  var vendus90 = DATA.clients.filter(function(c){ return (c.date_debut||'') >= d90; }).length;
+  var ventesMois = vendus90/3;
+  var dispo = totalLots - vendus - reserves;
+  var moisStock = ventesMois > 0 ? Math.round(dispo/ventesMois) : (dispo>0?99:0);
+
   var el = document.getElementById('kpi-grid-commercial');
   if (el) el.innerHTML = [
-    {l:'Programmes actifs',  v:progs.length,             i:'🏗️', c:'',         d:DATA.programmes.length+' total'},
-    {l:'Lots vendus',        v:vendus+'/'+totalLots,     i:'🏠', c:'kpi-green', d:Math.round(vendus/Math.max(totalLots,1)*100)+'% de taux de vente'},
-    {l:'Lots disponibles',   v:totalLots-vendus,         i:'📋', c:'',          d:'à commercialiser'},
-    {l:'Cessions foncières', v:cessions.length,          i:'🏞️', c:'kpi-green', d:fmtF(caCessions)+' FCFA valorisés'},
-    {l:'Encaissé cessions',  v:fmtF(encCessions)+' FCFA', i:'💰', c:'',         d:cessions.length+' cession(s)'},
-    {l:'Total actes vente',  v:totalActesCommerciaux,    i:'📈', c:'kpi-green', d:'lots + parcelles cédées'},
-    {l:'Leads pipeline',     v:leads,                    i:'🎯', c:'',          d:'prospects en cours'},
+    {l:'Taux de conversion',   v:tauxConv+'%',              i:'🎯', c:tauxConv>=20?'kpi-green':tauxConv>=10?'':'kpi-red', d:convertis+' réservés / '+leadsAll.length+' leads'},
+    {l:'Pipeline pondéré',     v:fmtF(Math.round(forecastPondere))+' F', i:'🔮', c:'kpi-copper', d:'sur '+fmtF(Math.round(pipelineBrut))+' F brut'},
+    {l:'Leads actifs',         v:leadsOuverts.length,       i:'📇', c:'', d:leadsAll.length+' au total'},
+    {l:'Vélocité de vente',    v:(velocite||'—')+(velocite?' j':''), i:'⏱️', c:'', d:'contact → réservation'},
+    {l:'Taux d\'écoulement',   v:vendus+'/'+totalLots,      i:'🏠', c:'kpi-green', d:Math.round(vendus/Math.max(totalLots,1)*100)+'% vendus · '+reserves+' réservés'},
+    {l:'Stock à écouler',      v:dispo,                     i:'📋', c:dispo===0?'kpi-green':'', d:(moisStock>=99?'rythme nul':'~'+moisStock+' mois au rythme actuel')},
+    {l:'Cessions foncières',   v:cessions.length,           i:'🏞️', c:'', d:fmtF(caCessions)+' F valorisés'},
+    {l:'Ticket moyen',         v:fmtF(Math.round(ticketMoyen))+' F', i:'🏷️', c:'', d:'prix moyen constaté'},
   ].map(function(k){
     return '<div class="kpi-card '+k.c+'" data-icon="'+k.i+'"><div class="kpi-label">'+k.l+'</div>'
       +'<div class="kpi-value or" style="font-size:17px;">'+k.v+'</div>'
       +'<div class="kpi-delta '+(k.c==='kpi-red'?'negative':k.c==='kpi-green'?'positive':'')+'">'+k.d+'</div></div>';
   }).join('');
 
-  // Répartition par programme
+  cmrcBuildFunnel(leadsAll);
+  cmrcBuildForecast(leadsOuverts, ticketMoyen);
+  cmrcBuildSources(leadsAll);
+  cmrcBuildAgents(leadsAll, ticketMoyen);
+  cmrcBuildActions(leadsAll, ticketMoyen);
+  cmrcBuildTrend();
+  buildDashObjectifs();
+  cmrcBuildProgrammes();
+}
+
+/* ── Entonnoir de conversion ─────────────────────────────────── */
+function cmrcBuildFunnel(leads) {
+  var host = document.getElementById('cmrc-funnel');
+  if (!host) return;
+  var idx = {}; CMRC_STADES.forEach(function(s,i){ idx[s.k]=i; });
+  /* Cumul : un lead au stade N a franchi tous les stades < N. */
+  var counts = CMRC_STADES.map(function(s,i){
+    return leads.filter(function(l){ var li=idx[l.stade]; return li!==undefined && li>=i && l.statut!=='perdu'; }).length;
+  });
+  var entrants = counts[0] || leads.length || 1;
+  var maxW = counts[0] || 1;
+  var convGlobal = entrants>0 ? Math.round((counts[counts.length-1]/entrants)*100) : 0;
+  var cvSpan = document.getElementById('cmrc-funnel-conv');
+  if (cvSpan) cvSpan.textContent = '· conversion globale '+convGlobal+'%';
+
+  host.innerHTML = CMRC_STADES.map(function(s,i){
+    var n = counts[i];
+    var w = Math.max(6, Math.round(n/maxW*100));
+    var tauxEtape = i>0 && counts[i-1]>0 ? Math.round(n/counts[i-1]*100) : 100;
+    var perte = i>0 ? counts[i-1]-n : 0;
+    return '<div style="margin-bottom:7px;">'
+      +'<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px;">'
+        +'<span style="color:var(--blanc-dim);">'+s.label+'</span>'
+        +'<span style="font-weight:700;color:'+s.color+';">'+n+(i>0?' <span style="color:var(--blanc-dim);font-weight:400;">('+tauxEtape+'%'+(perte>0?', −'+perte:'')+')</span>':'')+'</span>'
+      +'</div>'
+      +'<div style="height:18px;background:var(--bord,#eef);border-radius:4px;overflow:hidden;">'
+        +'<div style="width:'+w+'%;height:100%;background:'+s.color+';border-radius:4px;transition:width .5s;"></div>'
+      +'</div></div>';
+  }).join('');
+}
+
+/* ── Forecast pondéré par stade ──────────────────────────────── */
+function cmrcBuildForecast(leadsOuverts, ticketMoyen) {
+  var host = document.getElementById('cmrc-forecast');
+  if (!host) return;
+  var parStade = CMRC_STADES.filter(function(s){return s.k!=='reservation';}).map(function(s){
+    var ls = leadsOuverts.filter(function(l){ return l.stade===s.k; });
+    var brut = ls.reduce(function(sum,l){ return sum+_cmrcLeadValeur(l,ticketMoyen); },0);
+    return {s:s, n:ls.length, brut:brut, pondere:brut*s.proba};
+  });
+  var totalPondere = parStade.reduce(function(a,x){return a+x.pondere;},0);
+  var maxP = Math.max.apply(null, parStade.map(function(x){return x.pondere;}).concat([1]));
+
+  host.innerHTML =
+    '<div style="text-align:center;margin-bottom:12px;padding:10px;background:linear-gradient(135deg,rgba(197,168,128,.12),rgba(16,185,129,.08));border-radius:8px;">'
+      +'<div style="font-size:22px;font-weight:800;color:var(--or);">'+fmtF(Math.round(totalPondere))+' F</div>'
+      +'<div style="font-size:11px;color:var(--blanc-dim);">CA prévisionnel pondéré du pipeline ouvert</div>'
+    +'</div>'
+    + parStade.filter(function(x){return x.n>0;}).map(function(x){
+      var w = Math.round(x.pondere/maxP*100);
+      return '<div style="margin-bottom:6px;">'
+        +'<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px;">'
+          +'<span style="color:var(--blanc-dim);">'+x.s.label+' <span style="opacity:.6;">×'+Math.round(x.s.proba*100)+'%</span></span>'
+          +'<span style="font-weight:700;color:'+x.s.color+';">'+fmtF(Math.round(x.pondere))+' F</span>'
+        +'</div>'
+        +'<div style="height:6px;background:var(--bord,#eef);border-radius:3px;overflow:hidden;">'
+          +'<div style="width:'+w+'%;height:100%;background:'+x.s.color+';border-radius:3px;"></div>'
+        +'</div></div>';
+    }).join('')
+    || '<div style="color:var(--blanc-dim);font-size:12px;text-align:center;padding:16px 0;">Aucun lead ouvert. Alimentez le pipeline via le module CRM.</div>';
+}
+
+/* ── ROI par canal d'acquisition ─────────────────────────────── */
+function cmrcBuildSources(leads) {
+  var host = document.getElementById('cmrc-sources');
+  if (!host) return;
+  var SRC = {bouche_oreille:'Bouche-à-oreille',reseaux_sociaux:'Réseaux sociaux',site_web:'Site web',salon:'Salon',affichage:'Affichage',commercial:'Agent commercial',partenaire:'Partenaire'};
+  var agg = {};
+  leads.forEach(function(l){
+    var s = l.source || 'autre';
+    if (!agg[s]) agg[s] = {total:0, gagnes:0};
+    agg[s].total++;
+    if (l.stade === 'reservation') agg[s].gagnes++;
+  });
+  var rows = Object.keys(agg).map(function(k){
+    var a = agg[k];
+    return {label:SRC[k]||k, total:a.total, gagnes:a.gagnes, taux:a.total>0?Math.round(a.gagnes/a.total*100):0};
+  }).sort(function(a,b){ return b.gagnes-a.gagnes || b.taux-a.taux; });
+
+  if (!rows.length) { host.innerHTML='<div style="color:var(--blanc-dim);font-size:12px;text-align:center;padding:16px 0;">Aucune source renseignée sur les leads.</div>'; return; }
+  var maxTotal = Math.max.apply(null, rows.map(function(r){return r.total;}));
+  host.innerHTML =
+    '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+    +'<thead><tr style="text-align:left;color:var(--blanc-dim);font-size:10px;text-transform:uppercase;">'
+      +'<th style="padding:4px 0;">Canal</th><th style="text-align:center;">Leads</th><th style="text-align:center;">Gagnés</th><th style="text-align:right;">Conv.</th></tr></thead><tbody>'
+    + rows.map(function(r){
+      var col = r.taux>=25?'#10B981':r.taux>=12?'#C5A880':'#EF4444';
+      return '<tr style="border-top:1px solid var(--bord,#eef);">'
+        +'<td style="padding:6px 0;"><div>'+escHtml(r.label)+'</div>'
+          +'<div style="height:4px;background:var(--bord,#eef);border-radius:2px;margin-top:3px;max-width:120px;"><div style="width:'+Math.round(r.total/maxTotal*100)+'%;height:100%;background:#6366F1;border-radius:2px;"></div></div></td>'
+        +'<td style="text-align:center;font-weight:600;">'+r.total+'</td>'
+        +'<td style="text-align:center;font-weight:700;color:#10B981;">'+r.gagnes+'</td>'
+        +'<td style="text-align:right;font-weight:800;color:'+col+';">'+r.taux+'%</td></tr>';
+    }).join('')
+    +'</tbody></table>'
+    +'<div style="font-size:10px;color:var(--blanc-dim);margin-top:6px;">💡 Concentrez le budget acquisition sur les canaux à forte conversion.</div>';
+}
+
+/* ── Classement des commerciaux ──────────────────────────────── */
+function cmrcBuildAgents(leads, ticketMoyen) {
+  var host = document.getElementById('cmrc-agents');
+  if (!host) return;
+  var nomAgent = function(id){
+    var u = (DATA.users||[]).find(function(x){ return x.id===id || x.username===id; });
+    return u ? ((u.prenoms?u.prenoms+' ':'')+(u.nom||u.username||id)) : (id||'Non assigné');
+  };
+  var agg = {};
+  leads.forEach(function(l){
+    var a = l.commercial_id || l.commercial || '__none__';
+    if (!agg[a]) agg[a] = {leads:0, gagnes:0, pipeline:0};
+    agg[a].leads++;
+    if (l.stade==='reservation') agg[a].gagnes++;
+    else if (l.statut!=='perdu') agg[a].pipeline += _cmrcLeadValeur(l,ticketMoyen)*_cmrcStade(l.stade).proba;
+  });
+  var rows = Object.keys(agg).filter(function(k){return k!=='__none__';}).map(function(k){
+    var a=agg[k]; return {nom:nomAgent(k), leads:a.leads, gagnes:a.gagnes, pipeline:a.pipeline, taux:a.leads>0?Math.round(a.gagnes/a.leads*100):0};
+  }).sort(function(a,b){ return b.gagnes-a.gagnes || b.pipeline-a.pipeline; });
+
+  if (!rows.length) { host.innerHTML='<div style="color:var(--blanc-dim);font-size:12px;text-align:center;padding:16px 0;">Aucun lead assigné à un commercial.</div>'; return; }
+  var medals=['🥇','🥈','🥉'];
+  host.innerHTML = rows.slice(0,6).map(function(r,i){
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--bord,#eef);">'
+      +'<div style="font-size:16px;width:22px;text-align:center;">'+(medals[i]||(i+1))+'</div>'
+      +'<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+escHtml(r.nom)+'</div>'
+        +'<div style="font-size:10px;color:var(--blanc-dim);">'+r.leads+' leads · '+r.taux+'% conv · pipe '+fmtF(Math.round(r.pipeline))+' F</div></div>'
+      +'<div style="text-align:right;"><div style="font-size:16px;font-weight:800;color:#10B981;">'+r.gagnes+'</div><div style="font-size:9px;color:var(--blanc-dim);">gagnés</div></div>'
+    +'</div>';
+  }).join('');
+}
+
+/* ── Actions commerciales prioritaires ───────────────────────── */
+function cmrcBuildActions(leads, ticketMoyen) {
+  var host = document.getElementById('cmrc-actions');
+  if (!host) return;
+  var now = new Date();
+  var todayStr = now.toISOString().slice(0,10);
+  var actions = [];
+
+  /* 1. Leads chauds (négo/visite faite) sans relance planifiée ou en retard. */
+  leads.forEach(function(l){
+    if (l.statut==='perdu' || l.stade==='reservation') return;
+    var chaud = (l.stade==='negociation' || l.stade==='visite_faite');
+    var relanceRetard = l.date_relance && l.date_relance < todayStr;
+    if (chaud && (relanceRetard || !l.date_relance)) {
+      actions.push({
+        prio: l.stade==='negociation'?1:2,
+        icon: l.stade==='negociation'?'🔥':'📞',
+        titre: (l.nom||'Lead')+' — '+_cmrcStade(l.stade).label,
+        detail: (relanceRetard?'Relance en retard ('+l.date_relance+')':'Aucune relance planifiée')+' · valeur ~'+fmtF(Math.round(_cmrcLeadValeur(l,ticketMoyen)))+' F',
+        action:"goTo('leads')"
+      });
+    }
+  });
+
+  /* 2. Leads dormants : contactés il y a > 30 j, jamais avancés. */
+  var d30 = new Date(now.getFullYear(),now.getMonth(),now.getDate()-30).toISOString().slice(0,10);
+  leads.forEach(function(l){
+    if (l.statut==='perdu' || l.stade==='reservation') return;
+    if ((l.stade==='prospect'||l.stade==='contact') && l.date_contact && l.date_contact < d30) {
+      actions.push({prio:3, icon:'💤', titre:(l.nom||'Lead')+' dormant', detail:'Sans progression depuis '+l.date_contact+' — relancer ou qualifier perdu', action:"goTo('leads')"});
+    }
+  });
+
+  /* 3. Programmes en surstock (rythme d'écoulement faible). */
+  DATA.programmes.forEach(function(p){
+    if (p.statut==='termine') return;
+    var lotsP = DATA.lots.filter(function(l){return l.programme_id===p.id;}).length;
+    var dispoP = DATA.lots.filter(function(l){return l.programme_id===p.id && l.statut==='disponible';}).length;
+    if (lotsP>=5 && dispoP/lotsP > 0.7) {
+      actions.push({prio:4, icon:'🏚️', titre:'Surstock : '+(p.nom||p.id), detail:dispoP+'/'+lotsP+' lots invendus ('+Math.round(dispoP/lotsP*100)+'%) — action commerciale à intensifier', action:"goTo('lots')"});
+    }
+  });
+
+  /* 4. Réservations à confirmer (lots réservés non transformés en souscription). */
+  var reservesNonClients = DATA.lots.filter(function(l){
+    return l.statut==='reserve' && !DATA.clients.some(function(c){ return c.lot_id===l.id; });
+  });
+  if (reservesNonClients.length) {
+    actions.push({prio:2, icon:'📝', titre:reservesNonClients.length+' lot(s) réservé(s) sans dossier souscripteur', detail:'Finaliser la convention avant expiration de la réservation', action:"goTo('lots')"});
+  }
+
+  actions.sort(function(a,b){ return a.prio-b.prio; });
+  if (!actions.length) {
+    host.innerHTML = '<div style="color:#10B981;padding:16px 0;text-align:center;font-size:13px;font-weight:600;">✅ Aucune action urgente — pipeline sous contrôle</div>';
+    return;
+  }
+  host.innerHTML = actions.slice(0,8).map(function(a){
+    var bg = a.prio===1?'rgba(239,68,68,.08)':a.prio===2?'rgba(197,168,128,.10)':'rgba(148,163,184,.08)';
+    var bd = a.prio===1?'#EF4444':a.prio===2?'#C5A880':'#94A3B8';
+    return '<div onclick="'+a.action+'" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:'+bg+';border-left:3px solid '+bd+';border-radius:6px;margin-bottom:6px;cursor:pointer;">'
+      +'<div style="font-size:18px;">'+a.icon+'</div>'
+      +'<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:600;color:#0F172A;">'+escHtml(a.titre)+'</div>'
+        +'<div style="font-size:11px;color:#64748B;">'+escHtml(a.detail)+'</div></div>'
+      +'<div style="color:'+bd+';font-size:16px;">›</div>'
+    +'</div>';
+  }).join('');
+}
+
+/* ── Tendance ventes & leads sur 6 mois (barres jumelées SVG) ── */
+function cmrcBuildTrend() {
+  var host = document.getElementById('cmrc-trend');
+  if (!host) return;
+  var now = new Date(); var months = [];
+  for (var i=5;i>=0;i--){ var d=new Date(now.getFullYear(),now.getMonth()-i,1);
+    months.push({label:d.toLocaleDateString('fr-FR',{month:'short'}).slice(0,4), key:d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')}); }
+  var data = months.map(function(m){
+    return {
+      ventes: DATA.clients.filter(function(c){return (c.date_debut||'').startsWith(m.key);}).length,
+      leads:  (DATA.leads||[]).filter(function(l){return (l.created_at||l.date_contact||'').startsWith(m.key);}).length
+    };
+  });
+  var maxV = Math.max.apply(null, data.map(function(d){return Math.max(d.ventes,d.leads);}).concat([1]));
+  var W=100/months.length;
+  var bars = data.map(function(d,i){
+    var x = i*W;
+    var hL = d.leads/maxV*70, hV = d.ventes/maxV*70;
+    return '<g>'
+      +'<rect x="'+(x+W*0.18)+'" y="'+(78-hL)+'" width="'+(W*0.28)+'" height="'+hL+'" fill="#6366F1" rx="1"><title>'+d.leads+' leads</title></rect>'
+      +'<rect x="'+(x+W*0.50)+'" y="'+(78-hV)+'" width="'+(W*0.28)+'" height="'+hV+'" fill="#10B981" rx="1"><title>'+d.ventes+' ventes</title></rect>'
+      +'<text x="'+(x+W*0.5)+'" y="86" text-anchor="middle" font-size="4" fill="#94A3B8">'+months[i].label+'</text>'
+    +'</g>';
+  }).join('');
+  host.innerHTML = '<svg viewBox="0 0 100 90" style="width:100%;height:170px;">'+bars+'</svg>'
+    +'<div style="display:flex;gap:16px;justify-content:center;font-size:11px;margin-top:4px;">'
+    +'<span style="color:#6366F1;">■ Nouveaux leads</span><span style="color:#10B981;">■ Souscriptions</span></div>';
+}
+
+/* ── Absorption par programme (rythme de vente enrichi) ──────── */
+function cmrcBuildProgrammes() {
   var rEl = document.getElementById('dash-prog-repartition');
-  if (rEl) rEl.innerHTML = DATA.programmes.slice(0,6).map(function(p) {
-    var lotsP  = DATA.lots.filter(function(l){ return l.programme_id === p.id; }).length;
+  if (!rEl) return;
+  rEl.innerHTML = DATA.programmes.slice(0,6).map(function(p) {
+    var lotsP   = DATA.lots.filter(function(l){ return l.programme_id === p.id; }).length;
     var vendusP = DATA.lots.filter(function(l){ return l.programme_id === p.id && l.statut === 'vendu'; }).length;
+    var resP    = DATA.lots.filter(function(l){ return l.programme_id === p.id && l.statut === 'reserve'; }).length;
     var pct = lotsP > 0 ? Math.round(vendusP/lotsP*100) : 0;
-    return '<div style="margin-bottom:6px;">'
+    var pctRes = lotsP > 0 ? Math.round(resP/lotsP*100) : 0;
+    return '<div style="margin-bottom:8px;">'
       + '<div style="display:flex;justify-content:space-between;font-size:12px;color:#1E293B;margin-bottom:3px;">'
-      + '<span>'+escHtml(p.nom)+'</span><span style="font-weight:700;color:#0F172A;">'+vendusP+'/'+lotsP+' ('+pct+'%)</span></div>'
-      + '<div style="background:#E2E8F0;border-radius:4px;height:6px;">'
-      + '<div style="background:'+( pct>=80?'#10B981':pct>=50?'#C5A880':'#3B82F6')+';height:100%;width:'+pct+'%;border-radius:4px;transition:width .4s;"></div>'
+      + '<span>'+escHtml(p.nom)+'</span><span style="font-weight:700;color:#0F172A;">'+vendusP+'+'+resP+'/'+lotsP+' ('+pct+'%)</span></div>'
+      + '<div style="background:#E2E8F0;border-radius:4px;height:8px;display:flex;overflow:hidden;">'
+      + '<div style="background:'+( pct>=80?'#10B981':pct>=50?'#C5A880':'#3B82F6')+';height:100%;width:'+pct+'%;transition:width .4s;" title="'+vendusP+' vendus"></div>'
+      + '<div style="background:#C5A88088;height:100%;width:'+pctRes+'%;" title="'+resP+' réservés"></div>'
       + '</div></div>';
   }).join('') || '<div style="color:#94A3B8;font-size:13px;padding:12px 0;">Aucun programme.</div>';
 }
