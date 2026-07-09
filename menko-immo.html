@@ -2398,6 +2398,9 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <div class="nav-item" onclick="goTo('tresorerie-page')" data-page="tresorerie-page">
         <span class="nav-icon">💵</span><span>Trésorerie</span>
       </div>
+          <div class="nav-item" onclick="goTo('caisse')" data-page="caisse">
+        <span class="nav-icon">💰</span><span>Caisse</span>
+      </div>
           <div class="nav-item" onclick="goTo('previsionnel')" data-page="previsionnel">
         <span class="nav-icon">📈</span><span>Prévisionnel / BP</span>
       </div>
@@ -9073,6 +9076,24 @@ button:focus-visible, input:focus-visible, select:focus-visible {
         <div id="tresorerie-detaille-box"></div>
       </div>
 
+      <!-- ══ CAISSE — brouillard journalier, bons E/S, ouverture/clôture, ventilation ══ -->
+      <div class="page" id="page-caisse">
+        <div class="page-header">
+          <div>
+            <div class="page-title">Caisse</div>
+            <div class="page-subtitle">Ouverture/clôture · Bons d'entrée &amp; de sortie · Brouillard journalier · Envoi hiérarchie</div>
+          </div>
+          <div class="spacer"></div>
+          <button class="btn btn-secondary btn-sm" id="btn-caisse-nouvelle" onclick="caisseConfigModal(null)" style="display:none;">➕ Nouvelle caisse</button>
+        </div>
+
+        <div id="caisse-liste" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;margin-bottom:20px;"></div>
+
+        <div id="caisse-brouillard-box"></div>
+
+        <div id="caisse-ventilation-box" style="margin-top:24px;"></div>
+      </div>
+
       <!-- ══ PRÉVISIONNEL / BUSINESS PLAN BANCAIRE ══════════ -->
       <div class="page" id="page-previsionnel">
         <div class="page-header">
@@ -15512,14 +15533,18 @@ var DATA = {
   /* v114 — Aménagement foncier */
   af_operations: [],
   af_agents: [],
-  af_relances: []
+  af_relances: [],
+  /* v136 — Caisse (brouillard journalier, bons E/S, ouverture/clôture, ventilation comptable) */
+  caisses: [],
+  caisse_sessions: [],
+  caisse_mouvements: []
 };
 
 /* ──────────────────────────────────────────────────────
    INDEXEDDB
 ────────────────────────────────────────────────────── */
 var DB_NAME = 'ImmoSuiteDB';
-var DB_VERSION = 135; /* v135: store 'mobilites_rh' (mobilité interne / mutations / promotions) */
+var DB_VERSION = 136; /* v136: stores 'caisses','caisse_sessions','caisse_mouvements' (module Caisse) */
 var DEMO_DATA = false; /* PRODUCTION : aucune donnée de démonstration. Mettre true uniquement pour une démo. */
 var db = null;
 
@@ -15592,7 +15617,9 @@ var ALL_STORES = [
   'conges_rh','candidats_rh','postes_ouverts','formations_rh',
   'visites_rdv','visites_log','visites_blacklist',
   /* v135 — Mobilité interne RH (mutations, promotions, changements de grille) */
-  'mobilites_rh'
+  'mobilites_rh',
+  /* v136 — Module Caisse (ouverture/clôture, bons E/S, brouillard, ventilation) */
+  'caisses','caisse_sessions','caisse_mouvements'
 ];
 
 function initDB() {
@@ -15742,7 +15769,9 @@ async function loadAllData() {
   'cessions_foncieres',
   'lot_unites',
   /* v135 — Mobilité interne RH */
-  'mobilites_rh'
+  'mobilites_rh',
+  /* v136 — Module Caisse */
+  'caisses','caisse_sessions','caisse_mouvements'
   ];
   for (var s = 0; s < allKeys.length; s++) {
     var store = allKeys[s];
@@ -16134,6 +16163,9 @@ async function deleteFromSupabase(table, id) {
 
 /* Correspondance table Supabase ↔ store local (IndexedDB / DATA) */
 var SUPA_STORE_MAP = [
+  ['pi_caisses',          'caisses'],
+  ['pi_caisse_sessions',  'caisse_sessions'],
+  ['pi_caisse_mouvements','caisse_mouvements'],
   ['pi_users',           'users'],
   ['pi_portail_medias',  'portail_medias'],
   ['pi_portail_messages','portail_messages'],
@@ -17197,6 +17229,15 @@ async function doLogin() {
   /* Pull silencieux en arrière-plan : récupère les données cloud sans bloquer l'UI.
      Délai 1,5 s pour laisser le dashboard se rendre avant la mise à jour. */
   setTimeout(function(){ pullFromCloudSilent(); }, 1500);
+
+  /* Module Caisse : vérifie et envoie les états journaliers/mensuels en attente
+     (clôtures non encore transmises à la hiérarchie) */
+  setTimeout(function(){ if (typeof caisseCheckEnvoisAuto === 'function') caisseCheckEnvoisAuto(); }, 2500);
+  if (!window._caisseAutoTimer) {
+    window._caisseAutoTimer = setInterval(function(){
+      if (typeof caisseCheckEnvoisAuto === 'function') caisseCheckEnvoisAuto();
+    }, 1800000); /* toutes les 30 minutes */
+  }
 }
 
 function logout(forced) {
@@ -17330,6 +17371,7 @@ function goTo(page) {
   if (page === 'crm-rapports')   { buildRapportsCommerciaux(); }
   if (page === 'crm-apporteurs') { renderApporteurs(); buildKPIsApporteurs(); }
   if (page === 'tresorerie-page') { buildTresorerieDetaille(); }
+  if (page === 'caisse') { caisseEnter(); }
   if (page === 'previsionnel') { loadPrevisionnel(); }
   if (page === 'amenagement') { loadAmenagement(); }
   if (page === 'debourse') { edsRender(); }
@@ -23660,7 +23702,7 @@ var ALL_MODULES = [
   'Plans & Conception','Constructeurs','Conventions','Suivi Chantiers',
   'DQE & Cout de revient','Pipeline Leads','Plan Action Commercial',
   'Carte & Geoloc','Lots & Reservations','Souscripteurs','Paiements',
-  'Relances','Comptabilite','Tresorerie',
+  'Relances','Comptabilite','Tresorerie','Caisse',
   'RH Employes','Pointage','Paie','Conges RH','Recrutement','Formations','Livre Paie','Mobilite RH',
   'Rapports Commerciaux','Messagerie','Parametres',
   'Filiere Fonciere','Acquisition & Amenagement Foncier','Etude de Prix & Debourse',
@@ -23678,12 +23720,15 @@ var SYSTEM_ROLES = {
   comptable:  { id:'comptable',  label:'Comptable',      icon:'💼', level:2, system:true,
     permissions: Object.fromEntries(ALL_MODULES.map(function(m){
       return [m, ['Tableau de bord','Accueil','DQE & Cout de revient','Souscripteurs','Paiements',
-                  'Relances','Comptabilite','Tresorerie','Paie','Messagerie'].includes(m)]; })) },
+                  'Relances','Comptabilite','Tresorerie','Caisse','Paie','Messagerie'].includes(m)]; })) },
   commercial: { id:'commercial', label:'Commercial',     icon:'🎯', level:1, system:true,
     permissions: Object.fromEntries(ALL_MODULES.map(function(m){
       return [m, ['Tableau de bord','Accueil','Programmes','Pipeline Leads','Plan Action Commercial',
                   'Carte & Geoloc','Lots & Reservations','Souscripteurs','Relances',
                   'Rapports Commerciaux','Messagerie'].includes(m)]; })) },
+  caissiere:  { id:'caissiere',  label:'Caissière',      icon:'💰', level:1, system:true,
+    permissions: Object.fromEntries(ALL_MODULES.map(function(m){
+      return [m, ['Tableau de bord','Accueil','Caisse','Messagerie'].includes(m)]; })) },
 };
 
 // ── Rôles personnalisés (chargés depuis IndexedDB) ───────────────────────────
@@ -23766,7 +23811,7 @@ var MODULE_GROUPS = {
   commercial: ['Pipeline Leads','Plan Action Commercial','Carte & Geoloc','Itineraires Terrain','Ordres de Mission','Rapports Commerciaux'],
   ventes:     ['Lots & Reservations','Souscripteurs'],
   recouvrement:['Paiements','Relances'],
-  finance:    ['Comptabilite','Tresorerie'],
+  finance:    ['Comptabilite','Tresorerie','Caisse'],
   juridique:  ['Dossiers Juridiques'],
   rh:         ['RH Employes','Pointage','Paie','Journaliers & Temporaires','Declarations & Teledeclaration','Livre Paie','Conges RH','Recrutement','Formations','Mobilite RH'],
   collaboration:['Messagerie','Portail','Portail Apporteur'],
@@ -62863,6 +62908,735 @@ function imprimerFactureFNE(facId) {
 
 
 </script>
+<script>
+
+/* ══════════════════════════════════════════════════════════════════════════
+   MODULE CAISSE — ImmoSuite ERP v136
+   Ouverture/clôture · Bons d'entrée & de sortie · Brouillard journalier
+   Envoi périodique (journalier/mensuel) messagerie interne + email hiérarchie
+   Ventilation comptable (manuelle ou automatique) par le comptable après clôture
+   ──────────────────────────────────────────────────────────────────────────
+   Principe : la caissière n'est PAS comptable. Elle ouvre/clôture sa caisse,
+   saisit des bons d'entrée/sortie et transmet l'état de caisse. La contrepartie
+   comptable (compte de charge/produit/tiers) est choisie par le comptable lors
+   de la ventilation, après vérification — jamais par la caissière.
+══════════════════════════════════════════════════════════════════════════ */
+
+var CAISSE_UI = { brouillardCaisseId: null, brouillardSessionId: null };
+
+/* ── Utilitaires ─────────────────────────────────────────────────────── */
+function _caissePad3(n) { n = String(n); while (n.length < 3) n = '0' + n; return n; }
+
+function caisseRoleAdminLike() {
+  var role = APP.currentUser && APP.currentUser.role;
+  return role === 'admin' || role === 'manager' || role === 'comptable';
+}
+
+/* Défensif : si aucune caissière n'est assignée à une caisse, l'accès reste
+   ouvert (on ne bloque jamais totalement un utilisateur habilité au module). */
+function caisseUserPeut(caisseId) {
+  if (!APP.currentUser) return false;
+  if (caisseRoleAdminLike()) return true;
+  var c = (DATA.caisses || []).find(function(x){ return x.id === caisseId; });
+  if (!c) return false;
+  if (!c.caissiere_ids || !c.caissiere_ids.length) return true;
+  return c.caissiere_ids.indexOf(APP.currentUser.id) >= 0;
+}
+
+function caissesVisibles() {
+  if (!APP.currentUser) return [];
+  var all = DATA.caisses || [];
+  if (caisseRoleAdminLike()) return all;
+  return all.filter(function(c){ return caisseUserPeut(c.id); });
+}
+
+function caisseGetSessionOuverte(caisseId) {
+  return (DATA.caisse_sessions || []).find(function(s){ return s.caisse_id === caisseId && s.statut === 'ouverte'; }) || null;
+}
+
+function caisseDernièreSessionCloturee(caisseId) {
+  var list = (DATA.caisse_sessions || []).filter(function(s){ return s.caisse_id === caisseId && s.statut === 'cloturee'; });
+  list.sort(function(a,b){ return (b.cloturee_le||'').localeCompare(a.cloturee_le||''); });
+  return list[0] || null;
+}
+
+function caisseSoldeSession(session) {
+  if (!session) return 0;
+  var mvts = (DATA.caisse_mouvements || []).filter(function(m){ return m.session_id === session.id; });
+  var entrees = mvts.filter(function(m){ return m.type === 'entree'; }).reduce(function(s,m){ return s + (parseFloat(m.montant)||0); }, 0);
+  var sorties = mvts.filter(function(m){ return m.type === 'sortie'; }).reduce(function(s,m){ return s + (parseFloat(m.montant)||0); }, 0);
+  return (parseFloat(session.fond_ouverture)||0) + entrees - sorties;
+}
+
+function caisseNomUser(userId) {
+  var u = (DATA.users || []).find(function(x){ return x.id === userId; });
+  return u ? u.nom : userId;
+}
+
+/* ── Entrée sur la page ──────────────────────────────────────────────── */
+function caisseEnter() {
+  var btnNew = document.getElementById('btn-caisse-nouvelle');
+  if (btnNew) btnNew.style.display = caisseRoleAdminLike() ? '' : 'none';
+  caisseRenderListe();
+  document.getElementById('caisse-brouillard-box').innerHTML = '';
+  caisseRenderVentilation();
+}
+
+/* ── Liste des caisses (cartes) ──────────────────────────────────────── */
+function caisseRenderListe() {
+  var el = document.getElementById('caisse-liste');
+  if (!el) return;
+  var liste = caissesVisibles();
+  if (!liste.length) {
+    el.innerHTML = '<div style="grid-column:1/-1;padding:24px;text-align:center;color:var(--blanc-dim);">'
+      + (caisseRoleAdminLike() ? 'Aucune caisse configurée. Cliquez sur « ➕ Nouvelle caisse ».' : 'Aucune caisse ne vous est assignée pour le moment.')
+      + '</div>';
+    return;
+  }
+  el.innerHTML = liste.map(function(c) {
+    var session = caisseGetSessionOuverte(c.id);
+    var ouverte = !!session;
+    var solde = ouverte ? caisseSoldeSession(session) : null;
+    var caissieresNoms = (c.caissiere_ids || []).map(caisseNomUser).join(', ') || '—';
+    var badge = ouverte
+      ? '<span style="background:var(--vert);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;">OUVERTE</span>'
+      : '<span style="background:var(--dim);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;">FERMÉE</span>';
+    var actions = '';
+    if (!ouverte) {
+      actions += '<button class="btn btn-primary btn-sm" onclick="caisseOuvrirModal(\'' + c.id + '\')">🔓 Ouvrir la caisse</button>';
+    } else {
+      actions += '<button class="btn btn-secondary btn-sm" onclick="caisseOuvrirBonModal(\'' + c.id + '\',\'entree\')">📥 Entrée</button>'
+        + '<button class="btn btn-secondary btn-sm" onclick="caisseOuvrirBonModal(\'' + c.id + '\',\'sortie\')">📤 Sortie</button>'
+        + '<button class="btn btn-secondary btn-sm" onclick="caisseAfficherBrouillard(\'' + c.id + '\')">📋 Brouillard</button>'
+        + '<button class="btn btn-danger btn-sm" onclick="caisseClôturerModal(\'' + c.id + '\')">🔒 Clôturer</button>';
+    }
+    if (caisseRoleAdminLike()) {
+      actions += '<button class="btn btn-secondary btn-sm btn-icon" title="Configurer" onclick="caisseConfigModal(\'' + c.id + '\')">⚙️</button>';
+      if (!ouverte) actions += '<button class="btn btn-secondary btn-sm btn-icon" title="Historique" onclick="caisseAfficherBrouillard(\'' + c.id + '\')">🗂️</button>';
+    }
+    return '<div class="card" style="padding:16px;">'
+      + '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">'
+      + '<div><div style="font-weight:800;font-size:15px;">' + escHtml(c.nom) + '</div>'
+      + '<div style="font-size:11px;color:var(--blanc-dim);">Compte ' + escHtml(c.compte || '571') + ' · ' + escHtml(caissieresNoms) + '</div></div>'
+      + badge + '</div>'
+      + (ouverte
+          ? '<div style="font-size:22px;font-weight:800;color:var(--vert);margin:8px 0;">' + fmtF(solde) + ' FCFA</div>'
+            + '<div style="font-size:11px;color:var(--blanc-dim);margin-bottom:10px;">Ouverte le ' + (session.date||'') + ' par ' + escHtml(session.ouverte_par||'—') + ' · fond initial ' + fmtF(session.fond_ouverture) + ' FCFA</div>'
+          : '<div style="font-size:12px;color:var(--blanc-dim);margin:10px 0;">Caisse fermée' + (c.actif === false ? ' · <span style="color:var(--rouge);">inactive</span>' : '') + '</div>')
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap;">' + actions + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+/* ── Config caisse (admin) ───────────────────────────────────────────── */
+function caisseConfigModal(caisseId) {
+  var c = caisseId ? (DATA.caisses || []).find(function(x){ return x.id === caisseId; }) : null;
+  document.getElementById('cc-modal-title').textContent = c ? 'Configurer la caisse' : 'Nouvelle caisse';
+  document.getElementById('cc-id').value = c ? c.id : '';
+  document.getElementById('cc-nom').value = c ? (c.nom||'') : '';
+  document.getElementById('cc-compte').value = c ? (c.compte||'571') : '571';
+  document.getElementById('cc-actif').value = (c && c.actif === false) ? '0' : '1';
+  document.getElementById('cc-envoi-auto-jour').checked = !c || c.envoi_auto_journalier !== false;
+  document.getElementById('cc-envoi-auto-mois').checked = !c || c.envoi_auto_mensuel !== false;
+  document.getElementById('cc-dest-emails').value = c && c.destinataires_email ? c.destinataires_email.join(', ') : '';
+
+  var selCaissieres = document.getElementById('cc-caissieres');
+  var selDest = document.getElementById('cc-dest-internes');
+  var usersHtml = (DATA.users || []).map(function(u){ return '<option value="' + u.id + '">' + escHtml(u.nom) + ' (' + escHtml(u.role||'') + ')</option>'; }).join('');
+  selCaissieres.innerHTML = usersHtml;
+  selDest.innerHTML = usersHtml;
+  Array.from(selCaissieres.options).forEach(function(o){ o.selected = !!(c && c.caissiere_ids && c.caissiere_ids.indexOf(o.value) >= 0); });
+  Array.from(selDest.options).forEach(function(o){ o.selected = !!(c && c.destinataires_internes && c.destinataires_internes.indexOf(o.value) >= 0); });
+
+  openModal('modal-caisse-config');
+}
+
+async function caisseSaveConfig() {
+  var id = document.getElementById('cc-id').value;
+  var nom = document.getElementById('cc-nom').value.trim();
+  if (!nom) { toast('Le nom de la caisse est obligatoire.', 'error'); return; }
+  var compte = document.getElementById('cc-compte').value;
+  var actif = document.getElementById('cc-actif').value === '1';
+  var caissiereIds = Array.from(document.getElementById('cc-caissieres').selectedOptions).map(function(o){ return o.value; });
+  var destInternes = Array.from(document.getElementById('cc-dest-internes').selectedOptions).map(function(o){ return o.value; });
+  var destEmails = document.getElementById('cc-dest-emails').value.split(/[,;\n]/).map(function(s){ return s.trim(); }).filter(Boolean);
+  var envoiJour = document.getElementById('cc-envoi-auto-jour').checked;
+  var envoiMois = document.getElementById('cc-envoi-auto-mois').checked;
+
+  var c = id ? (DATA.caisses || []).find(function(x){ return x.id === id; }) : null;
+  if (!c) {
+    c = { id: uid(), created_at: today(), conversation_id: null, dernier_envoi_mensuel: null };
+    DATA.caisses.push(c);
+  }
+  c.nom = nom; c.compte = compte; c.actif = actif;
+  c.caissiere_ids = caissiereIds; c.destinataires_internes = destInternes; c.destinataires_email = destEmails;
+  c.envoi_auto_journalier = envoiJour; c.envoi_auto_mensuel = envoiMois;
+
+  await dbPut('caisses', c);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisses', c);
+  closeModal('modal-caisse-config');
+  toast('✅ Caisse enregistrée.', 'success');
+  caisseRenderListe();
+}
+
+/* ── Ouverture de caisse ─────────────────────────────────────────────── */
+function caisseOuvrirModal(caisseId) {
+  var c = (DATA.caisses || []).find(function(x){ return x.id === caisseId; });
+  if (!c) return;
+  if (caisseGetSessionOuverte(caisseId)) { toast('Cette caisse est déjà ouverte.', 'error'); return; }
+  var derniere = caisseDernièreSessionCloturee(caisseId);
+  var fondSuggere = derniere ? (parseFloat(derniere.fond_cloture_reel) || 0) : 0;
+  document.getElementById('co-caisse-id').value = caisseId;
+  document.getElementById('co-caisse-nom').textContent = c.nom;
+  document.getElementById('co-fond').value = fondSuggere;
+  document.getElementById('co-fond-note').textContent = derniere
+    ? 'Repris automatiquement du solde de clôture réel du ' + derniere.date + ' (' + fmtF(fondSuggere) + ' FCFA). Modifiable si besoin.'
+    : 'Première ouverture de cette caisse — aucun solde antérieur.';
+  openModal('modal-caisse-ouvrir');
+}
+
+async function caisseOuvrir() {
+  var caisseId = document.getElementById('co-caisse-id').value;
+  var fond = parseFloat(document.getElementById('co-fond').value) || 0;
+  if (caisseGetSessionOuverte(caisseId)) { toast('Cette caisse est déjà ouverte.', 'error'); closeModal('modal-caisse-ouvrir'); return; }
+  var session = {
+    id: uid(), caisse_id: caisseId, date: today(),
+    fond_ouverture: fond, fond_cloture_theorique: null, fond_cloture_reel: null, ecart: null,
+    statut: 'ouverte',
+    ouverte_par: (APP.currentUser && APP.currentUser.nom) || '—', ouverte_le: new Date().toISOString(),
+    cloturee_par: null, cloturee_le: null,
+    envoye_journalier: false, envoye_journalier_le: null
+  };
+  DATA.caisse_sessions.push(session);
+  await dbPut('caisse_sessions', session);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_sessions', session);
+  closeModal('modal-caisse-ouvrir');
+  toast('🔓 Caisse ouverte avec un fond de ' + fmtF(fond) + ' FCFA.', 'success');
+  caisseRenderListe();
+}
+
+/* ── Bons d'entrée / de sortie ────────────────────────────────────────── */
+function caisseOuvrirBonModal(caisseId, type) {
+  var session = caisseGetSessionOuverte(caisseId);
+  if (!session) { toast('Cette caisse n\'est pas ouverte.', 'error'); return; }
+  var c = (DATA.caisses || []).find(function(x){ return x.id === caisseId; });
+  document.getElementById('cb-modal-title').textContent = type === 'entree' ? '📥 Bon d\'entrée de caisse' : '📤 Bon de sortie de caisse';
+  document.getElementById('cb-caisse-id').value = caisseId;
+  document.getElementById('cb-type').value = type;
+  document.getElementById('cb-date').value = today();
+  document.getElementById('cb-montant').value = 0;
+  document.getElementById('cb-motif').value = '';
+  document.getElementById('cb-beneficiaire').value = '';
+  document.getElementById('cb-solde-actuel').textContent = 'Solde actuel de la caisse « ' + (c?c.nom:'') + ' » : ' + fmtF(caisseSoldeSession(session)) + ' FCFA';
+  openModal('modal-caisse-bon');
+}
+
+async function caisseSaveBon() {
+  var caisseId = document.getElementById('cb-caisse-id').value;
+  var type = document.getElementById('cb-type').value;
+  var date = document.getElementById('cb-date').value || today();
+  var montant = parseFloat(document.getElementById('cb-montant').value) || 0;
+  var motif = document.getElementById('cb-motif').value.trim();
+  var beneficiaire = document.getElementById('cb-beneficiaire').value.trim();
+
+  if (montant <= 0) { toast('Le montant doit être supérieur à zéro.', 'error'); return; }
+  if (!motif) { toast('Le motif est obligatoire.', 'error'); return; }
+
+  var session = caisseGetSessionOuverte(caisseId);
+  if (!session) { toast('La caisse a été clôturée entre-temps — impossible d\'enregistrer ce bon.', 'error'); closeModal('modal-caisse-bon'); return; }
+
+  var c = (DATA.caisses || []).find(function(x){ return x.id === caisseId; });
+
+  if (type === 'sortie') {
+    var soldeCourant = caisseSoldeSession(session);
+    if (montant > soldeCourant) {
+      if (!confirm('⚠️ Solde de caisse insuffisant (solde actuel : ' + fmtF(soldeCourant) + ' FCFA pour une sortie de ' + fmtF(montant) + ' FCFA).\n\nConfirmer tout de même l\'enregistrement de ce bon de sortie ?')) return;
+    }
+  }
+
+  var prefix = type === 'entree' ? 'BE' : 'BS';
+  var dateStr = date.replace(/-/g, '');
+  var count = (DATA.caisse_mouvements || []).filter(function(m){ return m.caisse_id === caisseId && m.type === type && (m.date||'').slice(0,10) === date; }).length + 1;
+  var numero = prefix + '-' + (c && c.compte ? c.compte : 'CSE') + '-' + dateStr + '-' + _caissePad3(count);
+
+  var mvt = {
+    id: uid(), session_id: session.id, caisse_id: caisseId,
+    date: date + 'T' + new Date().toISOString().slice(11,19), numero: numero,
+    type: type, montant: montant, motif: motif, beneficiaire: beneficiaire,
+    statut: 'a_ventiler', compte_ventile: null, ecriture_id: null,
+    ventile_par: null, ventile_le: null,
+    created_by: (APP.currentUser && APP.currentUser.nom) || '—', created_at: new Date().toISOString()
+  };
+  DATA.caisse_mouvements.push(mvt);
+  await dbPut('caisse_mouvements', mvt);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', mvt);
+  closeModal('modal-caisse-bon');
+  toast('✅ ' + (type === 'entree' ? 'Bon d\'entrée' : 'Bon de sortie') + ' ' + numero + ' enregistré.', 'success');
+  caisseRenderListe();
+  if (CAISSE_UI.brouillardCaisseId === caisseId) caisseAfficherBrouillard(caisseId);
+}
+
+/* ── Brouillard journalier ───────────────────────────────────────────── */
+function caisseAfficherBrouillard(caisseId) {
+  CAISSE_UI.brouillardCaisseId = caisseId;
+  var sessions = (DATA.caisse_sessions || []).filter(function(s){ return s.caisse_id === caisseId; })
+    .sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); });
+  var sessionCourante = caisseGetSessionOuverte(caisseId) || sessions[0];
+  CAISSE_UI.brouillardSessionId = sessionCourante ? sessionCourante.id : null;
+  var selectHtml = '<select class="filter-select" id="cb-session-select" onchange="caisseRenderBrouillardSession(this.value)">'
+    + sessions.map(function(s){ return '<option value="' + s.id + '"' + (s.id === CAISSE_UI.brouillardSessionId ? ' selected' : '') + '>' + s.date + (s.statut==='ouverte'?' (en cours)':' — clôturée') + '</option>'; }).join('')
+    + '</select>';
+  var box = document.getElementById('caisse-brouillard-box');
+  box.innerHTML = '<div class="card" style="padding:16px;margin-top:4px;">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">'
+    + '<div style="font-weight:800;font-size:15px;">📋 Brouillard de caisse</div>'
+    + '<div style="display:flex;gap:8px;align-items:center;">' + selectHtml
+    + '<button class="btn btn-secondary btn-sm" onclick="caisseImprimerBrouillard()">🖨️ Imprimer</button>'
+    + '<button class="btn btn-secondary btn-sm" onclick="caisseEnvoyerEtatManuel()">✉️ Envoyer l\'état</button>'
+    + '</div></div>'
+    + '<div id="caisse-brouillard-table"></div>'
+    + '</div>';
+  caisseRenderBrouillardSession(CAISSE_UI.brouillardSessionId);
+}
+
+function caisseRenderBrouillardSession(sessionId) {
+  CAISSE_UI.brouillardSessionId = sessionId;
+  var session = (DATA.caisse_sessions || []).find(function(s){ return s.id === sessionId; });
+  var tbl = document.getElementById('caisse-brouillard-table');
+  if (!tbl) return;
+  if (!session) { tbl.innerHTML = '<div style="color:var(--blanc-dim);">Aucune session.</div>'; return; }
+
+  var mvts = (DATA.caisse_mouvements || []).filter(function(m){ return m.session_id === session.id; })
+    .sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
+
+  var solde = parseFloat(session.fond_ouverture) || 0;
+  var rows = '<tr style="font-weight:700;background:rgba(255,255,255,0.04);"><td colspan="5">Fond d\'ouverture</td><td style="text-align:right;">' + fmtF(solde) + '</td></tr>';
+  mvts.forEach(function(m) {
+    solde += m.type === 'entree' ? (parseFloat(m.montant)||0) : -(parseFloat(m.montant)||0);
+    rows += '<tr>'
+      + '<td>' + (m.date||'').slice(11,16) + '</td>'
+      + '<td>' + escHtml(m.numero||'') + '</td>'
+      + '<td>' + escHtml(m.motif||'') + (m.beneficiaire ? ' — ' + escHtml(m.beneficiaire) : '') + '</td>'
+      + '<td style="text-align:right;color:var(--vert);">' + (m.type==='entree' ? fmtF(m.montant) : '') + '</td>'
+      + '<td style="text-align:right;color:var(--rouge);">' + (m.type==='sortie' ? fmtF(m.montant) : '') + '</td>'
+      + '<td style="text-align:right;">' + fmtF(solde) + '</td>'
+      + '<td><button class="btn btn-secondary btn-sm btn-icon" title="Imprimer le bon" onclick="caisseImprimerBon(\'' + m.id + '\')">🖨️</button>'
+      + (m.statut === 'ventile' ? '<span title="Ventilé" style="margin-left:4px;color:var(--vert);">✓</span>' : '<span title="En attente de ventilation" style="margin-left:4px;color:var(--dim);">⏳</span>') + '</td>'
+      + '</tr>';
+  });
+
+  var totalEntrees = mvts.filter(function(m){ return m.type==='entree'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+  var totalSorties = mvts.filter(function(m){ return m.type==='sortie'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+
+  tbl.innerHTML = '<div style="overflow-x:auto;">'
+    + '<table class="data-table"><thead><tr><th>Heure</th><th>N° bon</th><th>Motif</th><th style="text-align:right;">Entrée</th><th style="text-align:right;">Sortie</th><th style="text-align:right;">Solde</th><th></th></tr></thead>'
+    + '<tbody>' + rows + '</tbody>'
+    + '<tfoot><tr style="font-weight:800;border-top:2px solid var(--bord);"><td colspan="3">Totaux</td><td style="text-align:right;color:var(--vert);">' + fmtF(totalEntrees) + '</td><td style="text-align:right;color:var(--rouge);">' + fmtF(totalSorties) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td><td></td></tr></tfoot>'
+    + '</table></div>'
+    + (session.statut === 'cloturee'
+        ? '<div style="margin-top:10px;font-size:12px;color:var(--blanc-dim);">Clôturée le ' + (session.cloturee_le||'').slice(0,16).replace('T',' ') + ' par ' + escHtml(session.cloturee_par||'—') + ' · fond réel compté : ' + fmtF(session.fond_cloture_reel) + ' FCFA · écart : <strong style="color:' + (session.ecart ? 'var(--rouge)' : 'var(--vert)') + ';">' + fmtF(session.ecart||0) + ' FCFA</strong>' + (session.envoye_journalier ? ' · ✉️ état transmis' : ' · état non encore transmis') + '</div>'
+        : '');
+}
+
+/* ── Impression ──────────────────────────────────────────────────────── */
+function caisseImprimerBon(mvtId) {
+  var m = (DATA.caisse_mouvements || []).find(function(x){ return x.id === mvtId; });
+  if (!m) return;
+  var c = (DATA.caisses || []).find(function(x){ return x.id === m.caisse_id; });
+  var p = DATA.params || {};
+  var titre = m.type === 'entree' ? 'Bon d\'entrée de caisse' : 'Bon de sortie de caisse';
+  var html = '<div style="font-family:Georgia,serif;max-width:640px;margin:0 auto;">'
+    + '<div style="text-align:center;margin-bottom:18px;">'
+    + '<div style="font-size:16px;font-weight:800;">' + escHtml(p.societe || 'ImmoSuite ERP') + '</div>'
+    + '<div style="font-size:11px;color:#666;">' + escHtml(p.adresse||'') + '</div></div>'
+    + '<div style="text-align:center;font-size:18px;font-weight:800;border:2px solid #333;padding:8px;margin-bottom:16px;">' + titre + '</div>'
+    + '<table style="width:100%;border-collapse:collapse;font-size:13px;">'
+    + '<tr><td style="padding:6px 0;width:40%;color:#666;">N° du bon</td><td style="padding:6px 0;font-weight:700;">' + escHtml(m.numero) + '</td></tr>'
+    + '<tr><td style="padding:6px 0;color:#666;">Caisse</td><td style="padding:6px 0;">' + escHtml(c ? c.nom : '') + ' (compte ' + escHtml(c ? c.compte : '') + ')</td></tr>'
+    + '<tr><td style="padding:6px 0;color:#666;">Date</td><td style="padding:6px 0;">' + (m.date||'').replace('T',' ').slice(0,16) + '</td></tr>'
+    + '<tr><td style="padding:6px 0;color:#666;">Motif</td><td style="padding:6px 0;">' + escHtml(m.motif) + '</td></tr>'
+    + '<tr><td style="padding:6px 0;color:#666;">Bénéficiaire</td><td style="padding:6px 0;">' + escHtml(m.beneficiaire||'—') + '</td></tr>'
+    + '<tr><td style="padding:6px 0;color:#666;">Montant</td><td style="padding:10px 0;font-size:20px;font-weight:800;">' + fmtF(m.montant) + ' FCFA</td></tr>'
+    + '</table>'
+    + '<div style="display:flex;justify-content:space-between;margin-top:60px;font-size:12px;">'
+    + '<div>Caissière<br><br><br>___________________<br>' + escHtml(m.created_by||'') + '</div>'
+    + '<div>Bénéficiaire / Reçu par<br><br><br>___________________</div>'
+    + '</div>'
+    + '</div>';
+  openPrintPreview(html, titre + ' — ' + m.numero);
+}
+
+function caisseImprimerBrouillard() {
+  var session = (DATA.caisse_sessions || []).find(function(s){ return s.id === CAISSE_UI.brouillardSessionId; });
+  if (!session) { toast('Aucune session sélectionnée.', 'error'); return; }
+  var c = (DATA.caisses || []).find(function(x){ return x.id === session.caisse_id; });
+  var p = DATA.params || {};
+  var mvts = (DATA.caisse_mouvements || []).filter(function(m){ return m.session_id === session.id; })
+    .sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
+  var solde = parseFloat(session.fond_ouverture) || 0;
+  var rows = '';
+  mvts.forEach(function(m) {
+    solde += m.type === 'entree' ? (parseFloat(m.montant)||0) : -(parseFloat(m.montant)||0);
+    rows += '<tr><td>' + (m.date||'').slice(11,16) + '</td><td>' + escHtml(m.numero||'') + '</td><td>' + escHtml(m.motif||'') + '</td>'
+      + '<td style="text-align:right;">' + (m.type==='entree'?fmtF(m.montant):'') + '</td>'
+      + '<td style="text-align:right;">' + (m.type==='sortie'?fmtF(m.montant):'') + '</td>'
+      + '<td style="text-align:right;">' + fmtF(solde) + '</td></tr>';
+  });
+  var totalEntrees = mvts.filter(function(m){ return m.type==='entree'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+  var totalSorties = mvts.filter(function(m){ return m.type==='sortie'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+  var html = '<div style="font-family:Georgia,serif;">'
+    + '<div style="text-align:center;margin-bottom:14px;"><div style="font-size:16px;font-weight:800;">' + escHtml(p.societe||'ImmoSuite ERP') + '</div>'
+    + '<div style="font-size:18px;font-weight:800;margin-top:8px;">Brouillard journalier de caisse</div>'
+    + '<div style="font-size:12px;color:#666;">' + escHtml(c ? c.nom : '') + ' — ' + session.date + '</div></div>'
+    + '<table style="width:100%;border-collapse:collapse;font-size:12px;" border="1" cellpadding="5">'
+    + '<thead><tr style="background:#eee;"><th>Heure</th><th>N° bon</th><th>Motif</th><th>Entrée</th><th>Sortie</th><th>Solde</th></tr></thead>'
+    + '<tbody><tr><td colspan="5" style="font-weight:700;">Fond d\'ouverture</td><td style="text-align:right;font-weight:700;">' + fmtF(session.fond_ouverture) + '</td></tr>'
+    + rows
+    + '<tr style="font-weight:800;background:#f5f5f5;"><td colspan="3">Totaux</td><td style="text-align:right;">' + fmtF(totalEntrees) + '</td><td style="text-align:right;">' + fmtF(totalSorties) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td></tr>'
+    + '</tbody></table>'
+    + (session.statut === 'cloturee'
+        ? '<div style="margin-top:16px;font-size:12px;">Fond réel compté à la clôture : <strong>' + fmtF(session.fond_cloture_reel) + ' FCFA</strong> · Écart : <strong>' + fmtF(session.ecart||0) + ' FCFA</strong></div>'
+        : '')
+    + '<div style="display:flex;justify-content:space-between;margin-top:50px;font-size:12px;">'
+    + '<div>Caissière : ' + escHtml(session.ouverte_par||'') + '<br><br>___________________</div>'
+    + '<div>Vérifié par (Comptabilité)<br><br>___________________</div>'
+    + '</div></div>';
+  openPrintPreview(html, 'Brouillard de caisse — ' + (c?c.nom:'') + ' — ' + session.date);
+}
+
+/* ── Clôture de caisse ───────────────────────────────────────────────── */
+function caisseClôturerModal(caisseId) {
+  var session = caisseGetSessionOuverte(caisseId);
+  if (!session) { toast('Cette caisse n\'est pas ouverte.', 'error'); return; }
+  var c = (DATA.caisses || []).find(function(x){ return x.id === caisseId; });
+  var solde = caisseSoldeSession(session);
+  document.getElementById('ccl-caisse-id').value = caisseId;
+  document.getElementById('ccl-recap').innerHTML = '<strong>' + escHtml(c.nom) + '</strong><br>'
+    + 'Fond d\'ouverture : ' + fmtF(session.fond_ouverture) + ' FCFA<br>'
+    + 'Solde théorique actuel (fond + entrées − sorties) : <strong>' + fmtF(solde) + ' FCFA</strong>';
+  document.getElementById('ccl-fond-reel').value = solde;
+  document.getElementById('ccl-fond-reel').dataset.theorique = solde;
+  document.getElementById('ccl-ecart').textContent = '';
+  openModal('modal-caisse-cloturer');
+}
+
+function caisseUpdateEcartPreview() {
+  var input = document.getElementById('ccl-fond-reel');
+  var theorique = parseFloat(input.dataset.theorique) || 0;
+  var reel = parseFloat(input.value) || 0;
+  var ecart = reel - theorique;
+  var el = document.getElementById('ccl-ecart');
+  el.style.color = ecart === 0 ? 'var(--vert)' : 'var(--rouge)';
+  el.textContent = ecart === 0 ? 'Aucun écart.' : 'Écart : ' + (ecart > 0 ? '+' : '') + fmtF(ecart) + ' FCFA';
+}
+
+async function caisseCloturer() {
+  var caisseId = document.getElementById('ccl-caisse-id').value;
+  var session = caisseGetSessionOuverte(caisseId);
+  if (!session) { toast('Session introuvable.', 'error'); closeModal('modal-caisse-cloturer'); return; }
+  var soldeTheorique = caisseSoldeSession(session);
+  var fondReel = parseFloat(document.getElementById('ccl-fond-reel').value) || 0;
+  var ecart = fondReel - soldeTheorique;
+
+  if (ecart !== 0 && !confirm('Écart de ' + fmtF(ecart) + ' FCFA entre le solde théorique (' + fmtF(soldeTheorique) + ') et le comptage réel (' + fmtF(fondReel) + ').\n\nConfirmer la clôture malgré l\'écart ?')) return;
+
+  session.statut = 'cloturee';
+  session.fond_cloture_theorique = soldeTheorique;
+  session.fond_cloture_reel = fondReel;
+  session.ecart = ecart;
+  session.cloturee_par = (APP.currentUser && APP.currentUser.nom) || '—';
+  session.cloturee_le = new Date().toISOString();
+
+  await dbPut('caisse_sessions', session);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_sessions', session);
+  closeModal('modal-caisse-cloturer');
+  toast('🔒 Caisse clôturée. Solde réel : ' + fmtF(fondReel) + ' FCFA.', 'success');
+  caisseRenderListe();
+  if (CAISSE_UI.brouillardCaisseId === caisseId) caisseAfficherBrouillard(caisseId);
+
+  var c = (DATA.caisses || []).find(function(x){ return x.id === caisseId; });
+  if (c && c.envoi_auto_journalier !== false) {
+    setTimeout(function(){ caisseEnvoyerEtatJournalier(session.id, false); }, 400);
+  }
+}
+
+/* ── Envoi de l'état de caisse (messagerie interne + email hiérarchie) ─── */
+async function caisseGetOrCreateConversation(c) {
+  var userId = (APP.currentUser && APP.currentUser.id) || 'system';
+  var membres = [userId].concat(c.destinataires_internes || []).concat(c.caissiere_ids || []);
+  membres = membres.filter(function(v,i,a){ return v && a.indexOf(v) === i; }); /* dédoublonnage */
+
+  var conv = c.conversation_id ? (DATA.conversations || []).find(function(x){ return x.id === c.conversation_id; }) : null;
+  if (conv) {
+    /* Garder les participants à jour si la config a changé */
+    var manquants = membres.filter(function(m){ return conv.participants.indexOf(m) < 0; });
+    if (manquants.length) { conv.participants = conv.participants.concat(manquants); await dbPut('conversations', conv); }
+    return conv;
+  }
+  if (membres.length < 2) return null; /* pas de destinataire configuré */
+
+  conv = {
+    id: uid(), type: 'groupe', nom: '💰 État de caisse — ' + c.nom, emoji: '💰',
+    description: 'Brouillards et états de caisse transmis automatiquement.',
+    participants: membres, admin_id: userId, date_creation: new Date().toISOString()
+  };
+  DATA.conversations.push(conv);
+  await dbPut('conversations', conv);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_conversations', conv);
+  c.conversation_id = conv.id;
+  await dbPut('caisses', c);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisses', c);
+  return conv;
+}
+
+async function caisseEnvoyerMessageInterne(c, texte) {
+  var conv = await caisseGetOrCreateConversation(c);
+  if (!conv) return false;
+  var msg = {
+    id: uid(), conversation_id: conv.id,
+    expediteur_id: (APP.currentUser && APP.currentUser.id) || 'system',
+    contenu: texte, date: new Date().toISOString(), lu: false, fichiers: []
+  };
+  DATA.messages.push(msg);
+  await dbPut('messages', msg);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_messages', msg);
+  if (typeof renderConversations === 'function') renderConversations();
+  return true;
+}
+
+function caisseEnvoyerEmail(destinataires, sujet, corps) {
+  var p = DATA.params || {};
+  if (!destinataires || !destinataires.length) return;
+  if (!p.emailjs_service || !p.emailjs_template || !p.emailjs_key || typeof emailjs === 'undefined') return;
+  emailjs.init(p.emailjs_key);
+  destinataires.forEach(function(email) {
+    emailjs.send(p.emailjs_service, p.emailjs_template, {
+      to_email: email, to_name: 'Hiérarchie', subject: sujet, message: corps,
+      from_name: p.societe || 'ImmoSuite ERP', reply_to: p.email || ''
+    }).catch(function(){ /* échec silencieux — l'état interne reste transmis */ });
+  });
+}
+
+function _caisseTexteJournalier(session, c) {
+  var mvts = (DATA.caisse_mouvements || []).filter(function(m){ return m.session_id === session.id; });
+  var totalEntrees = mvts.filter(function(m){ return m.type==='entree'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+  var totalSorties = mvts.filter(function(m){ return m.type==='sortie'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+  var lignes = mvts.map(function(m){ return '  • ' + (m.type==='entree'?'[+] ':'[-] ') + m.numero + ' — ' + m.motif + ' : ' + fmtF(m.montant) + ' FCFA'; }).join('\n');
+  return '💰 ÉTAT JOURNALIER DE CAISSE — ' + c.nom + '\n'
+    + 'Date : ' + session.date + '\n'
+    + 'Ouverte par : ' + (session.ouverte_par||'—') + '\n\n'
+    + 'Fond d\'ouverture : ' + fmtF(session.fond_ouverture) + ' FCFA\n'
+    + 'Total entrées : ' + fmtF(totalEntrees) + ' FCFA\n'
+    + 'Total sorties : ' + fmtF(totalSorties) + ' FCFA\n'
+    + 'Solde théorique de clôture : ' + fmtF(session.fond_cloture_theorique != null ? session.fond_cloture_theorique : caisseSoldeSession(session)) + ' FCFA\n'
+    + (session.statut === 'cloturee' ? 'Fond réel compté : ' + fmtF(session.fond_cloture_reel) + ' FCFA\nÉcart : ' + fmtF(session.ecart||0) + ' FCFA\n' : '(caisse encore ouverte)\n')
+    + '\nDétail des mouvements :\n' + (lignes || '  (aucun mouvement)')
+    + '\n\nCes montants seront ventilés en comptabilité après vérification.';
+}
+
+async function caisseEnvoyerEtatJournalier(sessionId, manuel) {
+  var session = (DATA.caisse_sessions || []).find(function(s){ return s.id === sessionId; });
+  if (!session) return;
+  var c = (DATA.caisses || []).find(function(x){ return x.id === session.caisse_id; });
+  if (!c) return;
+  if (session.envoye_journalier && !manuel) return; /* déjà transmis automatiquement */
+
+  var texte = _caisseTexteJournalier(session, c);
+  var okInterne = await caisseEnvoyerMessageInterne(c, texte);
+  caisseEnvoyerEmail(c.destinataires_email, 'État journalier de caisse — ' + c.nom + ' — ' + session.date, texte);
+
+  session.envoye_journalier = true;
+  session.envoye_journalier_le = new Date().toISOString();
+  await dbPut('caisse_sessions', session);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_sessions', session);
+
+  if (manuel) {
+    toast(okInterne ? '✉️ État journalier transmis à la hiérarchie.' : '⚠️ Aucun destinataire configuré pour cette caisse (voir ⚙️ Configurer).', okInterne ? 'success' : 'error');
+  }
+  caisseRenderListe();
+  if (CAISSE_UI.brouillardSessionId === sessionId) caisseRenderBrouillardSession(sessionId);
+}
+
+async function caisseEnvoyerEtatMensuel(caisseId, manuel, moisStr) {
+  var c = (DATA.caisses || []).find(function(x){ return x.id === caisseId; });
+  if (!c) return;
+  var mois = moisStr || today().slice(0,7);
+  var sessions = (DATA.caisse_sessions || []).filter(function(s){ return s.caisse_id === caisseId && s.statut === 'cloturee' && (s.date||'').slice(0,7) === mois; });
+  if (!sessions.length) { if (manuel) toast('Aucune session clôturée pour ce mois.', 'error'); return; }
+
+  var totalEntrees = 0, totalSorties = 0, totalEcart = 0;
+  sessions.forEach(function(s) {
+    var mvts = (DATA.caisse_mouvements || []).filter(function(m){ return m.session_id === s.id; });
+    totalEntrees += mvts.filter(function(m){ return m.type==='entree'; }).reduce(function(sum,m){ return sum+(parseFloat(m.montant)||0); }, 0);
+    totalSorties += mvts.filter(function(m){ return m.type==='sortie'; }).reduce(function(sum,m){ return sum+(parseFloat(m.montant)||0); }, 0);
+    totalEcart += parseFloat(s.ecart) || 0;
+  });
+
+  var texte = '💰 ÉTAT MENSUEL DE CAISSE — ' + c.nom + '\n'
+    + 'Mois : ' + mois + '\n'
+    + 'Nombre de journées de caisse : ' + sessions.length + '\n\n'
+    + 'Total entrées du mois : ' + fmtF(totalEntrees) + ' FCFA\n'
+    + 'Total sorties du mois : ' + fmtF(totalSorties) + ' FCFA\n'
+    + 'Solde net du mois : ' + fmtF(totalEntrees - totalSorties) + ' FCFA\n'
+    + 'Cumul des écarts de caisse (théorique/réel) : ' + fmtF(totalEcart) + ' FCFA\n\n'
+    + 'Détail par journée disponible dans le module Caisse (brouillards journaliers).';
+
+  var okInterne = await caisseEnvoyerMessageInterne(c, texte);
+  caisseEnvoyerEmail(c.destinataires_email, 'État mensuel de caisse — ' + c.nom + ' — ' + mois, texte);
+
+  c.dernier_envoi_mensuel = mois;
+  await dbPut('caisses', c);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisses', c);
+
+  if (manuel) toast(okInterne ? '✉️ État mensuel transmis à la hiérarchie.' : '⚠️ Aucun destinataire configuré pour cette caisse.', okInterne ? 'success' : 'error');
+}
+
+function caisseEnvoyerEtatManuel() {
+  var session = (DATA.caisse_sessions || []).find(function(s){ return s.id === CAISSE_UI.brouillardSessionId; });
+  if (!session) { toast('Aucune session sélectionnée.', 'error'); return; }
+  caisseEnvoyerEtatJournalier(session.id, true);
+}
+
+/* ── Vérification automatique (appelée au login + toutes les 30 min) ───── */
+function caisseCheckEnvoisAuto() {
+  (DATA.caisses || []).forEach(function(c) {
+    if (c.envoi_auto_journalier !== false) {
+      (DATA.caisse_sessions || []).filter(function(s){ return s.caisse_id === c.id && s.statut === 'cloturee' && !s.envoye_journalier; })
+        .forEach(function(s){ caisseEnvoyerEtatJournalier(s.id, false); });
+    }
+    if (c.envoi_auto_mensuel !== false) {
+      var d = new Date(); d.setDate(1); d.setDate(0); /* dernier jour du mois précédent */
+      var moisPrec = d.toISOString().slice(0,7);
+      if (c.dernier_envoi_mensuel !== moisPrec) {
+        var aDesSessions = (DATA.caisse_sessions || []).some(function(s){ return s.caisse_id === c.id && s.statut === 'cloturee' && (s.date||'').slice(0,7) === moisPrec; });
+        if (aDesSessions) caisseEnvoyerEtatMensuel(c.id, false, moisPrec);
+      }
+    }
+  });
+}
+
+/* ── Ventilation comptable (comptable / manager / admin uniquement) ────── */
+function _caisseCompteOptionsHtml(selected) {
+  return (APP.planComptable || []).map(function(cpt){
+    return '<option value="' + cpt.code + '"' + (cpt.code === selected ? ' selected' : '') + '>' + cpt.code + ' — ' + escHtml(cpt.label) + '</option>';
+  }).join('');
+}
+
+function caisseRenderVentilation() {
+  var box = document.getElementById('caisse-ventilation-box');
+  if (!box) return;
+  if (!caisseRoleAdminLike()) { box.innerHTML = ''; return; }
+
+  var enAttente = (DATA.caisse_mouvements || []).filter(function(m) {
+    if (m.statut === 'ventile') return false;
+    var s = (DATA.caisse_sessions || []).find(function(x){ return x.id === m.session_id; });
+    return s && s.statut === 'cloturee';
+  }).sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
+
+  var enCours = (DATA.caisse_mouvements || []).filter(function(m) {
+    if (m.statut === 'ventile') return false;
+    var s = (DATA.caisse_sessions || []).find(function(x){ return x.id === m.session_id; });
+    return s && s.statut === 'ouverte';
+  }).length;
+
+  var html = '<div class="card" style="padding:16px;">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">'
+    + '<div style="font-weight:800;font-size:15px;">🧾 Ventilation comptable des mouvements de caisse</div>'
+    + '<button class="btn btn-secondary btn-sm" onclick="caisseVentilationAuto()">⚡ Ventilation automatique</button>'
+    + '</div>'
+    + '<div style="font-size:11px;color:var(--blanc-dim);margin-bottom:10px;">Seuls les mouvements des caisses <strong>clôturées</strong> apparaissent ici, après vérification.'
+    + (enCours ? ' (' + enCours + ' mouvement(s) en attente dans une caisse encore ouverte.)' : '') + '</div>';
+
+  if (!enAttente.length) {
+    html += '<div style="padding:16px;text-align:center;color:var(--blanc-dim);">Aucun mouvement en attente de ventilation.</div>';
+  } else {
+    html += '<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Date</th><th>Caisse</th><th>N°</th><th>Type</th><th>Motif</th><th style="text-align:right;">Montant</th><th>Compte de contrepartie</th><th></th></tr></thead><tbody>';
+    enAttente.forEach(function(m) {
+      var c = (DATA.caisses || []).find(function(x){ return x.id === m.caisse_id; });
+      html += '<tr>'
+        + '<td>' + (m.date||'').slice(0,10) + '</td>'
+        + '<td>' + escHtml(c ? c.nom : '') + '</td>'
+        + '<td>' + escHtml(m.numero||'') + '</td>'
+        + '<td>' + (m.type === 'entree' ? '<span style="color:var(--vert);">Entrée</span>' : '<span style="color:var(--rouge);">Sortie</span>') + '</td>'
+        + '<td>' + escHtml(m.motif||'') + (m.beneficiaire ? ' — ' + escHtml(m.beneficiaire) : '') + '</td>'
+        + '<td style="text-align:right;">' + fmtF(m.montant) + '</td>'
+        + '<td><select class="form-control" id="cv-compte-' + m.id + '" style="min-width:220px;"><option value="">— choisir —</option>' + _caisseCompteOptionsHtml('') + '</select></td>'
+        + '<td><button class="btn btn-primary btn-sm" onclick="caisseVentilerLigne(\'' + m.id + '\')">✅ Ventiler</button></td>'
+        + '</tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+  html += '</div>';
+  box.innerHTML = html;
+}
+
+async function genererEcritureCaisseMouvement(mvt, compteContrepartie) {
+  var caisse = (DATA.caisses || []).find(function(c){ return c.id === mvt.caisse_id; });
+  var compteCaisse = (caisse && caisse.compte) || '571';
+  var libelle = (mvt.type === 'entree' ? 'Entrée caisse' : 'Sortie caisse') + ' — ' + (mvt.motif || '') + (mvt.beneficiaire ? ' — ' + mvt.beneficiaire : '');
+  var ecr = {
+    id: 'ecr_cse_' + mvt.id, ref: mvt.numero || mvt.id, date: (mvt.date || '').slice(0,10) || today(),
+    piece: mvt.numero || '', libelle: libelle,
+    compte_debit: mvt.type === 'entree' ? compteCaisse : compteContrepartie,
+    compte_credit: mvt.type === 'entree' ? compteContrepartie : compteCaisse,
+    compte: compteCaisse, montant: parseFloat(mvt.montant) || 0, type: 'actif', mode: 'especes',
+    notes: 'Ventilé par ' + ((APP.currentUser && APP.currentUser.nom) || '—'), created_at: today()
+  };
+  var idx = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; });
+  if (idx >= 0) DATA.ecritures[idx] = ecr; else DATA.ecritures.push(ecr);
+  await dbPut('ecritures', ecr);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecr);
+  if (typeof buildBalance === 'function') buildBalance();
+  if (typeof buildGrandLivre === 'function') buildGrandLivre();
+
+  mvt.statut = 'ventile'; mvt.compte_ventile = compteContrepartie; mvt.ecriture_id = ecr.id;
+  mvt.ventile_par = (APP.currentUser && APP.currentUser.nom) || '—'; mvt.ventile_le = new Date().toISOString();
+  await dbPut('caisse_mouvements', mvt);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', mvt);
+  return ecr;
+}
+
+async function caisseVentilerLigne(mvtId) {
+  var sel = document.getElementById('cv-compte-' + mvtId);
+  var compte = sel ? sel.value : '';
+  if (!compte) { toast('Sélectionnez un compte de contrepartie.', 'error'); return; }
+  var mvt = (DATA.caisse_mouvements || []).find(function(m){ return m.id === mvtId; });
+  if (!mvt) return;
+  await genererEcritureCaisseMouvement(mvt, compte);
+  toast('✅ Écriture générée et mouvement ventilé.', 'success');
+  caisseRenderVentilation();
+  if (CAISSE_UI.brouillardSessionId === mvt.session_id) caisseRenderBrouillardSession(mvt.session_id);
+}
+
+/* Ventilation automatique par mots-clés du motif → compte, configurable dans
+   DATA.params.caisse_ventilation_map = { "carburant":"6051", "transport":"6132", ... }.
+   Les mouvements sans correspondance restent en attente de ventilation manuelle. */
+async function caisseVentilationAuto() {
+  var map = (DATA.params && DATA.params.caisse_ventilation_map) || {};
+  var cles = Object.keys(map);
+  if (!cles.length) { toast('Aucune règle de ventilation automatique configurée (Paramètres → Caisse).', 'error'); return; }
+
+  var enAttente = (DATA.caisse_mouvements || []).filter(function(m) {
+    if (m.statut === 'ventile') return false;
+    var s = (DATA.caisse_sessions || []).find(function(x){ return x.id === m.session_id; });
+    return s && s.statut === 'cloturee';
+  });
+
+  var appliques = 0;
+  for (var i = 0; i < enAttente.length; i++) {
+    var m = enAttente[i];
+    var motifLc = (m.motif || '').toLowerCase();
+    var compteTrouve = null;
+    for (var j = 0; j < cles.length; j++) {
+      if (motifLc.indexOf(cles[j].toLowerCase()) >= 0) { compteTrouve = map[cles[j]]; break; }
+    }
+    if (compteTrouve) { await genererEcritureCaisseMouvement(m, compteTrouve); appliques++; }
+  }
+  toast(appliques ? ('⚡ ' + appliques + ' mouvement(s) ventilé(s) automatiquement. ' + (enAttente.length - appliques) + ' restent à ventiler manuellement.') : 'Aucune correspondance trouvée — ventilation manuelle requise.', appliques ? 'success' : 'info');
+  caisseRenderVentilation();
+}
+
+</script>
 <!-- ══ APERÇU AVANT IMPRESSION ══════════════════════════════════════════ -->
 <div class="modal-overlay" id="modal-print-preview" style="display:none;z-index:9999;">
   <div style="background:var(--card);border-radius:12px;width:96vw;max-width:900px;height:92vh;display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.6);overflow:hidden;">
@@ -63061,6 +63835,120 @@ function imprimerFactureFNE(facId) {
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-immo-soc')">Annuler</button>
       <button class="btn btn-primary" onclick="saveImmoSociete()">💾 Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODALES MODULE CAISSE ══════════════════════════════════════════════ -->
+
+<!-- Modal : Créer / configurer une caisse -->
+<div class="modal-overlay" id="modal-caisse-config">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="cc-modal-title">Nouvelle caisse</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-caisse-config')">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="cc-id">
+      <div class="form-grid">
+        <div class="form-group span-2"><label>Nom de la caisse *</label><input class="form-control" id="cc-nom" placeholder="Caisse principale, Petite caisse chantier..."></div>
+        <div class="form-group"><label>Compte SYSCOHADA</label>
+          <select class="form-control" id="cc-compte">
+            <option value="571">571 — Caisse principale</option>
+            <option value="572">572 — Caisse annexe / petite caisse</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Statut</label>
+          <select class="form-control" id="cc-actif"><option value="1">Active</option><option value="0">Inactive</option></select>
+        </div>
+        <div class="form-group span-2"><label>Caissière(s) assignée(s)</label>
+          <select class="form-control" id="cc-caissieres" multiple size="4"></select>
+          <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">Aucune sélection = accessible par toute personne habilitée (comptable, manager, admin, caissière).</div>
+        </div>
+        <div class="form-group span-2"><label>Destinataires internes de l'état de caisse (messagerie)</label>
+          <select class="form-control" id="cc-dest-internes" multiple size="4"></select>
+        </div>
+        <div class="form-group span-2"><label>Destinataires email (hiérarchie) — un email par ligne ou séparés par virgule</label>
+          <textarea class="form-control" id="cc-dest-emails" rows="2" placeholder="directeur@societe.ci, dg@societe.ci"></textarea>
+        </div>
+        <div class="form-group"><label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="cc-envoi-auto-jour" checked> Envoi auto de l'état journalier à la clôture</label></div>
+        <div class="form-group"><label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="cc-envoi-auto-mois" checked> Envoi auto de l'état mensuel</label></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-caisse-config')">Annuler</button>
+      <button class="btn btn-primary" onclick="caisseSaveConfig()">💾 Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Ouverture de caisse -->
+<div class="modal-overlay" id="modal-caisse-ouvrir">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>🔓 Ouverture de caisse</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-caisse-ouvrir')">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="co-caisse-id">
+      <div id="co-caisse-nom" style="font-weight:700;margin-bottom:10px;"></div>
+      <div class="form-group">
+        <label>Fond de caisse à l'ouverture (FCFA)</label>
+        <input type="number" class="form-control" id="co-fond" value="0">
+        <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;" id="co-fond-note"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-caisse-ouvrir')">Annuler</button>
+      <button class="btn btn-primary" onclick="caisseOuvrir()">🔓 Ouvrir la caisse</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Bon d'entrée / de sortie de caisse -->
+<div class="modal-overlay" id="modal-caisse-bon">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="cb-modal-title">Bon de caisse</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-caisse-bon')">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="cb-caisse-id">
+      <input type="hidden" id="cb-type">
+      <div id="cb-solde-actuel" style="font-size:12px;color:var(--blanc-dim);margin-bottom:10px;"></div>
+      <div class="form-grid">
+        <div class="form-group"><label>Date *</label><input type="date" class="form-control" id="cb-date"></div>
+        <div class="form-group"><label>Montant (FCFA) *</label><input type="number" class="form-control" id="cb-montant" value="0"></div>
+        <div class="form-group span-2"><label>Motif / libellé *</label><input class="form-control" id="cb-motif" placeholder="Achat fournitures bureau, remboursement transport..."></div>
+        <div class="form-group span-2"><label>Bénéficiaire / tiers (optionnel)</label><input class="form-control" id="cb-beneficiaire" placeholder="Nom du bénéficiaire ou du fournisseur"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-caisse-bon')">Annuler</button>
+      <button class="btn btn-primary" onclick="caisseSaveBon()">💾 Enregistrer le bon</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Clôture de caisse -->
+<div class="modal-overlay" id="modal-caisse-cloturer">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>🔒 Clôture de caisse</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-caisse-cloturer')">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="ccl-caisse-id">
+      <div id="ccl-recap" style="margin-bottom:12px;font-size:13px;"></div>
+      <div class="form-group">
+        <label>Comptage réel du fond de caisse (FCFA) *</label>
+        <input type="number" class="form-control" id="ccl-fond-reel" value="0" oninput="caisseUpdateEcartPreview()">
+      </div>
+      <div id="ccl-ecart" style="margin-top:8px;font-weight:700;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-caisse-cloturer')">Annuler</button>
+      <button class="btn btn-primary" onclick="caisseCloturer()">🔒 Clôturer la caisse</button>
     </div>
   </div>
 </div>
