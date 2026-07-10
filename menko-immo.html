@@ -30763,6 +30763,25 @@ var IMPORT_MODULES = [
     ]
   },
   {
+    id:'bornes', label:'Bornes / Coordonnées', icon:'📐', store:'parcelles',
+    description:'Coordonnées de bornage — 1 ligne = 1 borne, regroupées par parcelle',
+    grouped:true,
+    fields:[
+      {key:'parcelle_ref',label:'Réf. parcelle',required:true,hint:'Clé de regroupement — doit correspondre à la référence de la parcelle (créée si absente)'},
+      {key:'borne',label:'Borne (nom)',required:true,hint:'Ex: B1, S2, P3'},
+      {key:'x',label:'X (Est / Easting, m)',required:true,type:'number'},
+      {key:'y',label:'Y (Nord / Northing, m)',required:true,type:'number'},
+      {key:'z',label:'Z (altitude, m)',required:false,type:'number'},
+      {key:'angle',label:'Angle / Gisement',required:false,type:'number'},
+      {key:'distance',label:'Distance au suivant (m)',required:false,type:'number'},
+      {key:'systeme',label:'Système géodésique',required:false,hint:'Ex: UTM30N-WGS84 ou Abidjan-Clarke1880 — obligatoire pour éviter un polygone faux'},
+      {key:'lat',label:'Latitude GPS (option, centroïde)',required:false,type:'number'},
+      {key:'lng',label:'Longitude GPS (option, centroïde)',required:false,type:'number'},
+      {key:'commune',label:'Commune (si création parcelle)',required:false},
+      {key:'localisation',label:'Localisation (si création parcelle)',required:false},
+    ]
+  },
+  {
     id:'mutations', label:'Mutations foncières', icon:'🔁', store:'mutations',
     description:'Mutations / transferts de parcelles',
     fields:[
@@ -31301,6 +31320,9 @@ async function confirmerImport() {
   var btnOk = document.getElementById('btn-confirmer-import');
   if (btnOk) { btnOk.disabled=true; btnOk.textContent='⏳ Import en cours…'; }
 
+  /* Import groupé (1 ligne = 1 borne → parcelles[].bornes[]) */
+  if (mod.grouped && moduleId==='bornes') { await _importBornesGrouped(rows, strategy, mod); return; }
+
   var store = mod.store;
   if (!DATA[store]) DATA[store] = [];
   var _tbl = (function(){ try { var e=(SUPA_STORE_MAP||[]).find(function(x){return x[1]===store;}); return e?e[0]:('pi_'+store); } catch(_){ return 'pi_'+store; } })();
@@ -31374,6 +31396,108 @@ async function confirmerImport() {
   if (nbSkipped) msg += ', '+nbSkipped+' ignoré(s)';
   if (nbErr) msg += ', '+nbErr+' erreur(s)';
   toast(msg, nbErr>0?'warning':'success');
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   IMPORT GROUPÉ DES BORNES → parcelles[].bornes[]
+   1 ligne CSV = 1 borne. Regroupement par réf. parcelle.
+   Recalcule la superficie (Gauss), pose le système géodésique,
+   centroïde GPS optionnel. Contrôles métier : <3 bornes, surface nulle.
+   ══════════════════════════════════════════════════════════════════ */
+async function _importBornesGrouped(rows, strategy, mod) {
+  if (!DATA.parcelles) DATA.parcelles = [];
+  var now = new Date().toISOString();
+  var norm = function(s){ return String(s||'').trim().toLowerCase(); };
+  var num = function(v){ var n=parseFloat(String(v).replace(',','.')); return isNaN(n)?null:n; };
+
+  /* Regrouper en préservant l'ordre du CSV (= ordre du contour) */
+  var groups = {}, order = [];
+  rows.forEach(function(r){
+    var key = norm(r.parcelle_ref);
+    if (!key) return;
+    if (!groups[key]) { groups[key] = []; order.push(key); }
+    groups[key].push(r);
+  });
+
+  var pCreated=0, pUpdated=0, pSkipped=0, bTotal=0, warns=[];
+
+  for (var g=0; g<order.length; g++) {
+    var key = order[g], grp = groups[key];
+    var refRaw = String(grp[0].parcelle_ref).trim();
+
+    var parc = DATA.parcelles.find(function(x){ return norm(x.ref)===key || norm(x.id)===key; });
+    var isNew = !parc;
+    if (isNew) {
+      parc = { id: uid(), ref: refRaw, statut: 'prospection', created_at: today() };
+      if (grp[0].commune) parc.commune = String(grp[0].commune).trim();
+      if (grp[0].localisation) parc.localisation = String(grp[0].localisation).trim();
+      DATA.parcelles.push(parc);
+    } else if (parc.bornes && parc.bornes.length && strategy==='skip') {
+      pSkipped++; continue; /* ne pas écraser un bornage existant */
+    }
+
+    /* Construire les bornes dans l'ordre du fichier */
+    var bornes = grp.map(function(r,i){
+      return {
+        nom: String(r.borne||('B'+(i+1))).trim(),
+        x: num(r.x)||0, y: num(r.y)||0, z: num(r.z)||0,
+        angle: num(r.angle)||0, distance: num(r.distance)||0
+      };
+    }).filter(function(b){ return b.x||b.y; });
+
+    parc.bornes = bornes;
+    bTotal += bornes.length;
+
+    /* Système géodésique (obligatoire métier) */
+    var sys = (grp.find(function(r){ return r.systeme; })||{}).systeme;
+    if (sys) {
+      parc.systeme_geodesique = String(sys).trim();
+      if (/29/.test(sys)) parc.utm_zone = 29; else if (/30/.test(sys)) parc.utm_zone = 30;
+    } else if (!parc.systeme_geodesique) {
+      warns.push(refRaw+' : système géodésique non précisé');
+    }
+
+    /* Centroïde GPS optionnel */
+    var lats=[], lngs=[];
+    grp.forEach(function(r){ var la=num(r.lat), lo=num(r.lng); if(la!==null&&lo!==null){ lats.push(la); lngs.push(lo); } });
+    if (lats.length) parc.geo_centroid = { lat: lats.reduce(function(s,v){return s+v;},0)/lats.length, lng: lngs.reduce(function(s,v){return s+v;},0)/lngs.length };
+
+    /* Recalcul superficie par Gauss */
+    if (bornes.length >= 3) {
+      var area = (typeof brnArea==='function') ? brnArea(bornes) : 0;
+      if (area > 0) parc.superficie = Math.round(area);
+      else warns.push(refRaw+' : surface nulle — ordre des bornes ou coordonnées à vérifier');
+    } else {
+      warns.push(refRaw+' : '+bornes.length+' borne(s) (<3) — polygone incomplet');
+    }
+    if (!parc.date_bornage) parc.date_bornage = (now.slice(0,10));
+
+    parc.updated_at = now;
+    parc._import_source = 'csv_bornes_'+now.slice(0,10);
+
+    try {
+      await dbPut('parcelles', parc);
+      if (typeof syncToSupabase==='function') syncToSupabase('pi_parcelles', parc);
+    } catch(e) {}
+    if (isNew) pCreated++; else pUpdated++;
+  }
+
+  /* Historique */
+  _importHistory.unshift({
+    date: now, module: mod.label, icon: mod.icon,
+    total: rows.length, new: pCreated, updated: pUpdated, skipped: pSkipped, errors: 0
+  });
+  try { localStorage.setItem('import_history', JSON.stringify(_importHistory.slice(0,20))); } catch(e){}
+
+  fermerPreview();
+  renderImportPage();
+  if (typeof renderParcelles==='function') renderParcelles();
+
+  var msg = mod.icon+' Bornes : '+bTotal+' borne(s) · '+pCreated+' parcelle(s) créée(s)';
+  if (pUpdated) msg += ', '+pUpdated+' mise(s) à jour';
+  if (pSkipped) msg += ', '+pSkipped+' ignorée(s)';
+  toast(msg, warns.length?'warning':'success');
+  if (warns.length) setTimeout(function(){ toast('⚠️ '+warns.length+' contrôle(s) : '+warns.slice(0,3).join(' · ')+(warns.length>3?'…':''), 'warning'); }, 900);
 }
 
 function fermerPreview() {
