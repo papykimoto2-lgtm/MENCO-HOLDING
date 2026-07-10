@@ -15462,7 +15462,7 @@ var DATA = {
   apporteurs: [],
   relances: [],
   users: [],
-  params: { societe: 'ImmoSuite ERP', email: '', tel: '', rccm: '' },
+  params: { id: 'main', societe: 'ImmoSuite ERP', email: '', tel: '', rccm: '' },
   employes: [],
   divisions: [],
   bulletins: [],
@@ -15800,6 +15800,7 @@ async function loadAllData() {
       /* Appliquer immédiatement les paramètres RH sauvegardés */
       if (DATA.params.prime_presence) PRIME_PRESENCE = DATA.params.prime_presence;
     }
+    if (DATA.params && !DATA.params.id) DATA.params.id = 'main'; /* singleton : id stable pour sync cloud */
     var urows = await dbGetAll('users');
     if (urows.length) {
       DATA.users = urows;
@@ -15976,6 +15977,18 @@ function _outboxWrite(q) {
   try { localStorage.setItem(_SYNC_OUTBOX_KEY, JSON.stringify(q)); } catch(e) {}
 }
 function _outboxEnqueue(entry) {
+  /* Réparation/refus des entrées invalides : une écriture sans id provoque un
+     400 permanent qui empoisonnerait la file. pi_params (singleton) → 'main'. */
+  if (entry && entry.op !== 'delete') {
+    if (entry.table === 'pi_params') {
+      if (!entry.id) entry.id = 'main';
+      if (entry.obj && !entry.obj.id) entry.obj.id = 'main';
+    }
+    if (!entry.id || !entry.obj || !entry.obj.id) {
+      console.warn('[SYNC] Entrée sans id refusée (non synchronisable) :', entry.table, entry);
+      return;
+    }
+  }
   var q = _outboxRead();
   // Dédoublonnage : une seule opération en attente par (table,id)
   q = q.filter(function(e){ return !(e.table === entry.table && e.id === entry.id); });
@@ -15984,9 +15997,28 @@ function _outboxEnqueue(entry) {
   _outboxWrite(q);
 }
 
+/* File de quarantaine : entrées définitivement rejetées par le cloud (erreur 4xx
+   de données). Conservées pour audit, ne bloquent plus la file principale. */
+var _SYNC_QUARANTINE_KEY = 'sync_outbox_quarantine';
+function _quarRead(){ try { return JSON.parse(localStorage.getItem(_SYNC_QUARANTINE_KEY)||'[]'); } catch(e){ return []; } }
+function _quarAdd(entry, raison){
+  var q = _quarRead();
+  entry.quarantaine_le = new Date().toISOString();
+  entry.raison = String(raison||'').slice(0,300);
+  q.push(entry); if (q.length > 200) q = q.slice(-200);
+  try { localStorage.setItem(_SYNC_QUARANTINE_KEY, JSON.stringify(q)); } catch(e){}
+  console.warn('[SYNC] Entrée mise en quarantaine :', entry.table, entry.id, raison);
+}
+
 /* pi_users reste à plat (requête login par colonne). Les autres tables stockent
    l'enregistrement complet en JSON dans la colonne "data" → aucun souci de colonnes. */
-function _supaRow(table, obj) { return table === 'pi_users' ? obj : { id: obj.id, data: obj }; }
+function _supaRow(table, obj) {
+  if (table === 'pi_users') return obj;
+  /* params = enregistrement unique (singleton) : id stable 'main' pour éviter
+     les nulls (contrainte NOT NULL) et garantir un merge sur une seule ligne. */
+  if (table === 'pi_params') return { id: (obj && obj.id) || 'main', data: obj };
+  return { id: obj.id, data: obj };
+}
 function _supaUnwrap(table, row) { return (table === 'pi_users') ? row : (row && row.data ? row.data : row); }
 
 /* Date de modification d'un enregistrement (pour « le plus récent gagne ») */
@@ -16795,9 +16827,18 @@ async function flushSyncOutbox() {
   _syncFlushing = true;
   try {
     var q = _outboxRead();
-    while (q.length) {
-      var e = q[0];
+    var i = 0;
+    while (i < q.length) {
+      var e = q[i];
+
+      /* Entrée invalide (héritée d'anciennes versions) → quarantaine, on continue. */
+      if (e.op !== 'delete' && (!e.id || !e.obj)) {
+        _quarAdd(e, 'Entrée invalide (id ou objet manquant)');
+        q.splice(i,1); _outboxWrite(q); continue;
+      }
+
       var ok = false;
+      window._lastSupaError = '';
       try {
         if (e.op === 'delete') {
           ok = (await sbFetch(e.table + '?id=eq.' + e.id, 'DELETE')) !== null;
@@ -16805,12 +16846,28 @@ async function flushSyncOutbox() {
           ok = (await sbFetch(e.table + '?on_conflict=id', 'POST', _supaRow(e.table, e.obj), 'resolution=merge-duplicates,return=minimal')) !== null;
         }
       } catch(err) { ok = false; }
-      if (!ok) break;            // réseau toujours indisponible → on garde la file
-      q.shift();
+
+      if (ok) { q.splice(i,1); _outboxWrite(q); continue; }
+
+      var err = String(window._lastSupaError || '');
+      /* ERREUR PERMANENTE DE DONNÉES (400/409/422, contrainte, id null…) :
+         cet enregistrement ne passera JAMAIS → quarantaine, la file continue.
+         C'est ce qui empêchait 280+ éléments de se vider à cause d'un seul. */
+      var permanente = /HTTP 4(00|09|22)|23502|23505|22P02|not-null|invalid input/i.test(err);
+      if (permanente) {
+        _quarAdd(e, err);
+        q.splice(i,1); _outboxWrite(q); continue;
+      }
+
+      /* ERREUR DE CONFIGURATION CLOUD (401/403/404 : grant/table manquante) ou
+         réseau : toute la file est affectée → on s'arrête, on réessaiera. */
+      e.tentatives = (e.tentatives || 0) + 1;
+      /* Filet ultime : 50 échecs non permanents sur la même entrée → quarantaine
+         pour ne pas geler la file indéfiniment. */
+      if (e.tentatives >= 50) { _quarAdd(e, 'Abandon après ' + e.tentatives + ' tentatives : ' + err); q.splice(i,1); }
       _outboxWrite(q);
+      break;
     }
-    var rest = _outboxRead().length;
-    if (rest === 0 && typeof toast === 'function') {/* silencieux si rien à signaler */}
   } finally {
     _syncFlushing = false;
   }
