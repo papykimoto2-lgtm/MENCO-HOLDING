@@ -15846,7 +15846,7 @@ var DATA = {
    INDEXEDDB
 ────────────────────────────────────────────────────── */
 var DB_NAME = 'ImmoSuiteDB';
-var DB_VERSION = 136; /* v136: stores 'caisses','caisse_sessions','caisse_mouvements' (module Caisse) */
+var DB_VERSION = 138; /* v138: fix VersionError (une IDB locale était déjà en v137) — stores 'caisses','caisse_sessions','caisse_mouvements' (module Caisse) */
 var DEMO_DATA = false; /* PRODUCTION : aucune donnée de démonstration. Mettre true uniquement pour une démo. */
 var db = null;
 
@@ -27576,18 +27576,31 @@ function lancerAuditIntegrite(){
   });
 
   /* ─── 2. ÉQUILIBRE COMPTABLE ───────────────────────────────── */
+  /* Vérification PAR ÉCRITURE via ecrLignes() (normaliseur legacy 2-lignes / multi-lignes SYSCOHADA).
+     L'ancien check ne regardait que compte_debit/compte_credit/montant : pour une écriture multi-lignes,
+     ces champs sont dérivés (1ère ligne D + 1ère ligne C + total débit) à la SAUVEGARDE, donc un import FEC
+     déséquilibré (voir importFEC : le warning n'empêche pas l'enregistrement) passait toujours comme équilibré. */
   var totDebit=0, totCredit=0, ecrDesequilibrees=0;
   (DATA.ecritures||[]).forEach(function(e){
-    var m=parseFloat(e.montant)||0;
-    /* Écriture simple débit/crédit : le montant doit apparaître des deux côtés. */
-    if(e.compte_debit && e.compte_credit){ totDebit+=m; totCredit+=m; }
-    else if(e.compte_debit && !e.compte_credit){ totDebit+=m; ecrDesequilibrees++; }
-    else if(!e.compte_debit && e.compte_credit){ totCredit+=m; ecrDesequilibrees++; }
-    if(m<=0 && !e._nul_ok) A('mineur','Comptabilité','Écriture à montant nul/négatif','Écriture '+(e.ref||e.id)+' : montant '+fmtF(m)+'.','comptabilite');
+    var lignes=(typeof ecrLignes==='function')?ecrLignes(e):[];
+    var d=0,c=0;
+    lignes.forEach(function(l){ var mm=parseFloat(l.montant)||0; if(l.sens==='D') d+=mm; else if(l.sens==='C') c+=mm; });
+    totDebit+=d; totCredit+=c;
+    if(Math.abs(d-c)>=1){ ecrDesequilibrees++; A('critique','Comptabilité','Écriture déséquilibrée','Écriture '+(e.ref||e.id)+' ('+(e.libelle||'')+') : débit '+fmtF(Math.round(d))+' F ≠ crédit '+fmtF(Math.round(c))+' F (écart '+fmtF(Math.round(Math.abs(d-c)))+' F). Origine probable : import FEC non bloquant.','comptabilite'); }
+    if(!lignes.length) A('mineur','Comptabilité','Écriture sans lignes exploitables','Écriture '+(e.ref||e.id)+' ne comporte aucun compte débit/crédit exploitable.','comptabilite');
+    else if((d+c)<=0 && !e._nul_ok) A('mineur','Comptabilité','Écriture à montant nul/négatif','Écriture '+(e.ref||e.id)+' : montant total '+fmtF(d+c)+'.','comptabilite');
   });
-  if(ecrDesequilibrees>0) A('critique','Comptabilité','Écritures déséquilibrées',ecrDesequilibrees+' écriture(s) sans contrepartie complète (débit ou crédit manquant).','comptabilite');
   var ecartBalance=Math.abs(totDebit-totCredit);
-  if(ecartBalance>1) A('critique','Comptabilité','Balance déséquilibrée','Total débits '+fmtF(Math.round(totDebit))+' F ≠ total crédits '+fmtF(Math.round(totCredit))+' F (écart '+fmtF(Math.round(ecartBalance))+' F).','comptabilite');
+  if(ecartBalance>1) A('critique','Comptabilité','Balance générale déséquilibrée','Total débits '+fmtF(Math.round(totDebit))+' F ≠ total crédits '+fmtF(Math.round(totCredit))+' F (écart '+fmtF(Math.round(ecartBalance))+' F) sur l\'ensemble du journal.','comptabilite');
+
+  /* ─── 2bis. VERROU EXERCICE CLOS VIOLÉ ─────────────────────── */
+  (DATA.ecritures||[]).forEach(function(e){
+    if(!e.date) return;
+    var an=new Date(e.date).getFullYear();
+    if(typeof exerciceEstClos==='function' && exerciceEstClos(e.date) && e.type!=='cloture' && e.mode!=='cloture'){
+      A('critique','Comptabilité','Écriture postérieure à une clôture','Écriture '+(e.ref||e.id)+' datée '+e.date+' (exercice '+an+' clôturé) — le verrou a été contourné (import, correction manuelle IndexedDB, ou bug).','comptabilite');
+    }
+  });
 
   /* ─── 3. COHÉRENCE CA / RECOUVREMENT ───────────────────────── */
   (DATA.clients||[]).forEach(function(c){
@@ -27627,6 +27640,69 @@ function lancerAuditIntegrite(){
     var vendus=lots.filter(function(l){return l.statut==='vendu';}).length;
     if(lots.length>0 && p.nb_lots && lots.length>p.nb_lots) A('mineur','Métier','Lots en excès','Programme '+(p.nom||p.id)+' : '+lots.length+' lots créés > '+p.nb_lots+' prévus.','programmes');
   });
+
+  /* ─── 6. TOMBSTONES / RÉINJECTION POST-SUPPRESSION ─────────── */
+  /* Lié à l'enquête en cours sur le bug de sync Supabase : un enregistrement supprimé localement
+     (donc marqué dans le registre de tombstones) mais encore présent dans DATA[store] est le
+     symptôme exact d'une réinjection par le pull Supabase (garde tombstone absente/contournée). */
+  if(typeof tombList==='function'){
+    var _tombAll=tombList();
+    Object.keys(_tombAll).forEach(function(store){
+      var ids=_tombAll[store]||[];
+      if(!ids.length || !DATA[store]) return;
+      ids.forEach(function(tid){
+        var found=DATA[store].find(function(x){ return String(x.id)===String(tid); });
+        if(found) A('critique','Sync / Tombstones','Enregistrement réinjecté après suppression','Store « '+store+' », id '+tid+' : supprimé localement (tombstone actif) mais toujours présent dans les données — probable réinjection par la synchronisation Supabase.',store);
+      });
+    });
+  }
+
+  /* ─── 7. ACHATS (fournisseurs → BC → réceptions → factures) ─── */
+  (DATA.bons_commande||[]).forEach(function(b){
+    if(b.fournisseur_id && !_auditExists('fournisseurs',b.fournisseur_id)) A('majeur','Achats','Bon de commande → fournisseur fantôme','BC '+(b.numero||b.id)+' pointe vers un fournisseur inexistant.','fournisseurs');
+  });
+  (DATA.receptions||[]).forEach(function(r){
+    if(r.bc_id && !_auditExists('bons_commande',r.bc_id)) A('majeur','Achats','Réception → bon de commande fantôme','Réception '+(r.numero||r.id)+' pointe vers un BC inexistant.','bons_commande');
+    if(r.fournisseur_id && !_auditExists('fournisseurs',r.fournisseur_id)) A('mineur','Achats','Réception → fournisseur fantôme','Réception '+(r.numero||r.id)+' pointe vers un fournisseur inexistant.','fournisseurs');
+  });
+  (DATA.factures_fournisseur||[]).forEach(function(f){
+    if(f.reception_id && !_auditExists('receptions',f.reception_id)) A('majeur','Achats','Facture fournisseur → réception fantôme','Facture '+(f.numero||f.id)+' pointe vers une réception inexistante.','receptions');
+    if(f.fournisseur_id && !_auditExists('fournisseurs',f.fournisseur_id)) A('majeur','Achats','Facture fournisseur → fournisseur fantôme','Facture '+(f.numero||f.id)+' pointe vers un fournisseur inexistant.','fournisseurs');
+  });
+
+  /* ─── 8. CAISSE (sessions / mouvements) ─────────────────────── */
+  (DATA.caisse_mouvements||[]).forEach(function(m){
+    if(m.caisse_id && !_auditExists('caisses',m.caisse_id)) A('majeur','Caisse','Mouvement → caisse fantôme','Mouvement de caisse '+(m.id||'')+' pointe vers une caisse inexistante.','caisses');
+    if(m.session_id && !_auditExists('caisse_sessions',m.session_id)) A('majeur','Caisse','Mouvement → session fantôme','Mouvement de caisse '+(m.id||'')+' pointe vers une session inexistante.','caisse_sessions');
+  });
+  (DATA.caisse_sessions||[]).forEach(function(s){
+    if(s.caisse_id && !_auditExists('caisses',s.caisse_id)) A('majeur','Caisse','Session → caisse fantôme','Session '+(s.id||'')+' pointe vers une caisse inexistante.','caisses');
+    if(s.statut==='ouverte' && s.date_ouverture){
+      var jrs=Math.floor((Date.now()-new Date(s.date_ouverture).getTime())/86400000);
+      if(jrs>=2) A('mineur','Caisse','Session de caisse ouverte depuis longtemps','Session '+(s.id||'')+' ouverte depuis '+jrs+' jour(s) sans clôture — vérifier oubli de clôture.','caisse_sessions');
+    }
+  });
+
+  /* ─── 9. STOCK — sorties dépassant le disponible ────────────── */
+  (function(){
+    var mvts=(DATA.stock_mouvements||[]).slice().sort(function(a,b){
+      var d=(a.date||'').localeCompare(b.date||''); return d!==0?d:((a.created_at||'').localeCompare(b.created_at||''));
+    });
+    var qte={};
+    mvts.forEach(function(m){
+      var ak=(typeof stockKeyOf==='function')?stockKeyOf(m):(m.res_id||m.designation||''), dep=(typeof depotOf==='function')?depotOf(m):(m.depot_id||'dep_central');
+      var ck=ak+'@'+dep, q=parseFloat(m.qte)||0;
+      if(qte[ck]===undefined) qte[ck]=0;
+      if(m.type==='entree') qte[ck]+=q;
+      else if(m.type==='sortie' || m.type==='retour'){
+        if(q>qte[ck]+0.001) A('majeur','Stock','Sortie supérieure au stock disponible','Mouvement '+(m.id||'')+' du '+(m.date||'')+' ('+(m.designation||m.res_id||'')+') : sortie '+fmtQ(q)+' > disponible '+fmtQ(qte[ck])+' à cette date — stock masqué à zéro au lieu d\'être négatif.','stock-materiaux');
+        qte[ck]-=q; if(qte[ck]<0) qte[ck]=0;
+      } else if(m.type==='ajustement') qte[ck]=q;
+    });
+  })();
+
+  /* Doublon code tiers comptable (annuaire 411/401) */
+  _dups('tiers_comptables','code','Code tiers comptable');
 
   /* ─── SYNTHÈSE ─────────────────────────────────────────────── */
   _AUDIT_RESULTS={ anomalies:anomalies, date:new Date().toISOString(),
