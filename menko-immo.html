@@ -13210,6 +13210,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
             <span style="font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px;font-weight:700;margin-right:2px;">Saisie</span>
             <button class="btn btn-secondary btn-sm" onclick="brnAdd()">+ Borne</button>
             <label class="btn btn-secondary btn-sm" style="cursor:pointer;">📥 Import CSV<input type="file" accept=".csv,.txt" style="display:none;" onchange="brnImportBornesCSV(this)"></label>
+            <label class="btn btn-secondary btn-sm" style="cursor:pointer;">📐 Import DXF/DWG<input type="file" accept=".dxf,.dwg" style="display:none;" onchange="brnImportDXF(this)"></label>
             <label class="btn btn-primary btn-sm" for="parc-scan-dossier-input" style="cursor:pointer;background:var(--vert,#1A6B3A);border-color:var(--vert,#1A6B3A);">📄 Scanner dossier</label>
           </div>
           <div style="width:1px;background:var(--bord);align-self:stretch;"></div>
@@ -53179,6 +53180,176 @@ function brnImportBornesCSV(input){
     input.value='';
   };
   rd.readAsText(fl);
+}
+
+/* ══════════════════════════════════════════════
+   IMPORT DXF / DWG → bornes de la parcelle
+   DXF ASCII/binaire : parsé nativement (offline, zéro dépendance)
+   DWG binaire : converti en DXF via LibreDWG WASM (lazy-load CDN)
+   NB CI : géomètres (Covadis/AutoCAD) → exporter en DXF de préférence.
+           Coordonnées attendues en UTM 30N (WGS84) ou Abidjan/Clarke 1880.
+   ══════════════════════════════════════════════ */
+function _dxfParse(txt){
+  // DXF binaire → texte non exploitable ici (traité en amont). Parse ASCII.
+  var raw = txt.split(/\r\n|\r|\n/);
+  var codes = [];
+  for (var i=0; i+1 < raw.length; i+=2){
+    codes.push({ c: parseInt(raw[i].trim(),10), v: raw[i+1] });
+  }
+  var polylines = [], points = [], labels = [], lines = [];
+  var i2 = 0;
+  function findSection(){ // avance jusqu'à ENTITIES
+    for (; i2 < codes.length; i2++){
+      if (codes[i2].c===2 && (codes[i2].v||'').trim()==='ENTITIES'){ i2++; return true; }
+    }
+    return false;
+  }
+  if (!findSection()) return { polylines:polylines, points:points, labels:labels, lines:lines };
+  var cur = null, mode = null;
+  function flush(){ if(cur){ if(mode==='poly') polylines.push(cur); else if(mode==='line') lines.push(cur); } cur=null; mode=null; }
+  for (; i2 < codes.length; i2++){
+    var c = codes[i2].c, v = (codes[i2].v||'').trim();
+    if (c===0){
+      flush();
+      if (v==='LWPOLYLINE'||v==='POLYLINE'){ cur={ verts:[], elev:0, closed:false }; mode='poly'; }
+      else if (v==='POINT'){ cur={}; mode='point'; }
+      else if (v==='LINE'){ cur={}; mode='line'; }
+      else if (v==='TEXT'||v==='MTEXT'){ cur={}; mode='text'; }
+      else if (v==='VERTEX'){ /* rattaché à la POLYLINE courante via _vtmp */ mode='vertex'; }
+      else if (v==='ENDSEC'){ break; }
+      else { cur=null; mode=null; }
+      continue;
+    }
+    if (mode==='poly'){
+      if (c===38) cur.elev = parseFloat(v)||0;
+      else if (c===70) cur.closed = (parseInt(v,10)&1)===1;
+      else if (c===10) cur.verts.push({ x:parseFloat(v)||0, y:0, z:cur.elev||0 });
+      else if (c===20 && cur.verts.length) cur.verts[cur.verts.length-1].y = parseFloat(v)||0;
+    } else if (mode==='vertex'){
+      var last = polylines[polylines.length-1] || cur;
+      if (last && last.verts){
+        if (c===10) last.verts.push({ x:parseFloat(v)||0, y:0, z:0 });
+        else if (c===20 && last.verts.length) last.verts[last.verts.length-1].y = parseFloat(v)||0;
+        else if (c===30 && last.verts.length) last.verts[last.verts.length-1].z = parseFloat(v)||0;
+      }
+    } else if (mode==='point'){
+      if (c===10) cur.x=parseFloat(v)||0; else if (c===20) cur.y=parseFloat(v)||0; else if (c===30) cur.z=parseFloat(v)||0;
+      if (c===20){ points.push({ x:cur.x||0, y:parseFloat(v)||0, z:cur.z||0, xx:cur.x||0 }); }
+    } else if (mode==='line'){
+      if (c===10) cur.x1=parseFloat(v)||0; else if (c===20) cur.y1=parseFloat(v)||0;
+      else if (c===11) cur.x2=parseFloat(v)||0; else if (c===21) cur.y2=parseFloat(v)||0;
+    } else if (mode==='text'){
+      if (c===10) cur.x=parseFloat(v)||0; else if (c===20) cur.y=parseFloat(v)||0;
+      else if (c===1) cur.t=v.replace(/\\[A-Za-z0-9|]+;?/g,'').trim();
+      if (c===1 && cur.t) labels.push({ x:cur.x||0, y:cur.y||0, t:cur.t });
+    }
+  }
+  flush();
+  return { polylines:polylines, points:points, labels:labels, lines:lines };
+}
+
+function _dxfToBornes(parsed){
+  // Choisit la polyligne à plus grande surface comme contour parcellaire.
+  function area(vs){ if(vs.length<3) return 0; var s=0; for(var i=0;i<vs.length;i++){ var a=vs[i],b=vs[(i+1)%vs.length]; s+=a.x*b.y-b.x*a.y; } return Math.abs(s/2); }
+  var best=null, ba=0;
+  parsed.polylines.forEach(function(p){ var vs=(p.verts||[]).filter(function(v){return v.x||v.y;}); var a=area(vs); if(vs.length>=3 && a>ba){ ba=a; best=vs; } });
+  var pts=[];
+  if (best){ pts = best.slice(); }
+  else if (parsed.points.length>=3){ pts = parsed.points.map(function(p){ return { x:p.x, y:p.y, z:p.z||0 }; }); }
+  else if (parsed.lines.length>=3){
+    // reconstruit un contour à partir de segments jointifs
+    var segs = parsed.lines.slice(); var used=[false]; var ordered=[{x:segs[0].x1,y:segs[0].y1,z:0},{x:segs[0].x2,y:segs[0].y2,z:0}];
+    var eps=0.05, guard=0;
+    while(guard++ < segs.length*2){
+      var tail=ordered[ordered.length-1], found=false;
+      for(var s=1;s<segs.length;s++){ if(used[s]) continue;
+        if(Math.abs(segs[s].x1-tail.x)<eps&&Math.abs(segs[s].y1-tail.y)<eps){ ordered.push({x:segs[s].x2,y:segs[s].y2,z:0}); used[s]=true; found=true; break; }
+        if(Math.abs(segs[s].x2-tail.x)<eps&&Math.abs(segs[s].y2-tail.y)<eps){ ordered.push({x:segs[s].x1,y:segs[s].y1,z:0}); used[s]=true; found=true; break; }
+      }
+      if(!found) break;
+    }
+    pts = ordered;
+  }
+  if (!pts.length) return [];
+  // Nommage : label le plus proche (< 5 m), sinon B1..Bn
+  return pts.map(function(p,idx){
+    var nom='B'+(idx+1), best=6;
+    parsed.labels.forEach(function(l){ var d=Math.hypot(l.x-p.x, l.y-p.y); if(d<best){ best=d; nom=l.t; } });
+    return { nom:nom, x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+((p.z||0).toFixed(3)), angle:0, distance:0 };
+  });
+}
+
+function _dwgToDxf(buf){
+  // Conversion DWG→DXF via LibreDWG WASM (chargé à la volée). Nécessite réseau au 1er usage.
+  return new Promise(function(resolve, reject){
+    function run(){
+      try {
+        var Lib = window.LibreDwg && (window.LibreDwg.LibreDwg||window.LibreDwg);
+        var create = (window.LibreDwg && window.LibreDwg.createModule) || window.createLibreDwgModule || (window.LibreDwg && window.LibreDwg.create);
+        if (!create){ reject(new Error('lib')); return; }
+        create().then(function(mod){
+          try {
+            var ld = window.LibreDwg.LibreDwg.create ? window.LibreDwg.LibreDwg.create(mod) : new window.LibreDwg.LibreDwg(mod);
+            var dwg = ld.dwg_read_data(buf, 0);
+            var db = ld.convert(dwg);
+            var dxf = ld.dwg_write_dxf ? ld.dwg_write_dxf(dwg) : (db && db.dxf);
+            ld.dwg_free && ld.dwg_free(dwg);
+            if (dxf) resolve(typeof dxf==='string'?dxf:new TextDecoder().decode(dxf)); else reject(new Error('convert'));
+          } catch(e){ reject(e); }
+        }).catch(reject);
+      } catch(e){ reject(e); }
+    }
+    if (window.LibreDwg){ run(); return; }
+    var s=document.createElement('script');
+    s.src='https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web/dist/libredwg-web.umd.js';
+    s.onload=run;
+    s.onerror=function(){ reject(new Error('cdn')); };
+    document.head.appendChild(s);
+  });
+}
+
+function _dxfApplyBornes(bornes, srcLabel){
+  if (!bornes.length){ toast('Aucun contour/borne exploitable dans le fichier '+srcLabel+'.','error'); return; }
+  var mode = (_brnList && _brnList.length) ? confirm(
+    'Le tableau contient déjà '+_brnList.length+' borne(s).\n\n'
+    +'OK = Remplacer entièrement par le contour importé.\n'
+    +'Annuler = Ajouter à la suite.'
+  ) : true;
+  _brnList = mode ? bornes : (_brnList||[]).concat(bornes);
+  brnRender();
+  var a = brnArea();
+  toast(bornes.length+' borne(s) importée(s) depuis '+srcLabel+(a>0?' · superficie '+(a/10000).toFixed(4)+' ha':''),'success');
+}
+
+function brnImportDXF(input){
+  var fl = input.files && input.files[0]; if(!fl){ return; }
+  var name = fl.name || 'fichier';
+  var isDwg = /\.dwg$/i.test(name);
+  var rd = new FileReader();
+  rd.onload = function(ev){
+    var arr = new Uint8Array(ev.target.result);
+    var sig = '';
+    for (var k=0;k<Math.min(22,arr.length);k++) sig += String.fromCharCode(arr[k]);
+    var binDwg = /^AC10\d\d/.test(sig) || isDwg;
+    var binDxf = sig.indexOf('AutoCAD Binary DXF')===0;
+    try {
+      if (binDwg){
+        toast('DWG binaire détecté — conversion DXF en cours…','info');
+        _dwgToDxf(ev.target.result).then(function(dxf){
+          _dxfApplyBornes(_dxfToBornes(_dxfParse(dxf)), name);
+        }).catch(function(){
+          toast('Conversion DWG impossible (hors ligne ou format non pris en charge). Exportez le plan en DXF depuis AutoCAD/Covadis (Fichier → Enregistrer sous → DXF), puis réimportez.','error');
+        });
+      } else if (binDxf){
+        toast('DXF binaire non pris en charge — ré-exportez en DXF ASCII (R12/2018 ASCII).','error');
+      } else {
+        var txt = new TextDecoder('utf-8').decode(arr);
+        _dxfApplyBornes(_dxfToBornes(_dxfParse(txt)), name);
+      }
+    } catch(e){ toast('Lecture impossible : '+(e.message||e),'error'); }
+    input.value='';
+  };
+  rd.readAsArrayBuffer(fl);
 }
 
 /* ══════════════════════════════════════════════
