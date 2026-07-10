@@ -2793,6 +2793,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           </div>
           <div class="spacer"></div>
           <button class="btn btn-secondary" onclick="backfillEcrituresVersements()" title="Génère les écritures comptables manquantes pour les versements déjà saisis">🧾 Générer écritures manquantes</button>
+          <button class="btn btn-secondary" onclick="backfillVentesTerrains()" title="Comptabilise les ventes de parcelles (terrains vendus) sans écriture">🗺️ Comptabiliser ventes terrains</button>
           <button class="btn btn-primary" onclick="openPaiementModal()">+ Enregistrer un versement</button>
         </div>
 
@@ -2890,6 +2891,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <button class="tab-btn active" onclick="switchTab('lots','dashboard')">📊 Tableau de bord</button>
           <button class="tab-btn" onclick="switchTab('lots','grille')">🗂 Grille des Lots</button>
           <button class="tab-btn" onclick="switchTab('lots','terrains')">🌍 Terrains</button>
+          <button class="tab-btn" onclick="switchTab('lots','marge');renderMargeLots()">💰 Marge</button>
         </div>
 
         <div class="tab-pane active" id="tab-lots-dashboard">
@@ -2921,9 +2923,21 @@ button:focus-visible, input:focus-visible, select:focus-visible {
             </div>
           </div>
         </div>
+        <div class="tab-pane" id="tab-lots-marge">
+          <div style="margin-bottom:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+            <select class="filter-select" id="marge-nature" onchange="renderMargeLots()">
+              <option value="terrain">🗺️ Terrains (parcelles)</option>
+              <option value="all">Tous les lots</option>
+            </select>
+            <select class="filter-select" id="marge-scope" onchange="renderMargeLots()">
+              <option value="all">Portefeuille (tous statuts)</option>
+              <option value="vendu">Réalisé (vendus)</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" onclick="exportMargeCSV()">⬇ Export CSV</button>
+          </div>
+          <div id="lots-marge"></div>
+        </div>
       </div>
-
-      <!-- ── COMPTABILITÉ SYSCOHADA ─────────────────── -->
       <div class="page" id="page-comptabilite">
         <div class="page-header">
           <div>
@@ -2950,6 +2964,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <button class="tab-btn" onclick="switchTab('compta','grandlivre')">📚 Grand Livre</button>
           <button class="tab-btn" onclick="switchTab('compta','rapprochement')">🏦 Rapprochement Bancaire</button>
           <button class="tab-btn" onclick="switchTab('compta','cloture');renderClotureFEC()">🔒 Clôture & FEC</button>
+          <button class="tab-btn" onclick="switchTab('compta','periodique')">📅 État périodique</button>
         </div>
 
         <!-- Journal -->
@@ -3744,6 +3759,25 @@ button:focus-visible, input:focus-visible, select:focus-visible {
         <!-- Clôture & FEC -->
         <div class="tab-pane" id="tab-compta-cloture">
           <div id="cloture-fec-content"></div>
+        </div>
+        <div class="tab-pane" id="tab-compta-periodique">
+          <div class="card" style="margin-bottom:12px;">
+            <div class="card-title">📅 État périodique — Caisse & Comptabilité</div>
+            <div style="font-size:12px;color:var(--blanc-dim);margin-bottom:12px;">Période libre (date début → date fin). Génère : Caisse/Trésorerie, Journal des mouvements, Grand Livre, Balance, Compte de résultat et Bilan de fin de période.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+              <div class="form-group" style="margin:0;"><label>Date début</label><input type="date" class="form-control" id="ep-d1" style="min-width:150px;"></div>
+              <div class="form-group" style="margin:0;"><label>Date fin</label><input type="date" class="form-control" id="ep-d2" style="min-width:150px;"></div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button class="btn btn-secondary btn-sm" onclick="epPreset('mois')">Ce mois</button>
+                <button class="btn btn-secondary btn-sm" onclick="epPreset('trim')">Ce trimestre</button>
+                <button class="btn btn-secondary btn-sm" onclick="epPreset('annee')">Cet exercice</button>
+              </div>
+              <button class="btn btn-primary" onclick="genererEtatPeriodique()">⚙️ Générer</button>
+              <button class="btn btn-secondary" onclick="epImprimer()">🖨️ Imprimer / PDF</button>
+              <button class="btn btn-secondary" onclick="epExportCSV()">⬇ Export CSV</button>
+            </div>
+          </div>
+          <div id="ep-content"></div>
         </div>
       </div>
 
@@ -5673,6 +5707,22 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
               <div class="form-group"><label>Taux Impôt sur les Sociétés (%)</label><input type="number" step="0.1" class="form-control" id="cd-taux-is" placeholder="25"></div>
               <div class="form-group"></div>
+              <div class="form-group"></div>
+            </div>
+
+            <div class="form-section-title" style="margin-top:18px;">🗺️ Lotissement — Vente de parcelles (terrains)</div>
+            <div style="font-size:12px;color:var(--blanc-dim);margin:6px 0 12px;line-height:1.6;">
+              À la <strong>mise en stock</strong> d'un lot terrain (acquisition + viabilisation) : <strong>D 601 Achat / C 401 ou 521</strong> puis <strong>D 335 Stock / C 6031 Variation</strong>. À la <strong>vente</strong> : <strong>D 4111 / C 702 (+ 4431 TVA)</strong> puis déstockage <strong>D 6031 / C 335</strong>. Actif uniquement si un compte de stock est renseigné.
+            </div>
+            <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;">
+              <div class="form-group"><label>Terrain — Produit (vente)</label><input class="form-control" id="cd-terrain-produit" placeholder="702"></div>
+              <div class="form-group"><label>Terrain — TVA collectée (viabilisé)</label><input class="form-control" id="cd-terrain-tva" placeholder="4431"></div>
+              <div class="form-group"><label>Taux TVA terrain (%)</label><input type="number" step="0.1" class="form-control" id="cd-terrain-taux-tva" placeholder="18"></div>
+              <div class="form-group"><label>Terrain — Stock (335)<br><span style="font-size:10px;color:var(--blanc-dim);">vide = comptabilité stock désactivée</span></label><input class="form-control" id="cd-terrain-stock" placeholder="ex : 335"></div>
+              <div class="form-group"><label>Terrain — Variation de stock</label><input class="form-control" id="cd-terrain-variation" placeholder="6031"></div>
+              <div class="form-group"></div>
+              <div class="form-group"><label>Terrain — Achat / charge (601)</label><input class="form-control" id="cd-terrain-achat" placeholder="601"></div>
+              <div class="form-group"><label>Terrain — Contrepartie acquisition<br><span style="font-size:10px;color:var(--blanc-dim);">401 fournisseur (à crédit) ou 521 banque (comptant)</span></label><input class="form-control" id="cd-terrain-contrepartie" placeholder="401"></div>
               <div class="form-group"></div>
             </div>
             <div style="margin-top:14px;"><button class="btn btn-primary" onclick="saveComptesDefaut()">💾 Enregistrer les comptes par défaut</button></div>
@@ -10554,6 +10604,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
               <div class="table-wrap"><table><thead><tr><th>Nom</th><th>Contact</th><th>Qualité</th><th></th></tr></thead><tbody id="af-tbody-prop"></tbody></table></div>
               <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0 6px;"><strong>Documents disponibles</strong><button class="btn btn-secondary btn-sm" onclick="afAddDocument()">+ Document</button></div>
               <div class="table-wrap"><table><thead><tr><th>Document</th><th>Disponible</th><th></th></tr></thead><tbody id="af-tbody-doc"></tbody></table></div>
+              <div style="margin-top:14px;border-top:1px solid var(--bord);padding-top:10px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><strong>📎 Pièces jointes — Prospection</strong><button class="btn btn-secondary btn-sm" onclick="afTriggerDocUpload('prospection')">+ Téléverser</button></div>
+                <div id="af-docs-prospection" style="font-size:12px;color:var(--blanc-dim);"></div>
+              </div>
             </div>
 
             <!-- P2 Négociation -->
@@ -10563,6 +10617,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
               <div class="form-grid" style="margin-top:12px;">
                 <div class="form-group span-2"><label>Proposition de clé de répartition</label><input id="af-prop-cle" class="form-control" placeholder="Prop. 40% / Aménageur 35% / Financier 25%"></div>
                 <div class="form-group"><label><input type="checkbox" id="af-accord-principe"> Accord de principe validé</label></div>
+              </div>
+              <div style="margin-top:14px;border-top:1px solid var(--bord);padding-top:10px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><strong>📎 Pièces jointes — Négociation</strong><button class="btn btn-secondary btn-sm" onclick="afTriggerDocUpload('negociation')">+ Téléverser</button></div>
+                <div id="af-docs-negociation" style="font-size:12px;color:var(--blanc-dim);"></div>
               </div>
             </div>
 
@@ -10574,6 +10632,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
               </div>
               <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0 6px;"><strong>Litiges éventuels</strong><button class="btn btn-secondary btn-sm" onclick="afAddLitige()">+ Litige</button></div>
               <div class="table-wrap"><table><thead><tr><th>Objet</th><th>Statut</th><th></th></tr></thead><tbody id="af-tbody-lit"></tbody></table></div>
+              <div style="margin-top:14px;border-top:1px solid var(--bord);padding-top:10px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><strong>📎 Pièces jointes — Juridique</strong><button class="btn btn-secondary btn-sm" onclick="afTriggerDocUpload('juridique')">+ Téléverser</button></div>
+                <div id="af-docs-juridique" style="font-size:12px;color:var(--blanc-dim);"></div>
+              </div>
             </div>
 
             <!-- P4 Administratif -->
@@ -10581,6 +10643,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
               <div style="display:flex;justify-content:space-between;align-items:center;margin:6px 0;"><strong>Démarches ministérielles</strong><div style="display:flex;gap:8px;"><button class="btn btn-secondary btn-sm" onclick="afChargerProcedureType()">📋 Procédure-type CI</button><button class="btn btn-secondary btn-sm" onclick="afAddDemarche()">+ Démarche</button></div></div>
               <div class="table-wrap"><table><thead><tr><th>Étape</th><th>Statut</th><th>Dépôt</th><th>Échéance</th><th></th></tr></thead><tbody id="af-tbody-dem"></tbody></table></div>
               <div id="af-admin-alertes" style="margin-top:10px;"></div>
+              <div style="margin-top:14px;border-top:1px solid var(--bord);padding-top:10px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><strong>📎 Pièces jointes — Administratif</strong><button class="btn btn-secondary btn-sm" onclick="afTriggerDocUpload('admin')">+ Téléverser</button></div>
+                <div id="af-docs-admin" style="font-size:12px;color:var(--blanc-dim);"></div>
+              </div>
             </div>
 
             <!-- P5 Aménagement -->
@@ -10588,6 +10654,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
               <div style="display:flex;justify-content:space-between;align-items:center;margin:6px 0;"><strong>Budget d'aménagement (VRD)</strong><button class="btn btn-secondary btn-sm" onclick="afAddPosteVrd()">+ Poste</button></div>
               <div class="table-wrap"><table><thead><tr><th>Poste</th><th style="text-align:right;">Budget (FCFA)</th><th style="text-align:right;">Avancement %</th><th></th></tr></thead><tbody id="af-tbody-vrd"></tbody></table></div>
               <div id="af-vrd-synth" class="card" style="margin-top:12px;background:var(--card2);"></div>
+              <div style="margin-top:14px;border-top:1px solid var(--bord);padding-top:10px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><strong>📎 Pièces jointes — Aménagement</strong><button class="btn btn-secondary btn-sm" onclick="afTriggerDocUpload('amenagement')">+ Téléverser</button></div>
+                <div id="af-docs-amenagement" style="font-size:12px;color:var(--blanc-dim);"></div>
+              </div>
             </div>
 
             <!-- P6 Répartition -->
@@ -10601,6 +10671,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
               </div>
               <div id="af-repartition-res" class="card" style="margin-top:12px;background:var(--card2);"></div>
               <div id="af-cessible-jauge" style="margin-top:12px;"></div>
+              <div style="margin-top:14px;border-top:1px solid var(--bord);padding-top:10px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><strong>📎 Pièces jointes — Répartition</strong><button class="btn btn-secondary btn-sm" onclick="afTriggerDocUpload('repartition')">+ Téléverser</button></div>
+                <div id="af-docs-repartition" style="font-size:12px;color:var(--blanc-dim);"></div>
+              </div>
             </div>
 
             <!-- P7 Commercialisation -->
@@ -10613,8 +10687,13 @@ button:focus-visible, input:focus-visible, select:focus-visible {
               </div>
               <div style="margin-top:10px;"><button class="btn btn-secondary btn-sm" onclick="cederLotsPartEntreprise()">💰 Céder des lots (part entreprise)</button></div>
               <div id="af-commercial-res" class="card" style="margin-top:12px;background:var(--card2);"></div>
+              <div style="margin-top:14px;border-top:1px solid var(--bord);padding-top:10px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><strong>📎 Pièces jointes — Commercialisation</strong><button class="btn btn-secondary btn-sm" onclick="afTriggerDocUpload('commercialisation')">+ Téléverser</button></div>
+                <div id="af-docs-commercialisation" style="font-size:12px;color:var(--blanc-dim);"></div>
+              </div>
             </div>
           </div>
+          <input type="file" id="af-doc-file-input" style="display:none;" onchange="afHandleDocFile(this)">
           <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal('modal-af-operation')">Annuler</button>
             <button class="btn btn-secondary" onclick="afTransfererFoncier()">📍 → Portefeuille Foncier</button>
@@ -11360,6 +11439,15 @@ button:focus-visible, input:focus-visible, select:focus-visible {
           <input type="number" class="form-control" id="p-nb-lots" value="0">
         </div>
         <div class="form-group">
+          <label>Nature du programme</label>
+          <select class="form-control" id="p-nature">
+            <option value="construction">🏠 Construction (villas / appartements)</option>
+            <option value="lotissement">🗺️ Lotissement (vente de parcelles)</option>
+            <option value="mixte">🏘️ Mixte (construction + parcelles)</option>
+          </select>
+          <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">Lotissement / Mixte : les lots peuvent être des <strong>terrains nus viabilisés</strong>, tarifés au m² ou au forfait.</div>
+        </div>
+        <div class="form-group">
           <label>Statut</label>
           <select class="form-control" id="p-statut">
             <option value="etude">En étude</option>
@@ -12056,7 +12144,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
       <div class="form-grid">
         <div class="form-group">
           <label>Programme *</label>
-          <select class="form-control" id="l-programme" onchange="populateTypeLogementOptions()">
+          <select class="form-control" id="l-programme" onchange="populateTypeLogementOptions();lotApplyProgrammeNature()">
             <option value="">— Choisir —</option>
           </select>
         </div>
@@ -12084,19 +12172,50 @@ button:focus-visible, input:focus-visible, select:focus-visible {
         </div>
         <div class="form-group">
           <label>Surface (m²)</label>
-          <input type="number" class="form-control" id="l-surface">
+          <input type="number" class="form-control" id="l-surface" oninput="lotRecalcPrixM2();lotRecalcCoutM2()">
         </div>
         <div class="form-group">
           <label>Nombre de pièces</label>
           <input type="number" class="form-control" id="l-pieces">
         </div>
         <div class="form-group">
+          <label>Mode de prix</label>
+          <select class="form-control" id="l-prix-mode" onchange="lotRecalcPrixM2()">
+            <option value="forfait">Forfait (prix global)</option>
+            <option value="m2">Au m² (prix unitaire × surface)</option>
+          </select>
+        </div>
+        <div class="form-group" id="l-grp-prix-m2" style="display:none;">
+          <label>Prix unitaire (FCFA / m²)</label>
+          <input type="number" class="form-control" id="l-prix-m2" oninput="lotRecalcPrixM2()">
+        </div>
+        <div class="form-group">
           <label>Prix de vente (FCFA)</label>
           <input type="number" class="form-control" id="l-prix">
+          <div id="l-prix-note" style="font-size:11px;color:var(--blanc-dim);margin-top:4px;"></div>
+        </div>
+        <div class="form-group span-2" id="l-grp-terrain-tva" style="display:none;">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="l-terrain-tva" style="width:auto;accent-color:#B87333;">
+            <span>Terrain à bâtir <strong>viabilisé</strong> → soumis à <strong>TVA 18 %</strong></span>
+          </label>
+          <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">Décoché = terrain nu non aménagé (hors champ / exonéré). Ce choix conditionne l'écriture de vente et la déclaration TVA.</div>
+        </div>
+        <div class="form-group">
+          <label>Mode coût de revient</label>
+          <select class="form-control" id="l-cout-mode" onchange="lotRecalcCoutM2()">
+            <option value="forfait">Forfait (coût global)</option>
+            <option value="m2">Au m² (foncier + viabilisation)</option>
+          </select>
+        </div>
+        <div class="form-group" id="l-grp-cout-m2" style="display:none;">
+          <label>Coût de revient (FCFA / m²)</label>
+          <input type="number" class="form-control" id="l-cout-m2" oninput="lotRecalcCoutM2()">
         </div>
         <div class="form-group">
           <label>Coût de revient (FCFA)</label>
           <input type="number" class="form-control" id="l-cout-revient">
+          <div id="l-cout-note" style="font-size:11px;color:var(--blanc-dim);margin-top:4px;"></div>
         </div>
         <div class="form-group">
           <label>Standing</label>
@@ -12115,9 +12234,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
         </div>
         <div class="form-group">
           <label>Nature du lot</label>
-          <select class="form-control" id="l-nature">
+          <select class="form-control" id="l-nature" onchange="lotNatureUI()">
             <option value="villa">Villa / plain-pied (1 lot = 1 unité)</option>
             <option value="immeuble">Immeuble (plusieurs appartements)</option>
+            <option value="terrain">🗺️ Terrain nu / parcelle (vente foncière)</option>
           </select>
         </div>
         <div class="form-group">
@@ -19133,6 +19253,11 @@ async function majStatutLotClient(clientId) {
     await dbPut('lots', lot);
     if (typeof syncToSupabase === 'function') syncToSupabase('pi_lots', lot);
   }
+  /* Lotissement : reconnaissance comptable du produit à la vente d'un terrain */
+  if (lot.nature === 'terrain') {
+    if (nouveau === 'vendu') { await comptabiliserVenteTerrain(lot); }
+    else { await supprimerVenteTerrain(lot.id); }
+  }
   return nouveau;
 }
 
@@ -20166,6 +20291,154 @@ async function supprimerEcritureVersement(versementId) {
   }
 }
 
+/* ══════════════════════════════════════════════════════════════════
+   VENTE DE PARCELLE (lot « terrain nu ») — routage SYSCOHADA lotisseur
+   Reconnaissance du produit à la vente (lot passé « vendu ») :
+     D 4111 (acquéreur, TTC)
+     C 702  (produit, HT)
+     C 4431 (TVA collectée)          ← si terrain viabilisé (à bâtir)
+   Déstockage (si compte stock paramétré + coût de revient saisi) :
+     D 6031 (variation de stock)
+     C 335  (stock terrains)
+   Idempotent (id ecr_vente_terrain_<lotId>).
+   ══════════════════════════════════════════════════════════════════ */
+async function comptabiliserVenteTerrain(lot) {
+  if (!lot || lot.nature !== 'terrain') return null;
+  var prix = parseFloat(lot.prix) || 0;
+  if (prix <= 0) return null;
+  var cd = (DATA.params && DATA.params.comptes_defaut) || {};
+  var cClient  = cd.client_lots || '4111';
+  var cProduit = cd.terrain_produit || '702';
+  var cTva     = cd.terrain_tva_collectee || '4431';
+  var cStock   = cd.terrain_stock || '';
+  var cVar     = cd.terrain_variation || '6031';
+  var taux     = (cd.terrain_taux_tva != null ? cd.terrain_taux_tva : 18) / 100;
+
+  var viab = !!lot.terrain_tva;
+  var ttc = prix, ht = prix, tva = 0;
+  if (viab && taux > 0) { ht = Math.round(prix / (1 + taux)); tva = ttc - ht; }
+
+  var cli = (DATA.clients || []).find(function(c){ return c.lot_id === lot.id; });
+  var nomCli = cli ? ((cli.nom || '') + ' ' + (cli.prenoms || '')).trim() : '';
+  var prog = (DATA.programmes || []).find(function(p){ return p.id === lot.programme_id; });
+  var lib = 'Vente parcelle ' + (lot.numero || '') + (prog ? ' — ' + prog.nom : '') + (nomCli ? ' (' + nomCli + ')' : '');
+
+  var lignes = [];
+  lignes.push({ compte: cClient, sens: 'D', montant: ttc, libelle: lib });
+  lignes.push({ compte: cProduit, sens: 'C', montant: ht, libelle: lib + (viab ? ' (HT)' : '') });
+  if (tva > 0) lignes.push({ compte: cTva, sens: 'C', montant: tva, libelle: 'TVA 18% — ' + lib });
+
+  var cout = parseFloat(lot.cout_revient) || 0;
+  if (cStock && cout > 0) {
+    lignes.push({ compte: cVar, sens: 'D', montant: cout, libelle: 'Déstockage — ' + lib });
+    lignes.push({ compte: cStock, sens: 'C', montant: cout, libelle: 'Sortie stock terrain — ' + lib });
+  }
+
+  var ecr = {
+    id: 'ecr_vente_terrain_' + lot.id,
+    ref: 'VT-' + (lot.numero || lot.id),
+    date: lot.date_vente || today(),
+    piece: 'VT-' + (lot.numero || ''),
+    libelle: lib,
+    lignes: lignes,
+    compte_debit: cClient,
+    compte_credit: cProduit,
+    montant: ttc,
+    type: 'produit',
+    journal: 'VE',
+    _auto: 'vente_terrain',
+    created_at: today()
+  };
+  var idx = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; });
+  if (idx >= 0) DATA.ecritures[idx] = ecr; else DATA.ecritures.push(ecr);
+  await dbPut('ecritures', ecr);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecr);
+  if (typeof buildBalance === 'function') buildBalance();
+  if (typeof buildGrandLivre === 'function') buildGrandLivre();
+  return ecr;
+}
+
+async function supprimerVenteTerrain(lotId) {
+  var ecrId = 'ecr_vente_terrain_' + lotId;
+  if (DATA.ecritures.some(function(e){ return e.id === ecrId; })) {
+    await deleteRecord('ecritures', ecrId, { skipIntegrity: true });
+  }
+}
+
+/* ── ACQUISITION + ENTRÉE EN STOCK d'un lot terrain (inventaire permanent) ──
+   À la mise en stock (coût = foncier + viabilisation) :
+     D 601 Achat terrain ....... coût     C 401/521 Contrepartie ... coût
+     D 335 Stock terrains ...... coût     C 6031 Variation ......... coût
+   À la vente, comptabiliserVenteTerrain déstocke  D 6031 / C 335  → COGS reconnu.
+   La contrepartie 401 (dette fournisseur) se solde via les flux de trésorerie
+   existants ; choisir 521 pour un achat comptant.
+   Sans compte de stock paramétré : ignoré (pas d'imputation hasardeuse). */
+async function comptabiliserEntreeStockTerrain(lot) {
+  if (!lot || lot.nature !== 'terrain') return null;
+  var cd = (DATA.params && DATA.params.comptes_defaut) || {};
+  var cStock = cd.terrain_stock || '';
+  var cVar   = cd.terrain_variation || '6031';
+  var cAchat = cd.terrain_achat || '601';
+  var cContre= cd.terrain_contrepartie || '401';
+  var cout = parseFloat(lot.cout_revient) || 0;
+  var ecrId = 'ecr_stock_terrain_' + lot.id;
+  if (!cStock || cout <= 0) { /* rien à stocker → retirer une éventuelle écriture obsolète */
+    if (DATA.ecritures.some(function(e){ return e.id === ecrId; })) await deleteRecord('ecritures', ecrId, { skipIntegrity: true });
+    return null;
+  }
+  var prog = (DATA.programmes || []).find(function(p){ return p.id === lot.programme_id; });
+  var lib = 'Acquisition + mise en stock parcelle ' + (lot.numero || '') + (prog ? ' — ' + prog.nom : '');
+  var ecr = {
+    id: ecrId,
+    ref: 'ST-' + (lot.numero || lot.id),
+    date: lot.date_acquisition || lot.created_at || today(),
+    piece: 'ST-' + (lot.numero || ''),
+    libelle: lib,
+    lignes: [
+      { compte: cAchat,  sens: 'D', montant: cout, libelle: 'Achat terrain — ' + lib },
+      { compte: cContre, sens: 'C', montant: cout, libelle: 'Contrepartie acquisition — ' + lib },
+      { compte: cStock,  sens: 'D', montant: cout, libelle: 'Entrée stock — ' + lib },
+      { compte: cVar,    sens: 'C', montant: cout, libelle: 'Mise en stock — ' + lib }
+    ],
+    compte_debit: cStock, compte_credit: cContre, montant: cout,
+    type: 'actif', journal: 'ST', _auto: 'stock_terrain', created_at: today()
+  };
+  var idx = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; });
+  if (idx >= 0) DATA.ecritures[idx] = ecr; else DATA.ecritures.push(ecr);
+  await dbPut('ecritures', ecr);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecr);
+  if (typeof buildBalance === 'function') buildBalance();
+  if (typeof buildGrandLivre === 'function') buildGrandLivre();
+  return ecr;
+}
+
+/* Rattrapage : entrées en stock + écritures de vente pour les terrains */
+async function backfillVentesTerrains() {
+  var cd = (DATA.params && DATA.params.comptes_defaut) || {};
+  var terrains = (DATA.lots || []).filter(function(l){ return l.nature === 'terrain'; });
+  var ventesManq = terrains.filter(function(l){
+    return l.statut === 'vendu' && (parseFloat(l.prix)||0) > 0
+      && !DATA.ecritures.some(function(e){ return e.id === 'ecr_vente_terrain_' + l.id; });
+  });
+  var stockManq = cd.terrain_stock ? terrains.filter(function(l){
+    return (parseFloat(l.cout_revient)||0) > 0
+      && !DATA.ecritures.some(function(e){ return e.id === 'ecr_stock_terrain_' + l.id; });
+  }) : [];
+  if (!ventesManq.length && !stockManq.length) { toast('Terrains déjà à jour — rien à comptabiliser.', 'success'); return; }
+  var msg = '';
+  if (stockManq.length) msg += stockManq.length + ' entrée(s) en stock (335/6031)\n';
+  if (ventesManq.length) msg += ventesManq.length + ' vente(s) (4111/702' + (cd.terrain_stock ? ' + déstockage' : '') + ')\n';
+  if (!cd.terrain_stock) msg += '\n⚠️ Aucun compte de stock paramétré : entrées/déstockage ignorés, seul le produit est reconnu.';
+  if (!confirm('À comptabiliser :\n' + msg + '\nContinuer ?')) return;
+  var ns = 0, nv = 0;
+  for (var i = 0; i < stockManq.length; i++) { if (await comptabiliserEntreeStockTerrain(stockManq[i])) ns++; }
+  for (var j = 0; j < ventesManq.length; j++) { if (await comptabiliserVenteTerrain(ventesManq[j])) nv++; }
+  if (typeof buildBalance === 'function') buildBalance();
+  if (typeof buildBilan === 'function') buildBilan();
+  if (typeof filterEcritures === 'function') filterEcritures();
+  toast(ns + ' entrée(s) stock · ' + nv + ' vente(s) terrain comptabilisée(s).', 'success');
+}
+
 /* ── RATTRAPAGE : génère les écritures manquantes pour les versements saisis AVANT ce correctif ── */
 async function backfillEcrituresVersements() {
   var manquants = DATA.versements.filter(function(v) {
@@ -20416,6 +20689,7 @@ function openProgrammeModal(id) {
     document.getElementById('p-date-lancement').value = p.dateLancement || p.date_lancement || '';
     document.getElementById('p-date-livraison').value = p.dateLivraison || p.date_livraison || '';
     setSelectValue('p-statut', p.statut);
+    setSelectValue('p-nature', p.nature || 'construction');
     setSelectValue('p-parcelle-id', p.parcelle_id || '');
     document.getElementById('p-pct-honoraires-tech').value = p.pct_honoraires_tech || 0;
     document.getElementById('p-pct-aleas').value = p.pct_aleas || 0;
@@ -20467,6 +20741,7 @@ function clearProgrammeForm() {
   document.getElementById('p-nb-lots').value = '0';
   var _h=document.getElementById('p-pct-honoraires-tech'); if(_h)_h.value='0';
   var _a=document.getElementById('p-pct-aleas'); if(_a)_a.value='0';
+  var _n=document.getElementById('p-nature'); if(_n)_n.value='construction';
 }
 
 async function saveProgramme() {
@@ -20479,6 +20754,7 @@ async function saveProgramme() {
     localisation: document.getElementById('p-localisation').value,
     nb_lots: parseInt(document.getElementById('p-nb-lots').value) || 0,
     statut: document.getElementById('p-statut').value,
+    nature: (document.getElementById('p-nature')||{}).value || 'construction',
     date_lancement: document.getElementById('p-date-lancement').value,
     date_livraison: document.getElementById('p-date-livraison').value,
     parcelle_id: document.getElementById('p-parcelle-id').value,
@@ -20543,6 +20819,7 @@ function renderProgrammes() {
       + '<div style="flex:1;"><h3 style="font-family:var(--font-head);color:var(--or);font-size:18px;">' + p.nom + '</h3>'
       + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;">'
       + '<span style="font-size:12px;color:var(--blanc-dim);">📍 ' + (p.localisation || 'N/A') + '</span>'
+      + (function(){ var n=p.nature||'construction'; var lbl={construction:'🏠 Construction',lotissement:'🗺️ Lotissement',mixte:'🏘️ Mixte'}[n]; var col={construction:'var(--bleu)',lotissement:'var(--vert)',mixte:'var(--or)'}[n]; return '<span class="badge" style="font-size:10px;background:var(--card2);color:'+col+';border:1px solid '+col+';">'+lbl+'</span>'; })()
       + (nbModeles ? '<span style="font-size:11px;color:var(--bleu);">🏠 ' + nbModeles + ' type(s)</span>' : '')
       + '</div></div>'
       + '<span class="badge ' + (statutColors[p.statut] || 'badge-bleu') + '">' + (statutLabels[p.statut] || p.statut) + '</span>'
@@ -21600,6 +21877,10 @@ async function deleteLot(id) {
   DATA.lots = DATA.lots.filter(function(x){ return x.id!==lid; });
   if (typeof deleteRecord==='function') await deleteRecord('lots', lid);
   else { await dbDelete('lots', lid); if (typeof deleteFromSupabase==='function') deleteFromSupabase('pi_lots', lid); }
+  /* écritures auto liées (entrée stock + vente terrain) */
+  ['ecr_stock_terrain_'+lid, 'ecr_vente_terrain_'+lid].forEach(async function(eid){
+    if (DATA.ecritures.some(function(e){ return e.id===eid; })) { try { await deleteRecord('ecritures', eid, { skipIntegrity: true }); } catch(e){} }
+  });
   /* libère les parcelles de morcellement liées */
   var liees = (DATA.parcelles_morcellement||[]).filter(function(pa){ return pa.lot_id===lid; });
   for (var i=0;i<liees.length;i++){ liees[i].lot_id=null; await dbPut('parcelles_morcellement', liees[i]); if(typeof syncToSupabase==='function') syncToSupabase('pi_parcelles_morcellement', liees[i]); }
@@ -21631,12 +21912,18 @@ function openLotModal(id) {
     document.getElementById('l-surface').value = l.surface || '';
     document.getElementById('l-pieces').value = l.pieces || '';
     document.getElementById('l-prix').value = l.prix || '';
+    setSelectValue('l-prix-mode', l.prix_mode || 'forfait');
+    document.getElementById('l-prix-m2').value = l.prix_m2 || '';
+    var _tv=document.getElementById('l-terrain-tva'); if(_tv) _tv.checked = !!l.terrain_tva;
     document.getElementById('l-cout-revient').value = l.cout_revient || '';
+    setSelectValue('l-cout-mode', l.cout_mode || 'forfait');
+    document.getElementById('l-cout-m2').value = l.cout_m2 || '';
     document.getElementById('l-notes').value = l.notes || '';
     setSelectValue('l-standing', l.standing);
     setSelectValue('l-statut', l.statut);
     setSelectValue('l-nature', l.nature || 'villa');
     setSelectValue('l-mode-livraison', l.mode_livraison || 'gros_oeuvre');
+    lotNatureUI(); lotRecalcPrixM2(); lotRecalcCoutM2();
   } else {
     document.getElementById('modal-lot-title').textContent = 'Nouveau Lot';
     populateTypeLogementOptions();
@@ -21645,11 +21932,71 @@ function openLotModal(id) {
 }
 
 function clearLotForm() {
-  ['l-numero','l-ilot','l-surface','l-pieces','l-prix','l-cout-revient','l-notes'].forEach(function(id) {
+  ['l-numero','l-ilot','l-surface','l-pieces','l-prix','l-prix-m2','l-cout-revient','l-cout-m2','l-notes'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.value = '';
   });
   document.getElementById('l-mode-livraison').value = 'gros_oeuvre';
+  var pm=document.getElementById('l-prix-mode'); if(pm) pm.value='forfait';
+  var cmo=document.getElementById('l-cout-mode'); if(cmo) cmo.value='forfait';
+  var tv=document.getElementById('l-terrain-tva'); if(tv) tv.checked=false;
+  lotNatureUI(); lotRecalcPrixM2(); lotRecalcCoutM2();
+}
+
+/* Affiche/masque le bloc TVA terrain selon la nature du lot */
+function lotNatureUI() {
+  var nat = (document.getElementById('l-nature')||{}).value || 'villa';
+  var isTerrain = nat==='terrain';
+  var g = document.getElementById('l-grp-terrain-tva'); if(g) g.style.display = isTerrain ? '' : 'none';
+}
+
+/* Applique la nature du programme sélectionné : lotissement → terrain nu par défaut */
+function lotApplyProgrammeNature() {
+  var prog = (DATA.programmes||[]).find(function(p){ return p.id===(document.getElementById('l-programme')||{}).value; });
+  if (!prog) return;
+  if ((prog.nature==='lotissement') && !APP.editingId) {
+    setSelectValue('l-nature','terrain');
+    var pm=document.getElementById('l-prix-mode'); if(pm) pm.value='m2';
+    lotNatureUI(); lotRecalcPrixM2();
+  }
+}
+
+/* Prix au m² : prix = prix_m2 × surface. Sinon forfait libre. */
+function lotRecalcPrixM2() {
+  var mode = (document.getElementById('l-prix-mode')||{}).value || 'forfait';
+  var grp = document.getElementById('l-grp-prix-m2');
+  var note = document.getElementById('l-prix-note');
+  var prixEl = document.getElementById('l-prix');
+  if (grp) grp.style.display = (mode==='m2') ? '' : 'none';
+  if (mode==='m2') {
+    var pm = parseFloat((document.getElementById('l-prix-m2')||{}).value)||0;
+    var sf = parseFloat((document.getElementById('l-surface')||{}).value)||0;
+    var total = Math.round(pm*sf);
+    if (prixEl) { prixEl.value = total || ''; prixEl.readOnly = true; prixEl.style.opacity='.75'; }
+    if (note) note.textContent = (pm&&sf) ? (fmtF(pm)+' F/m² × '+fmtF(sf)+' m² = '+fmtF(total)+' FCFA') : 'Saisissez prix/m² et surface.';
+  } else {
+    if (prixEl) { prixEl.readOnly = false; prixEl.style.opacity='1'; }
+    if (note) note.textContent = '';
+  }
+}
+
+/* Coût de revient au m² : coût = coût_m2 × surface (foncier + viabilisation). */
+function lotRecalcCoutM2() {
+  var mode = (document.getElementById('l-cout-mode')||{}).value || 'forfait';
+  var grp = document.getElementById('l-grp-cout-m2');
+  var note = document.getElementById('l-cout-note');
+  var el = document.getElementById('l-cout-revient');
+  if (grp) grp.style.display = (mode==='m2') ? '' : 'none';
+  if (mode==='m2') {
+    var cm = parseFloat((document.getElementById('l-cout-m2')||{}).value)||0;
+    var sf = parseFloat((document.getElementById('l-surface')||{}).value)||0;
+    var total = Math.round(cm*sf);
+    if (el) { el.value = total || ''; el.readOnly = true; el.style.opacity='.75'; }
+    if (note) note.textContent = (cm&&sf) ? (fmtF(cm)+' F/m² × '+fmtF(sf)+' m² = '+fmtF(total)+' FCFA') : 'Saisissez coût/m² et surface.';
+  } else {
+    if (el) { el.readOnly = false; el.style.opacity='1'; }
+    if (note) note.textContent = '';
+  }
 }
 
 /* Construit la liste des types de logement disponibles à partir des projets
@@ -21696,6 +22043,14 @@ async function saveLot() {
   var id = APP.editingId || uid();
   var _progLot = (DATA.programmes || []).find(function(p) { return p.id === document.getElementById('l-programme').value; });
   var _parcLot = (document.getElementById('l-parcelle')||{}).value || (_progLot ? (_progLot.parcelle_id||'') : '');
+  var _lotNature = (document.getElementById('l-nature')||{}).value || 'villa';
+  var _prixMode = (document.getElementById('l-prix-mode')||{}).value || 'forfait';
+  var _prixM2 = parseFloat((document.getElementById('l-prix-m2')||{}).value) || 0;
+  var _surface = parseFloat(document.getElementById('l-surface').value) || 0;
+  var _prix = (_prixMode==='m2') ? Math.round(_prixM2*_surface) : (parseFloat(document.getElementById('l-prix').value) || 0);
+  var _coutMode = (document.getElementById('l-cout-mode')||{}).value || 'forfait';
+  var _coutM2 = parseFloat((document.getElementById('l-cout-m2')||{}).value) || 0;
+  var _cout = (_coutMode==='m2') ? Math.round(_coutM2*_surface) : (parseFloat(document.getElementById('l-cout-revient').value) || 0);
   var lot = {
     id: id,
     programme_id: document.getElementById('l-programme').value,
@@ -21704,13 +22059,18 @@ async function saveLot() {
     numero: numero,
     ilot: document.getElementById('l-ilot').value,
     type: document.getElementById('l-type').value,
-    surface: parseFloat(document.getElementById('l-surface').value) || 0,
+    surface: _surface,
     pieces: parseInt(document.getElementById('l-pieces').value) || 0,
-    prix: parseFloat(document.getElementById('l-prix').value) || 0,
-    cout_revient: parseFloat(document.getElementById('l-cout-revient').value) || 0,
+    prix: _prix,
+    prix_mode: _prixMode,
+    prix_m2: _prixM2,
+    terrain_tva: _lotNature==='terrain' ? !!(document.getElementById('l-terrain-tva')||{}).checked : false,
+    cout_revient: _cout,
+    cout_mode: _coutMode,
+    cout_m2: _coutM2,
     standing: document.getElementById('l-standing').value,
     mode_livraison: document.getElementById('l-mode-livraison').value,
-    nature: (document.getElementById('l-nature')||{}).value || 'villa',
+    nature: _lotNature,
     statut: document.getElementById('l-statut').value,
     notes: document.getElementById('l-notes').value,
     _baseModifie: APP.editingId ? (APP._lotBaseModifie || null) : null,
@@ -21726,6 +22086,7 @@ async function saveLot() {
   }
   await dbPut('lots', lot);
   syncToSupabase('pi_lots', lot);
+  if (lot.nature === 'terrain' && typeof comptabiliserEntreeStockTerrain === 'function') { await comptabiliserEntreeStockTerrain(lot); }
   closeModal('modal-lot');
   toast('Lot enregistré.', 'success');
   renderLots();
@@ -21834,6 +22195,103 @@ function renderLotsDashboard() {
   html += tableauAgg('Par îlot', agg(function(l){ return l.ilot ? 'Îlot '+l.ilot : '—'; }), 20);
 
   box.innerHTML = html;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   ÉTAT DE MARGE — Prix de vente − Coût de revient (par lot / programme)
+   Filtres : programme (barre) · nature (terrain/tous) · portée (tous/vendus)
+   ══════════════════════════════════════════════════════════════════ */
+var _margeRows = [];
+function renderMargeLots() {
+  var box = document.getElementById('lots-marge'); if (!box) return;
+  var N = function(v){ return parseFloat(v)||0; };
+  var fProg = (document.getElementById('filter-programme-lots')||{}).value || '';
+  var nat = (document.getElementById('marge-nature')||{}).value || 'terrain';
+  var scope = (document.getElementById('marge-scope')||{}).value || 'all';
+  var progNom = function(id){ var p=(DATA.programmes||[]).find(function(x){return x.id===id;}); return p?p.nom:'—'; };
+  var natLbl = { villa:'Villa', immeuble:'Immeuble', terrain:'Terrain' };
+  var statLbl = { disponible:'Disponible', reserve:'Réservé', vendu:'Vendu' };
+
+  var lots = (DATA.lots||[]).filter(function(l){
+    if (fProg && l.programme_id !== fProg) return false;
+    if (nat==='terrain' && l.nature !== 'terrain') return false;
+    if (scope==='vendu' && l.statut !== 'vendu') return false;
+    return true;
+  });
+
+  if (!lots.length) {
+    box.innerHTML = '<div class="card"><div style="padding:24px;text-align:center;color:var(--blanc-dim);">Aucun lot pour ces filtres.</div></div>';
+    _margeRows = []; return;
+  }
+
+  /* Totaux globaux */
+  var caT = lots.reduce(function(s,l){ return s+N(l.prix); },0);
+  var coutT = lots.reduce(function(s,l){ return s+N(l.cout_revient); },0);
+  var margeT = caT - coutT;
+  var pctT = caT>0 ? (margeT/caT*100) : 0;
+  var surfT = lots.reduce(function(s,l){ return s+N(l.surface); },0);
+  var sansCout = lots.filter(function(l){ return N(l.cout_revient)<=0; }).length;
+
+  var kpis = [
+    { l:'Lots', v:lots.length, sub:Math.round(surfT).toLocaleString('fr-FR')+' m²', c:'var(--bleu)' },
+    { l:'CA (prix de vente)', v:fmtF(caT), sub:'FCFA', c:'var(--or)' },
+    { l:'Coût de revient', v:fmtF(coutT), sub:'FCFA', c:'var(--rouge)' },
+    { l:'Marge', v:fmtF(margeT), sub:pctT.toFixed(1)+'% du CA', c: margeT>=0?'var(--vert)':'var(--rouge)' }
+  ];
+  var kpiHTML = '<div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">'
+    + kpis.map(function(k){ return '<div class="kpi-card" style="border-top:3px solid '+k.c+';"><div class="kpi-label">'+k.l+'</div><div class="kpi-value" style="font-size:17px;color:'+k.c+';">'+k.v+'</div><div style="font-size:11px;color:var(--blanc-dim);margin-top:2px;">'+k.sub+'</div></div>'; }).join('')
+    + '</div>';
+  var avert = sansCout ? '<div class="card" style="margin-bottom:14px;border-left:3px solid var(--or);padding:10px 12px;font-size:12px;color:var(--blanc-dim);">⚠️ '+sansCout+' lot(s) sans coût de revient saisi — marge = prix (surévaluée). Renseignez le coût (forfait ou au m²) pour fiabiliser.</div>' : '';
+
+  /* Groupement par programme */
+  var groupes = {};
+  lots.forEach(function(l){ var k=l.programme_id||'—'; (groupes[k]=groupes[k]||[]).push(l); });
+
+  _margeRows = [];
+  var sections = Object.keys(groupes).map(function(pid){
+    var arr = groupes[pid].slice().sort(function(a,b){ return (a.numero||'').localeCompare(b.numero||''); });
+    var sCA=0,sCout=0,sSurf=0;
+    var rows = arr.map(function(l){
+      var prix=N(l.prix), cout=N(l.cout_revient), marge=prix-cout, pct=prix>0?(marge/prix*100):0;
+      sCA+=prix; sCout+=cout; sSurf+=N(l.surface);
+      _margeRows.push([progNom(pid), l.numero||'', natLbl[l.nature]||l.nature||'', N(l.surface), prix, cout, marge, pct.toFixed(1), statLbl[l.statut]||l.statut||'']);
+      var mc = marge>=0?'var(--vert)':'var(--rouge)';
+      return '<tr>'
+        + '<td style="font-size:12px;">'+escHtml(l.numero||'—')+(l.ilot?' <span style="color:var(--blanc-dim);">/'+escHtml(l.ilot)+'</span>':'')+'</td>'
+        + '<td style="text-align:right;">'+(N(l.surface)?fmtF(N(l.surface)):'—')+'</td>'
+        + '<td style="text-align:right;">'+fmtF(prix)+'</td>'
+        + '<td style="text-align:right;color:var(--blanc-dim);">'+(cout?fmtF(cout):'—')+'</td>'
+        + '<td style="text-align:right;font-weight:700;color:'+mc+';">'+fmtF(marge)+'</td>'
+        + '<td style="text-align:right;color:'+mc+';">'+(prix>0?pct.toFixed(1)+'%':'—')+'</td>'
+        + '<td style="text-align:center;font-size:11px;">'+(statLbl[l.statut]||l.statut||'')+'</td>'
+        + '</tr>';
+    }).join('');
+    var sMarge=sCA-sCout, sPct=sCA>0?(sMarge/sCA*100):0, smc=sMarge>=0?'var(--vert)':'var(--rouge)';
+    var sub = '<tr style="background:var(--card2);font-weight:700;">'
+      + '<td>Sous-total</td><td style="text-align:right;">'+fmtF(sSurf)+'</td>'
+      + '<td style="text-align:right;">'+fmtF(sCA)+'</td><td style="text-align:right;">'+fmtF(sCout)+'</td>'
+      + '<td style="text-align:right;color:'+smc+';">'+fmtF(sMarge)+'</td>'
+      + '<td style="text-align:right;color:'+smc+';">'+sPct.toFixed(1)+'%</td><td></td></tr>';
+    return '<div class="card" style="margin-bottom:16px;overflow-x:auto;">'
+      + '<div class="card-title">🗺️ '+escHtml(progNom(pid))+' <span style="font-size:11px;color:var(--blanc-dim);font-weight:400;">— '+arr.length+' lot(s)</span></div>'
+      + '<table style="width:100%;font-size:12px;margin-top:8px;"><thead><tr>'
+      + '<th style="text-align:left;">Lot</th><th style="text-align:right;">Surface m²</th>'
+      + '<th style="text-align:right;">Prix vente</th><th style="text-align:right;">Coût revient</th>'
+      + '<th style="text-align:right;">Marge</th><th style="text-align:right;">%</th><th style="text-align:center;">Statut</th>'
+      + '</tr></thead><tbody>'+rows+sub+'</tbody></table></div>';
+  }).join('');
+
+  box.innerHTML = kpiHTML + avert + sections;
+}
+
+function exportMargeCSV() {
+  if (!_margeRows.length) { toast('Rien à exporter — ouvrez l\'onglet Marge.', 'error'); return; }
+  var head = ['Programme','Lot','Nature','Surface_m2','Prix_vente','Cout_revient','Marge','Marge_pct','Statut'];
+  var lignes = [head].concat(_margeRows).map(function(r){ return r.map(function(c){ return '"'+String(c).replace(/"/g,'""')+'"'; }).join(';'); }).join('\r\n');
+  var blob = new Blob(['\ufeff'+lignes], { type:'text/csv;charset=utf-8;' });
+  var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = 'etat_marge_' + today() + '.csv'; a.click();
+  toast('État de marge exporté.', 'success');
 }
 
 function renderLots() {
@@ -22061,6 +22519,13 @@ function loadComptesDefaut() {
   document.getElementById('cd-tva-collectee').value = cd.tva_collectee || '443';
   document.getElementById('cd-tva-deductible').value = cd.tva_deductible || '444';
   document.getElementById('cd-cession-produit').value = cd.cession_produit || '701';
+  var _tp=document.getElementById('cd-terrain-produit'); if(_tp)_tp.value=cd.terrain_produit||'702';
+  var _tt=document.getElementById('cd-terrain-tva'); if(_tt)_tt.value=cd.terrain_tva_collectee||'4431';
+  var _ttx=document.getElementById('cd-terrain-taux-tva'); if(_ttx)_ttx.value=(cd.terrain_taux_tva!=null?cd.terrain_taux_tva:18);
+  var _ts=document.getElementById('cd-terrain-stock'); if(_ts)_ts.value=cd.terrain_stock||'';
+  var _tv2=document.getElementById('cd-terrain-variation'); if(_tv2)_tv2.value=cd.terrain_variation||'6031';
+  var _ta=document.getElementById('cd-terrain-achat'); if(_ta)_ta.value=cd.terrain_achat||'601';
+  var _tc=document.getElementById('cd-terrain-contrepartie'); if(_tc)_tc.value=cd.terrain_contrepartie||'401';
   document.getElementById('cd-amort-dotation').value = cd.amort_dotation || '681';
   document.getElementById('cd-amort-cumul').value = cd.amort_cumul || '28';
   document.getElementById('cd-taux-is').value = (DATA.params && DATA.params.taux_is != null) ? DATA.params.taux_is : 25;
@@ -22118,6 +22583,13 @@ function saveComptesDefaut() {
     retenue_garantie:    (document.getElementById('cd-retenue-garantie')||{}).value ? document.getElementById('cd-retenue-garantie').value.trim() : ((DATA.params&&DATA.params.comptes_defaut&&DATA.params.comptes_defaut.retenue_garantie)||'4017'),
     avance_fournisseur:  (document.getElementById('cd-avance-fournisseur')||{}).value ? document.getElementById('cd-avance-fournisseur').value.trim() : ((DATA.params&&DATA.params.comptes_defaut&&DATA.params.comptes_defaut.avance_fournisseur)||'4091'),
     cession_produit:     document.getElementById('cd-cession-produit').value.trim() || '701',
+    terrain_produit:     (document.getElementById('cd-terrain-produit')||{}).value ? document.getElementById('cd-terrain-produit').value.trim() : '702',
+    terrain_tva_collectee: (document.getElementById('cd-terrain-tva')||{}).value ? document.getElementById('cd-terrain-tva').value.trim() : '4431',
+    terrain_taux_tva:    parseFloat((document.getElementById('cd-terrain-taux-tva')||{}).value) || 18,
+    terrain_stock:       (document.getElementById('cd-terrain-stock')||{}).value ? document.getElementById('cd-terrain-stock').value.trim() : '',
+    terrain_variation:   (document.getElementById('cd-terrain-variation')||{}).value ? document.getElementById('cd-terrain-variation').value.trim() : '6031',
+    terrain_achat:       (document.getElementById('cd-terrain-achat')||{}).value ? document.getElementById('cd-terrain-achat').value.trim() : '601',
+    terrain_contrepartie:(document.getElementById('cd-terrain-contrepartie')||{}).value ? document.getElementById('cd-terrain-contrepartie').value.trim() : '401',
     amort_dotation:      document.getElementById('cd-amort-dotation').value.trim() || '681',
     amort_cumul:         document.getElementById('cd-amort-cumul').value.trim() || '28'
   };
@@ -22577,6 +23049,250 @@ function buildBalance() {
     + (Math.abs(totMvtD - totMvtC) < 1 && (totMvtD > 0)
       ? '<div class="alert alert-success" style="margin-top:12px;">✔ Balance équilibrée — Débit = Crédit = ' + fmtF(totMvtD) + ' FCFA</div>'
       : (totMvtD > 0 ? '<div class="alert alert-error" style="margin-top:12px;">⚠ Balance déséquilibrée — Écart : ' + fmtF(Math.abs(totMvtD - totMvtC)) + ' FCFA</div>' : ''));
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   ÉTAT PÉRIODIQUE (date début → date fin)
+   Caisse/Trésorerie · Journal des mouvements · Grand Livre · Balance
+   (8 col.) · Compte de résultat · Bilan de fin de période.
+   Réutilise ecrLignes() et APP.planComptable. Soldes d'ouverture =
+   mouvements antérieurs à la date de début (report à-nouveau implicite).
+   ══════════════════════════════════════════════════════════════════ */
+var _epData = null;
+function _epISO(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function epPreset(kind){
+  var now=new Date(), y=now.getFullYear(), m=now.getMonth(), d1, d2;
+  if(kind==='mois'){ d1=new Date(y,m,1); d2=new Date(y,m+1,0); }
+  else if(kind==='trim'){ var q=Math.floor(m/3); d1=new Date(y,q*3,1); d2=new Date(y,q*3+3,0); }
+  else { d1=new Date(y,0,1); d2=new Date(y,11,31); }
+  document.getElementById('ep-d1').value=_epISO(d1);
+  document.getElementById('ep-d2').value=_epISO(d2);
+  genererEtatPeriodique();
+}
+function _epRange(){
+  var d1=(document.getElementById('ep-d1')||{}).value, d2=(document.getElementById('ep-d2')||{}).value;
+  if(!d1||!d2) return null;
+  if(d1>d2){ var t=d1; d1=d2; d2=t; }
+  return { d1:d1, d2:d2 };
+}
+function _epCompte(code){
+  var c=(APP.planComptable||[]).find(function(x){ return x.code===code; });
+  return { code:code, label:c?c.label:'(compte '+code+')', classe:c?String(c.classe):(String(code)[0]||''), nature:c?c.nature:'' };
+}
+function _epFmtSolde(v){ return v>=0 ? {d:v,c:0} : {d:0,c:-v}; }
+
+function genererEtatPeriodique(){
+  var r=_epRange();
+  if(!r){ toast('Renseignez les deux dates (début et fin).','error'); return; }
+  var acc={}, journal=[];
+  (DATA.ecritures||[]).forEach(function(e){
+    if(!e.date) return;
+    var inPer = e.date>=r.d1 && e.date<=r.d2, before = e.date<r.d1;
+    if(!inPer && !before) return;
+    var lignes=ecrLignes(e);
+    if(inPer) journal.push({ e:e, lignes:lignes });
+    lignes.forEach(function(l){
+      if(!l.compte) return;
+      var a=acc[l.compte]||(acc[l.compte]={iniD:0,iniC:0,perD:0,perC:0});
+      var m=parseFloat(l.montant)||0;
+      if(before){ if(l.sens==='D')a.iniD+=m; else a.iniC+=m; }
+      else { if(l.sens==='D')a.perD+=m; else a.perC+=m; }
+    });
+  });
+  journal.sort(function(a,b){ return (a.e.date||'').localeCompare(b.e.date||'') || (a.e.ref||'').localeCompare(b.e.ref||''); });
+  var codes=Object.keys(acc).sort();
+
+  _epData={ range:r, acc:acc, codes:codes, journal:journal };
+  var head='<div class="card" style="margin-bottom:12px;"><div style="font-size:13px;">Période : <strong>'+_frDate(r.d1)+'</strong> → <strong>'+_frDate(r.d2)+'</strong> · '+journal.length+' écriture(s) · '+codes.length+' compte(s) mouvementé(s)</div></div>';
+
+  document.getElementById('ep-content').innerHTML =
+    head + _epCaisse() + _epBalance() + _epResultat() + _epBilan() + _epJournal() + _epGrandLivre();
+  toast('État périodique généré.','success');
+}
+function _frDate(iso){ if(!iso) return ''; var p=iso.split('-'); return p.length===3 ? p[2]+'/'+p[1]+'/'+p[0] : iso; }
+
+/* ── Caisse / Trésorerie (classe 5) ── */
+function _epCaisse(){
+  var rows='', tSI=0,tE=0,tS=0,tSF=0;
+  _epData.codes.filter(function(c){ return String(c).charAt(0)==='5'; }).forEach(function(code){
+    var a=_epData.acc[code], si=a.iniD-a.iniC, sf=si+a.perD-a.perC, m=_epCompte(code);
+    tSI+=si; tE+=a.perD; tS+=a.perC; tSF+=sf;
+    rows+='<tr><td style="font-weight:600;color:var(--or);">'+code+'</td><td style="font-size:12px;">'+escHtml(m.label)+'</td>'
+      +'<td style="text-align:right;">'+fmtF(si)+'</td>'
+      +'<td style="text-align:right;color:var(--vert);">'+(a.perD?fmtF(a.perD):'—')+'</td>'
+      +'<td style="text-align:right;color:var(--rouge);">'+(a.perC?fmtF(a.perC):'—')+'</td>'
+      +'<td style="text-align:right;font-weight:700;">'+fmtF(sf)+'</td></tr>';
+  });
+  if(!rows) rows='<tr><td colspan="6" style="text-align:center;color:var(--blanc-dim);padding:12px;">Aucun mouvement de trésorerie sur la période.</td></tr>';
+  return '<div class="card" style="margin-bottom:16px;overflow-x:auto;"><div class="card-title">💵 Caisse & Trésorerie (classe 5)</div>'
+    +'<table style="width:100%;font-size:12px;margin-top:8px;"><thead><tr>'
+    +'<th style="text-align:left;">Compte</th><th style="text-align:left;">Intitulé</th>'
+    +'<th style="text-align:right;">Solde initial</th><th style="text-align:right;">Entrées</th><th style="text-align:right;">Sorties</th><th style="text-align:right;">Solde final</th>'
+    +'</tr></thead><tbody>'+rows
+    +'<tr style="font-weight:700;background:rgba(184,115,51,0.08);border-top:2px solid var(--or);"><td colspan="2">TOTAL TRÉSORERIE</td>'
+    +'<td style="text-align:right;">'+fmtF(tSI)+'</td><td style="text-align:right;color:var(--vert);">'+fmtF(tE)+'</td><td style="text-align:right;color:var(--rouge);">'+fmtF(tS)+'</td><td style="text-align:right;">'+fmtF(tSF)+'</td></tr>'
+    +'</tbody></table></div>';
+}
+
+/* ── Balance à 8 colonnes (SI / Mouvements / SF) ── */
+function _epBalance(){
+  var rows='', t={iD:0,iC:0,mD:0,mC:0,fD:0,fC:0};
+  _epData.codes.forEach(function(code){
+    var a=_epData.acc[code], si=a.iniD-a.iniC, sf=si+a.perD-a.perC, m=_epCompte(code);
+    var SI=_epFmtSolde(si), SF=_epFmtSolde(sf);
+    t.iD+=SI.d; t.iC+=SI.c; t.mD+=a.perD; t.mC+=a.perC; t.fD+=SF.d; t.fC+=SF.c;
+    rows+='<tr><td style="font-weight:600;color:var(--or);">'+code+'</td><td style="font-size:12px;">'+escHtml(m.label)+'</td>'
+      +'<td style="text-align:right;">'+(SI.d?fmtF(SI.d):'—')+'</td><td style="text-align:right;">'+(SI.c?fmtF(SI.c):'—')+'</td>'
+      +'<td style="text-align:right;color:var(--rouge);">'+(a.perD?fmtF(a.perD):'—')+'</td><td style="text-align:right;color:var(--vert);">'+(a.perC?fmtF(a.perC):'—')+'</td>'
+      +'<td style="text-align:right;">'+(SF.d?fmtF(SF.d):'—')+'</td><td style="text-align:right;">'+(SF.c?fmtF(SF.c):'—')+'</td></tr>';
+  });
+  var eq=Math.abs(t.mD-t.mC)<1;
+  return '<div class="card" style="margin-bottom:16px;overflow-x:auto;"><div class="card-title">⚖️ Balance de la période (8 colonnes)</div>'
+    +'<table style="width:100%;font-size:11px;margin-top:8px;"><thead><tr>'
+    +'<th rowspan="2">Compte</th><th rowspan="2" style="text-align:left;">Intitulé</th><th colspan="2">Solde initial</th><th colspan="2">Mouvements période</th><th colspan="2">Solde final</th></tr>'
+    +'<tr><th style="text-align:right;">Débit</th><th style="text-align:right;">Crédit</th><th style="text-align:right;">Débit</th><th style="text-align:right;">Crédit</th><th style="text-align:right;">Débit</th><th style="text-align:right;">Crédit</th></tr>'
+    +'</thead><tbody>'+rows
+    +'<tr style="font-weight:700;background:rgba(184,115,51,0.08);border-top:2px solid var(--or);"><td colspan="2">TOTAUX</td>'
+    +'<td style="text-align:right;">'+fmtF(t.iD)+'</td><td style="text-align:right;">'+fmtF(t.iC)+'</td>'
+    +'<td style="text-align:right;">'+fmtF(t.mD)+'</td><td style="text-align:right;">'+fmtF(t.mC)+'</td>'
+    +'<td style="text-align:right;">'+fmtF(t.fD)+'</td><td style="text-align:right;">'+fmtF(t.fC)+'</td></tr>'
+    +'</tbody></table>'
+    +(eq?'<div class="alert alert-success" style="margin-top:10px;">✔ Mouvements équilibrés — D = C = '+fmtF(t.mD)+' FCFA</div>':'<div class="alert alert-error" style="margin-top:10px;">⚠ Écart mouvements : '+fmtF(Math.abs(t.mD-t.mC))+' FCFA</div>')
+    +'</div>';
+}
+
+/* ── Compte de résultat de la période (charges cl.6 / produits cl.7) ── */
+function _epResultat(){
+  var charges=[], produits=[], tCh=0, tPr=0;
+  _epData.codes.forEach(function(code){
+    var cl=String(code).charAt(0), a=_epData.acc[code], m=_epCompte(code);
+    if(cl==='6'){ var v=a.perD-a.perC; if(v!==0){ charges.push({m:m,v:v}); tCh+=v; } }
+    else if(cl==='7'){ var w=a.perC-a.perD; if(w!==0){ produits.push({m:m,v:w}); tPr+=w; } }
+  });
+  var res=tPr-tCh;
+  function col(list){ return list.map(function(x){ return '<tr><td style="color:var(--or);">'+x.m.code+'</td><td style="font-size:12px;">'+escHtml(x.m.label)+'</td><td style="text-align:right;">'+fmtF(x.v)+'</td></tr>'; }).join('')||'<tr><td colspan="3" style="color:var(--blanc-dim);text-align:center;padding:8px;">—</td></tr>'; }
+  return '<div class="card" style="margin-bottom:16px;"><div class="card-title">📊 Compte de résultat — période</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">'
+    +'<div style="overflow-x:auto;"><div style="font-weight:700;color:var(--rouge);margin-bottom:4px;">Charges (classe 6)</div><table style="width:100%;font-size:12px;"><tbody>'+col(charges)+'<tr style="font-weight:700;border-top:1px solid var(--or);"><td colspan="2">Total charges</td><td style="text-align:right;color:var(--rouge);">'+fmtF(tCh)+'</td></tr></tbody></table></div>'
+    +'<div style="overflow-x:auto;"><div style="font-weight:700;color:var(--vert);margin-bottom:4px;">Produits (classe 7)</div><table style="width:100%;font-size:12px;"><tbody>'+col(produits)+'<tr style="font-weight:700;border-top:1px solid var(--or);"><td colspan="2">Total produits</td><td style="text-align:right;color:var(--vert);">'+fmtF(tPr)+'</td></tr></tbody></table></div>'
+    +'</div>'
+    +'<div style="margin-top:12px;padding:10px 14px;border-radius:8px;background:'+(res>=0?'rgba(26,107,58,0.12)':'rgba(225,29,72,0.12)')+';font-weight:700;font-size:15px;color:'+(res>=0?'var(--vert)':'var(--rouge)')+';">Résultat de la période '+(res>=0?'(Bénéfice)':'(Perte)')+' : '+fmtF(res)+' FCFA</div>'
+    +'</div>';
+}
+
+/* ── Bilan condensé à la date de fin (cumul ≤ d2) ── */
+function _epBilan(){
+  var actif={}, passif={}, resultat=0;
+  _epData.codes.forEach(function(code){
+    var cl=String(code).charAt(0), a=_epData.acc[code], solde=a.iniD-a.iniC+a.perD-a.perC;
+    if(cl==='6') resultat-=solde;        // charges diminuent le résultat
+    else if(cl==='7') resultat+=(-solde); // produits (solde créditeur négatif) → +
+    else if(cl==='2'||cl==='3'){ if(solde>0) actif[cl]=(actif[cl]||0)+solde; else passif[cl]=(passif[cl]||0)+(-solde); }
+    else if(cl==='4'||cl==='5'){ if(solde>0) actif[cl]=(actif[cl]||0)+solde; else passif[cl]=(passif[cl]||0)+(-solde); }
+    else if(cl==='1'){ if(solde<0) passif[cl]=(passif[cl]||0)+(-solde); else actif[cl]=(actif[cl]||0)+solde; }
+  });
+  var lblA={ '2':'Actif immobilisé (cl.2)','3':'Stocks (cl.3)','4':'Créances & emplois (cl.4)','5':'Trésorerie-actif (cl.5)','1':'Cl.1 (débiteur)'};
+  var lblP={ '1':'Ressources durables (cl.1)','4':'Dettes (cl.4)','5':'Trésorerie-passif (cl.5)','2':'Cl.2 (créditeur)','3':'Cl.3 (créditeur)'};
+  var totA=0,totP=0, ra='', rp='';
+  ['2','3','4','5','1'].forEach(function(k){ if(actif[k]){ totA+=actif[k]; ra+='<tr><td>'+lblA[k]+'</td><td style="text-align:right;">'+fmtF(actif[k])+'</td></tr>'; } });
+  ['1','4','5','2','3'].forEach(function(k){ if(passif[k]){ totP+=passif[k]; rp+='<tr><td>'+lblP[k]+'</td><td style="text-align:right;">'+fmtF(passif[k])+'</td></tr>'; } });
+  rp+='<tr><td>Résultat de la période</td><td style="text-align:right;color:'+(resultat>=0?'var(--vert)':'var(--rouge)')+';">'+fmtF(resultat)+'</td></tr>';
+  totP+=resultat;
+  var ecart=totA-totP;
+  return '<div class="card" style="margin-bottom:16px;"><div class="card-title">🏛️ Bilan condensé au '+_frDate(_epData.range.d2)+'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">'
+    +'<div style="overflow-x:auto;"><div style="font-weight:700;margin-bottom:4px;">ACTIF</div><table style="width:100%;font-size:12px;"><tbody>'+ra+'<tr style="font-weight:700;border-top:2px solid var(--or);"><td>TOTAL ACTIF</td><td style="text-align:right;">'+fmtF(totA)+'</td></tr></tbody></table></div>'
+    +'<div style="overflow-x:auto;"><div style="font-weight:700;margin-bottom:4px;">PASSIF</div><table style="width:100%;font-size:12px;"><tbody>'+rp+'<tr style="font-weight:700;border-top:2px solid var(--or);"><td>TOTAL PASSIF</td><td style="text-align:right;">'+fmtF(totP)+'</td></tr></tbody></table></div>'
+    +'</div>'
+    +(Math.abs(ecart)<1?'<div class="alert alert-success" style="margin-top:10px;">✔ Bilan équilibré — Actif = Passif = '+fmtF(totA)+' FCFA</div>':'<div class="alert alert-error" style="margin-top:10px;">⚠ Écart Actif/Passif : '+fmtF(ecart)+' FCFA (écritures non soldées ou comptes hors classe standard)</div>')
+    +'</div>';
+}
+
+/* ── Journal des mouvements de la période ── */
+function _epJournal(){
+  var rows='', tD=0,tC=0;
+  _epData.journal.forEach(function(j){
+    var lignes=j.lignes, first=true;
+    lignes.forEach(function(l){
+      var m=parseFloat(l.montant)||0; if(l.sens==='D')tD+=m; else tC+=m;
+      rows+='<tr>'
+        +'<td style="font-size:11px;">'+(first?_frDate(j.e.date):'')+'</td>'
+        +'<td style="font-size:11px;">'+(first?escHtml(j.e.ref||j.e.piece||''):'')+'</td>'
+        +'<td style="color:var(--or);">'+escHtml(l.compte||'')+'</td>'
+        +'<td style="font-size:11px;">'+escHtml(l.libelle||j.e.libelle||'')+'</td>'
+        +'<td style="text-align:right;color:var(--rouge);">'+(l.sens==='D'?fmtF(m):'')+'</td>'
+        +'<td style="text-align:right;color:var(--vert);">'+(l.sens==='C'?fmtF(m):'')+'</td></tr>';
+      first=false;
+    });
+  });
+  if(!rows) rows='<tr><td colspan="6" style="text-align:center;color:var(--blanc-dim);padding:12px;">Aucune écriture sur la période.</td></tr>';
+  return '<div class="card" style="margin-bottom:16px;overflow-x:auto;"><div class="card-title">📓 Journal des mouvements</div>'
+    +'<table style="width:100%;font-size:12px;margin-top:8px;"><thead><tr><th>Date</th><th>Pièce</th><th>Compte</th><th style="text-align:left;">Libellé</th><th style="text-align:right;">Débit</th><th style="text-align:right;">Crédit</th></tr></thead><tbody>'+rows
+    +'<tr style="font-weight:700;background:rgba(184,115,51,0.08);border-top:2px solid var(--or);"><td colspan="4">TOTAUX</td><td style="text-align:right;color:var(--rouge);">'+fmtF(tD)+'</td><td style="text-align:right;color:var(--vert);">'+fmtF(tC)+'</td></tr>'
+    +'</tbody></table></div>';
+}
+
+/* ── Grand Livre de la période (par compte, avec solde progressif) ── */
+function _epGrandLivre(){
+  var blocs='';
+  _epData.codes.forEach(function(code){
+    var a=_epData.acc[code];
+    if(a.perD===0 && a.perC===0) return; // uniquement comptes mouvementés sur la période
+    var m=_epCompte(code), si=a.iniD-a.iniC, solde=si;
+    var lignes='';
+    _epData.journal.forEach(function(j){
+      j.lignes.forEach(function(l){
+        if(l.compte!==code) return;
+        var mo=parseFloat(l.montant)||0;
+        solde += (l.sens==='D'?mo:-mo);
+        lignes+='<tr><td style="font-size:11px;">'+_frDate(j.e.date)+'</td><td style="font-size:11px;">'+escHtml(j.e.ref||'')+'</td><td style="font-size:11px;">'+escHtml(l.libelle||j.e.libelle||'')+'</td>'
+          +'<td style="text-align:right;color:var(--rouge);">'+(l.sens==='D'?fmtF(mo):'')+'</td>'
+          +'<td style="text-align:right;color:var(--vert);">'+(l.sens==='C'?fmtF(mo):'')+'</td>'
+          +'<td style="text-align:right;font-weight:600;">'+fmtF(solde)+'</td></tr>';
+      });
+    });
+    blocs+='<div style="margin-bottom:14px;"><div style="font-weight:700;color:var(--or);font-size:13px;margin-bottom:4px;">'+code+' — '+escHtml(m.label)+'</div>'
+      +'<table style="width:100%;font-size:11px;"><thead><tr><th>Date</th><th>Pièce</th><th style="text-align:left;">Libellé</th><th style="text-align:right;">Débit</th><th style="text-align:right;">Crédit</th><th style="text-align:right;">Solde</th></tr></thead><tbody>'
+      +'<tr style="color:var(--blanc-dim);"><td colspan="5">Solde initial ('+_frDate(_epData.range.d1)+')</td><td style="text-align:right;font-weight:600;">'+fmtF(si)+'</td></tr>'
+      +lignes
+      +'<tr style="font-weight:700;border-top:1px solid var(--or);"><td colspan="3">Solde final</td><td style="text-align:right;color:var(--rouge);">'+fmtF(a.perD)+'</td><td style="text-align:right;color:var(--vert);">'+fmtF(a.perC)+'</td><td style="text-align:right;">'+fmtF(solde)+'</td></tr>'
+      +'</tbody></table></div>';
+  });
+  if(!blocs) blocs='<div style="text-align:center;color:var(--blanc-dim);padding:12px;">Aucun compte mouvementé.</div>';
+  return '<div class="card" style="margin-bottom:16px;overflow-x:auto;"><div class="card-title">📚 Grand Livre de la période</div><div style="margin-top:8px;">'+blocs+'</div></div>';
+}
+
+function epImprimer(){
+  var c=document.getElementById('ep-content');
+  if(!c || !c.innerHTML.trim()){ toast('Générez d\'abord l\'état.','error'); return; }
+  var soc=((DATA.params&&DATA.params.societe)||{}).nom || (DATA.params&&DATA.params.raison_sociale) || 'SANIX';
+  var w=window.open('','_blank');
+  w.document.write('<html><head><title>État périodique</title><meta charset="utf-8"><style>'
+    +'body{font-family:Arial,sans-serif;color:#111;padding:18px;font-size:12px;}'
+    +'table{width:100%;border-collapse:collapse;margin-top:6px;}th,td{border:1px solid #ccc;padding:4px 6px;}th{background:#f0e6da;text-align:left;}'
+    +'.card-title{font-weight:700;font-size:14px;margin:16px 0 4px;border-bottom:2px solid #B87333;padding-bottom:3px;}'
+    +'.alert{padding:6px 10px;margin-top:6px;border-radius:4px;}.alert-success{background:#e6f4ea;}.alert-error{background:#fde8ec;}'
+    +'.card{margin-bottom:14px;}h1{font-size:16px;}</style></head><body>'
+    +'<h1>'+escHtml(soc)+' — État périodique</h1>'
+    +c.innerHTML
+    +'<script>window.onload=function(){window.print();}<\/script></body></html>');
+  w.document.close();
+}
+
+function epExportCSV(){
+  if(!_epData){ toast('Générez d\'abord l\'état.','error'); return; }
+  var head=['Compte','Intitule','SI_Debit','SI_Credit','Mvt_Debit','Mvt_Credit','SF_Debit','SF_Credit'];
+  var rows=[head];
+  _epData.codes.forEach(function(code){
+    var a=_epData.acc[code], si=a.iniD-a.iniC, sf=si+a.perD-a.perC, m=_epCompte(code);
+    var SI=_epFmtSolde(si), SF=_epFmtSolde(sf);
+    rows.push([code, m.label, SI.d, SI.c, a.perD, a.perC, SF.d, SF.c]);
+  });
+  var csv=rows.map(function(r){ return r.map(function(x){ return '"'+String(x).replace(/"/g,'""')+'"'; }).join(';'); }).join('\r\n');
+  var blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8;'});
+  var a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download='etat_periodique_'+_epData.range.d1+'_'+_epData.range.d2+'.csv'; a.click();
+  toast('Balance périodique exportée.','success');
 }
 
 /* ── BILAN SYSCOHADA ─────────────────────────────────── */
@@ -39139,10 +39855,11 @@ function _printFromElement(elementId, titre, extraCss) {
   openPrintPreview(html, titre||'Document');
 }
 
-function openPrintPreview(html, titre) {
+function openPrintPreview(html, titre, landscape) {
   _ppHtml = html;
   _ppTitle = titre || 'Aperçu document';
   document.getElementById('pp-titre').textContent = _ppTitle;
+  document.getElementById('pp-landscape').checked = !!landscape;
   document.getElementById('modal-print-preview').style.display = 'flex';
   document.body.style.overflow = 'hidden';
   _ppLoad();
@@ -55086,6 +55803,7 @@ function afBindOperation(isEdit) {
   set('af-prix-lot',_afOp.prix_lot); set('af-lots-reserves',_afOp.lots_reserves); set('af-lots-vendus',_afOp.lots_vendus); set('af-titres',_afOp.titres);
   afRenderProp(); afRenderDoc(); afRenderRenc(); afRenderLit(); afRenderDem(); afRenderVrd();
   afCalcRepartition();
+  afLoadStageDocs();
   switchTab('af-op','prospection');
   openModal('modal-af-operation');
 }
@@ -55103,6 +55821,79 @@ function afRenderProp(){
       +'<td><button class="btn btn-secondary btn-sm" onclick="_afOp.proprietaires.splice('+i+',1);afRenderProp()">✕</button></td></tr>';
   }).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--muted,#999);padding:8px;">—</td></tr>';
 }
+/* ── PIÈCES JOINTES PAR ÉTAPE (store 'documents', entity_type af_operation) ── */
+var _afStageLabels = { prospection:'Prospection', negociation:'Négociation', juridique:'Juridique', admin:'Administratif', amenagement:'Aménagement', repartition:'Répartition', commercialisation:'Commercialisation' };
+var _afDocCache = [];
+var _afPendingDocStage = null;
+
+async function afLoadStageDocs(){
+  _afDocCache = [];
+  try {
+    var all = await dbGetAll('documents');
+    _afDocCache = (all||[]).filter(function(d){ return d.entity_type==='af_operation' && d.entity_id===(_afOp&&_afOp.id); });
+  } catch(e){}
+  Object.keys(_afStageLabels).forEach(afRenderStageDocs);
+}
+
+function afTriggerDocUpload(stage){
+  if (!_afOp || !_afOp.id){ toast('Ouvrez une opération d\'abord.','error'); return; }
+  _afPendingDocStage = stage;
+  var inp = document.getElementById('af-doc-file-input'); if(inp){ inp.value=''; inp.click(); }
+}
+
+function afHandleDocFile(input){
+  var file = input.files && input.files[0]; if(!file) return;
+  if (file.size > 10*1024*1024){ toast('Fichier trop volumineux (max 10 Mo).','error'); input.value=''; return; }
+  var stage = _afPendingDocStage;
+  var r = new FileReader();
+  r.onload = async function(e){
+    var doc = { id: uid(), entity_type:'af_operation', entity_id:_afOp.id, doc_categorie:stage,
+      name:file.name, type:file.type||'application/octet-stream', size:file.size, blob:e.target.result,
+      upload_date: today(), description:_afStageLabels[stage]||stage };
+    try {
+      await dbPut('documents', doc);
+      if (typeof syncToSupabase==='function') syncToSupabase('pi_documents', doc);
+      _afDocCache.push(doc);
+      afRenderStageDocs(stage);
+      toast('📎 Pièce ajoutée à l\'étape '+(_afStageLabels[stage]||stage)+'.','success');
+    } catch(err){ toast('Enregistrement impossible : '+(err.message||err),'error'); }
+    input.value='';
+  };
+  r.readAsDataURL(file);
+}
+
+function _afFmtSize(b){ b=b||0; return b<1024?b+' o':(b<1048576?(b/1024).toFixed(0)+' Ko':(b/1048576).toFixed(1)+' Mo'); }
+
+function afRenderStageDocs(stage){
+  var box = document.getElementById('af-docs-'+stage); if(!box) return;
+  var list = _afDocCache.filter(function(d){ return d.doc_categorie===stage; });
+  if (!list.length){ box.innerHTML = '<span style="color:var(--blanc-dim);">Aucune pièce jointe.</span>'; return; }
+  box.innerHTML = list.map(function(d){
+    var icon = /pdf/i.test(d.type)?'📄':(/image/i.test(d.type)?'🖼️':(/word|document/i.test(d.type)?'📝':(/excel|sheet|xls/i.test(d.type)?'📊':'📎')));
+    return '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--bord);border-radius:6px;margin-bottom:6px;">'
+      +'<span>'+icon+'</span>'
+      +'<div style="flex:1;min-width:0;"><div style="color:var(--blanc);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+afEsc(d.name)+'</div>'
+      +'<div style="font-size:10px;color:var(--blanc-dim);">'+_afFmtSize(d.size)+' · '+(d.upload_date||'')+'</div></div>'
+      +'<button class="btn btn-secondary btn-sm" onclick="afDownloadDoc(\''+d.id+'\')">⬇</button>'
+      +'<button class="btn btn-danger btn-sm" onclick="afDeleteStageDoc(\''+d.id+'\',\''+stage+'\')">🗑</button></div>';
+  }).join('');
+}
+
+function afDownloadDoc(id){
+  var d = _afDocCache.find(function(x){ return x.id===id; });
+  if(!d||!d.blob){ toast('Fichier introuvable.','error'); return; }
+  var a=document.createElement('a'); a.href=d.blob; a.download=d.name||'document'; a.click();
+}
+
+async function afDeleteStageDoc(id, stage){
+  if(!confirm('Supprimer cette pièce jointe ?')) return;
+  try { await deleteRecord('documents', id, { skipIntegrity:true }); }
+  catch(e){ try{ await dbDelete('documents', id); if(typeof deleteFromSupabase==='function') deleteFromSupabase('pi_documents', id); }catch(_){} }
+  _afDocCache = _afDocCache.filter(function(x){ return x.id!==id; });
+  afRenderStageDocs(stage);
+  toast('Pièce supprimée.','info');
+}
+
 /* documents */
 function afAddDocument(){ _afOp.documents.push({nom:'',dispo:true}); afRenderDoc(); }
 function afRenderDoc(){
@@ -55331,8 +56122,15 @@ async function afSaveOperation(){
 
 async function afDeleteOperation(){
   if(!_afOp || !confirm('Supprimer cette opération foncière ?')) return;
-  DATA.af_operations=DATA.af_operations.filter(function(x){return x.id!==_afOp.id;});
-  await dbDelete('af_operations',_afOp.id);
+  var _opId = _afOp.id;
+  DATA.af_operations=DATA.af_operations.filter(function(x){return x.id!==_opId;});
+  await dbDelete('af_operations',_opId);
+  /* purge des pièces jointes liées aux étapes */
+  try {
+    var docs = await dbGetAll('documents');
+    var liees = (docs||[]).filter(function(d){ return d.entity_type==='af_operation' && d.entity_id===_opId; });
+    for (var i=0;i<liees.length;i++){ try{ await deleteRecord('documents', liees[i].id, { skipIntegrity:true }); }catch(e){ try{ await dbDelete('documents', liees[i].id); }catch(_){} } }
+  } catch(e){}
   closeModal('modal-af-operation');
   afRenderPipeline(); afRenderDashboard();
   filiereLiveRefresh();
@@ -64364,6 +65162,7 @@ async function caisseEnter() {
   caisseRenderListe();
   document.getElementById('caisse-brouillard-box').innerHTML = '';
   caisseRenderEcarts();
+  await caisseLoadDocIndex();
   caisseRenderVentilation();
   try { await caisseSyncPreflight(); } catch(e){}
   caisseRenderSyncBanner();
@@ -64582,6 +65381,7 @@ function caisseOuvrirBonModal(caisseId, type) {
   document.getElementById('cb-beneficiaire').value = '';
   document.getElementById('cb-edit-warn').style.display = 'none';
   document.getElementById('cb-solde-actuel').textContent = 'Solde actuel de la caisse « ' + (c?c.nom:'') + ' » : ' + fmtF(caisseSoldeSession(session)) + ' FCFA';
+  cbResetDocs();
   openModal('modal-caisse-bon');
 }
 
@@ -64619,6 +65419,7 @@ function caisseEditBonModal(mvtId) {
       + 'Enregistrer régénère l\'écriture comptable ' + escHtml(m.ecriture_id||'') + ' avec les nouvelles valeurs.';
   } else { warn.style.display = 'none'; }
   document.getElementById('cb-solde-actuel').textContent = 'Caisse « ' + (c?c.nom:'') + ' » · bon ' + (m.type==='entree'?'d\'entrée':'de sortie');
+  cbLoadDocsFor(m.id);
   openModal('modal-caisse-bon');
 }
 
@@ -64666,6 +65467,7 @@ async function caisseSaveBon() {
       await dbPut('caisse_mouvements', mvt);
       if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', mvt);
     }
+    await cbCommitDocs(editId);
     closeModal('modal-caisse-bon');
     toast('✅ Bon ' + (mvt.numero||'') + ' modifié' + (etaitVentile ? ' — écriture régénérée.' : '.'), 'success');
     caisseRenderListe();
@@ -64704,11 +65506,103 @@ async function caisseSaveBon() {
   DATA.caisse_mouvements.push(nouveau);
   await dbPut('caisse_mouvements', nouveau);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', nouveau);
+  await cbCommitDocs(nouveau.id);
   closeModal('modal-caisse-bon');
   toast('✅ ' + (type === 'entree' ? 'Bon d\'entrée' : 'Bon de sortie') + ' ' + numero + ' enregistré.', 'success');
   caisseRenderListe();
   if (typeof caisseRenderDashboard === 'function') caisseRenderDashboard();
   if (CAISSE_UI.brouillardCaisseId === caisseId) caisseAfficherBrouillard(caisseId);
+}
+
+/* ── PIÈCES JUSTIFICATIVES DES MOUVEMENTS DE CAISSE ──────────────────
+   Store 'documents' (entity_type 'caisse_mouvement'). La caissière joint
+   les justificatifs au bon ; le comptable les consulte à la ventilation. */
+var _cbDocs = [];
+var _cbDocsToDelete = [];
+var _caisseDocIndex = {};
+
+async function caisseLoadDocIndex(){
+  _caisseDocIndex = {};
+  try {
+    var all = await dbGetAll('documents');
+    (all||[]).forEach(function(d){
+      if (d.entity_type!=='caisse_mouvement') return;
+      (_caisseDocIndex[d.entity_id]=_caisseDocIndex[d.entity_id]||[]).push(d);
+    });
+  } catch(e){}
+}
+function caisseDocCount(mvtId){ return (_caisseDocIndex[mvtId]||[]).length; }
+
+function cbResetDocs(){ _cbDocs=[]; _cbDocsToDelete=[]; cbRenderDocs(); }
+async function cbLoadDocsFor(mvtId){
+  _cbDocs=[]; _cbDocsToDelete=[];
+  try { var all=await dbGetAll('documents'); _cbDocs=(all||[]).filter(function(d){ return d.entity_type==='caisse_mouvement' && d.entity_id===mvtId; }); } catch(e){}
+  cbRenderDocs();
+}
+function cbTriggerDocUpload(){ var inp=document.getElementById('cb-doc-file-input'); if(inp){ inp.value=''; inp.click(); } }
+function cbHandleDocFile(input){
+  var f=input.files&&input.files[0]; if(!f) return;
+  if (f.size>10*1024*1024){ toast('Fichier trop volumineux (max 10 Mo).','error'); input.value=''; return; }
+  var r=new FileReader();
+  r.onload=function(e){ _cbDocs.push({ _pending:true, id:uid(), name:f.name, type:f.type||'application/octet-stream', size:f.size, blob:e.target.result, upload_date:today() }); cbRenderDocs(); input.value=''; };
+  r.readAsDataURL(f);
+}
+function _cbIcon(t){ return /pdf/i.test(t)?'📄':(/image/i.test(t)?'🖼️':(/word|document/i.test(t)?'📝':(/excel|sheet|xls/i.test(t)?'📊':'📎'))); }
+function _cbSize(b){ b=b||0; return b<1024?b+' o':(b<1048576?(b/1024).toFixed(0)+' Ko':(b/1048576).toFixed(1)+' Mo'); }
+function cbRenderDocs(){
+  var box=document.getElementById('cb-docs'); if(!box) return;
+  if(!_cbDocs.length){ box.innerHTML='<span style="color:var(--blanc-dim);">Aucune pièce jointe.</span>'; return; }
+  box.innerHTML=_cbDocs.map(function(d){
+    return '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--bord);border-radius:6px;margin-bottom:6px;">'
+      +'<span>'+_cbIcon(d.type)+'</span>'
+      +'<div style="flex:1;min-width:0;"><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+escHtml(d.name)+'</div>'
+      +'<div style="font-size:10px;color:var(--blanc-dim);">'+_cbSize(d.size)+(d._pending?' · à enregistrer':(' · '+(d.upload_date||'')))+'</div></div>'
+      +(d.blob?'<button type="button" class="btn btn-secondary btn-sm" onclick="cbDownload(\''+d.id+'\')">⬇</button>':'')
+      +'<button type="button" class="btn btn-danger btn-sm" onclick="cbRemoveDoc(\''+d.id+'\')">🗑</button></div>';
+  }).join('');
+}
+function cbDownload(id){ var d=_cbDocs.find(function(x){return x.id===id;}); if(d&&d.blob){ var a=document.createElement('a'); a.href=d.blob; a.download=d.name||'document'; a.click(); } }
+function cbRemoveDoc(id){
+  var d=_cbDocs.find(function(x){return x.id===id;});
+  if(d&&!d._pending) _cbDocsToDelete.push(id);
+  _cbDocs=_cbDocs.filter(function(x){return x.id!==id;}); cbRenderDocs();
+}
+async function cbCommitDocs(mvtId){
+  for (var i=0;i<_cbDocs.length;i++){
+    var d=_cbDocs[i]; if(!d._pending) continue;
+    var doc={ id:d.id, entity_type:'caisse_mouvement', entity_id:mvtId, doc_categorie:'justificatif',
+      name:d.name, type:d.type, size:d.size, blob:d.blob, upload_date:d.upload_date||today(), description:'Justificatif caisse' };
+    try { await dbPut('documents', doc); if(typeof syncToSupabase==='function') syncToSupabase('pi_documents', doc); } catch(e){}
+  }
+  for (var j=0;j<_cbDocsToDelete.length;j++){
+    try { await deleteRecord('documents', _cbDocsToDelete[j], { skipIntegrity:true }); }
+    catch(e){ try{ await dbDelete('documents', _cbDocsToDelete[j]); if(typeof deleteFromSupabase==='function') deleteFromSupabase('pi_documents', _cbDocsToDelete[j]); }catch(_){} }
+  }
+  _cbDocs=[]; _cbDocsToDelete=[];
+  await caisseLoadDocIndex();
+  if (typeof caisseRenderVentilation==='function') caisseRenderVentilation();
+}
+
+/* Consultation des pièces par le comptable (ventilation / brouillard) */
+async function caisseViewDocs(mvtId){
+  var m=(DATA.caisse_mouvements||[]).find(function(x){return x.id===mvtId;});
+  document.getElementById('cbv-title').textContent='📎 Pièces — '+((m&&m.numero)||'');
+  var list=document.getElementById('cbv-list');
+  list.innerHTML='<span style="color:var(--blanc-dim);">Chargement…</span>';
+  openModal('modal-caisse-docs');
+  var docs=[];
+  try { var all=await dbGetAll('documents'); docs=(all||[]).filter(function(d){ return d.entity_type==='caisse_mouvement' && d.entity_id===mvtId; }); } catch(e){}
+  if(!docs.length){ list.innerHTML='<div style="text-align:center;color:var(--blanc-dim);padding:16px;">Aucune pièce justificative jointe à ce mouvement.</div>'; return; }
+  list.innerHTML=docs.map(function(d){
+    var isImg=/image/i.test(d.type);
+    return '<div style="border:1px solid var(--bord);border-radius:8px;padding:10px;margin-bottom:10px;">'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:'+(isImg?'8px':'0')+';">'
+      +'<span>'+_cbIcon(d.type)+'</span><div style="flex:1;font-weight:600;">'+escHtml(d.name)+'</div>'
+      +'<span style="font-size:10px;color:var(--blanc-dim);">'+_cbSize(d.size)+'</span>'
+      +'<a class="btn btn-secondary btn-sm" href="'+d.blob+'" download="'+escHtml(d.name)+'">⬇</a></div>'
+      +(isImg?'<img src="'+d.blob+'" style="max-width:100%;border-radius:6px;">':'')
+      +'</div>';
+  }).join('');
 }
 
 /* ── Brouillard journalier ───────────────────────────────────────────── */
@@ -64758,6 +65652,7 @@ function caisseRenderBrouillardSession(sessionId) {
       + '<td>'
       + (caisseCanEditBon(m) ? '<button class="btn btn-secondary btn-sm btn-icon" title="Modifier le bon" onclick="caisseEditBonModal(\'' + m.id + '\')">✏️</button> ' : '')
       + '<button class="btn btn-secondary btn-sm btn-icon" title="Imprimer le bon" onclick="caisseImprimerBon(\'' + m.id + '\')">🖨️</button>'
+      + (caisseDocCount(m.id) ? ' <button class="btn btn-primary btn-sm" title="Pièces justificatives" onclick="caisseViewDocs(\'' + m.id + '\')">📎 ' + caisseDocCount(m.id) + '</button>' : '')
       + (caisseRoleAdminLike() ? ' <button class="btn btn-danger btn-sm btn-icon" title="Supprimer le mouvement" onclick="caisseSupprimerMouvement(\'' + m.id + '\')">🗑️</button>' : '')
       + (m.statut === 'ventile' ? '<span title="Ventilé" style="margin-left:4px;color:var(--vert);">✓</span>' : '<span title="En attente de ventilation" style="margin-left:4px;color:var(--dim);">⏳</span>')
       + (_caissePending(m.id) ? '<span title="Non synchronisé au cloud — écriture locale seulement" style="margin-left:4px;color:var(--rouge,#dc2626);font-weight:700;">☁✗</span>' : '')
@@ -64843,7 +65738,7 @@ function caisseImprimerBrouillard() {
     + '<div>Caissière : ' + escHtml(session.ouverte_par||'') + '<br><br>___________________</div>'
     + '<div>Vérifié par (Comptabilité)<br><br>___________________</div>'
     + '</div></div>';
-  openPrintPreview(html, 'Brouillard de caisse — ' + (c?c.nom:'') + ' — ' + session.date);
+  openPrintPreview(html, 'Brouillard de caisse — ' + (c?c.nom:'') + ' — ' + session.date, true);
 }
 
 /* ── Clôture de caisse ───────────────────────────────────────────────── */
@@ -65285,7 +66180,9 @@ function caisseRenderVentilation() {
         + '<td>' + escHtml(m.motif||'') + (m.beneficiaire ? ' — ' + escHtml(m.beneficiaire) : '') + '</td>'
         + '<td style="text-align:right;">' + fmtF(m.montant) + '</td>'
         + '<td><select class="form-control" id="cv-compte-' + m.id + '" style="min-width:220px;"><option value="">— choisir —</option>' + _caisseCompteOptionsHtml('') + '</select></td>'
-        + '<td><button class="btn btn-secondary btn-sm btn-icon" title="Imprimer le bon" onclick="caisseImprimerBon(\'' + m.id + '\')">🖨️</button> <button class="btn btn-secondary btn-sm btn-icon" title="Modifier avant ventilation" onclick="caisseEditBonModal(\'' + m.id + '\')">✏️</button> <button class="btn btn-primary btn-sm" onclick="caisseVentilerLigne(\'' + m.id + '\')">✅ Ventiler</button></td>'
+        + '<td><button class="btn btn-secondary btn-sm btn-icon" title="Imprimer le bon" onclick="caisseImprimerBon(\'' + m.id + '\')">🖨️</button> '
+        + '<button class="btn ' + (caisseDocCount(m.id) ? 'btn-primary' : 'btn-secondary') + ' btn-sm" title="Pièces justificatives" onclick="caisseViewDocs(\'' + m.id + '\')">📎' + (caisseDocCount(m.id) ? ' ' + caisseDocCount(m.id) : '') + '</button> '
+        + '<button class="btn btn-secondary btn-sm btn-icon" title="Modifier avant ventilation" onclick="caisseEditBonModal(\'' + m.id + '\')">✏️</button> <button class="btn btn-primary btn-sm" onclick="caisseVentilerLigne(\'' + m.id + '\')">✅ Ventiler</button></td>'
         + '</tr>';
     });
     html += '</tbody></table></div>';
@@ -65940,12 +66837,32 @@ function caisseEcartNonRegularise(){
         <div class="form-group span-2"><label>N° de pièce justificative (facture, reçu…)</label><input class="form-control" id="cb-piece" placeholder="Ex : FAC-2026-0148, reçu n°037"></div>
         <div class="form-group span-2"><label>Motif / libellé *</label><input class="form-control" id="cb-motif" placeholder="Achat fournitures bureau, remboursement transport..."></div>
         <div class="form-group span-2"><label>Bénéficiaire / tiers (optionnel)</label><input class="form-control" id="cb-beneficiaire" placeholder="Nom du bénéficiaire ou du fournisseur"></div>
+        <div class="form-group span-2">
+          <label style="display:flex;justify-content:space-between;align-items:center;">
+            <span>📎 Pièces justificatives</span>
+            <button class="btn btn-secondary btn-sm" type="button" onclick="cbTriggerDocUpload()">+ Joindre un document</button>
+          </label>
+          <div id="cb-docs" style="font-size:12px;margin-top:6px;"></div>
+        </div>
       </div>
     </div>
+    <input type="file" id="cb-doc-file-input" style="display:none;" onchange="cbHandleDocFile(this)">
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-caisse-bon')">Annuler</button>
       <button class="btn btn-primary" onclick="caisseSaveBon()">💾 Enregistrer le bon</button>
     </div>
+  </div>
+</div>
+
+<!-- Modal : consultation des pièces jointes d'un mouvement de caisse -->
+<div class="modal-overlay" id="modal-caisse-docs">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="cbv-title">📎 Pièces justificatives</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-caisse-docs')">✕</button>
+    </div>
+    <div class="modal-body"><div id="cbv-list" style="font-size:13px;"></div></div>
+    <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('modal-caisse-docs')">Fermer</button></div>
   </div>
 </div>
 
