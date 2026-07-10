@@ -17023,9 +17023,23 @@ function renderSyncQuarantine() {
 }
 
 function _quarWrite(q){ try { localStorage.setItem(_SYNC_QUARANTINE_KEY, JSON.stringify(q)); } catch(e){} }
+function _quarEstResurrection(e){
+  /* Une entrée quarantaine 'upsert' visant un id supprimé depuis (tombstone actif)
+     ne doit jamais être réinjectée telle quelle dans la file — elle ressusciterait
+     l'enregistrement côté Supabase. */
+  if (!e || e.op === 'delete' || !e.id) return false;
+  var te = SUPA_STORE_MAP.find(function(x){ return x[0] === e.table; });
+  var store = te ? te[1] : null;
+  return !!(store && typeof tombHas === 'function' && tombHas(store, e.id));
+}
 function requarUne(idx) {
   var q = _quarRead(); var e = q[idx]; if (!e) return;
   q.splice(idx,1); _quarWrite(q);
+  if (_quarEstResurrection(e)) {
+    toast('⛔ Ignoré — cet enregistrement a été supprimé depuis (tombstone actif).', 'info');
+    renderSyncQuarantine();
+    return;
+  }
   delete e.raison; delete e.quarantaine_le; e.tentatives = 0;
   _outboxEnqueue(e);
   toast('♻️ Réinjecté dans la file — Réessayer la file pour envoyer.', 'info');
@@ -17034,8 +17048,12 @@ function requarUne(idx) {
 function requarTout() {
   var q = _quarRead(); if (!q.length) return;
   _quarWrite([]);
-  q.forEach(function(e){ delete e.raison; delete e.quarantaine_le; e.tentatives = 0; _outboxEnqueue(e); });
-  toast('♻️ ' + q.length + ' opération(s) réinjectée(s) dans la file.', 'info');
+  var bloquees = 0;
+  q.forEach(function(e){
+    if (_quarEstResurrection(e)) { bloquees++; return; }
+    delete e.raison; delete e.quarantaine_le; e.tentatives = 0; _outboxEnqueue(e);
+  });
+  toast('♻️ ' + (q.length-bloquees) + ' opération(s) réinjectée(s)' + (bloquees ? ' — ' + bloquees + ' ignorée(s) (supprimées depuis)' : '') + '.', 'info');
   if (navigator.onLine) { try { flushSyncOutbox().then(function(){ renderSyncQuarantine(); }); } catch(e){} }
   renderSyncQuarantine();
 }
@@ -17264,6 +17282,22 @@ async function flushSyncOutbox() {
       if (e.op !== 'delete' && (!e.id || !e.obj)) {
         _quarAdd(e, 'Entrée invalide (id ou objet manquant)');
         q.splice(i,1); _outboxWrite(q); continue;
+      }
+
+      /* ── GARDE TOMBSTONE ──────────────────────────────────────────────
+         Un 'upsert' en file peut être ANTÉRIEUR à une suppression locale plus
+         récente du même enregistrement (édition mise en attente hors-ligne,
+         puis suppression avant reconnexion — ou requarTout() qui réinjecte une
+         vieille entrée en quarantaine). Le pousser tel quel ressusciterait la
+         ligne côté Supabase, qui repartirait ensuite vers tous les postes via
+         Realtime. On convertit en DELETE pour purger au lieu de résurrecter. */
+      if (e.op !== 'delete' && e.id) {
+        var _te2 = SUPA_STORE_MAP.find(function(x){ return x[0] === e.table; });
+        var _store2 = _te2 ? _te2[1] : null;
+        if (_store2 && typeof tombHas === 'function' && tombHas(_store2, e.id)) {
+          e = { op:'delete', table:e.table, id:e.id };
+          q[i] = e; _outboxWrite(q);
+        }
       }
 
       var ok = false;
@@ -40135,6 +40169,18 @@ async function _rtApply(table, eventType, newRow, oldRow){
     /* INSERT ou UPDATE */
     var incoming = _supaUnwrap(table, newRow);
     if (!incoming || !incoming.id) return;
+    /* ── GARDE TOMBSTONE ──────────────────────────────────────────────
+       Sans ce check, un événement realtime (INSERT/UPDATE) arrivant APRÈS
+       une suppression locale réinjecte l'enregistrement dans DATA[store] et
+       IndexedDB — même s'il vient d'être supprimé sur ce poste. C'est le
+       chemin de réinjection qui n'était PAS couvert par pullFromCloudSilent()
+       (celui-ci a bien la garde, cf. tombHas() ligne ~17209).
+       Auto-guérison : on renvoie une suppression Supabase pour purger la
+       ligne fantôme côté serveur, au lieu de la laisser revenir en boucle. */
+    if (typeof tombHas === 'function' && tombHas(store, incoming.id)) {
+      try { if (typeof deleteFromSupabase === 'function') deleteFromSupabase(table, incoming.id); } catch(e){}
+      return;
+    }
     var idx = DATA[store].findIndex(function(x){ return x.id === incoming.id; });
     if (idx >= 0) {
       var existing = DATA[store][idx];
