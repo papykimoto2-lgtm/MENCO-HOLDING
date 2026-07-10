@@ -13211,6 +13211,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
             <button class="btn btn-secondary btn-sm" onclick="brnAdd()">+ Borne</button>
             <label class="btn btn-secondary btn-sm" style="cursor:pointer;">📥 Import CSV<input type="file" accept=".csv,.txt" style="display:none;" onchange="brnImportBornesCSV(this)"></label>
             <label class="btn btn-secondary btn-sm" style="cursor:pointer;">📐 Import DXF/DWG<input type="file" accept=".dxf,.dwg" style="display:none;" onchange="brnImportDXF(this)"></label>
+            <button class="btn btn-secondary btn-sm" onclick="grefOpen()">📍 Géoréférencer un plan</button>
             <label class="btn btn-primary btn-sm" for="parc-scan-dossier-input" style="cursor:pointer;background:var(--vert,#1A6B3A);border-color:var(--vert,#1A6B3A);">📄 Scanner dossier</label>
           </div>
           <div style="width:1px;background:var(--bord);align-self:stretch;"></div>
@@ -13282,6 +13283,57 @@ button:focus-visible, input:focus-visible, select:focus-visible {
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-parcelle')">Annuler</button>
       <button class="btn btn-primary" onclick="saveParcelle()">Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Géoréférencement d'un plan (image/PDF) → bornes -->
+<div class="modal-overlay" id="modal-georef">
+  <div class="modal modal-lg" style="max-width:1100px;">
+    <div class="modal-header">
+      <div>
+        <h3 style="margin-bottom:3px;">📍 Géoréférencer un plan</h3>
+        <div style="font-size:11px;color:var(--dim);">Amers de grille (≥3) → tracé des bornes → coordonnées terrain calculées. Repérage uniquement — précision non légale.</div>
+      </div>
+      <button class="btn btn-secondary btn-icon" onclick="grefClose()">✕</button>
+    </div>
+    <div style="padding:12px 16px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+        <label class="btn btn-primary btn-sm" style="cursor:pointer;">📂 Charger plan (image/PDF)<input type="file" id="gref-file" accept="image/*,.pdf" style="display:none;" onchange="grefLoad(this)"></label>
+        <div style="width:1px;background:var(--bord);align-self:stretch;"></div>
+        <button class="btn btn-secondary btn-sm" id="gref-mode-amer" onclick="grefSetMode('amer')">➕ Amer (point grille)</button>
+        <button class="btn btn-secondary btn-sm" id="gref-mode-borne" onclick="grefSetMode('borne')">➕ Borne</button>
+        <button class="btn btn-secondary btn-sm" onclick="grefUndo()">↩︎ Annuler dernier</button>
+        <div style="width:1px;background:var(--bord);align-self:stretch;"></div>
+        <button class="btn btn-secondary btn-sm" onclick="grefZoom(1.25)">🔍+</button>
+        <button class="btn btn-secondary btn-sm" onclick="grefZoom(0.8)">🔍−</button>
+        <button class="btn btn-secondary btn-sm" onclick="grefFit()">⤢ Ajuster</button>
+        <span id="gref-hint" style="font-size:11px;color:var(--blanc-dim);"></span>
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        <div style="flex:1 1 560px;min-width:320px;">
+          <div id="gref-canvas-wrap" style="position:relative;border:1px solid var(--bord);border-radius:8px;overflow:hidden;background:#0d0d14;height:520px;touch-action:none;">
+            <canvas id="gref-canvas" style="display:block;width:100%;height:100%;cursor:crosshair;"></canvas>
+            <div id="gref-empty" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--blanc-dim);font-size:13px;text-align:center;padding:20px;">Chargez un plan (image ou PDF). Les plans KAGEO Print-to-PDF sont rastérisés automatiquement.</div>
+          </div>
+          <div style="font-size:11px;color:var(--blanc-dim);margin-top:6px;">Zoomez sur une croix de grille (+), cliquez dessus, saisissez son X/Y. Répétez sur 3 croix non alignées. Passez ensuite en mode « Borne » et cliquez chaque sommet dans l'ordre.</div>
+        </div>
+        <div style="flex:1 1 300px;min-width:260px;">
+          <div class="card" style="padding:10px;margin-bottom:8px;">
+            <div style="font-weight:700;font-size:12px;margin-bottom:6px;">Amers de calibration <span class="tbadge" id="gref-amer-count">0</span></div>
+            <div id="gref-amer-list" style="font-size:11px;"></div>
+          </div>
+          <div id="gref-quality" style="font-size:11px;margin-bottom:8px;"></div>
+          <div class="card" style="padding:10px;">
+            <div style="font-weight:700;font-size:12px;margin-bottom:6px;">Bornes tracées <span class="tbadge" id="gref-borne-count">0</span></div>
+            <div id="gref-borne-list" style="font-size:11px;max-height:180px;overflow:auto;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="grefClose()">Annuler</button>
+      <button class="btn btn-primary" onclick="grefApply()">✔ Injecter les bornes</button>
     </div>
   </div>
 </div>
@@ -53320,6 +53372,251 @@ function _dxfApplyBornes(bornes, srcLabel){
   var a = brnArea();
   toast(bornes.length+' borne(s) importée(s) depuis '+srcLabel+(a>0?' · superficie '+(a/10000).toFixed(4)+' ha':''),'success');
 }
+
+/* ══════════════════════════════════════════════
+   GÉORÉFÉRENCEMENT D'UN PLAN (image / PDF KAGEO) → bornes
+   Transformation affine estimée par moindres carrés à partir
+   d'amers de grille (≥3, non alignés). Gère rotation, échelle,
+   inclinaison ET inversion d'axe Y (pixel bas ≠ Nord haut).
+   ⚠ Repérage cartographique — précision pixel, non légale.
+   ══════════════════════════════════════════════ */
+var _gref = { img:null, amers:[], bornes:[], mode:'amer', view:{s:1,ox:0,oy:0}, T:null };
+
+function grefOpen(){
+  document.getElementById('modal-georef').classList.add('open');
+  grefSetMode('amer');
+  grefRedraw(); grefRenderLists();
+}
+function grefClose(){ document.getElementById('modal-georef').classList.remove('open'); }
+function grefSetMode(m){
+  _gref.mode=m;
+  var a=document.getElementById('gref-mode-amer'), b=document.getElementById('gref-mode-borne');
+  if(a) a.className='btn btn-sm '+(m==='amer'?'btn-primary':'btn-secondary');
+  if(b) b.className='btn btn-sm '+(m==='borne'?'btn-primary':'btn-secondary');
+  var h=document.getElementById('gref-hint');
+  if(h) h.textContent = m==='amer' ? 'Clic = amer de grille (X/Y connus)' : 'Clic = borne (coordonnées calculées)';
+}
+
+async function grefLoad(input){
+  var fl=input.files&&input.files[0]; if(!fl) return; input.value='';
+  try{
+    var img;
+    if(/pdf$/i.test(fl.name)||fl.type==='application/pdf'){
+      toast('Rastérisation du PDF…','info');
+      img = await _grefPdfToImage(fl);
+    } else {
+      img = await _grefFileToImage(fl);
+    }
+    _gref.img=img; _gref.amers=[]; _gref.bornes=[]; _gref.T=null;
+    document.getElementById('gref-empty').style.display='none';
+    grefFit(); grefRenderLists(); grefRenderQuality();
+    toast('Plan chargé ('+img.width+'×'+img.height+' px).','success');
+  }catch(e){ toast('Chargement impossible : '+(e.message||e),'error'); }
+}
+function _grefFileToImage(fl){
+  return new Promise(function(res,rej){
+    var r=new FileReader();
+    r.onload=function(){ var im=new Image(); im.onload=function(){res(im);}; im.onerror=function(){rej(new Error('image illisible'));}; im.src=r.result; };
+    r.onerror=function(){rej(new Error('lecture échouée'));}; r.readAsDataURL(fl);
+  });
+}
+async function _grefPdfToImage(fl){
+  var lib=await _loadPdfJs();
+  var buf=await fl.arrayBuffer();
+  var pdf=await lib.getDocument({data:buf}).promise;
+  var page=await pdf.getPage(1);
+  var vp0=page.getViewport({scale:1});
+  var target=2400; // largeur cible px pour lisibilité de la grille
+  var scale=Math.min(4, target/vp0.width);
+  var vp=page.getViewport({scale:scale});
+  var cv=document.createElement('canvas'); cv.width=Math.round(vp.width); cv.height=Math.round(vp.height);
+  await page.render({canvasContext:cv.getContext('2d'),viewport:vp}).promise;
+  var im=new Image(); await new Promise(function(res){ im.onload=res; im.src=cv.toDataURL('image/png'); });
+  return im;
+}
+
+function grefFit(){
+  var img=_gref.img; if(!img) return;
+  var wrap=document.getElementById('gref-canvas-wrap');
+  var cw=wrap.clientWidth, ch=wrap.clientHeight;
+  var s=Math.min(cw/img.width, ch/img.height);
+  _gref.view={ s:s, ox:(cw-img.width*s)/2, oy:(ch-img.height*s)/2 };
+  grefRedraw();
+}
+function grefZoom(f){
+  var wrap=document.getElementById('gref-canvas-wrap');
+  var cx=wrap.clientWidth/2, cy=wrap.clientHeight/2;
+  _grefZoomAt(f,cx,cy);
+}
+function _grefZoomAt(f,cx,cy){
+  var v=_gref.view;
+  var ix=(cx-v.ox)/v.s, iy=(cy-v.oy)/v.s;
+  v.s*=f; v.ox=cx-ix*v.s; v.oy=cy-iy*v.s;
+  grefRedraw();
+}
+function _grefCanvasPt(evt){
+  var cv=document.getElementById('gref-canvas');
+  var r=cv.getBoundingClientRect();
+  var sx=cv.width/r.width, sy=cv.height/r.height;
+  return { x:(evt.clientX-r.left)*sx, y:(evt.clientY-r.top)*sy };
+}
+function _grefToImg(cx,cy){ var v=_gref.view; return { x:(cx-v.ox)/v.s, y:(cy-v.oy)/v.s }; }
+
+function grefRedraw(){
+  var cv=document.getElementById('gref-canvas'); if(!cv) return;
+  var wrap=document.getElementById('gref-canvas-wrap');
+  cv.width=wrap.clientWidth; cv.height=wrap.clientHeight;
+  var ctx=cv.getContext('2d'); ctx.clearRect(0,0,cv.width,cv.height);
+  var img=_gref.img; if(!img) return;
+  var v=_gref.view;
+  ctx.imageSmoothingEnabled=true;
+  ctx.drawImage(img, v.ox, v.oy, img.width*v.s, img.height*v.s);
+  // amers (rouge)
+  _gref.amers.forEach(function(a,i){ _grefMarker(ctx, v.ox+a.px*v.s, v.oy+a.py*v.s, '#e11d48', 'A'+(i+1)); });
+  // bornes (vert) + polyligne
+  if(_gref.bornes.length>1){
+    ctx.beginPath();
+    _gref.bornes.forEach(function(b,i){ var X=v.ox+b.px*v.s, Y=v.oy+b.py*v.s; if(i===0)ctx.moveTo(X,Y); else ctx.lineTo(X,Y); });
+    ctx.strokeStyle='rgba(26,107,58,0.9)'; ctx.lineWidth=1.5; ctx.stroke();
+  }
+  _gref.bornes.forEach(function(b,i){ _grefMarker(ctx, v.ox+b.px*v.s, v.oy+b.py*v.s, '#1A6B3A', b.nom); });
+}
+function _grefMarker(ctx,x,y,color,label){
+  ctx.beginPath(); ctx.arc(x,y,4,0,6.283); ctx.fillStyle=color; ctx.fill();
+  ctx.strokeStyle='#fff'; ctx.lineWidth=1; ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x-8,y); ctx.lineTo(x+8,y); ctx.moveTo(x,y-8); ctx.lineTo(x,y+8);
+  ctx.strokeStyle=color; ctx.lineWidth=0.7; ctx.stroke();
+  ctx.font='11px sans-serif'; ctx.fillStyle='#fff'; ctx.strokeStyle='rgba(0,0,0,0.7)'; ctx.lineWidth=3;
+  ctx.strokeText(label,x+7,y-6); ctx.fillText(label,x+7,y-6);
+}
+
+function grefUndo(){
+  if(_gref.mode==='amer'&&_gref.amers.length) _gref.amers.pop();
+  else if(_gref.mode==='borne'&&_gref.bornes.length){ _gref.bornes.pop(); }
+  _grefRenumber(); grefFitTransform(); grefRedraw(); grefRenderLists(); grefRenderQuality();
+}
+function _grefRenumber(){ _gref.bornes.forEach(function(b,i){ b.nom='B'+(i+1); }); }
+
+function _grefPlace(cx,cy){
+  var p=_grefToImg(cx,cy);
+  if(p.x<0||p.y<0||p.x>_gref.img.width||p.y>_gref.img.height) return;
+  if(_gref.mode==='amer'){
+    var sx=prompt('Amer '+(_gref.amers.length+1)+' — coordonnée X (Est, m) :'); if(sx===null) return;
+    var sy=prompt('Amer '+(_gref.amers.length+1)+' — coordonnée Y (Nord, m) :'); if(sy===null) return;
+    var X=parseFloat((sx||'').replace(',','.')), Y=parseFloat((sy||'').replace(',','.'));
+    if(isNaN(X)||isNaN(Y)){ toast('X/Y invalides.','error'); return; }
+    _gref.amers.push({px:p.x,py:p.y,X:X,Y:Y});
+    grefFitTransform();
+  } else {
+    if(!_gref.T){ toast('Placez d\'abord 3 amers.','error'); return; }
+    _gref.bornes.push({px:p.x,py:p.y,nom:'B'+(_gref.bornes.length+1)});
+  }
+  grefRedraw(); grefRenderLists(); grefRenderQuality();
+}
+
+/* Affine LSQ : [X Y] = A·[px py 1]. Design partagé, 2 RHS. */
+function grefFitTransform(){
+  var A=_gref.amers; _gref.T=null;
+  if(A.length<3) return;
+  var Sxx=0,Sxy=0,Sx=0,Syy=0,Sy=0,Sn=A.length;
+  var bX=[0,0,0], bY=[0,0,0];
+  A.forEach(function(a){
+    Sxx+=a.px*a.px; Sxy+=a.px*a.py; Sx+=a.px; Syy+=a.py*a.py; Sy+=a.py;
+    bX[0]+=a.px*a.X; bX[1]+=a.py*a.X; bX[2]+=a.X;
+    bY[0]+=a.px*a.Y; bY[1]+=a.py*a.Y; bY[2]+=a.Y;
+  });
+  var N=[[Sxx,Sxy,Sx],[Sxy,Syy,Sy],[Sx,Sy,Sn]];
+  var cX=_solve3(N,bX), cY=_solve3(N,bY);
+  if(!cX||!cY){ return; }
+  _gref.T={ ax:cX[0],bx:cX[1],cx:cX[2], ay:cY[0],by:cY[1],cy:cY[2] };
+}
+function _solve3(M,b){
+  var m=[M[0].slice(),M[1].slice(),M[2].slice()], r=b.slice();
+  for(var i=0;i<3;i++){
+    var piv=i; for(var k=i+1;k<3;k++) if(Math.abs(m[k][i])>Math.abs(m[piv][i])) piv=k;
+    if(Math.abs(m[piv][i])<1e-9) return null;
+    var t=m[i];m[i]=m[piv];m[piv]=t; var tr=r[i];r[i]=r[piv];r[piv]=tr;
+    for(var k2=0;k2<3;k2++){ if(k2===i)continue; var f=m[k2][i]/m[i][i];
+      for(var j=0;j<3;j++) m[k2][j]-=f*m[i][j]; r[k2]-=f*r[i]; }
+  }
+  return [r[0]/m[0][0], r[1]/m[1][1], r[2]/m[2][2]];
+}
+function _grefTx(px,py){ var T=_gref.T; return { X:T.ax*px+T.bx*py+T.cx, Y:T.ay*px+T.by*py+T.cy }; }
+
+function grefRenderQuality(){
+  var el=document.getElementById('gref-quality'); if(!el) return;
+  if(!_gref.T){ el.innerHTML='<span style="color:var(--blanc-dim);">Calibration : '+_gref.amers.length+'/3 amers minimum.</span>'; return; }
+  var A=_gref.amers, s=0;
+  A.forEach(function(a){ var t=_grefTx(a.px,a.py); s+=Math.pow(t.X-a.X,2)+Math.pow(t.Y-a.Y,2); });
+  var rms=Math.sqrt(s/A.length);
+  var col=rms<1?'#1A6B3A':(rms<5?'#B87333':'#e11d48');
+  el.innerHTML='<div class="card" style="padding:8px;border-left:3px solid '+col+';">'
+    +'<strong style="color:'+col+';">Résidu RMS ≈ '+rms.toFixed(2)+' m</strong>'
+    +'<div style="color:var(--blanc-dim);font-size:10px;margin-top:2px;">'+(rms<1?'Bonne calibration.':rms<5?'Correct — ajoutez un amer pour affiner.':'Médiocre — vérifiez les X/Y saisis / amers alignés ?')+'</div></div>';
+}
+function grefRenderLists(){
+  var ac=document.getElementById('gref-amer-count'), bc=document.getElementById('gref-borne-count');
+  if(ac)ac.textContent=_gref.amers.length; if(bc)bc.textContent=_gref.bornes.length;
+  var al=document.getElementById('gref-amer-list');
+  if(al) al.innerHTML=_gref.amers.length? _gref.amers.map(function(a,i){ return '<div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid var(--bord);"><span style="color:#e11d48;font-weight:700;">A'+(i+1)+'</span><span>X '+a.X+' · Y '+a.Y+'</span></div>'; }).join('') : '<span style="color:var(--blanc-dim);">Aucun amer. Cliquez sur 3 croix de grille.</span>';
+  var bl=document.getElementById('gref-borne-list');
+  if(bl){
+    if(!_gref.bornes.length){ bl.innerHTML='<span style="color:var(--blanc-dim);">Aucune borne. Passez en mode Borne.</span>'; }
+    else if(!_gref.T){ bl.innerHTML='<span style="color:#e11d48;">Calibration incomplète.</span>'; }
+    else bl.innerHTML=_gref.bornes.map(function(b){ var t=_grefTx(b.px,b.py); return '<div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid var(--bord);"><span style="color:#1A6B3A;font-weight:700;">'+b.nom+'</span><span>'+t.X.toFixed(2)+' · '+t.Y.toFixed(2)+'</span></div>'; }).join('');
+  }
+}
+
+function grefApply(){
+  if(!_gref.T){ toast('Calibrez d\'abord (3 amers).','error'); return; }
+  if(_gref.bornes.length<3){ toast('Tracez au moins 3 bornes.','error'); return; }
+  var pts=_gref.bornes.map(function(b){ var t=_grefTx(b.px,b.py); return { nom:b.nom, x:+t.X.toFixed(2), y:+t.Y.toFixed(2), z:0, angle:0, distance:0 }; });
+  var mode = (_brnList&&_brnList.length) ? confirm('Le tableau contient déjà '+_brnList.length+' borne(s).\n\nOK = Remplacer · Annuler = Ajouter à la suite.') : true;
+  _brnList = mode ? pts : (_brnList||[]).concat(pts);
+  brnRender();
+  var a=brnArea();
+  grefClose();
+  toast(pts.length+' borne(s) géoréférencée(s)'+(a>0?' · superficie '+(a/10000).toFixed(4)+' ha':'')+' — précision de repérage, à valider.','success');
+}
+
+/* Interactions pointeur : pan / pinch / clic-placement */
+(function grefBindPointer(){
+  function bind(){
+    var wrap=document.getElementById('gref-canvas-wrap'); if(!wrap||wrap._grefBound) return; wrap._grefBound=true;
+    var ptrs={}, moved=0, startAvg=null, startDist=0, startView=null;
+    wrap.addEventListener('pointerdown', function(e){
+      if(!_gref.img) return; wrap.setPointerCapture(e.pointerId);
+      ptrs[e.pointerId]={x:e.clientX,y:e.clientY}; moved=0;
+      var ids=Object.keys(ptrs);
+      startView={s:_gref.view.s,ox:_gref.view.ox,oy:_gref.view.oy};
+      if(ids.length===2){ var a=ptrs[ids[0]],b=ptrs[ids[1]]; startDist=Math.hypot(a.x-b.x,a.y-b.y); startAvg={x:(a.x+b.x)/2,y:(a.y+b.y)/2}; }
+    });
+    wrap.addEventListener('pointermove', function(e){
+      if(!ptrs[e.pointerId]) return;
+      var prev=ptrs[e.pointerId]; var dx=e.clientX-prev.x, dy=e.clientY-prev.y;
+      moved+=Math.abs(dx)+Math.abs(dy);
+      ptrs[e.pointerId]={x:e.clientX,y:e.clientY};
+      var ids=Object.keys(ptrs);
+      if(ids.length===1){ _gref.view.ox+=dx; _gref.view.oy+=dy; grefRedraw(); }
+      else if(ids.length===2){
+        var a=ptrs[ids[0]],b=ptrs[ids[1]]; var d=Math.hypot(a.x-b.x,a.y-b.y);
+        var r=wrap.getBoundingClientRect();
+        if(startDist>0){ var f=d/startDist; _gref.view=Object.assign({},startView); _grefZoomAt(f, startAvg.x-r.left, startAvg.y-r.top); }
+      }
+    });
+    function up(e){
+      if(!ptrs[e.pointerId]) return;
+      var single=Object.keys(ptrs).length===1;
+      delete ptrs[e.pointerId];
+      if(single && moved<6 && _gref.img){ var p=_grefCanvasPt(e); _grefPlace(p.x,p.y); }
+    }
+    wrap.addEventListener('pointerup', up);
+    wrap.addEventListener('pointercancel', function(e){ delete ptrs[e.pointerId]; });
+    wrap.addEventListener('wheel', function(e){ if(!_gref.img)return; e.preventDefault(); var r=wrap.getBoundingClientRect(); _grefZoomAt(e.deltaY<0?1.12:0.89, e.clientX-r.left, e.clientY-r.top); }, {passive:false});
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', bind);
+  else bind();
+})();
 
 function brnImportDXF(input){
   var fl = input.files && input.files[0]; if(!fl){ return; }
