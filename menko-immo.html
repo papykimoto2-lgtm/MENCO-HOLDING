@@ -15822,6 +15822,7 @@ var DATA = {
   chantier_couts: [],
   depots: [],
   fournisseurs: [],
+  tiers_comptables: [],
   bons_commande: [],
   receptions: [],
   factures_fournisseur: [],
@@ -15907,6 +15908,7 @@ var ALL_STORES = [
   'chantier_couts',
   'depots',
   'fournisseurs',
+  'tiers_comptables',
   'bons_commande',
   'receptions',
   'factures_fournisseur',
@@ -16520,6 +16522,7 @@ var SUPA_STORE_MAP = [
   ['pi_chantier_couts',  'chantier_couts'],
   ['pi_depots',          'depots'],
   ['pi_fournisseurs',    'fournisseurs'],
+  ['pi_tiers_comptables','tiers_comptables'],
   ['pi_bons_commande',   'bons_commande'],
   ['pi_receptions',      'receptions'],
   ['pi_factures_fournisseur','factures_fournisseur'],
@@ -16651,7 +16654,7 @@ function _libelleStore(store) {
     conges_rh:'Congés', candidats_rh:'Candidats', postes_ouverts:'Postes ouverts', formations_rh:'Formations',
     mobilites_rh:'Mobilité interne (mutations)',
     constructeurs:'Constructeurs', conventions:'Conventions', situations:'Situations de travaux',
-    avenants:'Avenants', fournisseurs:'Fournisseurs', depots:'Dépôts', stock_mouvements:'Mouvements de stock',
+    avenants:'Avenants', fournisseurs:'Fournisseurs', tiers_comptables:'Tiers comptables', depots:'Dépôts', stock_mouvements:'Mouvements de stock',
     bons_commande:'Bons de commande', factures_fournisseur:'Factures fournisseurs',
     receptions:'Réceptions', receptions_travaux:'Réceptions travaux', livraisons:'Livraisons', receptions_dossiers:'Dossiers de réception',
     parcelles:'Parcelles (foncier)', parcelles_morcellement:'Morcellements', mutations:'Mutations foncières',
@@ -31763,6 +31766,40 @@ var IMPORT_MODULES = [
       {key:'nature', label:'Nature',            required:false, hint:'actif / passif / actif_contra / charge / produit / tresorerie / variable — défaut: charge'},
     ]
   },
+  {
+    id:'ecritures_comptables', label:'Écritures comptables (journal / FEC)', icon:'📑', store:'ecritures', grouped:true,
+    description:'Reprise du journal depuis Sage Saari, Ciel, EBP… (format FEC normalisé ou export CSV)',
+    fields:[
+      {key:'journalcode',   label:'Code journal',              required:true,  hint:'Ex: AC, VE, BQ, OD… (colonne JournalCode du FEC)'},
+      {key:'journallib',    label:'Libellé journal',            required:false, hint:'JournalLib'},
+      {key:'ecriturenum',   label:'N° écriture',                required:false, hint:'EcritureNum — sert à regrouper les lignes d\'une même écriture. Laissez vide si absent (1 ligne = 1 écriture, à vérifier).'},
+      {key:'ecrituredate',  label:'Date écriture',              required:true,  hint:'AAAAMMJJ (FEC) ou AAAA-MM-JJ — EcritureDate'},
+      {key:'comptenum',     label:'Compte',                     required:true,  hint:'Code du plan comptable — CompteNum'},
+      {key:'comptelib',     label:'Libellé compte',             required:false, hint:'CompteLib'},
+      {key:'compauxnum',    label:'Compte auxiliaire (tiers)',  required:false, hint:'CompAuxNum — code client/fournisseur'},
+      {key:'compauxlib',    label:'Libellé tiers',              required:false, hint:'CompAuxLib'},
+      {key:'pieceref',      label:'Réf. pièce',                 required:false, hint:'PieceRef'},
+      {key:'piecedate',     label:'Date pièce',                 required:false, hint:'PieceDate'},
+      {key:'ecriturelib',   label:'Libellé écriture',           required:true,  hint:'EcritureLib'},
+      {key:'debit',         label:'Débit',                      required:false, type:'number', hint:'Laissez vide/0 sur les lignes créditrices'},
+      {key:'credit',        label:'Crédit',                     required:false, type:'number', hint:'Laissez vide/0 sur les lignes débitrices'},
+      {key:'ecriturelet',   label:'Lettrage',                   required:false, hint:'EcritureLet'},
+      {key:'datelet',       label:'Date de lettrage',           required:false, hint:'DateLet'},
+    ]
+  },
+  {
+    id:'tiers_comptables', label:'Tiers comptables (clients/fournisseurs)', icon:'👥', store:'tiers_comptables',
+    description:'Répertoire des comptes auxiliaires 411/401 (annuaire tiers)',
+    fields:[
+      {key:'id',            label:'ID unique',           required:false},
+      {key:'code',           label:'Code tiers (CompAuxNum)', required:true,  hint:'Code du tiers tel qu\'utilisé dans Sage/Ciel/EBP'},
+      {key:'nom',            label:'Nom du tiers',        required:true},
+      {key:'type',           label:'Type',                required:false, hint:'client / fournisseur / autre'},
+      {key:'compte_racine',  label:'Compte racine',       required:false, hint:'Ex: 411 (client) ou 401 (fournisseur)'},
+      {key:'email',          label:'Email',               required:false},
+      {key:'tel',            label:'Téléphone',           required:false},
+    ]
+  },
 ];
 
 /* ─── Import history ─── */
@@ -31779,6 +31816,20 @@ function renderImportPage() {
     +'<div style="font-size:12px;color:var(--blanc-dim);">Importez vos données depuis des fichiers CSV. Téléchargez d\'abord le modèle, remplissez-le et importez. Une prévisualisation vous permet de valider avant l\'enregistrement.</div>'
     +'</div>'
     +'<button class="btn btn-secondary btn-sm" onclick="voirHistoriqueImport()">📋 Historique</button>'
+    +'</div>'
+
+    /* ── Connecteur comptable externe (Sage Saari, Ciel, EBP…) ── */
+    +'<div class="card" style="padding:14px 16px;margin-bottom:14px;">'
+    +'<div style="font-weight:700;font-size:13px;margin-bottom:8px;">🔌 Connecteur comptable externe — Sage Saari, Ciel, EBP…</div>'
+    +'<div style="font-size:12px;color:var(--blanc-dim);margin-bottom:10px;">ImmoSuite ne se connecte pas en direct à Sage/Ciel (pas d\'API cloud ouverte pour ces logiciels) : l\'échange se fait par <strong>fichier exporté</strong>, ce qui fonctionne avec la quasi-totalité des logiciels comptables du marché. Choisissez votre logiciel source pour afficher la marche à suivre, puis utilisez la carte <strong>« Écritures comptables (journal / FEC) »</strong> ci-dessous pour le journal, ou <strong>« Plan comptable »</strong> / <strong>« Tiers comptables »</strong> selon le besoin.</div>'
+    +'<select class="filter-select" id="import-source-profile" style="font-size:12px;max-width:320px;" onchange="_updateSourceProfileHint()">'
+    +'<option value="fec">FEC normalisé (18 colonnes, tabulation)</option>'
+    +'<option value="sage">Sage Saari / Sage 100 / Sage Business Cloud</option>'
+    +'<option value="ciel">Ciel Compta</option>'
+    +'<option value="ebp">EBP Compta</option>'
+    +'<option value="autre">Autre logiciel (export CSV/Excel)</option>'
+    +'</select>'
+    +'<div id="import-source-hint" style="font-size:11px;color:var(--or);margin-top:8px;background:var(--or-glow);border-radius:6px;padding:8px 10px;"></div>'
     +'</div>'
 
     /* Alerte double import */
@@ -31825,7 +31876,7 @@ function renderImportPage() {
     +'<select class="filter-select" id="import-sep" style="font-size:12px;" onchange="reanalyserCSV()">'
     +'<option value=";">Point-virgule (;)</option>'
     +'<option value=",">Virgule (,)</option>'
-    +'<option value="\t">Tabulation</option>'
+    +'<option value="\t">Tabulation (FEC)</option>'
     +'</select></div>'
     +'<div style="display:flex;align-items:flex-end;">'
     +'<label style="font-size:12px;color:var(--blanc-dim);"><input type="checkbox" id="import-premiere-ligne" checked style="margin-right:6px;"> Première ligne = en-têtes</label>'
@@ -31845,6 +31896,23 @@ function renderImportPage() {
     +'</div>'
     +'</div>'
     +'</div>';
+
+  _updateSourceProfileHint();
+}
+
+/* ── Astuces d'export selon le logiciel source sélectionné ── */
+var SOURCE_PROFILE_HINTS = {
+  fec:   '📄 Fichier FEC standard : texte, séparateur tabulation, 18 colonnes (JournalCode, EcritureNum, EcritureDate, CompteNum, CompteLib, PieceRef, EcritureLib, Debit, Credit…). Sélectionnez le fichier .txt tel quel dans la carte « Écritures comptables » — le séparateur tabulation est détecté automatiquement.',
+  sage:  '🟠 Sage Saari / Sage 100 / Sage Business Cloud : menu Fichier → Exporter (ou Import/Export) → « Format Trésorerie Sage, Ciel et FEC » / « Export FEC ». Récupérez le fichier .txt généré et importez-le tel quel dans « Écritures comptables ».',
+  ciel:  '🔵 Ciel Compta : menu Dossier → Import/Export → Export FEC. Le fichier .txt obtenu respecte le format FEC standard et s\'importe directement dans « Écritures comptables ».',
+  ebp:   '🟣 EBP Compta : menu Outils (ou Traitements) → Export → Export FEC (Contrôle fiscal). Importez le fichier .txt généré dans « Écritures comptables ».',
+  autre: '⚪ Autre logiciel : exportez vos écritures en CSV/Excel puis enregistrez-les en .csv. Vous ferez correspondre vous-même les colonnes (compte, débit, crédit, date, libellé…) à l\'étape de prévisualisation — aucun format imposé.'
+};
+function _updateSourceProfileHint() {
+  var sel = document.getElementById('import-source-profile');
+  var hintEl = document.getElementById('import-source-hint');
+  if (!sel || !hintEl) return;
+  hintEl.textContent = SOURCE_PROFILE_HINTS[sel.value] || '';
 }
 
 /* ─── Télécharger modèle CSV ────────────────────────────────── */
@@ -31897,6 +31965,15 @@ function previewCSV(input, moduleId) {
   var reader = new FileReader();
   reader.onload = function(e) {
     _importState.raw = e.target.result;
+    /* Détection auto du séparateur — fichiers FEC (tabulation) très fréquents pour les écritures */
+    var sepSel = document.getElementById('import-sep');
+    if (sepSel) {
+      var firstLine = (_importState.raw.split(/\r?\n/)[0] || '');
+      var nbTab = (firstLine.match(/\t/g)||[]).length;
+      var nbSemi = (firstLine.match(/;/g)||[]).length;
+      var nbComma = (firstLine.match(/,/g)||[]).length;
+      if (nbTab > nbSemi && nbTab > nbComma) sepSel.value = '\t';
+    }
     _afficherPreview(mod);
   };
   reader.readAsText(file, 'UTF-8');
@@ -32054,6 +32131,9 @@ async function confirmerImport() {
 
   /* Import du plan comptable (compte par compte → DATA.params.plan_comptable_*) */
   if (moduleId==='plan_comptable') { await _importPlanComptable(rows, strategy, mod); return; }
+
+  /* Import du journal comptable externe (Sage Saari, Ciel, EBP… format FEC ou CSV) */
+  if (mod.grouped && moduleId==='ecritures_comptables') { await _importEcrituresGrouped(rows, strategy, mod); return; }
 
   var store = mod.store;
   if (!DATA[store]) DATA[store] = [];
@@ -32307,6 +32387,150 @@ async function _importPlanComptable(rows, strategy, mod) {
   if (nbSkipped) msg += ', '+nbSkipped+' ignoré(s)';
   if (nbErr) msg += ', '+nbErr+' erreur(s)';
   toast(msg, (nbErr>0||warns.length)?'warning':'success');
+  if (warns.length) setTimeout(function(){ toast('⚠️ '+warns.length+' contrôle(s) : '+warns.slice(0,3).join(' · ')+(warns.length>3?'…':''), 'warning'); }, 900);
+}
+
+/* ── Utilitaires de parsing pour les connecteurs comptables externes ── */
+function _parseAnyDate(s) {
+  s = String(s||'').trim();
+  if (!s) return '';
+  if (/^\d{8}$/.test(s)) return s.slice(0,4)+'-'+s.slice(4,6)+'-'+s.slice(6,8); /* AAAAMMJJ — format FEC */
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+  var m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  if (m) return m[3]+'-'+m[2].padStart(2,'0')+'-'+m[1].padStart(2,'0');
+  return s;
+}
+function _parseFECNumber(v) {
+  if (v===undefined || v===null || v==='') return 0;
+  var n = parseFloat(String(v).trim().replace(/\s/g,'').replace(',', '.'));
+  return isNaN(n) ? 0 : n;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   IMPORT DU JOURNAL COMPTABLE EXTERNE (Sage Saari, Ciel, EBP, Quadratus…)
+   Accepte le format FEC normalisé (arrêté du 29/07/2013, 18 colonnes,
+   tabulation, un compte par ligne) ou un export CSV « maison » mappé
+   manuellement. Les lignes sont regroupées par EcritureNum (à défaut,
+   par Code journal + Réf. pièce + Date) pour reconstituer chaque
+   écriture en partie double, comme dans le journal de l'application.
+   ══════════════════════════════════════════════════════════════════ */
+async function _importEcrituresGrouped(rows, strategy, mod) {
+  if (!DATA.ecritures) DATA.ecritures = [];
+  var now = new Date().toISOString();
+
+  /* Regroupement des lignes en écritures (préserve l'ordre du fichier) */
+  var groups = {}, order = [];
+  rows.forEach(function(r, i) {
+    var num = String(r.ecriturenum||'').trim();
+    var key = num ? (r.journalcode||'')+'|'+num
+                  : (r.journalcode||'')+'|'+(r.pieceref||'')+'|'+(r.ecrituredate||'')+'|'+i;
+    if (!groups[key]) { groups[key] = []; order.push(key); }
+    groups[key].push(r);
+  });
+
+  var nbNew=0, nbUpdated=0, nbSkipped=0, nbErr=0, warns=[];
+
+  for (var g=0; g<order.length; g++) {
+    var grp = groups[order[g]];
+    var first = grp[0];
+    try {
+      var lignes = grp.map(function(r){
+        var debit = _parseFECNumber(r.debit);
+        var credit = _parseFECNumber(r.credit);
+        return {
+          compte: String(r.comptenum||'').trim(),
+          sens: debit>0 ? 'D' : 'C',
+          montant: debit>0 ? debit : credit,
+          libelle: r.ecriturelib || r.comptelib || '',
+          compte_aux: r.compauxnum||'',
+          compte_aux_lib: r.compauxlib||''
+        };
+      }).filter(function(l){ return l.compte && l.montant>0; });
+
+      if (lignes.length < 2) {
+        nbErr++; warns.push((first.ecriturenum||first.pieceref||'ligne '+(g+1))+' : compte/montant manquant (< 2 lignes exploitables)');
+        continue;
+      }
+      var hasD = lignes.some(function(l){ return l.sens==='D'; });
+      var hasC = lignes.some(function(l){ return l.sens==='C'; });
+      if (!hasD || !hasC) {
+        nbErr++; warns.push((first.ecriturenum||first.pieceref||'?')+' : pas de contrepartie débit/crédit');
+        continue;
+      }
+      var lignesDebit = lignes.filter(function(l){ return l.sens==='D'; });
+      var lignesCredit = lignes.filter(function(l){ return l.sens==='C'; });
+      var totD = lignesDebit.reduce(function(s,l){ return s+l.montant; }, 0);
+      var totC = lignesCredit.reduce(function(s,l){ return s+l.montant; }, 0);
+      if (Math.abs(totD-totC) >= 1) {
+        warns.push((first.ecriturenum||first.pieceref||'?')+' : écriture déséquilibrée (Débit '+fmtF(totD)+' / Crédit '+fmtF(totC)+')');
+      }
+
+      var date = _parseAnyDate(first.ecrituredate) || today();
+      var cDebit = APP.planComptable.find(function(c){ return c.code === lignesDebit[0].compte; });
+      var typeAuto = 'divers';
+      if (cDebit) {
+        if (cDebit.classe === '6') typeAuto = 'charge';
+        else if (cDebit.classe === '7') typeAuto = 'produit';
+        else typeAuto = cDebit.nature || 'divers';
+      }
+
+      var importKey = (first.journalcode||'JRN')+'-'+(first.ecriturenum || first.pieceref || date);
+      var existant = DATA.ecritures.find(function(e){ return e._import_key === importKey; });
+
+      var ecriture = {
+        id: existant ? existant.id : uid(),
+        ref: existant ? existant.ref : ('IMP-'+(first.journalcode||'JRN')+'-'+(first.ecriturenum||String(g+1).padStart(5,'0'))),
+        date: date,
+        piece: first.pieceref || '',
+        type: typeAuto,
+        libelle: first.ecriturelib || lignes[0].libelle || 'Écriture importée',
+        lignes: lignes.map(function(l){ return { compte:l.compte, sens:l.sens, montant:l.montant, libelle:l.libelle }; }),
+        compte: lignesDebit[0].compte,
+        compte_debit: lignesDebit[0].compte,
+        compte_credit: lignesCredit[0].compte,
+        montant: totD,
+        mode: 'import',
+        programme_id: '',
+        notes: 'Importé depuis logiciel externe (FEC/CSV) — journal ' + (first.journalcode||'—') + (first.journallib?(' · '+first.journallib):''),
+        source: 'import_externe',
+        _import_key: importKey,
+        created_at: existant ? existant.created_at : now,
+        updated_at: now
+      };
+
+      if (existant) {
+        if (strategy === 'skip') { nbSkipped++; continue; }
+        var idx = DATA.ecritures.findIndex(function(e){ return e.id === existant.id; });
+        DATA.ecritures[idx] = ecriture;
+        nbUpdated++;
+      } else {
+        DATA.ecritures.push(ecriture);
+        nbNew++;
+      }
+      await dbPut('ecritures', ecriture);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecriture);
+    } catch(e) { nbErr++; }
+  }
+
+  _importHistory.unshift({
+    date: now, module: mod.label, icon: mod.icon,
+    total: rows.length, new: nbNew, updated: nbUpdated, skipped: nbSkipped, errors: nbErr
+  });
+  try { localStorage.setItem('import_history', JSON.stringify(_importHistory.slice(0,20))); } catch(e){}
+
+  fermerPreview();
+  renderImportPage();
+  if (typeof filterEcritures === 'function') filterEcritures();
+  if (typeof buildBalance === 'function') buildBalance();
+  if (typeof buildCompteResultat === 'function') buildCompteResultat();
+  if (typeof buildBilan === 'function') buildBilan();
+  if (typeof buildTresorerie === 'function') buildTresorerie();
+
+  var msg = mod.icon+' Journal : '+nbNew+' écriture(s) créée(s)';
+  if (nbUpdated) msg += ', '+nbUpdated+' mise(s) à jour';
+  if (nbSkipped) msg += ', '+nbSkipped+' ignorée(s)';
+  if (nbErr) msg += ', '+nbErr+' rejetée(s)';
+  toast(msg, (nbErr>0||warns.length) ? 'warning' : 'success');
   if (warns.length) setTimeout(function(){ toast('⚠️ '+warns.length+' contrôle(s) : '+warns.slice(0,3).join(' · ')+(warns.length>3?'…':''), 'warning'); }, 900);
 }
 
