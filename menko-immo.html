@@ -31753,6 +31753,16 @@ var IMPORT_MODULES = [
       {key:'statut',      label:'Statut (ventile/a_ventiler)', required:false, hint:'Historique déjà comptabilisé → ventile (évite de gonfler « à ventiler »)'},
     ]
   },
+  {
+    id:'plan_comptable', label:'Plan comptable (SYSCOHADA)', icon:'📒', store:'plan_comptable',
+    description:'Ajout / mise à jour de comptes du plan comptable',
+    fields:[
+      {key:'code',   label:'Code compte',      required:true,  hint:'Ex: 6055, 4111… Doit commencer par le chiffre de la classe'},
+      {key:'label',  label:'Libellé du compte', required:true},
+      {key:'classe', label:'Classe (1 à 8)',    required:false, hint:'Déduite du 1er chiffre du code si laissée vide'},
+      {key:'nature', label:'Nature',            required:false, hint:'actif / passif / actif_contra / charge / produit / tresorerie / variable — défaut: charge'},
+    ]
+  },
 ];
 
 /* ─── Import history ─── */
@@ -31780,7 +31790,7 @@ function renderImportPage() {
     /* Grille des modules */
     +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;" id="import-modules-grid">'
     + IMPORT_MODULES.map(function(m) {
-        var nbExisting = (DATA[m.store]||[]).length;
+        var nbExisting = m.id==='plan_comptable' ? (APP.planComptable||[]).length : (DATA[m.store]||[]).length;
         return '<div class="card" style="cursor:default;" id="import-card-'+m.id+'">'
           +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;">'
           +'<div><span style="font-size:24px;">'+m.icon+'</span></div>'
@@ -31850,6 +31860,9 @@ function telechargerTemplateCSV(moduleId) {
     if (f.key.includes('date')) return new Date().toISOString().slice(0,10);
     if (f.key==='email') return 'exemple@domaine.com';
     if (f.key==='tel') return '+225 07 00 00 00 00';
+    if (f.key==='code' && moduleId==='plan_comptable') return '6055';
+    if (f.key==='classe' && moduleId==='plan_comptable') return '6';
+    if (f.key==='nature' && moduleId==='plan_comptable') return 'charge';
     return 'exemple';
   }).join(';');
   var csv = '# Modèle import ImmoSuite — '+mod.label+'\n'
@@ -32039,6 +32052,9 @@ async function confirmerImport() {
   /* Import groupé (1 ligne = 1 borne → parcelles[].bornes[]) */
   if (mod.grouped && moduleId==='bornes') { await _importBornesGrouped(rows, strategy, mod); return; }
 
+  /* Import du plan comptable (compte par compte → DATA.params.plan_comptable_*) */
+  if (moduleId==='plan_comptable') { await _importPlanComptable(rows, strategy, mod); return; }
+
   var store = mod.store;
   if (!DATA[store]) DATA[store] = [];
   var _tbl = (function(){ try { var e=(SUPA_STORE_MAP||[]).find(function(x){return x[1]===store;}); return e?e[0]:('pi_'+store); } catch(_){ return 'pi_'+store; } })();
@@ -32213,6 +32229,84 @@ async function _importBornesGrouped(rows, strategy, mod) {
   if (pUpdated) msg += ', '+pUpdated+' mise(s) à jour';
   if (pSkipped) msg += ', '+pSkipped+' ignorée(s)';
   toast(msg, warns.length?'warning':'success');
+  if (warns.length) setTimeout(function(){ toast('⚠️ '+warns.length+' contrôle(s) : '+warns.slice(0,3).join(' · ')+(warns.length>3?'…':''), 'warning'); }, 900);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   IMPORT DU PLAN COMPTABLE (SYSCOHADA)
+   1 ligne CSV = 1 compte. Un compte dont le code existe déjà dans
+   APP.planComptable est traité comme une surcharge (plan_comptable_modifs
+   si standard, ou mise à jour de plan_comptable_custom s'il a été ajouté
+   précédemment) ; un code inconnu devient un nouveau compte personnalisé
+   (plan_comptable_custom). La stratégie de doublon choisie dans l'aperçu
+   (ignorer / mettre à jour / remplacer) s'applique aux comptes déjà
+   présents dans le plan.                                              */
+async function _importPlanComptable(rows, strategy, mod) {
+  DATA.params = DATA.params || {};
+  DATA.params.plan_comptable_custom = DATA.params.plan_comptable_custom || [];
+  DATA.params.plan_comptable_modifs = DATA.params.plan_comptable_modifs || {};
+  DATA.params.plan_comptable_supprimes = DATA.params.plan_comptable_supprimes || [];
+
+  var NATURES_VALIDES = ['actif','passif','actif_contra','charge','produit','tresorerie','variable'];
+  var nbNew=0, nbUpdated=0, nbSkipped=0, nbErr=0, warns=[];
+
+  rows.forEach(function(p) {
+    try {
+      var code = String(p.code||'').trim();
+      var label = String(p.label||'').trim();
+      if (!code || !label) { nbErr++; return; }
+
+      var classe = String(p.classe||'').trim() || code.charAt(0);
+      var nature = String(p.nature||'').trim().toLowerCase() || 'charge';
+      if (NATURES_VALIDES.indexOf(nature) === -1) {
+        warns.push(code+' : nature « '+nature+' » inconnue → « charge » appliquée par défaut');
+        nature = 'charge';
+      }
+      if (classe && code.charAt(0) !== classe) {
+        warns.push(code+' : le code ne commence pas par la classe indiquée ('+classe+')');
+      }
+
+      var existant = APP.planComptable.find(function(c){ return c.code === code; });
+      var estAjoute = DATA.params.plan_comptable_custom.some(function(c){ return c.code === code; });
+
+      if (!existant) {
+        /* Nouveau compte → toujours ajouté, quelle que soit la stratégie */
+        DATA.params.plan_comptable_custom.push({ code:code, label:label, classe:classe, nature:nature });
+        nbNew++;
+      } else {
+        if (strategy === 'skip') { nbSkipped++; return; }
+        if (estAjoute) {
+          var idx = DATA.params.plan_comptable_custom.findIndex(function(c){ return c.code === code; });
+          DATA.params.plan_comptable_custom[idx] = { code:code, label:label, classe:classe, nature:nature };
+        } else {
+          DATA.params.plan_comptable_modifs[code] = { label:label, classe:classe, nature:nature };
+        }
+        /* Un compte précédemment supprimé et réimporté redevient actif */
+        var idxSup = DATA.params.plan_comptable_supprimes.indexOf(code);
+        if (idxSup >= 0) DATA.params.plan_comptable_supprimes.splice(idxSup, 1);
+        nbUpdated++;
+      }
+    } catch(e) { nbErr++; }
+  });
+
+  rebuildPlanComptable();
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_params', DATA.params);
+
+  _importHistory.unshift({
+    date: new Date().toISOString(), module: mod.label, icon: mod.icon,
+    total: rows.length, new: nbNew, updated: nbUpdated, skipped: nbSkipped, errors: nbErr
+  });
+  try { localStorage.setItem('import_history', JSON.stringify(_importHistory.slice(0,20))); } catch(e){}
+
+  fermerPreview();
+  renderImportPage();
+  if (typeof renderPlanComptableParam === 'function') renderPlanComptableParam();
+
+  var msg = mod.icon+' Plan comptable : '+nbNew+' compte(s) ajouté(s)';
+  if (nbUpdated) msg += ', '+nbUpdated+' mis à jour';
+  if (nbSkipped) msg += ', '+nbSkipped+' ignoré(s)';
+  if (nbErr) msg += ', '+nbErr+' erreur(s)';
+  toast(msg, (nbErr>0||warns.length)?'warning':'success');
   if (warns.length) setTimeout(function(){ toast('⚠️ '+warns.length+' contrôle(s) : '+warns.slice(0,3).join(' · ')+(warns.length>3?'…':''), 'warning'); }, 900);
 }
 
