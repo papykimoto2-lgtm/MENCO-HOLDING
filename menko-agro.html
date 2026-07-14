@@ -5808,7 +5808,16 @@ function _agroAccessWindow(){
                     "<button class=\"btn btn-sm btn-outline\" type=\"button\" onclick=\"viderBornage(" + id + ")\">🗑️ Vider les points</button>" +
                   "</span>" +
                 "</div>" +
-                "<div id=\"listeBornagePoints\" style=\"font-size:0.78rem;color:#555;margin-bottom:1rem;max-height:90px;overflow-y:auto;\">" + renderListeBornagePoints(p) + "</div>" +
+                "<div id=\"listeBornagePoints\" style=\"font-size:0.78rem;color:#555;margin-bottom:0.6rem;max-height:110px;overflow-y:auto;\">" + renderListeBornagePoints(p) + "</div>" +
+                "<div style=\"background:#f4f8f6;border:1px solid #d8e4de;border-radius:6px;padding:0.6rem;margin-bottom:1rem;\">" +
+                  "<strong style=\"font-size:0.8rem;\">📐 Ajouter une borne en UTM (relevé géomètre)</strong>" +
+                  "<div class=\"form-row\" style=\"margin-top:0.4rem;align-items:flex-end;\">" +
+                    "<div class=\"form-group\" style=\"flex:0 0 130px;\"><label>Zone</label><select id=\"borneUtmZone\"><option value=\"30\">30N (Est CI)</option><option value=\"29\">29N (Ouest CI)</option></select></div>" +
+                    "<div class=\"form-group\"><label>X — Est (m)</label><input type=\"number\" id=\"borneUtmX\" step=\"0.01\" placeholder=\"Ex: 265722.18\"></div>" +
+                    "<div class=\"form-group\"><label>Y — Nord (m)</label><input type=\"number\" id=\"borneUtmY\" step=\"0.01\" placeholder=\"Ex: 671035.25\"></div>" +
+                    "<div class=\"form-group\" style=\"flex:0 0 auto;\"><button class=\"btn btn-sm btn-success\" type=\"button\" onclick=\"ajouterBorneUTM(" + id + ")\">➕ Ajouter borne</button></div>" +
+                  "</div>" +
+                "</div>" +
                 "<div class=\"form-row\">" +
                   "<div class=\"form-group\" style=\"flex:3;\"><label>Notes</label><textarea id=\"editParcNotes\">" + (p.notes || "") + "</textarea></div>" +
                 "</div>" +
@@ -5896,11 +5905,66 @@ function _agroAccessWindow(){
         function renderListeBornagePoints(p) {
             if (!p.bornage.length) return '<em style="color:#aaa;">Aucun point de bornage. Démarrez le bornage puis cliquez sur la carte pour placer les bornes successives.</em>';
             return p.bornage.map(function(pt, idx) {
+                const u = latLngToUTM(pt.lat, pt.lng);
                 return '<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0;">' +
-                    '<span>📍 Borne ' + (idx + 1) + ' — ' + pt.lat.toFixed(6) + ', ' + pt.lng.toFixed(6) + '</span>' +
+                    '<span>📍 <strong>B' + (idx + 1) + '</strong> — UTM ' + u.zone + u.hemi +
+                    ' · X ' + u.easting.toFixed(2) + ' · Y ' + u.northing.toFixed(2) +
+                    ' <span style="color:#999;">(' + pt.lat.toFixed(6) + ', ' + pt.lng.toFixed(6) + ')</span></span>' +
                     '<button class="btn btn-sm btn-outline" type="button" style="padding:0 0.4rem;" onclick="supprimerPointBornage(' + p.id + ',' + idx + ')">✕</button>' +
                     '</div>';
             }).join('');
+        }
+
+        // ============================================================
+        //  CONVERSION UTM ↔ WGS84 (bornage foncier — CI : zones 29N/30N)
+        // ============================================================
+        function latLngToUTM(lat, lon) {
+            const a = 6378137.0, f = 1 / 298.257223563, k0 = 0.9996;
+            const e2 = f * (2 - f), ep2 = e2 / (1 - e2);
+            const zone = Math.floor((lon + 180) / 6) + 1;
+            const lonO = ((zone - 1) * 6 - 180 + 3) * Math.PI / 180;
+            const latR = lat * Math.PI / 180, lonR = lon * Math.PI / 180;
+            const N = a / Math.sqrt(1 - e2 * Math.sin(latR) ** 2);
+            const T = Math.tan(latR) ** 2, C = ep2 * Math.cos(latR) ** 2;
+            const A = Math.cos(latR) * (lonR - lonO);
+            const M = a * ((1 - e2 / 4 - 3 * e2 * e2 / 64 - 5 * e2 ** 3 / 256) * latR
+                - (3 * e2 / 8 + 3 * e2 * e2 / 32 + 45 * e2 ** 3 / 1024) * Math.sin(2 * latR)
+                + (15 * e2 * e2 / 256 + 45 * e2 ** 3 / 1024) * Math.sin(4 * latR)
+                - (35 * e2 ** 3 / 3072) * Math.sin(6 * latR));
+            let E = k0 * N * (A + (1 - T + C) * A ** 3 / 6 + (5 - 18 * T + T * T + 72 * C - 58 * ep2) * A ** 5 / 120) + 500000;
+            let Nn = k0 * (M + N * Math.tan(latR) * (A * A / 2 + (5 - T + 9 * C + 4 * C * C) * A ** 4 / 24 + (61 - 58 * T + T * T + 600 * C - 330 * ep2) * A ** 6 / 720));
+            if (lat < 0) Nn += 10000000;
+            return { zone, hemi: lat >= 0 ? 'N' : 'S', easting: E, northing: Nn };
+        }
+        function utmToLatLng(easting, northing, zone, hemi) {
+            const a = 6378137.0, f = 1 / 298.257223563, k0 = 0.9996;
+            const e2 = f * (2 - f), ep2 = e2 / (1 - e2);
+            const e1 = (1 - Math.sqrt(1 - e2)) / (1 + Math.sqrt(1 - e2));
+            const x = easting - 500000;
+            let y = northing; if (hemi === 'S') y -= 10000000;
+            const lonO = (zone - 1) * 6 - 180 + 3;
+            const M = y / k0, mu = M / (a * (1 - e2 / 4 - 3 * e2 * e2 / 64 - 5 * e2 ** 3 / 256));
+            const phi1 = mu + (3 * e1 / 2 - 27 * e1 ** 3 / 32) * Math.sin(2 * mu)
+                + (21 * e1 * e1 / 16 - 55 * e1 ** 4 / 32) * Math.sin(4 * mu)
+                + (151 * e1 ** 3 / 96) * Math.sin(6 * mu) + (1097 * e1 ** 4 / 512) * Math.sin(8 * mu);
+            const N1 = a / Math.sqrt(1 - e2 * Math.sin(phi1) ** 2);
+            const T1 = Math.tan(phi1) ** 2, C1 = ep2 * Math.cos(phi1) ** 2;
+            const R1 = a * (1 - e2) / Math.pow(1 - e2 * Math.sin(phi1) ** 2, 1.5);
+            const D = x / (N1 * k0);
+            const lat = phi1 - (N1 * Math.tan(phi1) / R1) * (D * D / 2 - (5 + 3 * T1 + 10 * C1 - 4 * C1 * C1 - 9 * ep2) * D ** 4 / 24 + (61 + 90 * T1 + 298 * C1 + 45 * T1 * T1 - 252 * ep2 - 3 * C1 * C1) * D ** 6 / 720);
+            const lon = lonO * Math.PI / 180 + (D - (1 + 2 * T1 + C1) * D ** 3 / 6 + (5 - 2 * C1 + 28 * T1 - 3 * C1 * C1 + 8 * ep2 + 24 * T1 * T1) * D ** 5 / 120) / Math.cos(phi1);
+            return { lat: lat * 180 / Math.PI, lng: lon * 180 / Math.PI };
+        }
+        function ajouterBorneUTM(id) {
+            const p = data.parcelles.find(pc => pc.id === id); if (!p) return;
+            const zone = parseInt(document.getElementById('borneUtmZone').value);
+            const x = parseFloat(document.getElementById('borneUtmX').value);
+            const y = parseFloat(document.getElementById('borneUtmY').value);
+            if (isNaN(x) || isNaN(y)) { alert('Saisir X (Est) et Y (Nord).'); return; }
+            const g = utmToLatLng(x, y, zone, 'N');
+            p.bornage.push({ lat: g.lat, lng: g.lng });
+            saveData();
+            editerParcelle(id);
         }
 
         /** Surface d'un polygone GPS via la formule du lacet (shoelace), approximation plane convertie en hectares. */
