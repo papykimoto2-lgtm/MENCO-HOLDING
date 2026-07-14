@@ -5805,7 +5805,10 @@ function _agroAccessWindow(){
                   "<span>" +
                     (p.bornage.length >= 3 ? "<button class=\"btn btn-sm\" style=\"background:#2a7a4a;color:#fff;\" type=\"button\" onclick=\"appliquerSurfaceBornage(" + id + ")\" title=\"Reporter la surface calculée dans le champ Superficie\">📥 Reporter " + surfaceBornageHa(p.bornage).toFixed(2) + " ha</button> " : "") +
                     "<button class=\"btn btn-sm " + (bornageModeActif ? "btn-danger" : "btn-outline") + "\" type=\"button\" onclick=\"toggleModeBornage(" + id + ")\">" + (bornageModeActif ? "⏹ Arrêter le bornage" : "📍 Démarrer le bornage") + "</button> " +
-                    "<button class=\"btn btn-sm btn-outline\" type=\"button\" onclick=\"viderBornage(" + id + ")\">🗑️ Vider les points</button>" +
+                    "<button class=\"btn btn-sm btn-outline\" type=\"button\" onclick=\"viderBornage(" + id + ")\">🗑️ Vider les points</button> " +
+                    "<button class=\"btn btn-sm\" style=\"background:#1f618d;color:#fff;\" type=\"button\" onclick=\"ouvrirPlanBornage(" + id + ")\" title=\"Plan parcellaire : X,Y,Z, distances, gisements, angles, surface\">📋 Plan de bornage</button> " +
+                    "<label class=\"btn btn-sm btn-outline\" style=\"cursor:pointer;margin:0;\" title=\"Importer des bornes UTM depuis un CSV (borne;X;Y;Z)\">📥 CSV bornes<input type=\"file\" accept=\".csv,.txt\" style=\"display:none;\" onchange=\"importerBornesCSV(" + id + ", this.files[0]); this.value='';\"></label> " +
+                    "<label class=\"btn btn-sm btn-outline\" style=\"cursor:pointer;margin:0;\" title=\"Importer un plan DXF géoréférencé en UTM\">📐 DXF/DWG<input type=\"file\" accept=\".dxf,.dwg\" style=\"display:none;\" onchange=\"importerDXFparcelle(" + id + ", this.files[0]); this.value='';\"></label>" +
                   "</span>" +
                 "</div>" +
                 "<div id=\"listeBornagePoints\" style=\"font-size:0.78rem;color:#555;margin-bottom:0.6rem;max-height:110px;overflow-y:auto;\">" + renderListeBornagePoints(p) + "</div>" +
@@ -5815,6 +5818,7 @@ function _agroAccessWindow(){
                     "<div class=\"form-group\" style=\"flex:0 0 130px;\"><label>Zone</label><select id=\"borneUtmZone\"><option value=\"30\">30N (Est CI)</option><option value=\"29\">29N (Ouest CI)</option></select></div>" +
                     "<div class=\"form-group\"><label>X — Est (m)</label><input type=\"number\" id=\"borneUtmX\" step=\"0.01\" placeholder=\"Ex: 265722.18\"></div>" +
                     "<div class=\"form-group\"><label>Y — Nord (m)</label><input type=\"number\" id=\"borneUtmY\" step=\"0.01\" placeholder=\"Ex: 671035.25\"></div>" +
+                    "<div class=\"form-group\" style=\"flex:0 0 110px;\"><label>Z — Alt (m)</label><input type=\"number\" id=\"borneUtmZ\" step=\"0.01\" placeholder=\"opt.\"></div>" +
                     "<div class=\"form-group\" style=\"flex:0 0 auto;\"><button class=\"btn btn-sm btn-success\" type=\"button\" onclick=\"ajouterBorneUTM(" + id + ")\">➕ Ajouter borne</button></div>" +
                   "</div>" +
                 "</div>" +
@@ -5962,7 +5966,9 @@ function _agroAccessWindow(){
             const y = parseFloat(document.getElementById('borneUtmY').value);
             if (isNaN(x) || isNaN(y)) { alert('Saisir X (Est) et Y (Nord).'); return; }
             const g = utmToLatLng(x, y, zone, 'N');
-            p.bornage.push({ lat: g.lat, lng: g.lng });
+            const zEl = document.getElementById('borneUtmZ');
+            const z = zEl && zEl.value !== '' ? parseFloat(zEl.value) : null;
+            p.bornage.push({ lat: g.lat, lng: g.lng, z: isNaN(z) ? null : z });
             saveData();
             editerParcelle(id);
         }
@@ -6188,10 +6194,246 @@ function _agroAccessWindow(){
         // ============================================================
         //  SIG AVANCÉ — surface auto, export KML, import GPS, drone
         // ============================================================
+        // ============================================================
+        //  OUTILS PLAN PARCELLAIRE / BORNAGE (X,Y,Z, distances, gisements, angles)
+        // ============================================================
+        /** Zone UTM dominante d'une parcelle (déduite de la 1re borne, défaut 30N). */
+        function bornageZone(p) {
+            if (p.bornage && p.bornage.length) return latLngToUTM(p.bornage[0].lat, p.bornage[0].lng).zone;
+            return 30;
+        }
+        /** Métriques cadastrales : sommets UTM, côtés (distance+gisement), angles, surface planimétrique. */
+        function bornageMetrics(p) {
+            const pts = p.bornage.map(function(b) {
+                const u = latLngToUTM(b.lat, b.lng);
+                return { E: u.easting, N: u.northing, z: (b.z != null ? b.z : null), zone: u.zone, hemi: u.hemi };
+            });
+            const n = pts.length, seg = [], ang = [];
+            for (let i = 0; i < n; i++) {
+                const a = pts[i], b = pts[(i + 1) % n];
+                const dE = b.E - a.E, dN = b.N - a.N;
+                const dist = Math.hypot(dE, dN);
+                let gon = Math.atan2(dE, dN) * 200 / Math.PI; if (gon < 0) gon += 400;
+                let deg = Math.atan2(dE, dN) * 180 / Math.PI; if (deg < 0) deg += 360;
+                seg.push({ from: i, to: (i + 1) % n, dist, gon, deg });
+            }
+            for (let i = 0; i < n; i++) {
+                const prev = pts[(i - 1 + n) % n], cur = pts[i], nxt = pts[(i + 1) % n];
+                const a1 = Math.atan2(prev.E - cur.E, prev.N - cur.N);
+                const a2 = Math.atan2(nxt.E - cur.E, nxt.N - cur.N);
+                let d = (a2 - a1) * 180 / Math.PI; d = ((d % 360) + 360) % 360;
+                if (d > 180) d = 360 - d;
+                ang.push({ deg: d, gon: d * 200 / 180 });
+            }
+            let A = 0;
+            for (let i = 0; i < n; i++) { const a = pts[i], b = pts[(i + 1) % n]; A += a.E * b.N - b.E * a.N; }
+            A = Math.abs(A) / 2;
+            const perim = seg.reduce((s, x) => s + x.dist, 0);
+            return { zone: bornageZone(p), pts, seg, ang, perim, surfaceM2: A, surfaceHa: A / 10000 };
+        }
+
+        function ouvrirPlanBornage(id) {
+            const p = data.parcelles.find(pc => pc.id === id); if (!p) return;
+            const body = document.getElementById("modalBody");
+            if (!p.bornage || p.bornage.length < 3) {
+                body.innerHTML = "<h2>📋 Plan de bornage — " + p.reference + "</h2>" +
+                    "<p style=\"color:#b33c3c;\">Au moins 3 bornes requises. Ajoutez des bornes (UTM manuel, CSV, DXF ou clic carte) puis relancez.</p>" +
+                    "<button class=\"btn btn-outline\" onclick=\"editerParcelle(" + id + ")\">← Retour</button>";
+                document.getElementById("modalOverlay").classList.add("active");
+                return;
+            }
+            const m = bornageMetrics(p);
+            const lignesBornes = m.pts.map(function(pt, i) {
+                return "<tr><td>B" + (i + 1) + "</td><td>" + pt.E.toFixed(2) + "</td><td>" + pt.N.toFixed(2) +
+                    "</td><td>" + (pt.z != null ? pt.z.toFixed(2) : "—") + "</td></tr>";
+            }).join("");
+            const lignesCotes = m.seg.map(function(s) {
+                return "<tr><td>B" + (s.from + 1) + " → B" + (s.to + 1) + "</td><td>" + s.dist.toFixed(2) +
+                    "</td><td>" + s.gon.toFixed(4) + "</td><td>" + s.deg.toFixed(2) + "°</td></tr>";
+            }).join("");
+            const lignesAngles = m.ang.map(function(a, i) {
+                return "<tr><td>B" + (i + 1) + "</td><td>" + a.deg.toFixed(2) + "°</td><td>" + a.gon.toFixed(4) + "</td></tr>";
+            }).join("");
+            body.innerHTML =
+                "<div class=\"flex-between\" style=\"flex-wrap:wrap;gap:0.5rem;\"><h2 style=\"margin:0;\">📋 Plan de bornage — " + p.reference + "</h2>" +
+                  "<span><button class=\"btn btn-sm\" style=\"background:#c0392b;color:#fff;\" onclick=\"exporterPlanBornagePDF(" + id + ")\">📄 PDF plan de bornage</button> " +
+                  "<button class=\"btn btn-sm btn-outline\" onclick=\"exporterBornesCSV(" + id + ")\">📤 CSV bornes</button> " +
+                  "<button class=\"btn btn-sm btn-outline\" onclick=\"editerParcelle(" + id + ")\">← Retour</button></span></div>" +
+                "<div style=\"display:flex;gap:1.2rem;flex-wrap:wrap;margin:0.7rem 0;font-size:0.9rem;\">" +
+                  "<span>📐 <strong>Surface planimétrique (UTM " + m.zone + "N)</strong> : " + m.surfaceHa.toFixed(4) + " ha (" + Math.round(m.surfaceM2).toLocaleString('fr-FR') + " m²)</span>" +
+                  "<span>📏 <strong>Périmètre</strong> : " + m.perim.toFixed(2) + " m</span>" +
+                  "<span>🔢 <strong>Bornes</strong> : " + m.pts.length + "</span></div>" +
+                "<div style=\"display:flex;gap:1rem;flex-wrap:wrap;\">" +
+                  "<div style=\"flex:1;min-width:220px;\"><strong style=\"font-size:0.85rem;\">Sommets (UTM)</strong>" +
+                    "<div class=\"table-wrap\" style=\"max-height:240px;overflow:auto;\"><table><thead><tr><th>Borne</th><th>X (Est)</th><th>Y (Nord)</th><th>Z</th></tr></thead><tbody>" + lignesBornes + "</tbody></table></div></div>" +
+                  "<div style=\"flex:1;min-width:220px;\"><strong style=\"font-size:0.85rem;\">Côtés (distance / gisement)</strong>" +
+                    "<div class=\"table-wrap\" style=\"max-height:240px;overflow:auto;\"><table><thead><tr><th>Côté</th><th>Dist. (m)</th><th>Gis. (gon)</th><th>Gis. (°)</th></tr></thead><tbody>" + lignesCotes + "</tbody></table></div></div>" +
+                  "<div style=\"flex:1;min-width:180px;\"><strong style=\"font-size:0.85rem;\">Angles au sommet</strong>" +
+                    "<div class=\"table-wrap\" style=\"max-height:240px;overflow:auto;\"><table><thead><tr><th>Borne</th><th>Angle (°)</th><th>Angle (gon)</th></tr></thead><tbody>" + lignesAngles + "</tbody></table></div></div>" +
+                "</div>" +
+                "<p style=\"font-size:0.74rem;color:#888;margin-top:0.6rem;\">Gisement compté depuis le Nord, sens horaire. Surface calculée par les coordonnées projetées UTM (standard cadastral), plus précise que l'approximation sphérique.</p>";
+            document.getElementById("modalOverlay").classList.add("active");
+        }
+
+        // ── IMPORT CSV BORNES (UTM : borne;X;Y;Z) ──
+        function importerBornesCSV(id, file) {
+            if (!file) return;
+            const zoneSel = document.getElementById('borneUtmZone');
+            const zone = zoneSel ? parseInt(zoneSel.value) : 30;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const rows = e.target.result.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+                const verts = [];
+                rows.forEach(function(l) {
+                    const parts = l.split(/[;,\t]/).map(s => s.trim());
+                    const off = isNaN(parseFloat(parts[0])) ? 1 : 0;
+                    const X = parseFloat(parts[off]), Y = parseFloat(parts[off + 1]);
+                    const Zr = (parts[off + 2] !== undefined && parts[off + 2] !== '') ? parseFloat(parts[off + 2]) : null;
+                    if (!isNaN(X) && !isNaN(Y)) verts.push({ X, Y, Z: (Zr == null || isNaN(Zr)) ? null : Zr });
+                });
+                if (verts.length < 3) { alert("CSV : au moins 3 bornes (X;Y) valides requises.\nFormat : borne;X;Y;Z (zone " + zone + "N sélectionnée)."); return; }
+                const a = verts[0], b = verts[verts.length - 1];
+                if (Math.abs(a.X - b.X) < 0.001 && Math.abs(a.Y - b.Y) < 0.001) verts.pop();
+                const p = data.parcelles.find(pc => pc.id === id); if (!p) return;
+                p.bornage = verts.map(function(v) { const g = utmToLatLng(v.X, v.Y, zone, 'N'); return { lat: g.lat, lng: g.lng, z: v.Z }; });
+                saveData(); editerParcelle(id);
+                alert("✅ " + p.bornage.length + " bornes importées (UTM " + zone + "N).");
+            };
+            reader.readAsText(file);
+        }
+
+        // ── IMPORT DXF (géoréférencé UTM) — DWG : conversion requise ──
+        function parseDXFVertices(txt) {
+            const lines = txt.split(/\r?\n/);
+            const verts = []; let capture = false, x = null, y = null, z = null;
+            for (let i = 0; i + 1 < lines.length; i += 2) {
+                const code = lines[i].trim(), val = lines[i + 1];
+                if (code === '0') {
+                    const t = (val || '').trim().toUpperCase();
+                    capture = (t === 'LWPOLYLINE' || t === 'POLYLINE' || t === 'VERTEX' || t === 'POINT' || t === 'LINE');
+                    x = y = z = null; continue;
+                }
+                if (!capture) continue;
+                if (code === '10') x = parseFloat(val);
+                else if (code === '20') { y = parseFloat(val); if (!isNaN(x) && !isNaN(y)) { verts.push({ X: x, Y: y, Z: (z == null ? null : z) }); } }
+                else if (code === '30') z = parseFloat(val);
+            }
+            return verts;
+        }
+        function importerDXFparcelle(id, file) {
+            if (!file) return;
+            const ext = file.name.split('.').pop().toLowerCase();
+            if (ext === 'dwg') {
+                alert("DWG binaire non lisible hors-ligne.\nConvertir en DXF ASCII : ODA File Converter (gratuit) ou AutoCAD → Enregistrer sous → DXF R2018 ASCII, puis réimporter.");
+                return;
+            }
+            const zoneSel = document.getElementById('borneUtmZone');
+            const zone = zoneSel ? parseInt(zoneSel.value) : 30;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                let verts;
+                try { verts = parseDXFVertices(e.target.result); } catch (err) { alert("DXF illisible : " + err.message); return; }
+                if (verts.length < 3) { alert("Aucune polyligne exploitable (≥3 sommets) trouvée dans le DXF."); return; }
+                const a = verts[0], b = verts[verts.length - 1];
+                if (Math.abs(a.X - b.X) < 0.001 && Math.abs(a.Y - b.Y) < 0.001) verts.pop();
+                const p = data.parcelles.find(pc => pc.id === id); if (!p) return;
+                p.bornage = verts.map(function(v) { const g = utmToLatLng(v.X, v.Y, zone, 'N'); return { lat: g.lat, lng: g.lng, z: v.Z }; });
+                saveData(); editerParcelle(id);
+                alert("✅ DXF importé : " + p.bornage.length + " bornes (UTM " + zone + "N).");
+            };
+            reader.readAsText(file);
+        }
+
+        // ── EXPORT CSV BORNES ──
+        function exporterBornesCSV(id) {
+            const p = data.parcelles.find(pc => pc.id === id); if (!p || !p.bornage.length) return;
+            let csv = "borne;X;Y;Z;zone\n";
+            p.bornage.forEach(function(b, i) {
+                const u = latLngToUTM(b.lat, b.lng);
+                csv += "B" + (i + 1) + ";" + u.easting.toFixed(2) + ";" + u.northing.toFixed(2) + ";" + (b.z != null ? b.z.toFixed(2) : "") + ";" + u.zone + u.hemi + "\n";
+            });
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = 'bornes-' + p.reference.replace(/[^\w]+/g, '_') + '.csv';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+        }
+
+        // ── EXPORT PDF PLAN DE BORNAGE (récap + croquis) ──
+        function exporterPlanBornagePDF(id) {
+            const p = data.parcelles.find(pc => pc.id === id); if (!p || p.bornage.length < 3) return;
+            const m = bornageMetrics(p);
+            const { jsPDF } = window.jspdf; const doc = new jsPDF();
+            const soc = (typeof ENTREPRISE !== 'undefined' && ENTREPRISE.nom) ? ENTREPRISE.nom : 'MENKO AGRO';
+            doc.setFontSize(14); doc.setFont(undefined, 'bold');
+            doc.text("PLAN DE BORNAGE", 105, 16, { align: 'center' });
+            doc.setFontSize(9); doc.setFont(undefined, 'normal');
+            doc.text(soc, 105, 22, { align: 'center' });
+            doc.setFontSize(10); doc.setFont(undefined, 'bold');
+            doc.text("Parcelle : " + p.reference, 15, 32);
+            doc.setFont(undefined, 'normal'); doc.setFontSize(9);
+            doc.text("Titre foncier : " + (p.titreFoncier || '—'), 15, 38);
+            doc.text("Système : WGS84 / UTM Zone " + m.zone + "N", 120, 38);
+            doc.text("Surface (UTM) : " + m.surfaceHa.toFixed(4) + " ha  (" + Math.round(m.surfaceM2).toLocaleString('fr-FR') + " m²)", 15, 44);
+            doc.text("Périmètre : " + m.perim.toFixed(2) + " m", 120, 44);
+            doc.text("Date : " + new Date().toLocaleDateString('fr-FR'), 15, 50);
+
+            // Croquis
+            const bx = 15, by = 56, bw = 180, bh = 88;
+            doc.setDrawColor(180); doc.rect(bx, by, bw, bh);
+            const Es = m.pts.map(pt => pt.E), Ns = m.pts.map(pt => pt.N);
+            const minE = Math.min.apply(null, Es), maxE = Math.max.apply(null, Es);
+            const minN = Math.min.apply(null, Ns), maxN = Math.max.apply(null, Ns);
+            const pad = 10;
+            const sc = Math.min((bw - 2 * pad) / ((maxE - minE) || 1), (bh - 2 * pad) / ((maxN - minN) || 1));
+            const mx = (maxE - minE) * sc, my = (maxN - minN) * sc;
+            const ox = bx + (bw - mx) / 2, oy = by + (bh - my) / 2;
+            const proj = m.pts.map(function(pt) {
+                return { x: ox + (pt.E - minE) * sc, y: oy + my - (pt.N - minN) * sc };
+            });
+            doc.setDrawColor(192, 57, 43); doc.setLineWidth(0.4);
+            for (let i = 0; i < proj.length; i++) {
+                const a = proj[i], b = proj[(i + 1) % proj.length];
+                doc.line(a.x, a.y, b.x, b.y);
+            }
+            doc.setFontSize(7); doc.setTextColor(30);
+            proj.forEach(function(pt, i) {
+                doc.setFillColor(31, 97, 141); doc.circle(pt.x, pt.y, 0.9, 'F');
+                doc.text("B" + (i + 1), pt.x + 1.5, pt.y - 1);
+            });
+            doc.setLineWidth(0.2); doc.setDrawColor(0); doc.setTextColor(0);
+
+            // Tableaux
+            let y = by + bh + 8;
+            doc.setFontSize(9); doc.setFont(undefined, 'bold');
+            doc.text("Coordonnées des bornes (UTM " + m.zone + "N)", 15, y);
+            doc.text("Côtés — distances & gisements", 110, y);
+            y += 5; doc.setFontSize(7.5); doc.setFont(undefined, 'bold');
+            doc.text("Borne", 15, y); doc.text("X (Est)", 33, y); doc.text("Y (Nord)", 60, y); doc.text("Z", 90, y);
+            doc.text("Côté", 110, y); doc.text("Dist (m)", 132, y); doc.text("Gis (gon)", 158, y);
+            doc.setFont(undefined, 'normal'); y += 4;
+            const nrows = Math.max(m.pts.length, m.seg.length);
+            for (let i = 0; i < nrows; i++) {
+                if (y > 285) { doc.addPage(); y = 20; }
+                if (i < m.pts.length) {
+                    const pt = m.pts[i];
+                    doc.text("B" + (i + 1), 15, y); doc.text(pt.E.toFixed(2), 33, y);
+                    doc.text(pt.N.toFixed(2), 60, y); doc.text(pt.z != null ? pt.z.toFixed(2) : "—", 90, y);
+                }
+                if (i < m.seg.length) {
+                    const s = m.seg[i];
+                    doc.text("B" + (s.from + 1) + "-B" + (s.to + 1), 110, y);
+                    doc.text(s.dist.toFixed(2), 132, y); doc.text(s.gon.toFixed(3), 158, y);
+                }
+                y += 4.2;
+            }
+            doc.save('plan-bornage-' + p.reference.replace(/[^\w]+/g, '_') + '.pdf');
+        }
+
         function appliquerSurfaceBornage(id) {
             const p = data.parcelles.find(pc => pc.id === id);
             if (!p || p.bornage.length < 3) return;
-            const s = surfaceBornageHa(p.bornage);
+            const s = bornageMetrics(p).surfaceHa;
             const champ = document.getElementById("editParcSuperficie");
             if (champ) champ.value = s.toFixed(2);
             p.superficieHa = parseFloat(s.toFixed(2));
