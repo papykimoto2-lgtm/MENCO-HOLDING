@@ -1700,6 +1700,8 @@ function _agroAccessWindow(){
             if (!data.transformations) data.transformations = [];
             if (!data.mouvementsManuels) data.mouvementsManuels = [];
             if (!data.nextId.mouvementManuel) data.nextId.mouvementManuel = 1;
+            if (!data.inventaires) data.inventaires = [];
+            if (!data.nextId.inventaire) data.nextId.inventaire = 1;
             // ── PARAMÉTRAGE : utilisateurs, rôles, entreprise ──
             const TOUS_ONGLETS = ['tabProduits','tabParcelles','tabMainOeuvre','tabEquipements','tabFournisseurs','tabCampagnes','tabProduction','tabElevage','tabStocks','tabTracabilite','tabClients','tabVentes','tabMarketing','tabCompta','tabBI','tabParametres'];
             if (!data.roles) {
@@ -3491,37 +3493,204 @@ function _agroAccessWindow(){
             verifierAlertesStock();
         }
 
+        // ============================================================
+        //  INVENTAIRE DE DÉPÔT — comptage physique global, écart valorisé
+        //  (FIFO), ajustement des lots + écriture SYSCOHADA + PV PDF
+        // ============================================================
+        /** Coût moyen pondéré d'un produit dans un dépôt, d'après les lots FIFO restants. */
+        function cmupProduitDepot(produitId, depotId) {
+            let q = 0, v = 0;
+            data.lotsStock.filter(l => l.produitId === produitId && l.depotId === depotId && l.quantiteRestante > 0)
+                .forEach(l => { q += l.quantiteRestante; v += l.quantiteRestante * l.coutUnitaire; });
+            return q ? v / q : 0;
+        }
+
         function ouvrirModalInventaire() {
             const overlay = document.getElementById('modalOverlay');
             const body = document.getElementById('modalBody');
-            let optsProduits = data.produits.map(p => `<option value="${p.id}">${p.nom}</option>`).join('');
-            let optsDepots = data.depots.map(d => `<option value="${d.id}">${d.nom}</option>`).join('');
+            if (!data.depots.length) { alert('Créez au moins un dépôt.'); return; }
+            const depotCourant = parseInt((document.getElementById('selectDepotStock') || {}).value) || data.depots[0].id;
+            const optsDepots = data.depots.map(d => `<option value="${d.id}"${d.id === depotCourant ? ' selected' : ''}>${d.nom}</option>`).join('');
             body.innerHTML =
-                `<h2>Inventaire</h2><div class="form-row"><div class="form-group"><label>Produit *</label><select id="invProduit">${optsProduits}</select></div><div class="form-group"><label>Dépôt *</label><select id="invDepot">${optsDepots}</select></div><div class="form-group"><label>Quantité comptée *</label><input type="number" id="invQte" step="1"></div></div><button class="btn" onclick="validerInventaire()">Valider</button>`;
+                '<div class="flex-between" style="flex-wrap:wrap;gap:0.5rem;"><h2 style="margin:0;">📋 Inventaire de dépôt</h2>' +
+                  '<button class="btn btn-sm btn-outline" onclick="fermerModal()">Fermer</button></div>' +
+                '<div class="form-row" style="margin-top:0.5rem;align-items:flex-end;">' +
+                  `<div class="form-group"><label>Dépôt *</label><select id="invDepot" onchange="renderInventaireTable()">${optsDepots}</select></div>` +
+                  `<div class="form-group"><label>Date *</label><input type="date" id="invDate" value="${new Date().toISOString().slice(0,10)}"></div>` +
+                  '<div class="form-group" style="flex:2;"><label>Responsable du comptage</label><input type="text" id="invResp" placeholder="Nom du magasinier / comité"></div>' +
+                '</div>' +
+                '<div id="invTableWrap" style="max-height:340px;overflow:auto;"></div>' +
+                '<div id="invTotaux" style="margin-top:0.6rem;font-size:0.9rem;"></div>' +
+                '<div class="form-row" style="margin-top:0.6rem;">' +
+                  '<button class="btn btn-success" onclick="validerInventaire()">✅ Valider l\'inventaire</button>' +
+                  '<button class="btn btn-outline" onclick="exporterPVInventaire()">📄 PV d\'inventaire (PDF)</button>' +
+                '</div>';
             overlay.classList.add('active');
+            renderInventaireTable();
+        }
+
+        function renderInventaireTable() {
+            const depotId = parseInt(document.getElementById('invDepot').value);
+            const wrap = document.getElementById('invTableWrap');
+            let rows = '';
+            data.produits.forEach(function(prod) {
+                const stock = getStock(prod.id, depotId);
+                const theo = stock ? stock.quantite : 0;
+                const cout = cmupProduitDepot(prod.id, depotId);
+                rows += '<tr>' +
+                    '<td>' + prod.nom + '</td>' +
+                    '<td style="text-align:center;">' + (prod.unite || 'u') + '</td>' +
+                    '<td style="text-align:right;" data-theo="' + theo + '">' + theo + '</td>' +
+                    '<td style="text-align:right;"><input type="number" step="0.0001" id="invc_' + prod.id + '" value="' + theo + '" data-cout="' + cout + '" oninput="majEcartInv(' + prod.id + ')" style="width:90px;text-align:right;"></td>' +
+                    '<td style="text-align:right;" id="inve_' + prod.id + '">0</td>' +
+                    '<td style="text-align:right;">' + cout.toFixed(0) + '</td>' +
+                    '<td style="text-align:right;" id="invv_' + prod.id + '">0</td>' +
+                    '</tr>';
+            });
+            wrap.innerHTML = '<table><thead><tr><th>Produit</th><th>Unité</th><th>Théorique</th><th>Compté</th><th>Écart</th><th>Coût u.</th><th>Valeur écart</th></tr></thead><tbody>' + rows + '</tbody></table>';
+            majTotauxInv();
+        }
+
+        function majEcartInv(pid) {
+            const inp = document.getElementById('invc_' + pid);
+            const cellTheo = inp.closest('tr').children[2];
+            const theo = parseFloat(cellTheo.getAttribute('data-theo')) || 0;
+            const compte = parseFloat(inp.value);
+            const cout = parseFloat(inp.getAttribute('data-cout')) || 0;
+            const ecart = (isNaN(compte) ? theo : compte) - theo;
+            const eEl = document.getElementById('inve_' + pid);
+            const vEl = document.getElementById('invv_' + pid);
+            eEl.textContent = (ecart > 0 ? '+' : '') + ecart.toFixed(4);
+            eEl.style.color = ecart === 0 ? '#888' : (ecart > 0 ? '#2a7a4a' : '#b33c3c');
+            const val = ecart * cout;
+            vEl.textContent = (val > 0 ? '+' : '') + val.toFixed(0);
+            vEl.style.color = val === 0 ? '#888' : (val > 0 ? '#2a7a4a' : '#b33c3c');
+            majTotauxInv();
+        }
+
+        function _collecterInventaire() {
+            const depotId = parseInt(document.getElementById('invDepot').value);
+            const lignes = [];
+            data.produits.forEach(function(prod) {
+                const inp = document.getElementById('invc_' + prod.id);
+                if (!inp) return;
+                const stock = getStock(prod.id, depotId);
+                const theo = stock ? stock.quantite : 0;
+                const compte = parseFloat(inp.value);
+                if (isNaN(compte)) return;
+                const cout = parseFloat(inp.getAttribute('data-cout')) || 0;
+                const ecart = compte - theo;
+                lignes.push({ produitId: prod.id, nom: prod.nom, unite: prod.unite || 'u', theorique: theo, compte: compte, ecart: ecart, cout: cout, valeur: ecart * cout });
+            });
+            return { depotId, lignes };
+        }
+
+        function majTotauxInv() {
+            const c = _collecterInventaire();
+            let manquantV = 0, boniV = 0, nEcarts = 0;
+            c.lignes.forEach(function(l) { if (l.ecart < 0) manquantV += -l.valeur; else if (l.ecart > 0) boniV += l.valeur; if (l.ecart !== 0) nEcarts++; });
+            document.getElementById('invTotaux').innerHTML =
+                '<strong>Écarts :</strong> ' + nEcarts + ' produit(s) · ' +
+                '<span style="color:#b33c3c;">Manquants : ' + manquantV.toFixed(0) + ' FCFA</span> · ' +
+                '<span style="color:#2a7a4a;">Bonis : ' + boniV.toFixed(0) + ' FCFA</span> · ' +
+                '<strong>Net : ' + (boniV - manquantV).toFixed(0) + ' FCFA</strong>';
         }
 
         function validerInventaire() {
-            const produitId = parseInt(document.getElementById('invProduit').value);
-            const depotId = parseInt(document.getElementById('invDepot').value);
-            const qte = parseFloat(document.getElementById('invQte').value);
-            if (!produitId || !depotId || isNaN(qte) || qte < 0) { alert('Veuillez remplir correctement.'); return; }
-            let stock = getStock(produitId, depotId);
-            if (!stock) { stock = { produitId, depotId, quantite: 0, seuil: 10 };
-                data.stocks.push(stock); }
-            const ecart = qte - stock.quantite;
-            stock.quantite = qte;
-            if (ecart !== 0) {
+            const c = _collecterInventaire();
+            const depot = getDepot(c.depotId);
+            const date = document.getElementById('invDate').value || new Date().toISOString().slice(0, 10);
+            const resp = document.getElementById('invResp').value.trim();
+            const ecarts = c.lignes.filter(l => l.ecart !== 0);
+            if (!ecarts.length) { alert('Aucun écart : rien à ajuster.'); return; }
+            if (!confirm('Valider l\'inventaire du dépôt « ' + (depot ? depot.nom : '') + ' » ?\n' + ecarts.length + ' ajustement(s) seront enregistrés (stock, lots FIFO et comptabilité).')) return;
+
+            const invId = data.nextId.inventaire++;
+            const piece = 'INV' + invId;
+            let manquantTotal = 0, boniTotal = 0;
+
+            ecarts.forEach(function(l) {
+                let stock = getStock(l.produitId, c.depotId);
+                if (!stock) { stock = { produitId: l.produitId, depotId: c.depotId, quantite: 0, seuil: 10 }; data.stocks.push(stock); }
+                if (l.ecart < 0) {
+                    // Manquant : destockage FIFO réel des lots les plus anciens
+                    const r = consommerFIFO(l.produitId, c.depotId, -l.ecart);
+                    manquantTotal += r.coutTotal;
+                    l.valeurReelle = -r.coutTotal;
+                } else {
+                    // Boni : nouveau lot d'ajustement au CMUP courant
+                    const cmup = l.cout || 0;
+                    creerLotStock(l.produitId, c.depotId, l.ecart, cmup, 'inventaire', invId, { type: 'inventaire', date: date });
+                    boniTotal += l.ecart * cmup;
+                    l.valeurReelle = l.ecart * cmup;
+                }
+                stock.quantite = l.compte;
                 data.mouvementsManuels.push({
-                    id: data.nextId.mouvementManuel++, date: new Date().toISOString().slice(0, 10),
-                    sens: 'ajustement', produitId, depotId, quantite: ecart, valeur: 0, type: 'inventaire',
-                    ref: 'Inventaire', libelle: 'Ajustement inventaire (' + (ecart > 0 ? '+' : '') + ecart + ')'
+                    id: data.nextId.mouvementManuel++, date: date,
+                    sens: 'ajustement', produitId: l.produitId, depotId: c.depotId,
+                    quantite: l.ecart, valeur: l.valeurReelle || 0, type: 'inventaire',
+                    ref: piece, libelle: 'Inventaire ' + (depot ? depot.nom : '') + ' (' + (l.ecart > 0 ? '+' : '') + l.ecart + ')'
                 });
-            }
+            });
+
+            // Écriture SYSCOHADA — variation de stock (convention 603/31 de l'app)
+            const lignesEc = [];
+            if (boniTotal > 0.5) { lignesEc.push({ compte: '31', libelle: 'Boni d\'inventaire ' + (depot ? depot.nom : ''), debit: boniTotal, credit: 0 });
+                                    lignesEc.push({ compte: '603', libelle: 'Variation stock (boni)', debit: 0, credit: boniTotal }); }
+            if (manquantTotal > 0.5) { lignesEc.push({ compte: '603', libelle: 'Variation stock (manquant)', debit: manquantTotal, credit: 0 });
+                                        lignesEc.push({ compte: '31', libelle: 'Manquant d\'inventaire ' + (depot ? depot.nom : ''), debit: 0, credit: manquantTotal }); }
+            if (lignesEc.length) ajouterEcriture(date, piece, 'Inventaire dépôt ' + (depot ? depot.nom : '') + ' au ' + date, lignesEc, { type: 'inventaire', id: invId });
+
+            data.inventaires.push({ id: invId, date: date, depotId: c.depotId, responsable: resp,
+                lignes: c.lignes, manquantTotal: manquantTotal, boniTotal: boniTotal, piece: piece });
+
             saveData();
             fermerModal();
             renderStocks();
+            if (typeof renderValorisationStock === 'function') renderValorisationStock();
+            if (typeof renderJournalMouvements === 'function') renderJournalMouvements();
             verifierAlertesStock();
+            alert('✅ Inventaire enregistré (' + piece + ').\nManquants : ' + manquantTotal.toFixed(0) + ' FCFA · Bonis : ' + boniTotal.toFixed(0) + ' FCFA.');
+        }
+
+        function exporterPVInventaire() {
+            const c = _collecterInventaire();
+            const depot = getDepot(c.depotId);
+            const date = document.getElementById('invDate').value || new Date().toISOString().slice(0, 10);
+            const resp = document.getElementById('invResp').value.trim();
+            const { jsPDF } = window.jspdf; const doc = new jsPDF();
+            const soc = (typeof ENTREPRISE !== 'undefined' && ENTREPRISE.nom) ? ENTREPRISE.nom : 'MENKO AGRO';
+            doc.setFontSize(14); doc.setFont(undefined, 'bold');
+            doc.text("PROCÈS-VERBAL D'INVENTAIRE", 105, 16, { align: 'center' });
+            doc.setFontSize(9); doc.setFont(undefined, 'normal');
+            doc.text(soc, 105, 22, { align: 'center' });
+            doc.setFontSize(10);
+            doc.text('Dépôt : ' + (depot ? depot.nom : '—'), 15, 32);
+            doc.text('Date : ' + date, 150, 32);
+            doc.text('Responsable : ' + (resp || '—'), 15, 38);
+            let y = 48; doc.setFontSize(8); doc.setFont(undefined, 'bold');
+            doc.text('Produit', 15, y); doc.text('Théo.', 95, y, { align: 'right' }); doc.text('Compté', 120, y, { align: 'right' });
+            doc.text('Écart', 145, y, { align: 'right' }); doc.text('Coût u.', 170, y, { align: 'right' }); doc.text('Val. écart', 198, y, { align: 'right' });
+            doc.setFont(undefined, 'normal'); y += 2; doc.line(15, y, 198, y); y += 4;
+            let manq = 0, boni = 0;
+            c.lignes.forEach(function(l) {
+                if (y > 280) { doc.addPage(); y = 20; }
+                doc.text(String(l.nom).substring(0, 45), 15, y);
+                doc.text(l.theorique.toFixed(2), 95, y, { align: 'right' });
+                doc.text(l.compte.toFixed(2), 120, y, { align: 'right' });
+                doc.text((l.ecart > 0 ? '+' : '') + l.ecart.toFixed(2), 145, y, { align: 'right' });
+                doc.text(l.cout.toFixed(0), 170, y, { align: 'right' });
+                doc.text((l.valeur > 0 ? '+' : '') + l.valeur.toFixed(0), 198, y, { align: 'right' });
+                if (l.ecart < 0) manq += -l.valeur; else if (l.ecart > 0) boni += l.valeur;
+                y += 5;
+            });
+            y += 2; doc.line(15, y, 198, y); y += 6; doc.setFont(undefined, 'bold');
+            doc.text('Total manquants : ' + manq.toFixed(0) + ' FCFA', 15, y);
+            doc.text('Total bonis : ' + boni.toFixed(0) + ' FCFA', 90, y);
+            doc.text('Net : ' + (boni - manq).toFixed(0) + ' FCFA', 160, y);
+            y += 16; doc.setFont(undefined, 'normal'); doc.setFontSize(9);
+            doc.text('Le magasinier', 25, y); doc.text('Le contrôleur', 90, y); doc.text('La Direction', 160, y);
+            doc.save('PV-inventaire-' + (depot ? depot.nom.replace(/[^\w]+/g, '_') : 'depot') + '-' + date + '.pdf');
         }
 
         // ============================================================
