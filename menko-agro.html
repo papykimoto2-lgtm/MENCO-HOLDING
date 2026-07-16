@@ -1290,6 +1290,46 @@ function _agroAccessWindow(){
                 </div>
             </div>
 
+            <!-- ==================== SYNCHRO CLOUD ==================== -->
+            <div class="card" data-mtab="☁️ Synchro cloud">
+                <h2>☁️ Synchronisation cloud (Supabase)</h2>
+                <div id="syncEtat" style="margin-bottom:1rem;"></div>
+
+                <h3 style="font-size:0.95rem;color:#1e3d2f;margin-bottom:0.5rem;">Connexion au projet</h3>
+                <div class="form-row">
+                    <div class="form-group" style="flex:2;"><label>URL du projet *</label><input type="text" id="syncUrl" placeholder="https://xxxxxxxxxxxx.supabase.co" autocomplete="off"></div>
+                    <div class="form-group" style="flex:3;"><label>Clé publiable / anon *</label><input type="password" id="syncKey" placeholder="eyJhbGciOi…" autocomplete="off"></div>
+                    <div class="form-group" style="flex:0 0 auto;display:flex;align-items:flex-end;">
+                        <button class="btn btn-outline btn-sm" type="button" onclick="basculerVisibiliteCle()" id="syncBtnOeil" title="Afficher / masquer la clé">👁️</button>
+                    </div>
+                </div>
+                <div id="syncMsg" style="font-size:0.82rem;margin-bottom:0.7rem;"></div>
+                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1.2rem;">
+                    <button class="btn btn-success btn-sm" onclick="enregistrerSynchroCloud()">💾 Enregistrer &amp; tester</button>
+                    <button class="btn btn-outline btn-sm" onclick="testerSynchroCloud()">🔌 Tester la connexion</button>
+                    <button class="btn btn-danger btn-sm" onclick="deconnecterSynchroCloud()">⛔ Déconnecter</button>
+                </div>
+
+                <h3 style="font-size:0.95rem;color:#1e3d2f;margin-bottom:0.5rem;">Opérations manuelles</h3>
+                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.6rem;">
+                    <button class="btn btn-sm" style="background:#2980b9;color:#fff;" onclick="forcerPushCloud()">⬆️ Envoyer le local vers le cloud</button>
+                    <button class="btn btn-sm" style="background:#6c3483;color:#fff;" onclick="forcerPullCloud()">⬇️ Récupérer le cloud (écrase le local)</button>
+                </div>
+                <p style="font-size:0.76rem;color:#888;margin-bottom:1.2rem;">Envoi automatique 1,5 s après chaque modification. Récupération au démarrage : la version la plus récente (<code>_modifie</code>) gagne — arbitrage <em>last-write-wins</em> sur le blob entier.</p>
+
+                <h3 style="font-size:0.95rem;color:#1e3d2f;margin-bottom:0.5rem;">Installation SQL du projet</h3>
+                <p style="font-size:0.78rem;color:#666;margin-bottom:0.4rem;">À exécuter une seule fois dans <em>SQL Editor</em> du projet Supabase.</p>
+                <textarea id="syncSql" readonly style="width:100%;height:210px;font-family:ui-monospace,Consolas,monospace;font-size:0.72rem;line-height:1.45;background:#1e2b24;color:#d8f0e2;border-radius:8px;padding:0.8rem;border:none;"></textarea>
+                <button class="btn btn-outline btn-sm" style="margin-top:0.5rem;" onclick="copierSQLCloud()">📋 Copier le SQL</button>
+
+                <div style="background:#fdecea;border:1px solid #f5b7b1;border-left:5px solid #c0392b;border-radius:8px;padding:0.8rem 1rem;font-size:0.79rem;color:#7b241c;margin-top:1rem;line-height:1.55;">
+                    <strong>⚠️ Modèle de sécurité — à lire.</strong> La clé anon est publique par nature : elle est lisible dans le navigateur de tout utilisateur.
+                    Avec une politique <code>to anon using (true)</code>, quiconque obtient cette clé lit et écrit <strong>l'intégralité de l'ERP</strong> (IDOR par conception).
+                    Acceptable uniquement en poste unique de confiance. Dès l'ouverture multi-postes : politique <code>to authenticated</code> + Supabase Auth,
+                    ou proxy Edge Function signé HMAC côté serveur. La clé <code>service_role</code> est refusée par l'application.
+                </div>
+            </div>
+
             <!-- ==================== MISE EN PRODUCTION ==================== -->
             <div class="card" data-mtab="🚀 Mise en production">
                 <h2>🚀 Mise en production — remise à zéro des données</h2>
@@ -1929,10 +1969,28 @@ function _agroAccessWindow(){
 
         /* ── Synchro cloud Agro (table agro_state, blob unique) ── */
         var AGRO_ROW_ID = 'main';
+        var AGRO_SYNC = { etat:'inactif', dernierPush:null, dernierPull:null, erreur:null, octets:0 };
+
+        /** Refuse toute URL hors Supabase : la clé serait sinon envoyée à un hôte arbitraire. */
+        function agroUrlValide(url){
+            try{
+                var u=new URL(url);
+                return u.protocol==='https:' && /(^|\.)supabase\.(co|in|net)$/.test(u.hostname);
+            }catch(e){ return false; }
+        }
+        /** Refuse une clé service_role : elle contourne toute RLS et ne doit jamais atteindre le navigateur. */
+        function agroCleRole(key){
+            try{
+                var p=JSON.parse(atob(key.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+                return p.role || null;
+            }catch(e){ return null; }
+        }
         function agroSbCfg(){
             var url=(localStorage.getItem('sb_url')||'').trim().replace(/\/+$/,'');
             var key=(localStorage.getItem('sb_key')||'').trim();
-            return (url && key) ? { url:url, key:key } : null;
+            if(!url || !key || !agroUrlValide(url)) return null;
+            if(agroCleRole(key)==='service_role') return null;
+            return { url:url, key:key };
         }
         async function agroSb(path, method, body){
             var c=agroSbCfg(); if(!c) return null;
@@ -1950,12 +2008,15 @@ function _agroAccessWindow(){
             _agroPushTimer=setTimeout(agroPush, 1500);
         }
         async function agroPush(){
-            if(!agroSbCfg() || _agroSyncing) return;
-            _agroSyncing=true;
+            if(!agroSbCfg() || _agroSyncing) return false;
+            _agroSyncing=true; AGRO_SYNC.etat='envoi'; majBadgeSync();
             try{
+                var blob=JSON.stringify(data); AGRO_SYNC.octets=blob.length;
                 await agroSb('agro_state?on_conflict=id','POST',{ id:AGRO_ROW_ID, data:data, updated_at:new Date().toISOString() });
-            }catch(e){ /* hors ligne — réessai au prochain save */ }
-            finally{ _agroSyncing=false; }
+                AGRO_SYNC.dernierPush=new Date().toISOString(); AGRO_SYNC.erreur=null; AGRO_SYNC.etat='ok';
+                return true;
+            }catch(e){ AGRO_SYNC.erreur=e.message; AGRO_SYNC.etat='erreur'; return false; }
+            finally{ _agroSyncing=false; majBadgeSync(); }
         }
         async function agroPull(){
             if(!agroSbCfg()) return;
@@ -1969,7 +2030,13 @@ function _agroAccessWindow(){
                         data=remote;
                     }
                 }
-            }catch(e){ /* hors ligne — on garde le local */ }
+                AGRO_SYNC.dernierPull=new Date().toISOString(); AGRO_SYNC.erreur=null; AGRO_SYNC.etat='ok';
+            }catch(e){ AGRO_SYNC.erreur=e.message; AGRO_SYNC.etat='erreur'; }
+            majBadgeSync();
+        }
+
+        function majBadgeSync(){
+            if (typeof renderSynchroCloud === 'function' && document.getElementById('syncEtat')) renderSynchroCloud(true);
         }
 
         // ============================================================
@@ -8203,11 +8270,175 @@ function _agroAccessWindow(){
             set('entTel', e.tel); set('entEmail', e.email); set('entRccm', e.rccm); set('entNcc', e.ncc);
             renderUtilisateurs();
             renderMatricePermissions();
+            renderSynchroCloud();
             renderMiseEnProduction();
             const u = sessionUtilisateur();
             const role = roleUtilisateurCourant();
             const info = document.getElementById('utilisateurCourantInfo');
             if (info) info.innerHTML = `Session active : <strong>${u.nom || 'Administrateur'}</strong> — rôle appliqué : <strong>${data.roles[role] ? data.roles[role].label : role}</strong>.`;
+        }
+
+        // ============================================================
+        //  SYNCHRONISATION CLOUD — configuration & diagnostic
+        // ============================================================
+        const SYNC_SQL = `-- Menko Agro — état applicatif synchronisé (blob unique)
+create table if not exists public.agro_state (
+  id          text primary key,
+  data        jsonb       not null,
+  updated_at  timestamptz not null default now()
+);
+
+create index if not exists agro_state_updated_at_idx on public.agro_state (updated_at desc);
+
+alter table public.agro_state enable row level security;
+
+-- OPTION A — poste unique de confiance (clé anon).
+-- La clé anon étant publique, cette politique expose toute la base.
+create policy agro_state_anon_rw on public.agro_state
+  for all to anon using (true) with check (true);
+
+-- OPTION B — RECOMMANDÉE en multi-postes : exiger une session authentifiée.
+-- drop policy if exists agro_state_anon_rw on public.agro_state;
+-- create policy agro_state_auth_rw on public.agro_state
+--   for all to authenticated using (true) with check (true);
+
+-- Horodatage serveur fiable (empêche un client de falsifier updated_at).
+create or replace function public.agro_state_touch()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at := now();
+  return new;
+end; $$;
+
+drop trigger if exists agro_state_touch_trg on public.agro_state;
+create trigger agro_state_touch_trg before insert or update on public.agro_state
+  for each row execute function public.agro_state_touch();`;
+
+        function renderSynchroCloud(badgeSeulement) {
+            const zone = document.getElementById('syncEtat');
+            if (!zone) return;
+            const url = (localStorage.getItem('sb_url') || '').trim();
+            const key = (localStorage.getItem('sb_key') || '').trim();
+            const cfg = agroSbCfg();
+            const ko = { fond: '#fdecea', bord: '#f5b7b1', txt: '#7b241c' };
+            const ok = { fond: '#eafaf1', bord: '#a9dfbf', txt: '#145a32' };
+            const nu = { fond: '#fef9e7', bord: '#f7dc6f', txt: '#7d6608' };
+            let c = nu, titre = '⚪ Synchronisation inactive — données stockées localement (IndexedDB) uniquement.';
+            if (url && key && !cfg) {
+                c = ko;
+                titre = agroCleRole(key) === 'service_role'
+                    ? '⛔ Clé service_role détectée — refusée. Utilisez la clé anon / publishable.'
+                    : '⛔ URL invalide — seuls les domaines *.supabase.co sont autorisés.';
+            } else if (cfg && AGRO_SYNC.etat === 'erreur') {
+                c = ko; titre = '🔴 Erreur de synchronisation : ' + (AGRO_SYNC.erreur || 'inconnue') + ' — les données restent sauvegardées en local.';
+            } else if (cfg && AGRO_SYNC.etat === 'envoi') {
+                c = nu; titre = '🔄 Envoi en cours…';
+            } else if (cfg) {
+                c = ok; titre = '🟢 Connecté — ' + cfg.url.replace('https://', '');
+            }
+            const fmt = t => t ? new Date(t).toLocaleString('fr-CI') : '—';
+            const poids = AGRO_SYNC.octets ? (AGRO_SYNC.octets / 1048576).toFixed(2) + ' Mo' : '—';
+            zone.innerHTML =
+                `<div style="background:${c.fond};border:1px solid ${c.bord};border-radius:8px;padding:0.7rem 0.9rem;color:${c.txt};font-size:0.84rem;font-weight:600;">${titre}</div>` +
+                `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:0.6rem;margin-top:0.6rem;font-size:0.78rem;">` +
+                `<div style="background:#fafcfb;border:1px solid #e3e9e6;border-radius:8px;padding:0.5rem 0.7rem;"><div style="color:#888;">Dernier envoi</div><strong>${fmt(AGRO_SYNC.dernierPush)}</strong></div>` +
+                `<div style="background:#fafcfb;border:1px solid #e3e9e6;border-radius:8px;padding:0.5rem 0.7rem;"><div style="color:#888;">Dernière récupération</div><strong>${fmt(AGRO_SYNC.dernierPull)}</strong></div>` +
+                `<div style="background:#fafcfb;border:1px solid #e3e9e6;border-radius:8px;padding:0.5rem 0.7rem;"><div style="color:#888;">Volume synchronisé</div><strong>${poids}</strong></div>` +
+                `<div style="background:#fafcfb;border:1px solid #e3e9e6;border-radius:8px;padding:0.5rem 0.7rem;"><div style="color:#888;">Ligne cloud</div><strong>agro_state / ${AGRO_ROW_ID}</strong></div>` +
+                `</div>` +
+                (AGRO_SYNC.octets > 4194304 ? `<div style="margin-top:0.5rem;font-size:0.78rem;color:#7d6608;background:#fef9e7;border-radius:6px;padding:0.5rem 0.7rem;">⚠️ Blob > 4 Mo : chaque enregistrement renvoie la base entière. Purgez les photos et orthophotos drone, ou passez à une synchro par table.</div>` : '');
+            if (badgeSeulement) return;
+            const iu = document.getElementById('syncUrl'), ik = document.getElementById('syncKey');
+            if (iu) iu.value = url;
+            if (ik) ik.value = key;
+            const sql = document.getElementById('syncSql');
+            if (sql) sql.value = SYNC_SQL;
+        }
+
+        function basculerVisibiliteCle() {
+            const ik = document.getElementById('syncKey');
+            if (!ik) return;
+            ik.type = ik.type === 'password' ? 'text' : 'password';
+        }
+
+        function msgSync(txt, ok) {
+            const el = document.getElementById('syncMsg');
+            if (el) { el.textContent = txt; el.style.color = ok ? '#145a32' : '#b03a2e'; }
+        }
+
+        async function enregistrerSynchroCloud() {
+            const url = (document.getElementById('syncUrl').value || '').trim().replace(/\/+$/, '');
+            const key = (document.getElementById('syncKey').value || '').trim();
+            if (!url || !key) { msgSync('URL et clé obligatoires.', false); return; }
+            if (!agroUrlValide(url)) { msgSync('URL refusée : seuls les projets https://*.supabase.co sont acceptés.', false); return; }
+            const role = agroCleRole(key);
+            if (role === 'service_role') { msgSync('Clé service_role refusée : elle contourne la RLS et ne doit jamais être exposée au navigateur. Utilisez la clé anon.', false); return; }
+            localStorage.setItem('sb_url', url);
+            localStorage.setItem('sb_key', key);
+            msgSync('Configuration enregistrée. Test en cours…', true);
+            await testerSynchroCloud();
+        }
+
+        async function testerSynchroCloud() {
+            const cfg = agroSbCfg();
+            if (!cfg) { msgSync('Configuration absente ou invalide.', false); renderSynchroCloud(); return; }
+            try {
+                await agroSb('agro_state?select=id&limit=1', 'GET');
+                AGRO_SYNC.etat = 'ok'; AGRO_SYNC.erreur = null;
+                msgSync('✅ Connexion établie — table agro_state accessible.', true);
+            } catch (e) {
+                AGRO_SYNC.etat = 'erreur'; AGRO_SYNC.erreur = e.message;
+                msgSync('❌ Échec : ' + e.message + '. Vérifiez que la table agro_state existe et que la politique RLS autorise le rôle utilisé.', false);
+            }
+            renderSynchroCloud();
+        }
+
+        async function forcerPushCloud() {
+            if (!agroSbCfg()) { msgSync('Synchronisation non configurée.', false); return; }
+            const ok = await agroPush();
+            msgSync(ok ? '⬆️ Base locale envoyée vers le cloud.' : '❌ Envoi échoué : ' + (AGRO_SYNC.erreur || ''), ok);
+            renderSynchroCloud();
+        }
+
+        async function forcerPullCloud() {
+            if (!agroSbCfg()) { msgSync('Synchronisation non configurée.', false); return; }
+            if (!confirm('La base cloud va remplacer intégralement la base locale.\nUne archive JSON du local va être téléchargée avant.\n\nContinuer ?')) return;
+            telechargerArchiveMEP('Avant récupération cloud');
+            try {
+                const rows = await agroSb('agro_state?id=eq.' + AGRO_ROW_ID + '&select=data,updated_at', 'GET');
+                if (!Array.isArray(rows) || !rows.length || !rows[0].data) { msgSync('Aucune donnée sur le cloud.', false); return; }
+                data = rows[0].data;
+                applyMigrations();
+                AGRO_SYNC.dernierPull = new Date().toISOString(); AGRO_SYNC.etat = 'ok'; AGRO_SYNC.erreur = null;
+                if (!agroDB) agroDB = await openAgroDB();
+                await idbPut(agroDB, 'data', data);
+                Object.keys(loadedTabs).forEach(k => loadedTabs[k] = false);
+                msgSync('⬇️ Base cloud récupérée (' + new Date(rows[0].updated_at).toLocaleString('fr-CI') + ').', true);
+                switchTab('tabParametres');
+                renderParametres();
+            } catch (e) {
+                AGRO_SYNC.etat = 'erreur'; AGRO_SYNC.erreur = e.message;
+                msgSync('❌ Récupération échouée : ' + e.message, false);
+            }
+            renderSynchroCloud();
+        }
+
+        function deconnecterSynchroCloud() {
+            if (!confirm('Désactiver la synchronisation cloud ?\nLes données locales sont conservées ; la ligne cloud n\'est pas supprimée.')) return;
+            localStorage.removeItem('sb_url');
+            localStorage.removeItem('sb_key');
+            AGRO_SYNC = { etat: 'inactif', dernierPush: null, dernierPull: null, erreur: null, octets: 0 };
+            msgSync('Synchronisation désactivée.', true);
+            renderSynchroCloud();
+        }
+
+        function copierSQLCloud() {
+            const t = document.getElementById('syncSql');
+            if (!t) return;
+            navigator.clipboard.writeText(SYNC_SQL).then(
+                () => msgSync('📋 SQL copié dans le presse-papier.', true),
+                () => { t.select(); document.execCommand('copy'); msgSync('📋 SQL copié.', true); }
+            );
         }
 
         // ============================================================
