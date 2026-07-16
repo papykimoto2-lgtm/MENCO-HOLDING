@@ -1310,12 +1310,35 @@ function _agroAccessWindow(){
                     <button class="btn btn-danger btn-sm" onclick="deconnecterSynchroCloud()">⛔ Déconnecter</button>
                 </div>
 
-                <h3 style="font-size:0.95rem;color:#1e3d2f;margin-bottom:0.5rem;">Opérations manuelles</h3>
-                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.6rem;">
-                    <button class="btn btn-sm" style="background:#2980b9;color:#fff;" onclick="forcerPushCloud()">⬆️ Envoyer le local vers le cloud</button>
-                    <button class="btn btn-sm" style="background:#6c3483;color:#fff;" onclick="forcerPullCloud()">⬇️ Récupérer le cloud (écrase le local)</button>
+                <h3 style="font-size:0.95rem;color:#1e3d2f;margin-bottom:0.5rem;">Sauvegarde intégrale — mode hérité (<code>agro_state</code>)</h3>
+                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.4rem;">
+                    <button class="btn btn-outline btn-sm" onclick="forcerPushCloud()">⬆️ Envoyer la base entière (blob)</button>
+                    <button class="btn btn-outline btn-sm" onclick="forcerPullCloud()">⬇️ Restaurer depuis le blob (écrase le local)</button>
                 </div>
-                <p style="font-size:0.76rem;color:#888;margin-bottom:1.2rem;">Envoi automatique 1,5 s après chaque modification. Récupération au démarrage : la version la plus récente (<code>_modifie</code>) gagne — arbitrage <em>last-write-wins</em> sur le blob entier.</p>
+                <p style="font-size:0.76rem;color:#888;margin-bottom:1.2rem;">Blob unique, arbitrage <em>last-write-wins</em> sur la base entière : réservé à la sauvegarde ponctuelle et à la reprise. La synchronisation courante passe par les tables ci-dessous.</p>
+
+                <h3 style="font-size:0.95rem;color:#1e3d2f;margin-bottom:0.5rem;">🔁 Synchronisation des tables</h3>
+                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.6rem;">
+                    <button class="btn btn-outline btn-sm" onclick="comparerTablesCloud()">🔍 Comparer local ↔ cloud</button>
+                    <button class="btn btn-sm" style="background:#2980b9;color:#fff;" onclick="synchroniserToutesTables('push')">⬆️ Envoyer les tables modifiées</button>
+                    <button class="btn btn-sm" style="background:#6c3483;color:#fff;" onclick="synchroniserToutesTables('pull')">⬇️ Récupérer les tables distantes</button>
+                    <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.8rem;color:#2c3e50;">
+                        <input type="checkbox" id="syncAuto" onchange="basculerSyncAuto()"> Envoi automatique
+                    </label>
+                </div>
+                <div style="display:flex;gap:0.9rem;flex-wrap:wrap;font-size:0.75rem;color:#555;margin-bottom:0.6rem;">
+                    <span><strong>✅ Synchro</strong> identique</span>
+                    <span><strong style="color:#1f618d;">⬆️ Envoi</strong> local plus récent</span>
+                    <span><strong style="color:#6c3483;">⬇️ Réception</strong> cloud plus récent</span>
+                    <span><strong style="color:#b03a2e;">⚠️ Conflit</strong> modifié des deux côtés</span>
+                    <span><strong style="color:#999;">— Absent</strong> jamais synchronisé</span>
+                </div>
+                <div class="table-wrap" style="max-height:420px;overflow-y:auto;margin-bottom:1.2rem;">
+                    <table>
+                        <thead><tr><th>Table</th><th style="text-align:right;">Enreg.</th><th>Local</th><th>Cloud</th><th>Dernier auteur</th><th>État</th><th style="text-align:right;">Action</th></tr></thead>
+                        <tbody id="syncTables"></tbody>
+                    </table>
+                </div>
 
                 <h3 style="font-size:0.95rem;color:#1e3d2f;margin-bottom:0.5rem;">Installation SQL du projet</h3>
                 <p style="font-size:0.78rem;color:#666;margin-bottom:0.4rem;">À exécuter une seule fois dans <em>SQL Editor</em> du projet Supabase.</p>
@@ -1955,9 +1978,54 @@ function _agroAccessWindow(){
             } else {
                 data = getDefaultData();
             }
-            await agroPull();
+            await agroPullTables();
             try { applyMigrations(); } catch (e) {}
             await saveData();
+        }
+
+        /**
+         * Réception au démarrage, table par table.
+         *  - poste neuf (aucune méta locale) → adoption intégrale du cloud ;
+         *  - poste connu → réception des seules tables non divergentes localement ;
+         *  - divergence des deux côtés → conservée en conflit, arbitrage dans Paramétrage ;
+         *  - agro_stores absente → repli sur l'ancien blob agro_state puis amorçage.
+         */
+        async function agroPullTables(){
+            if(!agroSbCfg()) return;
+            var rows;
+            try{
+                rows = await agroSb('agro_stores?select=store,data,hash,updated_at,updated_by','GET');
+            }catch(e){
+                AGRO_SYNC.erreur=e.message;
+                await agroPull();   // repli mode hérité (blob)
+                return;
+            }
+            if(!Array.isArray(rows) || !rows.length){
+                await agroPull();   // cloud vierge : on tente l'ancien blob
+                AGRO_SYNC.etat='ok';
+                return;
+            }
+            SYNC_REMOTE={}; rows.forEach(function(r){ SYNC_REMOTE[r.store]={ store:r.store, hash:r.hash, updated_at:r.updated_at, updated_by:r.updated_by }; });
+            var neuf = !data._sync || !data._sync.stores || !Object.keys(data._sync.stores).length;
+            var meta = syncMeta();
+            var recus = 0, conflits = 0;
+            rows.forEach(function(r){
+                var h = syncHash(r.store);
+                if(h === r.hash){ meta.stores[r.store]={ base:r.hash, t:r.updated_at }; return; }
+                var base = (meta.stores[r.store]||{}).base;
+                var localDivergent = base !== h;
+                if(neuf || !localDivergent){
+                    data[r.store] = r.data;
+                    meta.stores[r.store]={ base:r.hash, t:r.updated_at };
+                    recus++;
+                } else {
+                    conflits++;   // arbitrage manuel : on ne perd jamais le local en silence
+                }
+            });
+            AGRO_SYNC.dernierPull=new Date().toISOString();
+            AGRO_SYNC.etat = conflits ? 'conflit' : 'ok';
+            AGRO_SYNC.erreur = conflits ? (conflits + ' table(s) en conflit — arbitrage requis dans Paramétrage › Synchro cloud') : null;
+            majBadgeSync();
         }
 
         async function saveData() {
@@ -2005,7 +2073,11 @@ function _agroAccessWindow(){
         function agroPushDebounced(){
             if(!agroSbCfg()) return;
             clearTimeout(_agroPushTimer);
-            _agroPushTimer=setTimeout(agroPush, 1500);
+            _agroPushTimer=setTimeout(function(){
+                // Envoi granulaire : seules les tables modifiées partent (agro_stores).
+                if(typeof pousserTablesModifiees==='function') pousserTablesModifiees();
+                else agroPush();
+            }, 1500);
         }
         async function agroPush(){
             if(!agroSbCfg() || _agroSyncing) return false;
@@ -8281,7 +8353,39 @@ function _agroAccessWindow(){
         // ============================================================
         //  SYNCHRONISATION CLOUD — configuration & diagnostic
         // ============================================================
-        const SYNC_SQL = `-- Menko Agro — état applicatif synchronisé (blob unique)
+        const SYNC_SQL = `-- Menko Agro — synchronisation par table (recommandée)
+create table if not exists public.agro_stores (
+  store       text primary key,
+  data        jsonb       not null,
+  hash        text        not null,
+  updated_at  timestamptz not null default now(),
+  updated_by  text
+);
+
+create index if not exists agro_stores_updated_at_idx on public.agro_stores (updated_at desc);
+
+alter table public.agro_stores enable row level security;
+
+create policy agro_stores_anon_rw on public.agro_stores
+  for all to anon using (true) with check (true);
+-- OPTION RECOMMANDÉE multi-postes :
+-- drop policy if exists agro_stores_anon_rw on public.agro_stores;
+-- create policy agro_stores_auth_rw on public.agro_stores
+--   for all to authenticated using (true) with check (true);
+
+create or replace function public.agro_stores_touch()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at := now();
+  return new;
+end; $$;
+
+drop trigger if exists agro_stores_touch_trg on public.agro_stores;
+create trigger agro_stores_touch_trg before insert or update on public.agro_stores
+  for each row execute function public.agro_stores_touch();
+
+-- ------------------------------------------------------------
+-- Menko Agro — état applicatif (blob unique, mode hérité)
 create table if not exists public.agro_state (
   id          text primary key,
   data        jsonb       not null,
@@ -8314,6 +8418,230 @@ drop trigger if exists agro_state_touch_trg on public.agro_state;
 create trigger agro_state_touch_trg before insert or update on public.agro_state
   for each row execute function public.agro_state_touch();`;
 
+        // ── Empreinte rapide (cyrb53) : détecte toute divergence de contenu ──
+        function _cyrb53(str, seed) {
+            seed = seed || 0;
+            let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
+            for (let i = 0, ch; i < str.length; i++) {
+                ch = str.charCodeAt(i);
+                h1 = Math.imul(h1 ^ ch, 2654435761);
+                h2 = Math.imul(h2 ^ ch, 1597334677);
+            }
+            h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+            h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+            return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+        }
+
+        // ============================================================
+        //  SYNCHRONISATION PAR TABLE (agro_stores)
+        //  Chaque store est une ligne indépendante : deux postes qui
+        //  travaillent sur des modules différents ne s'écrasent plus.
+        //  base = empreinte au dernier échange réussi → arbitre le sens.
+        // ============================================================
+        var SYNC_REMOTE = {};
+        var _syncEnCours = false;
+
+        function syncStores() { return Object.keys(data).filter(k => k.charAt(0) !== '_').sort(); }
+        function syncHash(k) { try { return _cyrb53(JSON.stringify(data[k])); } catch (e) { return '0'; } }
+        function syncMeta() {
+            if (!data._sync || typeof data._sync !== 'object') data._sync = { stores: {} };
+            if (!data._sync.stores) data._sync.stores = {};
+            return data._sync;
+        }
+        function syncCompte(k) {
+            const v = data[k];
+            if (Array.isArray(v)) return v.length;
+            if (v && typeof v === 'object') return Object.keys(v).length;
+            return v == null ? 0 : 1;
+        }
+
+        /**
+         * push    : local modifié depuis le dernier échange, cloud inchangé
+         * pull    : cloud modifié, local inchangé
+         * conflit : les deux ont divergé — arbitrage manuel obligatoire
+         * absent  : aucune ligne cloud
+         */
+        function syncEtatStore(k) {
+            const m = syncMeta().stores[k] || {};
+            const h = syncHash(k);
+            const r = SYNC_REMOTE[k];
+            if (!r) return { etat: 'absent', h: h, m: m, r: null };
+            if (r.hash === h) return { etat: 'sync', h: h, m: m, r: r };
+            const localDivergent = m.base !== h;
+            const cloudDivergent = m.base !== r.hash;
+            if (localDivergent && cloudDivergent) return { etat: 'conflit', h: h, m: m, r: r };
+            if (localDivergent) return { etat: 'push', h: h, m: m, r: r };
+            return { etat: 'pull', h: h, m: m, r: r };
+        }
+
+        async function comparerTablesCloud(silencieux) {
+            if (!agroSbCfg()) { if (!silencieux) msgSync('Synchronisation non configurée.', false); return false; }
+            try {
+                const rows = await agroSb('agro_stores?select=store,hash,updated_at,updated_by', 'GET');
+                SYNC_REMOTE = {};
+                (rows || []).forEach(r => { SYNC_REMOTE[r.store] = r; });
+                AGRO_SYNC.erreur = null;
+                if (!silencieux) msgSync('🔍 Comparaison effectuée — ' + Object.keys(SYNC_REMOTE).length + ' table(s) côté cloud.', true);
+            } catch (e) {
+                AGRO_SYNC.etat = 'erreur'; AGRO_SYNC.erreur = e.message;
+                if (!silencieux) msgSync('❌ Comparaison impossible : ' + e.message + ' — la table agro_stores existe-t-elle ?', false);
+                renderTablesSync(); return false;
+            }
+            renderTablesSync();
+            return true;
+        }
+
+        async function pousserStore(k, silencieux) {
+            if (!agroSbCfg()) return false;
+            const h = syncHash(k);
+            try {
+                await agroSb('agro_stores?on_conflict=store', 'POST', {
+                    store: k, data: data[k], hash: h,
+                    updated_at: new Date().toISOString(),
+                    updated_by: (sessionUtilisateur().nom || 'Administrateur')
+                });
+                syncMeta().stores[k] = { base: h, t: new Date().toISOString() };
+                SYNC_REMOTE[k] = { store: k, hash: h, updated_at: new Date().toISOString(), updated_by: (sessionUtilisateur().nom || 'Administrateur') };
+                AGRO_SYNC.dernierPush = new Date().toISOString(); AGRO_SYNC.etat = 'ok'; AGRO_SYNC.erreur = null;
+                await sauverLocalSeul();
+                if (!silencieux) { renderTablesSync(); renderSynchroCloud(true); }
+                return true;
+            } catch (e) {
+                AGRO_SYNC.etat = 'erreur'; AGRO_SYNC.erreur = e.message;
+                if (!silencieux) { msgSync('❌ Envoi de « ' + k + ' » échoué : ' + e.message, false); renderSynchroCloud(true); }
+                return false;
+            }
+        }
+
+        async function recupererStore(k, silencieux) {
+            if (!agroSbCfg()) return false;
+            try {
+                const rows = await agroSb('agro_stores?store=eq.' + encodeURIComponent(k) + '&select=data,hash,updated_at,updated_by', 'GET');
+                if (!Array.isArray(rows) || !rows.length) { if (!silencieux) msgSync('« ' + k + ' » absent du cloud.', false); return false; }
+                data[k] = rows[0].data;
+                syncMeta().stores[k] = { base: rows[0].hash, t: new Date().toISOString() };
+                SYNC_REMOTE[k] = { store: k, hash: rows[0].hash, updated_at: rows[0].updated_at, updated_by: rows[0].updated_by };
+                AGRO_SYNC.dernierPull = new Date().toISOString(); AGRO_SYNC.etat = 'ok'; AGRO_SYNC.erreur = null;
+                try { applyMigrations(); } catch (e) {}
+                await sauverLocalSeul();
+                Object.keys(loadedTabs).forEach(t => loadedTabs[t] = false);
+                if (!silencieux) { renderTablesSync(); renderSynchroCloud(true); }
+                return true;
+            } catch (e) {
+                AGRO_SYNC.etat = 'erreur'; AGRO_SYNC.erreur = e.message;
+                if (!silencieux) msgSync('❌ Réception de « ' + k + ' » échouée : ' + e.message, false);
+                return false;
+            }
+        }
+
+        /** Écrit IndexedDB sans redéclencher un cycle de synchro. */
+        async function sauverLocalSeul() {
+            if (!agroDB) agroDB = await openAgroDB();
+            data._modifie = new Date().toISOString();
+            await idbPut(agroDB, 'data', data);
+        }
+
+        async function resoudreConflit(k, sens) {
+            const libelle = sens === 'push' ? 'écraser la version CLOUD par le LOCAL' : 'écraser la version LOCALE par le CLOUD';
+            if (!confirm('Conflit sur « ' + k +' ».\n\nConfirmer : ' + libelle + ' ?\nLa version écrasée est définitivement perdue.')) return;
+            const ok = sens === 'push' ? await pousserStore(k) : await recupererStore(k);
+            if (ok) msgSync('Conflit sur « ' + k + ' » résolu (' + (sens === 'push' ? 'envoi' : 'réception') + ').', true);
+        }
+
+        async function synchroniserToutesTables(sens) {
+            if (_syncEnCours) return;
+            if (!agroSbCfg()) { msgSync('Synchronisation non configurée.', false); return; }
+            _syncEnCours = true;
+            try {
+                if (!(await comparerTablesCloud(true))) return;
+                const cible = sens === 'push' ? ['push', 'absent'] : ['pull'];
+                const liste = syncStores().filter(k => cible.indexOf(syncEtatStore(k).etat) !== -1);
+                const conflits = syncStores().filter(k => syncEtatStore(k).etat === 'conflit');
+                if (!liste.length) {
+                    msgSync(conflits.length ? '⚠️ Rien à ' + (sens === 'push' ? 'envoyer' : 'récupérer') + ' — ' + conflits.length + ' conflit(s) à arbitrer manuellement.' : '✅ Tout est déjà synchronisé.', !conflits.length);
+                    return;
+                }
+                if (sens === 'pull' && !confirm(liste.length + ' table(s) locale(s) vont être remplacées par la version cloud.\n\nContinuer ?')) return;
+                let ok = 0;
+                for (const k of liste) {
+                    const r = sens === 'push' ? await pousserStore(k, true) : await recupererStore(k, true);
+                    if (r) ok++;
+                }
+                msgSync((sens === 'push' ? '⬆️ ' : '⬇️ ') + ok + '/' + liste.length + ' table(s) synchronisée(s).' + (conflits.length ? ' ' + conflits.length + ' conflit(s) restent à arbitrer.' : ''), ok === liste.length);
+                if (sens === 'pull') { switchTab('tabParametres'); renderParametres(); }
+            } finally {
+                _syncEnCours = false;
+                renderTablesSync(); renderSynchroCloud(true);
+            }
+        }
+
+        /** Envoi automatique : seules les tables réellement modifiées partent. */
+        async function pousserTablesModifiees() {
+            if (!agroSbCfg() || _syncEnCours) return;
+            if (localStorage.getItem('sb_auto') === '0') return;
+            _syncEnCours = true;
+            try {
+                const meta = syncMeta();
+                const sales = syncStores().filter(k => (meta.stores[k] || {}).base !== syncHash(k));
+                for (const k of sales) await pousserStore(k, true);
+                if (sales.length && document.getElementById('syncTables')) { renderTablesSync(); renderSynchroCloud(true); }
+            } finally { _syncEnCours = false; }
+        }
+
+        const SYNC_BADGE = {
+            sync:    { txt: '✅ Synchro',   bg: '#eafaf1', c: '#145a32' },
+            push:    { txt: '⬆️ Envoi',     bg: '#eaf2f8', c: '#1f618d' },
+            pull:    { txt: '⬇️ Réception', bg: '#f4ecf7', c: '#6c3483' },
+            conflit: { txt: '⚠️ Conflit',   bg: '#fdecea', c: '#b03a2e' },
+            absent:  { txt: '— Absent',     bg: '#f4f6f6', c: '#7f8c8d' }
+        };
+
+        function renderTablesSync() {
+            const tb = document.getElementById('syncTables');
+            if (!tb) return;
+            const auto = document.getElementById('syncAuto');
+            if (auto) auto.checked = localStorage.getItem('sb_auto') !== '0';
+            if (!agroSbCfg()) {
+                tb.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">Synchronisation cloud non configurée.</td></tr>';
+                return;
+            }
+            const fmt = t => t ? new Date(t).toLocaleString('fr-CI', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+            const stores = syncStores();
+            const compteur = { sync: 0, push: 0, pull: 0, conflit: 0, absent: 0 };
+            tb.innerHTML = stores.map(k => {
+                const st = syncEtatStore(k);
+                compteur[st.etat]++;
+                const b = SYNC_BADGE[st.etat];
+                let act = '';
+                if (st.etat === 'conflit') {
+                    act = `<button class="btn btn-sm" style="background:#2980b9;color:#fff;" title="Écraser le cloud par le local" onclick="resoudreConflit('${k}','push')">⬆️</button> ` +
+                          `<button class="btn btn-sm" style="background:#6c3483;color:#fff;" title="Écraser le local par le cloud" onclick="resoudreConflit('${k}','pull')">⬇️</button>`;
+                } else if (st.etat === 'push' || st.etat === 'absent') {
+                    act = `<button class="btn btn-sm btn-outline" title="Envoyer vers le cloud" onclick="pousserStore('${k}')">⬆️</button>`;
+                } else if (st.etat === 'pull') {
+                    act = `<button class="btn btn-sm btn-outline" title="Récupérer depuis le cloud" onclick="recupererStore('${k}')">⬇️</button>`;
+                } else {
+                    act = '<span style="color:#bbb;">—</span>';
+                }
+                return `<tr><td><strong>${k}</strong></td><td style="text-align:right;">${syncCompte(k)}</td>` +
+                    `<td style="font-size:0.76rem;color:#666;">${fmt((st.m || {}).t)}</td>` +
+                    `<td style="font-size:0.76rem;color:#666;">${fmt(st.r && st.r.updated_at)}</td>` +
+                    `<td style="font-size:0.76rem;color:#666;">${(st.r && st.r.updated_by) || '—'}</td>` +
+                    `<td><span class="badge" style="background:${b.bg};color:${b.c};">${b.txt}</span></td>` +
+                    `<td style="text-align:right;white-space:nowrap;">${act}</td></tr>`;
+            }).join('');
+            const res = document.getElementById('syncResume');
+            if (res) res.innerHTML =
+                `<span style="color:#145a32;">✅ ${compteur.sync}</span> · <span style="color:#1f618d;">⬆️ ${compteur.push + compteur.absent}</span> · ` +
+                `<span style="color:#6c3483;">⬇️ ${compteur.pull}</span> · <span style="color:#b03a2e;font-weight:700;">⚠️ ${compteur.conflit}</span> sur ${stores.length} tables`;
+        }
+
+        function basculerSyncAuto() {
+            const el = document.getElementById('syncAuto');
+            localStorage.setItem('sb_auto', el && el.checked ? '1' : '0');
+            msgSync(el && el.checked ? 'Envoi automatique activé.' : '⚠️ Envoi automatique désactivé — synchronisation manuelle uniquement.', !!(el && el.checked));
+        }
+
         function renderSynchroCloud(badgeSeulement) {
             const zone = document.getElementById('syncEtat');
             if (!zone) return;
@@ -8331,6 +8659,8 @@ create trigger agro_state_touch_trg before insert or update on public.agro_state
                     : '⛔ URL invalide — seuls les domaines *.supabase.co sont autorisés.';
             } else if (cfg && AGRO_SYNC.etat === 'erreur') {
                 c = ko; titre = '🔴 Erreur de synchronisation : ' + (AGRO_SYNC.erreur || 'inconnue') + ' — les données restent sauvegardées en local.';
+            } else if (cfg && AGRO_SYNC.etat === 'conflit') {
+                c = ko; titre = '⚠️ ' + (AGRO_SYNC.erreur || 'Conflit de synchronisation') + '.';
             } else if (cfg && AGRO_SYNC.etat === 'envoi') {
                 c = nu; titre = '🔄 Envoi en cours…';
             } else if (cfg) {
@@ -8344,10 +8674,11 @@ create trigger agro_state_touch_trg before insert or update on public.agro_state
                 `<div style="background:#fafcfb;border:1px solid #e3e9e6;border-radius:8px;padding:0.5rem 0.7rem;"><div style="color:#888;">Dernier envoi</div><strong>${fmt(AGRO_SYNC.dernierPush)}</strong></div>` +
                 `<div style="background:#fafcfb;border:1px solid #e3e9e6;border-radius:8px;padding:0.5rem 0.7rem;"><div style="color:#888;">Dernière récupération</div><strong>${fmt(AGRO_SYNC.dernierPull)}</strong></div>` +
                 `<div style="background:#fafcfb;border:1px solid #e3e9e6;border-radius:8px;padding:0.5rem 0.7rem;"><div style="color:#888;">Volume synchronisé</div><strong>${poids}</strong></div>` +
-                `<div style="background:#fafcfb;border:1px solid #e3e9e6;border-radius:8px;padding:0.5rem 0.7rem;"><div style="color:#888;">Ligne cloud</div><strong>agro_state / ${AGRO_ROW_ID}</strong></div>` +
+                `<div style="background:#fafcfb;border:1px solid #e3e9e6;border-radius:8px;padding:0.5rem 0.7rem;"><div style="color:#888;">Tables</div><strong id="syncResume">—</strong></div>` +
                 `</div>` +
                 (AGRO_SYNC.octets > 4194304 ? `<div style="margin-top:0.5rem;font-size:0.78rem;color:#7d6608;background:#fef9e7;border-radius:6px;padding:0.5rem 0.7rem;">⚠️ Blob > 4 Mo : chaque enregistrement renvoie la base entière. Purgez les photos et orthophotos drone, ou passez à une synchro par table.</div>` : '');
             if (badgeSeulement) return;
+            renderTablesSync();
             const iu = document.getElementById('syncUrl'), ik = document.getElementById('syncKey');
             if (iu) iu.value = url;
             if (ik) ik.value = key;
@@ -8594,8 +8925,10 @@ create trigger agro_state_touch_trg before insert or update on public.agro_state
 
             applyMigrations();          // recrée les structures vides + valeurs par défaut manquantes
             Object.keys(loadedTabs).forEach(k => loadedTabs[k] = false);
-            await saveData();           // écrit IndexedDB puis écrase la ligne cloud agro_state
-            if (typeof agroPush === 'function') { try { await agroPush(); } catch (e) {} }
+            await saveData();           // écrit IndexedDB
+            // Propagation immédiate de la purge sur toutes les tables cloud modifiées,
+            // sinon la réception au démarrage restaurerait les données de démo.
+            try { await pousserTablesModifiees(); } catch (e) {}
 
             alert(`✅ Mise en production effectuée.\n${total} enregistrement(s) supprimés.\nArchive : ${archive}\n\nSaisissez maintenant les à-nouveaux SYSCOHADA (capital, immobilisations, stocks, trésorerie) avant toute opération.`);
             inp.value = '';
