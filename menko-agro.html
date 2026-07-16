@@ -1289,6 +1289,60 @@ function _agroAccessWindow(){
                     <button class="btn btn-success" onclick="sauvegarderEntreprise()">💾 Enregistrer</button>
                 </div>
             </div>
+
+            <!-- ==================== MISE EN PRODUCTION ==================== -->
+            <div class="card" data-mtab="🚀 Mise en production">
+                <h2>🚀 Mise en production — remise à zéro des données</h2>
+                <div style="background:#fdecea;border:1px solid #f5b7b1;border-left:5px solid #c0392b;border-radius:8px;padding:0.8rem 1rem;font-size:0.82rem;color:#7b241c;margin-bottom:1rem;">
+                    <strong>⚠️ Opération irréversible.</strong> Elle efface les données de démonstration pour démarrer l'exploitation réelle.
+                    Une archive JSON complète est téléchargée automatiquement avant toute purge — conservez-la 10 ans (art. 24 AUDCIF).
+                    Le <strong>plan comptable SYSCOHADA n'est jamais purgé</strong>.
+                </div>
+
+                <h3 style="font-size:0.95rem;color:#1e3d2f;margin-bottom:0.5rem;">1. Inventaire des données actuelles</h3>
+                <div class="table-wrap" style="margin-bottom:1.2rem;">
+                    <table><thead><tr><th>Catégorie</th><th>Contenu</th><th style="text-align:right;">Enregistrements</th></tr></thead><tbody id="mepInventaire"></tbody></table>
+                </div>
+
+                <h3 style="font-size:0.95rem;color:#1e3d2f;margin-bottom:0.5rem;">2. Périmètre de la purge</h3>
+                <div id="mepModes" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:0.8rem;margin-bottom:1.2rem;"></div>
+
+                <h3 style="font-size:0.95rem;color:#1e3d2f;margin-bottom:0.5rem;">3. Exercice comptable d'ouverture</h3>
+                <div class="form-row">
+                    <div class="form-group"><label>Date de début d'exploitation</label><input type="date" id="mepDateDebut"></div>
+                    <div class="form-group" style="flex:3;"><label>Motif / référence de l'opération</label><input type="text" id="mepMotif" placeholder="Ex: Bascule production — validation direction du 16/07/2026"></div>
+                </div>
+
+                <h3 style="font-size:0.95rem;color:#1e3d2f;margin:0.8rem 0 0.5rem;">4. Confirmation</h3>
+                <div class="form-row" style="align-items:flex-end;">
+                    <div class="form-group" style="flex:2;">
+                        <label>Saisir <code style="background:#eee;padding:1px 5px;border-radius:3px;">MISE EN PRODUCTION</code> pour déverrouiller</label>
+                        <input type="text" id="mepConfirme" autocomplete="off" oninput="majBoutonMEP()" placeholder="MISE EN PRODUCTION">
+                    </div>
+                    <div class="form-group" style="flex:0 0 auto;">
+                        <button class="btn btn-danger" id="mepBtn" disabled onclick="executerMiseEnProduction()">🗑️ Exécuter la mise à zéro</button>
+                    </div>
+                    <div class="form-group" style="flex:0 0 auto;">
+                        <button class="btn btn-outline" onclick="telechargerArchiveMEP('manuelle')">💾 Archive JSON seule</button>
+                    </div>
+                </div>
+                <div id="mepAlerteRole" style="font-size:0.8rem;color:#b03a2e;margin-bottom:0.6rem;"></div>
+
+                <div style="background:#eaf3ee;border-radius:8px;padding:0.8rem 1rem;font-size:0.79rem;color:#1e3d2f;line-height:1.55;">
+                    <strong>À faire immédiatement après la purge (SYSCOHADA) :</strong>
+                    <ol style="margin:0.4rem 0 0 1.1rem;">
+                        <li>Saisir l'écriture d'<strong>à-nouveaux</strong> : capital (101), immobilisations (2x) et amortissements (28x), stocks (31/32/33), banque (521), caisse (571), dettes (40x/16x).</li>
+                        <li>Créer les <strong>lots de stock initiaux</strong> valorisés au coût d'achat réel — le FIFO doit concorder au centime près avec le solde du compte 3x.</li>
+                        <li>Vérifier l'équilibre : total actif = total passif, sinon le bilan sera faux dès le premier jour.</li>
+                        <li>Recréer les <strong>utilisateurs réels</strong> et retirer le compte admin générique.</li>
+                    </ol>
+                </div>
+
+                <h3 style="font-size:0.95rem;color:#1e3d2f;margin:1rem 0 0.5rem;">Journal des opérations système</h3>
+                <div class="table-wrap">
+                    <table><thead><tr><th>Date</th><th>Opération</th><th>Utilisateur</th><th>Motif</th><th style="text-align:right;">Suppressions</th></tr></thead><tbody id="mepJournal"></tbody></table>
+                </div>
+            </div>
         </section>
 
         <!-- ==================== PLAN D'ACTION COMMERCIAL ==================== -->
@@ -8149,10 +8203,174 @@ function _agroAccessWindow(){
             set('entTel', e.tel); set('entEmail', e.email); set('entRccm', e.rccm); set('entNcc', e.ncc);
             renderUtilisateurs();
             renderMatricePermissions();
+            renderMiseEnProduction();
             const u = sessionUtilisateur();
             const role = roleUtilisateurCourant();
             const info = document.getElementById('utilisateurCourantInfo');
             if (info) info.innerHTML = `Session active : <strong>${u.nom || 'Administrateur'}</strong> — rôle appliqué : <strong>${data.roles[role] ? data.roles[role].label : role}</strong>.`;
+        }
+
+        // ============================================================
+        //  MISE EN PRODUCTION — remise à zéro contrôlée
+        // ============================================================
+        const MEP_TRANSACTIONS = ['ventes','productions','bandes','campagnes','commandesFournisseur','receptionsFournisseur',
+            'facturesFournisseur','commandesClient','livraisonsClient','facturesClient','reglementsClients','reglementsFournisseurs',
+            'ecritures','lotsStock','stocks','mouvementsManuels','inventaires','transformations','pointages','actionsMarketing',
+            'notificationsLues','droneOverlays'];
+        const MEP_REFERENTIELS = ['produits','clients','fournisseurs','depots','parcelles','proprietaires','contratsFonciers',
+            'equipements','ouvriers','equipes'];
+        const MEP_ID_TRANSACTIONS = ['vente','production','recolte','bande','suiviElevage','sortieAnimaux','prophylaxie','alimentJ',
+            'ecriture','campagne','operationCampagne','lotStock','actionMarketing','maintenance','reglementClient',
+            'reglementFournisseur','commandeFourn','receptionFourn','factureFourn','commandeClient','livraisonClient','factureClient',
+            'mouvementManuel','inventaire','transformation','numeroLot','pointage','droneOverlay'];
+        const MEP_ID_REFERENTIELS = ['produit','depot','fournisseur','client','parcelle','proprietaire','contratFoncier',
+            'fichierFoncier','equipement','ouvrier','equipe'];
+
+        const MEP_MODES = {
+            transactions: {
+                label: '🧹 Purge transactionnelle',
+                desc: 'Efface ventes, productions, élevage, campagnes, stocks, écritures, pointages, traçabilité. <strong>Conserve</strong> produits, clients, fournisseurs, parcelles, dépôts, équipements, ouvriers et le paramétrage.',
+                stores: MEP_TRANSACTIONS, ids: MEP_ID_TRANSACTIONS
+            },
+            demo: {
+                label: '🚜 Purge des données de démonstration',
+                desc: 'Efface transactions <strong>et</strong> référentiels de démo (produits, clients, fournisseurs, parcelles, dépôts…). Conserve utilisateurs, rôles, entreprise et plan comptable.',
+                stores: MEP_TRANSACTIONS.concat(MEP_REFERENTIELS), ids: MEP_ID_TRANSACTIONS.concat(MEP_ID_REFERENTIELS)
+            },
+            usine: {
+                label: '🏭 Réinitialisation usine',
+                desc: 'Tout est effacé, y compris utilisateurs, rôles et fiche entreprise (un seul compte <em>admin</em> est recréé). Plan comptable SYSCOHADA conservé.',
+                stores: MEP_TRANSACTIONS.concat(MEP_REFERENTIELS), ids: MEP_ID_TRANSACTIONS.concat(MEP_ID_REFERENTIELS)
+            }
+        };
+
+        function mepCompter(store) {
+            const v = data[store];
+            if (Array.isArray(v)) return v.length;
+            if (v && typeof v === 'object') return Object.keys(v).length;
+            return 0;
+        }
+
+        function renderMiseEnProduction() {
+            const tb = document.getElementById('mepInventaire');
+            if (!tb) return;
+            const lignes = [
+                ['Transactions', 'Ventes, productions, élevage, campagnes, stocks, écritures, pointages, traçabilité', MEP_TRANSACTIONS],
+                ['Référentiels', 'Produits, clients, fournisseurs, dépôts, parcelles, foncier, équipements, ouvriers', MEP_REFERENTIELS],
+                ['Paramétrage', 'Utilisateurs, rôles, fiche entreprise', ['utilisateurs','roles']],
+                ['Plan comptable', 'Comptes SYSCOHADA révisé — jamais purgé', ['planComptable']]
+            ];
+            tb.innerHTML = lignes.map(([cat, desc, stores]) => {
+                const n = stores.reduce((t, st) => t + mepCompter(st), 0);
+                const protege = cat === 'Plan comptable';
+                return `<tr><td><strong>${cat}</strong>${protege ? ' <span class="badge" style="background:#eaf3ee;color:#1e3d2f;">protégé</span>' : ''}</td>` +
+                    `<td style="font-size:0.8rem;color:#666;">${desc}</td><td style="text-align:right;font-weight:700;">${n}</td></tr>`;
+            }).join('');
+
+            const box = document.getElementById('mepModes');
+            if (box && !box.dataset.pret) {
+                box.innerHTML = Object.keys(MEP_MODES).map((k, i) =>
+                    `<label style="display:block;border:1px solid #d6e2db;border-radius:8px;padding:0.7rem 0.9rem;cursor:pointer;background:#fafcfb;">
+                        <input type="radio" name="mepMode" value="${k}"${i === 0 ? ' checked' : ''} style="margin-right:0.4rem;">
+                        <strong style="font-size:0.86rem;">${MEP_MODES[k].label}</strong>
+                        <div style="font-size:0.76rem;color:#666;margin-top:0.3rem;line-height:1.45;">${MEP_MODES[k].desc}</div>
+                    </label>`).join('');
+                box.dataset.pret = '1';
+            }
+            const dt = document.getElementById('mepDateDebut');
+            if (dt && !dt.value) dt.value = new Date().toISOString().slice(0, 10);
+
+            const admin = roleUtilisateurCourant() === 'admin';
+            const alerte = document.getElementById('mepAlerteRole');
+            if (alerte) alerte.textContent = admin ? '' : '⛔ Opération réservée au rôle Administrateur.';
+            majBoutonMEP();
+            renderJournalMEP();
+        }
+
+        function majBoutonMEP() {
+            const btn = document.getElementById('mepBtn');
+            const inp = document.getElementById('mepConfirme');
+            if (!btn || !inp) return;
+            btn.disabled = !(inp.value.trim().toUpperCase() === 'MISE EN PRODUCTION' && roleUtilisateurCourant() === 'admin');
+        }
+
+        function renderJournalMEP() {
+            const tb = document.getElementById('mepJournal');
+            if (!tb) return;
+            const j = data.journalSysteme || [];
+            tb.innerHTML = j.length ? j.slice().reverse().map(e =>
+                `<tr><td>${new Date(e.date).toLocaleString('fr-CI')}</td><td><strong>${e.operation}</strong></td>` +
+                `<td>${e.utilisateur || '—'}</td><td style="font-size:0.8rem;color:#666;">${e.motif || '—'}</td>` +
+                `<td style="text-align:right;">${e.supprimes != null ? e.supprimes : '—'}</td></tr>`
+            ).join('') : '<tr><td colspan="5" style="text-align:center;color:#999;">Aucune opération système enregistrée.</td></tr>';
+        }
+
+        /** Archive JSON intégrale — obligation de conservation OHADA. */
+        function telechargerArchiveMEP(motif) {
+            const nom = 'menko-agro_archive_' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.json';
+            const blob = new Blob([JSON.stringify({ _archive: { date: new Date().toISOString(), motif: motif || '', version: 'menko-agro' }, data: data }, null, 1)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = nom; document.body.appendChild(a); a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+            return nom;
+        }
+
+        async function executerMiseEnProduction() {
+            if (roleUtilisateurCourant() !== 'admin') { alert('Opération réservée au rôle Administrateur.'); return; }
+            const inp = document.getElementById('mepConfirme');
+            if (!inp || inp.value.trim().toUpperCase() !== 'MISE EN PRODUCTION') return;
+            const modeEl = document.querySelector('input[name="mepMode"]:checked');
+            const mode = modeEl ? modeEl.value : 'transactions';
+            const cfg = MEP_MODES[mode];
+            const motif = (document.getElementById('mepMotif').value || '').trim();
+            const dateDebut = document.getElementById('mepDateDebut').value || new Date().toISOString().slice(0, 10);
+
+            const total = cfg.stores.reduce((t, st) => t + mepCompter(st), 0);
+            if (!confirm(`${cfg.label}\n\n${total} enregistrement(s) vont être définitivement supprimés.\nUne archive JSON va être téléchargée avant la purge.\n\nConfirmer ?`)) return;
+            if (!confirm('Dernière confirmation — action IRRÉVERSIBLE. La base cloud sera également écrasée. Continuer ?')) return;
+
+            const archive = telechargerArchiveMEP('Mise en production — ' + mode);
+
+            const def = getDefaultData();
+            cfg.stores.forEach(st => {
+                if (Array.isArray(data[st])) data[st] = [];
+                else if (data[st] && typeof data[st] === 'object') data[st] = {};
+            });
+            cfg.ids.forEach(k => { if (data.nextId[k] != null) data.nextId[k] = 1; });
+
+            if (mode === 'transactions') {
+                // Les équipements sont conservés : seul l'historique de maintenance est purgé.
+                (data.equipements || []).forEach(eq => { eq.maintenances = []; eq.heuresUsage = 0; });
+            }
+            if (mode === 'usine') {
+                data.roles = null; data.utilisateurs = null; data.entreprise = null;
+                data.nextId.utilisateur = 1;
+                ENTREPRISE = { nom: '', activite: '', adresse: '', tel: '', email: '', rccm: '', ncc: '' };
+            }
+
+            data.exploitation = { dateDebut: dateDebut, misEnProductionLe: new Date().toISOString() };
+            data.journalSysteme = data.journalSysteme || [];
+            data.journalSysteme.push({
+                date: new Date().toISOString(),
+                operation: cfg.label,
+                utilisateur: (sessionUtilisateur().nom || 'Administrateur'),
+                motif: motif || '—',
+                supprimes: total,
+                archive: archive
+            });
+
+            applyMigrations();          // recrée les structures vides + valeurs par défaut manquantes
+            Object.keys(loadedTabs).forEach(k => loadedTabs[k] = false);
+            await saveData();           // écrit IndexedDB puis écrase la ligne cloud agro_state
+            if (typeof agroPush === 'function') { try { await agroPush(); } catch (e) {} }
+
+            alert(`✅ Mise en production effectuée.\n${total} enregistrement(s) supprimés.\nArchive : ${archive}\n\nSaisissez maintenant les à-nouveaux SYSCOHADA (capital, immobilisations, stocks, trésorerie) avant toute opération.`);
+            inp.value = '';
+            switchTab('tabParametres');
+            renderParametres();
+            if (typeof renderNotifications === 'function') renderNotifications();
         }
 
         function renderUtilisateurs() {
