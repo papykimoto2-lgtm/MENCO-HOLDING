@@ -231,6 +231,24 @@
 
   <div class="params-card">
     <div class="card-head">
+      <h3>☁️ Connexion Supabase</h3>
+      <span id="sbStatut" class="badge-off">Non configuré</span>
+    </div>
+    <p class="modal-hint">Synchronise les utilisateurs &amp; accès sur le cloud. Base locale = source hors-ligne ; Supabase = partage multi-poste. Anon key uniquement (RLS obligatoire).</p>
+    <div class="form-row">
+      <div class="form-group"><label>URL projet</label><input type="text" id="sbUrl" placeholder="https://xxxx.supabase.co"></div>
+      <div class="form-group"><label>Clé anon (public)</label><input type="password" id="sbKey" autocomplete="off" placeholder="eyJhbGci..."></div>
+    </div>
+    <div class="form-row">
+      <button class="btn-mini" onclick="sbSaveCfg()">💾 Enregistrer</button>
+      <button class="btn-mini outline" onclick="sbTest()">🔌 Tester</button>
+      <button class="btn-mini outline" onclick="sbSyncNow()">🔄 Synchroniser</button>
+    </div>
+    <p id="sbMsg" class="modal-hint" style="margin-top:.4rem;"></p>
+  </div>
+
+  <div class="params-card">
+    <div class="card-head">
       <h3>👥 Utilisateurs &amp; accès</h3>
       <button class="btn-mini" onclick="ouvrirModalUtilisateurHub()">➕ Nouvel utilisateur</button>
     </div>
@@ -269,6 +287,120 @@
 
 <script>
 function fmtF(n){ return (n||0).toLocaleString('fr-FR') + ' F'; }
+
+// ============================================================
+//  SYNC SUPABASE — table 'menko_hub_users' (XHR REST, offline-first)
+//  Base locale = source hors-ligne. Cloud = partage multi-poste.
+// ============================================================
+const SB_CFG_KEY = 'menko_hub_sb';
+const SB_TABLE = 'menko_hub_users';
+function sbCfg(){
+  try { const c = JSON.parse(localStorage.getItem(SB_CFG_KEY)); return (c && c.url && c.key) ? c : null; } catch(e){ return null; }
+}
+function sbHeaders(cfg){
+  return { apikey: cfg.key, Authorization: 'Bearer ' + cfg.key, 'Content-Type': 'application/json' };
+}
+function sbXHR(method, path, body, prefer){
+  return new Promise((resolve, reject) => {
+    const cfg = sbCfg();
+    if (!cfg) return reject(new Error('Supabase non configuré'));
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, cfg.url.replace(/\/+$/,'') + '/rest/v1/' + path, true);
+    const h = sbHeaders(cfg);
+    for (const k in h) xhr.setRequestHeader(k, h[k]);
+    if (prefer) xhr.setRequestHeader('Prefer', prefer);
+    xhr.timeout = 15000;
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(xhr.responseText ? JSON.parse(xhr.responseText) : []); } catch(e){ resolve([]); }
+      } else reject(new Error('HTTP ' + xhr.status + ' ' + xhr.responseText));
+    };
+    xhr.onerror = () => reject(new Error('Réseau indisponible'));
+    xhr.ontimeout = () => reject(new Error('Délai dépassé'));
+    xhr.send(body ? JSON.stringify(body) : null);
+  });
+}
+function _toCloud(u){
+  return { id:u.id, nom:u.nom||'', login:u.login||'', password_hash:u.password_hash||'', salt:u.salt||'',
+           role:u.role||'', actif:u.actif!==false, deleted:false,
+           created_at:u.createdAt||new Date().toISOString(), updated_at:u.updatedAt||new Date().toISOString() };
+}
+function _fromCloud(r){
+  return { id:r.id, nom:r.nom, login:r.login, password_hash:r.password_hash, salt:r.salt,
+           role:r.role, actif:r.actif!==false, createdAt:r.created_at, updatedAt:r.updated_at, _deleted:!!r.deleted };
+}
+async function sbUsersPush(user){
+  if (!sbCfg()) return;
+  user.updatedAt = new Date().toISOString();
+  await sbXHR('POST', SB_TABLE, [_toCloud(user)], 'resolution=merge-duplicates,return=minimal');
+}
+async function sbUsersSoftDelete(id){
+  if (!sbCfg()) return;
+  await sbXHR('PATCH', SB_TABLE + '?id=eq.' + encodeURIComponent(id),
+    { deleted:true, updated_at:new Date().toISOString() }, 'return=minimal');
+}
+// Pull cloud → merge local (updated_at le plus récent gagne ; tombstone = suppression locale)
+async function sbUsersPull(){
+  if (!sbCfg()) return false;
+  const rows = await sbXHR('GET', SB_TABLE + '?select=*', null);
+  const db = await openHoldDB();
+  const locals = await getAllUsers(db);
+  const map = {}; locals.forEach(u => map[u.id] = u);
+  for (const r of rows) {
+    const c = _fromCloud(r);
+    const l = map[c.id];
+    if (c._deleted) { if (l) await _deleteUserLocal(db, c.id); continue; }
+    if (!l || new Date(c.updatedAt||0) >= new Date(l.updatedAt||0)) {
+      delete c._deleted;
+      await putUser(db, c);
+    }
+  }
+  return true;
+}
+function _deleteUserLocal(db, id){
+  return new Promise((res) => {
+    const tx = db.transaction('users','readwrite');
+    tx.objectStore('users').delete(id);
+    tx.oncomplete = () => res();
+    tx.onerror = () => res();
+  });
+}
+// Push local non encore présents/plus récents → cloud (réconciliation montante)
+async function sbUsersPushAll(){
+  if (!sbCfg()) return;
+  const db = await openHoldDB();
+  const users = realUsers(await getAllUsers(db));
+  if (!users.length) return;
+  await sbXHR('POST', SB_TABLE, users.map(_toCloud), 'resolution=merge-duplicates,return=minimal');
+}
+function _sbMsg(m, ok){ const e = document.getElementById('sbMsg'); if (e){ e.textContent = m; e.style.color = ok ? 'var(--vert,#1a7f37)' : 'var(--dim)'; } }
+function sbRefreshStatut(){
+  const b = document.getElementById('sbStatut'); if (!b) return;
+  if (sbCfg()) { b.textContent = '☁️ Configuré'; b.className = 'badge-on'; }
+  else { b.textContent = 'Non configuré'; b.className = 'badge-off'; }
+  const c = sbCfg();
+  if (c) { const u = document.getElementById('sbUrl'), k = document.getElementById('sbKey'); if (u) u.value = c.url; if (k) k.value = c.key; }
+}
+function sbSaveCfg(){
+  const url = document.getElementById('sbUrl').value.trim();
+  const key = document.getElementById('sbKey').value.trim();
+  if (!/^https:\/\/.+\.supabase\.co$/.test(url)) return _sbMsg('URL invalide (https://xxxx.supabase.co).', false);
+  if (key.length < 20) return _sbMsg('Clé anon invalide.', false);
+  localStorage.setItem(SB_CFG_KEY, JSON.stringify({ url, key }));
+  sbRefreshStatut(); _sbMsg('Configuration enregistrée.', true);
+}
+async function sbTest(){
+  if (!sbCfg()) return _sbMsg('Configurez d\'abord URL + clé.', false);
+  _sbMsg('Test en cours…', true);
+  try { await sbXHR('GET', SB_TABLE + '?select=id&limit=1', null); _sbMsg('✅ Connexion OK, table accessible.', true); }
+  catch(e){ _sbMsg('❌ ' + e.message, false); }
+}
+async function sbSyncNow(){
+  if (!sbCfg()) return _sbMsg('Configurez d\'abord URL + clé.', false);
+  _sbMsg('Synchronisation…', true);
+  try { await sbUsersPushAll(); await sbUsersPull(); renderParametrage(); _sbMsg('✅ Synchronisé.', true); }
+  catch(e){ _sbMsg('❌ ' + e.message, false); }
+}
 
 // ============================================================
 //  AUTH CENTRALISÉE — MenkoHoldingDB / store 'users'
@@ -407,6 +539,7 @@ async function doSetup(){
   const hash = await hashPassword(p1, salt);
   const user = { id:'u_'+Date.now(), nom, login, password_hash:hash, salt, role:'admin', actif:true, createdAt:new Date().toISOString() };
   await putUser(db, user);
+  try { await sbUsersPush(user); } catch(e){}
   sessionStorage.setItem(SESSION_KEY, JSON.stringify({ id:user.id, nom:user.nom, login:user.login, role:user.role }));
   enterApp(user);
 }
@@ -416,6 +549,7 @@ async function doLogin(){
   const pass = document.getElementById('login-pass').value;
   if (!login || !pass) return showErr('Identifiant et mot de passe requis.');
 
+  try { await sbUsersPull(); } catch(e){}   // cloud d'abord (compte créé sur autre poste), best-effort
   const db = await openHoldDB();
   const users = realUsers(await getAllUsers(db));
   const user = users.find(u => u.login.toLowerCase() === login.toLowerCase());
@@ -472,6 +606,8 @@ function fermerModal(){
 }
 
 async function renderParametrage(){
+  sbRefreshStatut();
+  try { await sbUsersPull(); } catch(e){}
   const db = await openHoldDB();
   const users = realUsers(await getAllUsers(db));
   const roles = getHubRoles();
@@ -553,6 +689,7 @@ async function validerUtilisateurHub(id){
       user.password_hash = await hashPassword(pass, salt);
     }
     await putUser(db, user);
+    try { await sbUsersPush(user); } catch(e){ _modalErr('Enregistré en local. Sync cloud échouée : ' + e.message); }
     fermerModal();
     renderParametrage();
     if (currentSession().login && currentSession().login.toLowerCase() === login.toLowerCase()) {
@@ -579,7 +716,8 @@ async function supprimerUtilisateurHub(id){
   if (moi.id !== id && !confirm('Supprimer cet utilisateur ?\nIl ne pourra plus se connecter à aucune application du groupe.')) return;
   const tx = db.transaction('users', 'readwrite');
   tx.objectStore('users').delete(id);
-  tx.oncomplete = function(){
+  tx.oncomplete = async function(){
+    try { await sbUsersSoftDelete(id); } catch(e){}
     renderParametrage();
     if (moi.id === id) doLogout();
   };
@@ -649,6 +787,7 @@ async function supprimerRoleHub(role){
     try { return enterApp(JSON.parse(session)); } catch(e){}
   }
   const db = await openHoldDB();
+  try { await sbUsersPull(); } catch(e){}   // récupère comptes créés ailleurs avant écran setup
   const users = realUsers(await getAllUsers(db));
   if (users.length === 0) {
     document.getElementById('login-title').textContent = 'Bienvenue';
