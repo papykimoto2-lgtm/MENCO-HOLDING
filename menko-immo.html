@@ -9743,6 +9743,9 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <option value="radio">Radio / TV</option>
               <option value="affichage">Affichage urbain</option>
             </select>
+            <select class="filter-select" id="filter-campagne-division" onchange="renderCampagnes();buildPACDashboard();buildROI();" style="font-weight:700;border-color:#B87333;">
+              <option value="">🏢 Toutes divisions</option>
+            </select>
           </div>
           <div id="campagnes-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;"></div>
         </div>
@@ -9932,8 +9935,13 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                   </select>
                 </div>
                 <div class="form-group"><label>Programme ciblé</label>
-                  <select class="form-control" id="camp-programme">
+                  <select class="form-control" id="camp-programme" onchange="_campSyncDivisionDepuisProgramme()">
                     <option value="">— Tous programmes —</option>
+                  </select>
+                </div>
+                <div class="form-group"><label>🏢 Division</label>
+                  <select class="form-control" id="camp-division">
+                    <option value="">— Toutes divisions —</option>
                   </select>
                 </div>
                 <div class="form-group"><label>Type de logement ciblé</label>
@@ -38893,6 +38901,10 @@ function populateDivisionSelects() {
       grpEcrDiv.style.display = 'none';
     }
   }
+  var selCampDiv = document.getElementById('camp-division');
+  if (selCampDiv) { var curCD = selCampDiv.value; selCampDiv.innerHTML = '<option value="">— Toutes divisions —</option>' + DATA.divisions.map(function(d) { return '<option value="' + d.id + '">' + d.nom + '</option>'; }).join(''); selCampDiv.value = curCD; }
+  var selCampFilter = document.getElementById('filter-campagne-division');
+  if (selCampFilter) { var curCF = selCampFilter.value; selCampFilter.innerHTML = '<option value="">🏢 Toutes divisions</option>' + DATA.divisions.map(function(d) { return '<option value="' + d.id + '">' + d.nom + '</option>'; }).join(''); selCampFilter.value = curCF; }
 }
 
 /* Pré-remplit la division de l'écriture depuis celle du programme sélectionné (modifiable ensuite) */
@@ -47322,41 +47334,56 @@ function getRapportDateMin() {
   return '';
 }
 
+// ── Résolution unifiée du nom commercial (prenoms+nom, commercial_id prioritaire) ──
+// Toute résolution de "qui est le commercial" DOIT passer par ces 2 helpers.
+// Avant ce correctif, 4 sources (clients/leads/versements/etapes) résolvaient
+// le nom chacune à leur façon (ordre nom/prénom différent, ou ignorant
+// commercial_id), ce qui éclatait un même commercial en plusieurs lignes
+// dans le classement / tableau comparatif / commissions.
+function _nomEmploye(emp) { return emp ? ((emp.prenoms||'')+' '+(emp.nom||'')).trim() : ''; }
+function _commercialNomDe(obj, champTexte) {
+  if (!obj) return '';
+  var emp = obj.commercial_id ? DATA.employes.find(function(e){return e.id===obj.commercial_id;}) : null;
+  if (emp) return _nomEmploye(emp);
+  return (champTexte && obj[champTexte]) || '';
+}
+
 // ── Construire la liste des commerciaux avec métriques ───────────────────────
 function buildCommsList(dateMin) {
   var comms = {};
+  function _get(nom, emp_id) {
+    if (!comms[nom]) comms[nom] = { nom:nom, emp_id:emp_id||'', clients:[], versements:[], leads:[], etapes:[], crs:[] };
+    return comms[nom];
+  }
 
   DATA.clients.forEach(function(c) {
-    // Résoudre le nom depuis RH en priorité
-    var empC = c.commercial_id ? DATA.employes.find(function(e){return e.id===c.commercial_id;}) : null;
-    var nom = empC ? ((empC.prenoms||'')+' '+empC.nom).trim() : (c.commercial||'');
+    var nom = _commercialNomDe(c, 'commercial');
     if (!nom) return;
-    if (!comms[nom]) comms[nom] = { nom:nom, emp_id:c.commercial_id||'', clients:[], versements:[], leads:[], etapes:[], crs:[] };
-    comms[nom].clients.push(c);
+    _get(nom, c.commercial_id).clients.push(c);
   });
   DATA.leads.forEach(function(l) {
-    var nom = l.commercial_id ? ((DATA.employes.find(function(e){return e.id===l.commercial_id;})||{nom:l.commercial_id,prenoms:''}).nom + ' ' + ((DATA.employes.find(function(e){return e.id===l.commercial_id;})||{prenoms:''}).prenoms)).trim() : '';
+    var nom = _commercialNomDe(l, 'commercial');
     if (!nom) return;
-    if (!comms[nom]) comms[nom] = { nom:nom, clients:[], versements:[], leads:[], etapes:[], crs:[] };
-    comms[nom].leads.push(l);
+    _get(nom, l.commercial_id).leads.push(l);
   });
   DATA.versements.forEach(function(v) {
     if (dateMin && v.date < dateMin) return;
     var c = DATA.clients.find(function(x){return x.id===v.client_id;});
-    if (!c || !c.commercial) return;
-    var nom = c.commercial;
-    if (!comms[nom]) comms[nom] = { nom:nom, clients:[], versements:[], leads:[], etapes:[], crs:[] };
-    comms[nom].versements.push(v);
+    var nom = _commercialNomDe(c, 'commercial');
+    if (!nom) return;
+    _get(nom, c.commercial_id).versements.push(v);
   });
   DATA.etapes_itineraire.forEach(function(e) {
-    var nom = e.commercial_nom || ''; if (!nom) return;
-    if (!comms[nom]) comms[nom] = { nom:nom, clients:[], versements:[], leads:[], etapes:[], crs:[] };
-    comms[nom].etapes.push(e);
+    var emp = e.commercial_id ? DATA.employes.find(function(x){return x.id===e.commercial_id;}) : null;
+    var nom = emp ? _nomEmploye(emp) : (e.commercial_nom || '');
+    if (!nom) return;
+    _get(nom, e.commercial_id).etapes.push(e);
   });
   DATA.cr_visites.forEach(function(cr) {
     var etape = DATA.etapes_itineraire.find(function(e){return e.id===cr.etape_id;});
     if (!etape) return;
-    var nom = etape.commercial_nom || '';
+    var emp = etape.commercial_id ? DATA.employes.find(function(x){return x.id===etape.commercial_id;}) : null;
+    var nom = emp ? _nomEmploye(emp) : (etape.commercial_nom || '');
     if (comms[nom]) comms[nom].crs.push(cr);
   });
 
@@ -47560,14 +47587,14 @@ function buildFicheCommercial() {
   var box = document.getElementById('fiche-commercial-detail'); if (!box) return;
   if (!commNom) { box.innerHTML='<div style="text-align:center;padding:32px;color:#94A3B8;"><div style="font-size:36px;margin-bottom:10px;">👤</div>Sélectionnez un commercial.</div>'; return; }
 
-  var clients    = DATA.clients.filter(function(c){return c.commercial===commNom;});
-  var versements = DATA.versements.filter(function(v){ var c=DATA.clients.find(function(x){return x.id===v.client_id;}); return c&&c.commercial===commNom; });
-  var etapes     = DATA.etapes_itineraire.filter(function(e){return e.commercial_nom===commNom||e.commercial_id===commNom;});
-  var crs        = DATA.cr_visites.filter(function(cr){return etapes.find(function(e){return e.id===cr.etape_id;});});
-  var leads      = DATA.leads.filter(function(l){
-    var emp = l.commercial_id ? DATA.employes.find(function(e){return e.id===l.commercial_id;}) : null;
-    return emp && (emp.nom+' '+emp.prenoms).trim()===commNom;
+  var clients    = DATA.clients.filter(function(c){return _commercialNomDe(c,'commercial')===commNom;});
+  var versements = DATA.versements.filter(function(v){ var c=DATA.clients.find(function(x){return x.id===v.client_id;}); return c&&_commercialNomDe(c,'commercial')===commNom; });
+  var etapes     = DATA.etapes_itineraire.filter(function(e){
+    var emp = e.commercial_id ? DATA.employes.find(function(x){return x.id===e.commercial_id;}) : null;
+    return (emp ? _nomEmploye(emp) : (e.commercial_nom||''))===commNom;
   });
+  var crs        = DATA.cr_visites.filter(function(cr){return etapes.find(function(e){return e.id===cr.etape_id;});});
+  var leads      = DATA.leads.filter(function(l){return _commercialNomDe(l,'commercial')===commNom;});
 
   var totalCA  = clients.reduce(function(s,c){return s+(parseFloat(c.montant_total)||0);},0);
   var totalEnc = versements.reduce(function(s,v){return s+(parseFloat(v.montant)||0);},0);
@@ -54942,7 +54969,9 @@ switchTab = function(context, tab) {
 
 /* ─── Dashboard PAC ─────────────────────────────────── */
 function buildPACDashboard() {
-  var campagnes = DATA.campagnes || [];
+  var divF = (document.getElementById('filter-campagne-division')||{}).value||'';
+  var scope= userScopeDivision();
+  var campagnes = (DATA.campagnes || []).filter(function(c){ return (!divF||c.division_id===divF) && (!scope||c.division_id===scope); });
   var actions   = DATA.actions_marketing || [];
   var now       = today();
 
@@ -55034,6 +55063,15 @@ function buildPACDashboard() {
   }
 }
 
+/* Pré-remplit la division de la campagne depuis celle du programme ciblé (modifiable ensuite) */
+function _campSyncDivisionDepuisProgramme() {
+  var selProg = document.getElementById('camp-programme');
+  var selDiv = document.getElementById('camp-division');
+  if (!selProg || !selDiv || selDiv.value) return; // ne pas écraser un choix déjà fait
+  var prog = (DATA.programmes || []).find(function(p){ return p.id === selProg.value; });
+  if (prog && prog.division_id) selDiv.value = prog.division_id;
+}
+
 /* ─── CAMPAGNES ─────────────────────────────────────── */
 function renderCampagnes() {
   var grid = document.getElementById('campagnes-grid');
@@ -55042,11 +55080,15 @@ function renderCampagnes() {
   var q    = ((document.getElementById('search-campagnes')||{}).value||'').toLowerCase();
   var stat = (document.getElementById('filter-campagne-statut')||{}).value||'';
   var canal= (document.getElementById('filter-campagne-canal')||{}).value||'';
+  var divF = (document.getElementById('filter-campagne-division')||{}).value||'';
+  var scope= userScopeDivision();
 
   var list = (DATA.campagnes||[]).filter(function(c){
     return (!q||(c.nom+' '+(c.description||'')).toLowerCase().includes(q))
       && (!stat||c.statut===stat)
-      && (!canal||c.canal===canal);
+      && (!canal||c.canal===canal)
+      && (!divF||c.division_id===divF)
+      && (!scope||c.division_id===scope);
   }).sort(function(a,b){ return (b.date_debut||'').localeCompare(a.date_debut||''); });
 
   if (!list.length) {
@@ -55066,7 +55108,7 @@ function renderCampagnes() {
     return '<div class="constructeur-card">'
       +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;">'
         +'<div style="flex:1;">'
-          +'<div style="font-size:11px;color:var(--blanc-dim);margin-bottom:3px;">'+(canalIcon[c.canal]||'📣')+' '+c.canal.replace(/_/g,' ').toUpperCase()+'</div>'
+          +'<div style="font-size:11px;color:var(--blanc-dim);margin-bottom:3px;">'+(canalIcon[c.canal]||'📣')+' '+c.canal.replace(/_/g,' ').toUpperCase()+(c.division_id?' · 🏢 '+_nomDivision(c.division_id):'')+'</div>'
           +'<div style="font-weight:700;font-size:15px;margin-bottom:2px;">'+c.nom+'</div>'
           +'<div style="font-size:11px;color:var(--blanc-dim);">'+(c.date_debut||'—')+' → '+(c.date_fin||'—')+'</div>'
         +'</div>'
@@ -55118,6 +55160,7 @@ function openCampagne(id) {
     var c = DATA.campagnes.find(function(x){return x.id===id;});
     if (c) {
       el('camp-nom',c.nom); el('camp-canal',c.canal); el('camp-programme',c.programme_id);
+      el('camp-division',c.division_id);
       el('camp-type-logement',c.type_logement); el('camp-date-debut',c.date_debut);
       el('camp-date-fin',c.date_fin); el('camp-budget',c.budget);
       el('camp-depense',c.depense); el('camp-responsable',c.responsable_id);
@@ -55129,7 +55172,7 @@ function openCampagne(id) {
       renderActionsCampagne(c.actions_internes||[]);
     }
   } else {
-    ['camp-nom','camp-description','camp-zone','camp-date-debut','camp-date-fin'].forEach(function(f){el(f,'');});
+    ['camp-nom','camp-description','camp-zone','camp-date-debut','camp-date-fin','camp-division'].forEach(function(f){el(f,'');});
     el('camp-budget','0'); el('camp-depense','0');
     el('camp-obj-leads','20'); el('camp-obj-visites','10');
     el('camp-obj-souscriptions','3'); el('camp-obj-ca','0');
@@ -55188,6 +55231,7 @@ async function saveCampagne() {
     id: APP.editingId||uid(), nom:nom,
     canal: document.getElementById('camp-canal').value,
     programme_id: document.getElementById('camp-programme').value,
+    division_id: document.getElementById('camp-division').value || userScopeDivision() || '',
     type_logement: document.getElementById('camp-type-logement').value,
     date_debut: document.getElementById('camp-date-debut').value,
     date_fin: document.getElementById('camp-date-fin').value,
@@ -55580,7 +55624,9 @@ async function deleteSegment(id){
 
 /* ─── ROI & PERFORMANCE ──────────────────────────────── */
 function buildROI(){
-  var campagnes=DATA.campagnes||[];
+  var divF = (document.getElementById('filter-campagne-division')||{}).value||'';
+  var scope= userScopeDivision();
+  var campagnes=(DATA.campagnes||[]).filter(function(c){ return (!divF||c.division_id===divF) && (!scope||c.division_id===scope); });
 
   // KPIs ROI globaux
   var roiEl=document.getElementById('roi-kpi');
