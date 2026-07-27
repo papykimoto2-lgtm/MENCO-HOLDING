@@ -88519,13 +88519,14 @@ function qrSvgTag(text){
     if (ED.mode !== 'interieur') return;
     var multi = ED.niveaux.length > 1;
     var pieces = ED.elements.filter(function(e) { return e.type === 'piece'; });
-    var HAUTEUR = 2.7, DEDUC = 15, HFAIENCE = 1.5; /* défauts alignés sur la génération DQE */
+    var DEDUC = 15, HFAIENCE = 1.5; /* défauts alignés sur la génération DQE */
+    function _nivH(ni) { var nv = ED.niveaux[ni | 0]; var h = nv && parseFloat(nv.h); return (h && h > 0) ? h : 2.7; }
     var total = 0, totalMurs = 0, totalFaience = 0;
     var surfParNiv = [];
     var rows = pieces.map(function(p) {
       var s = Math.round(p.w * p.h * 10) / 10;
       var perim = 2 * (p.w + p.h);
-      var wallA = Math.round(perim * HAUTEUR * (1 - DEDUC / 100) * 10) / 10;
+      var wallA = Math.round(perim * _nivH(p.niv) * (1 - DEDUC / 100) * 10) / 10;
       total += s; totalMurs += wallA;
       var ni = p.niv | 0;
       surfParNiv[ni] = (surfParNiv[ni] || 0) + s;
@@ -88553,8 +88554,8 @@ function qrSvgTag(text){
     var longFondation = Math.round(mursPorteurs.filter(function(m) { return (m.niv | 0) === 0; })
       .reduce(function(a, m) { return a + Math.max(m.w, m.h); }, 0) * 10) / 10;
     var longCloisons  = Math.round(cloisons.reduce(function(a, c) { return a + Math.max(c.w, c.h); }, 0) * 10) / 10;
-    var surfPorteurs  = Math.round(longPorteurs * HAUTEUR * 10) / 10;
-    var surfCloisons  = Math.round(longCloisons * HAUTEUR * 10) / 10;
+    var surfPorteurs  = Math.round(mursPorteurs.reduce(function(a, m) { return a + Math.max(m.w, m.h) * _nivH(m.niv); }, 0) * 10) / 10;
+    var surfCloisons  = Math.round(cloisons.reduce(function(a, c) { return a + Math.max(c.w, c.h) * _nivH(c.niv); }, 0) * 10) / 10;
 
     var ratios = _archiGetCoutRatios();
     var coutSol     = total * ratios.sol;
@@ -89501,6 +89502,7 @@ function qrSvgTag(text){
           + 'Unité détectée : <b>' + res.uniteNom + '</b> · Emprise : <b>'
           + (Math.round(res.wM * 10) / 10) + ' × ' + (Math.round(res.hM * 10) / 10) + ' m</b>'
           + (res.blocsIgnores ? '<br>⚠️ ' + res.blocsIgnores + ' bloc(s) imbriqué(s) au-delà du 1er niveau ignorés.' : '')
+          + (res.vuesIgnorees ? '<br>ℹ️ ' + res.vuesIgnorees + ' vue(s) façade/coupe exclue(s) du cadrage (hors emprise plan).' : '')
           + '<br><span style="color:var(--dim);">Calques : ' + lay.slice(0, 12).join(', ') + (lay.length > 12 ? '…' : '') + '</span>', 'ok');
         if (btn) btn.disabled = false;
       };
@@ -89540,7 +89542,8 @@ function qrSvgTag(text){
       pairs.push([c, L[i + 1]]);
     }
 
-    var insunits = null, layers = {}, blocs = {}, ents = [], blocsIgnores = 0;
+    var insunits = null, layers = {}, blocs = {}, ents = [], blocsIgnores = 0, vuesIgnorees = 0;
+    var RE_VUE_ANNEXE = /fa[çc]ade|plan\s*de\s*coupe|^coupe/i;
 
     /* HEADER : $INSUNITS */
     for (var h = 0; h < pairs.length - 2; h++) {
@@ -89648,6 +89651,7 @@ function qrSvgTag(text){
         if (polyCour.pts.length >= 2) { geo.push({ g: 'poly', lay: polyCour.lay, pts: polyCour.pts, closed: polyCour.closed }); layers[polyCour.lay] = (layers[polyCour.lay] || 0) + 1; }
         polyCour = null; continue;
       }
+      if (e.type === 'INSERT' && RE_VUE_ANNEXE.test(_g(e, 2, ''))) { vuesIgnorees++; continue; }
       _emit(e, geo, null, 0);
     }
 
@@ -89665,7 +89669,7 @@ function qrSvgTag(text){
 
     var bb = _dxfBBox(geo);
     return { ents: geo, layers: layers, facteur: facteur, uniteAuto: uniteAuto, uniteNom: uniteNom,
-             bbox: bb, wM: (bb.x2 - bb.x1) * facteur, hM: (bb.y2 - bb.y1) * facteur, blocsIgnores: blocsIgnores };
+             bbox: bb, wM: (bb.x2 - bb.x1) * facteur, hM: (bb.y2 - bb.y1) * facteur, blocsIgnores: blocsIgnores, vuesIgnorees: vuesIgnorees };
   }
 
   function _dxfBBox(geo) {
