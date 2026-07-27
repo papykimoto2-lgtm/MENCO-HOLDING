@@ -11889,6 +11889,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             </select>
             <button class="btn btn-secondary btn-sm" onclick="dqeAjouterTypePerso()" title="Ajouter un type de logement personnalisé">➕ Type</button>
             <button class="btn btn-secondary btn-sm" onclick="ajouterPosteNomenclature()">+ Ajouter poste</button>
+            <button class="btn btn-secondary btn-sm" onclick="cctpOuvrirImport()" title="Détecter la composition des murs (agglo 15/20, béton banché) depuis un CCTP">📄 Importer CCTP</button>
             <button class="btn btn-secondary btn-sm" onclick="exporterNomenclatureCSV()">⬇ CSV</button>
             <button class="btn btn-secondary btn-sm" onclick="printPreviewDQE()" title="Aperçu avant impression">🖨️ Aperçu & imprimer</button>
           </div>
@@ -12419,6 +12420,67 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         </div>
       </div>
 
+      <!-- ── MODAL : Import CCTP → mapping composition murs (agglo 15/20 vs béton banché) ── -->
+      <div class="modal-overlay" id="modal-cctp-import">
+        <div class="modal" style="max-width:680px;">
+          <div class="modal-header">
+            <div class="modal-title">📄 Importer un CCTP — mapping composition des murs</div>
+            <button class="modal-close" onclick="closeModal('modal-cctp-import')">✕</button>
+          </div>
+          <div class="modal-body">
+            <div style="font-size:12px;color:var(--dim);margin-bottom:10px;">
+              Collez le texte du CCTP, ou importez un fichier PDF/TXT. L'outil recherche la composition prescrite pour les murs porteurs/façade et pour les cloisons (agglos 15, agglos 20, ou béton banché) et propose les postes de gros œuvre correspondants — à valider avant génération.
+            </div>
+            <div class="form-grid">
+              <div class="form-group span-2">
+                <label>Fichier CCTP (PDF ou TXT) — optionnel</label>
+                <input type="file" id="cctp-file" class="form-control" accept=".pdf,.txt" onchange="cctpChargerFichier(this)">
+              </div>
+              <div class="form-group span-2">
+                <label>Texte du CCTP</label>
+                <textarea id="cctp-texte" class="form-control" rows="8" placeholder="Collez ici l'article du CCTP décrivant les murs (ex : « Les murs extérieurs seront réalisés en agglos creux de 20 cm... Les cloisons intérieures en agglos de 15 cm... »)."></textarea>
+              </div>
+              <div class="form-group span-2">
+                <button class="btn btn-secondary btn-sm" onclick="cctpAnalyser()">🔍 Analyser le texte</button>
+              </div>
+              <div class="form-group span-2" id="cctp-resultats"></div>
+              <div class="form-group">
+                <label>Composition retenue — Murs porteurs / façade</label>
+                <select id="cctp-sel-mur" class="form-control"></select>
+              </div>
+              <div class="form-group">
+                <label>Surface murs porteurs (m²)</label>
+                <input type="number" id="cctp-surf-mur" class="form-control" min="0" step="0.1" placeholder="Ex : 120">
+              </div>
+              <div class="form-group">
+                <label>Composition retenue — Cloisons / refends</label>
+                <select id="cctp-sel-cloison" class="form-control"></select>
+              </div>
+              <div class="form-group">
+                <label>Surface cloisons (m²)</label>
+                <input type="number" id="cctp-surf-cloison" class="form-control" min="0" step="0.1" placeholder="Ex : 60">
+              </div>
+              <div class="form-group span-2">
+                <label>Type de logement cible (nomenclature DQE)</label>
+                <select id="cctp-type" class="form-control">
+                  <option value="F2">F2</option>
+                  <option value="F3">F3</option>
+                  <option value="F4">F4</option>
+                  <option value="VILLA">VILLA</option>
+                </select>
+              </div>
+            </div>
+            <div class="alert alert-info" style="margin-top:12px;font-size:12px;">
+              ℹ️ Le béton banché génère 2 lignes (béton dosé à 350 kg/m³ + coffrage 2 faces). Les postes déjà générés depuis un CCTP pour ce type sont remplacés à chaque génération ; vos postes ajoutés manuellement ne sont jamais touchés.
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal('modal-cctp-import')">Annuler</button>
+            <button class="btn btn-primary" onclick="cctpGenererPostes()">📋 Générer les postes gros œuvre</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Modal : génération nomenclature DQE depuis le plan (éditeur archi) -->
       <!-- Modal : import de plan (DXF / PDF / image) -->
       <div class="modal-overlay" id="modal-archi-import">
@@ -12485,6 +12547,18 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             </div>
             <div class="alert alert-info" style="margin-top:12px;font-size:12px;">
               ℹ️ Polylignes fermées → rectangle d'encombrement. Lignes → mur/cloison d'épaisseur paramétrée. Les textes situés à l'intérieur d'une pièce servent de libellé. Vérifiez toujours les surfaces obtenues avant de chiffrer.
+            </div>
+            <div id="conv-blocs-wrap" style="display:none;margin-top:16px;">
+              <div class="form-section-title">🔧 Équipements détectés (blocs plomberie / électricité / VRD)</div>
+              <div style="font-size:12px;color:var(--dim);margin-bottom:8px;">
+                Chaque bloc du dessin (Lavabo, WC, Douche, Table de cuisson électrique…) est reconnu par son nom. Corrigez le type si besoin ; les postes DQE correspondants pourront être générés automatiquement (case à cocher dans « Générer nomenclature DQE »).
+              </div>
+              <div class="table-wrap" style="max-height:260px;overflow:auto;">
+                <table>
+                  <thead><tr><th>Bloc</th><th>Occurrences</th><th>Type d'équipement</th></tr></thead>
+                  <tbody id="conv-blocs-tbody"></tbody>
+                </table>
+              </div>
             </div>
           </div>
           <div class="modal-footer">
@@ -12556,6 +12630,12 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                 <label>Menuiseries & escalier (détecté depuis le plan)</label>
                 <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px;margin-top:4px;">
                   <label style="display:flex;align-items:center;gap:5px;font-weight:400;"><input type="checkbox" id="gen-nomen-menuiserie" checked> 🚪 Portes + Fenêtres + Escalier (forfait par unité)</label>
+                </div>
+              </div>
+              <div class="form-group span-2" id="gen-nomen-equip-wrap" style="display:none;">
+                <label>Plomberie / Électricité / VRD (détecté depuis les blocs du plan)</label>
+                <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px;margin-top:4px;">
+                  <label style="display:flex;align-items:center;gap:5px;font-weight:400;"><input type="checkbox" id="gen-nomen-equip" checked> 🔧 Lavabo / WC / Douche / Plaque de cuisson / Prises / Points lumineux / Tableau / Regards (forfait par unité posée)</label>
                 </div>
               </div>
             </div>
@@ -12668,6 +12748,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="filters-bar" style="margin-bottom:12px;">
             <input type="text" class="search-input" id="eds-res-search" placeholder="🔍 Code, libellé, type..." oninput="edsRenderRes()" style="flex:1;min-width:160px;">
             <button class="btn btn-secondary btn-sm" onclick="edsIndexerPrix()">📈 Indexer les prix</button>
+            <button class="btn btn-secondary btn-sm" onclick="edsOuvrirImportBPU()">⬆ Importer BPU (CSV)</button>
             <button class="btn btn-primary btn-sm" onclick="edsOpenRes()">+ Ressource</button>
           </div>
           <div class="card"><div style="font-size:12px;color:var(--muted);margin-bottom:8px;">Mettre à jour un prix ici recalcule automatiquement tous les ouvrages liés.</div>
@@ -12761,6 +12842,32 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div class="form-group"><label>Prix unitaire (FCFA)</label><input type="number" id="eds-res-pu" class="form-control" value="0"></div>
           </div></div>
           <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('modal-eds-res')">Annuler</button><button class="btn btn-primary" onclick="edsSaveRes()">💾 Enregistrer</button></div>
+        </div>
+      </div>
+
+      <!-- ── MODAL : Import BPU externe (CSV sous-traitants) ── -->
+      <div class="modal-overlay" id="modal-eds-import-bpu">
+        <div class="modal" style="max-width:820px;">
+          <div class="modal-header"><div class="modal-title">⬆ Importer un BPU externe (CSV sous-traitants)</div><button class="modal-close" onclick="closeModal('modal-eds-import-bpu')">✕</button></div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label>Fichier CSV</label>
+              <input type="file" id="bpu-file" class="form-control" accept=".csv,text/csv" onchange="edsChargerFichierBPU(this)">
+              <div style="font-size:11px;color:var(--muted);margin-top:6px;">
+                Colonnes reconnues (en-tête libre, accents/majuscules ignorés) : <b>Code</b> (optionnel),
+                <b>Désignation</b> / Libellé (obligatoire), <b>Unité</b>, <b>Prix</b> / PU (obligatoire),
+                <b>Sous-traitant</b> / Fournisseur. Séparateur virgule ou point-virgule détecté automatiquement.
+              </div>
+            </div>
+            <div id="bpu-preview-zone" style="margin-top:10px;"></div>
+          </div>
+          <div class="modal-footer" style="justify-content:space-between;align-items:center;">
+            <span id="bpu-import-footer-info" style="font-size:12px;color:var(--muted);"></span>
+            <div>
+              <button class="btn btn-secondary" onclick="closeModal('modal-eds-import-bpu')">Annuler</button>
+              <button class="btn btn-primary" id="bpu-btn-valider" onclick="edsValiderImportBPU()" disabled>✅ Importer la sélection</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -36443,11 +36550,6 @@ function _setModChecked(mod, val) {
 function _syncModChk(el) {
   _setModChecked(el.getAttribute('data-mod'), el.checked);
   _updateNbModules();
-  /* CORRECTIF : sans cet appel, la ligne d'actions C/M/S/V d'un module
-     coché individuellement (hors "Tout"/"Aucun") restait grisée et
-     non-cliquable (pointer-events:none hérité de l'état décoché initial),
-     empêchant de cocher "M" (Modifier) même après avoir activé le module. */
-  if (typeof _rolesMajDroits === 'function') _rolesMajDroits();
 }
 
 function toggleGroupModules(group, val) {
@@ -36532,7 +36634,7 @@ function openRoleModal(roleId) {
   sv('role-preset', '');
   sv('role-description', isEdit ? (r.description||'') : '');
 
-  buildModulesGrid(isEdit ? r.permissions : {}, isEdit ? r.droits : {});
+  buildModulesGrid(isEdit ? r.permissions : {});
   document.getElementById('modal-role-editor').classList.add('open');
 }
 
@@ -64090,7 +64192,10 @@ var PRIX_MATERIAUX_CI = [
   { id:'mat_joint_carr',categorie:'carrelage',   libelle:'Joint de carrelage',                unite:'kg',     prix:1000,   fournisseur:'Etrusco',         validite:'2025-12-31' },
   { id:'mat_souscouche',categorie:'peinture',    libelle:'Sous-couche / primaire (pot 10L)',  unite:'pot',    prix:14000,  fournisseur:'AGA',             validite:'2025-12-31' },
   { id:'mat_tole_alu',  categorie:'couverture',  libelle:'Tôle bac alu (feuille)',            unite:'unité',  prix:6000,   fournisseur:'Eternit CI',      validite:'2025-12-31' },
-  { id:'mat_chevrons',  categorie:'charpente',   libelle:'Chevrons / pannes bois (ml)',       unite:'ml',     prix:1500,   fournisseur:'Scierie locale',  validite:'2025-12-31' }
+  { id:'mat_chevrons',  categorie:'charpente',   libelle:'Chevrons / pannes bois (ml)',       unite:'ml',     prix:1500,   fournisseur:'Scierie locale',  validite:'2025-12-31' },
+  { id:'mat_beton350',     categorie:'gros_oeuvre', libelle:'Béton dosé à 350 kg/m³ (banché, coulé pompe)', unite:'m³',     prix:95000, fournisseur:'Centrale à béton', validite:'2025-12-31' },
+  { id:'mat_coffrage_banche', categorie:'gros_oeuvre', libelle:'Coffrage banche (location + mise en œuvre)', unite:'m²',     prix:3500,  fournisseur:'Loueur matériel',  validite:'2025-12-31' },
+  { id:'mat_treillis_soude', categorie:'ferraillage', libelle:'Treillis soudé ST25C (panneau)',            unite:'panneau',prix:22000, fournisseur:'Sococé',           validite:'2025-12-31' }
 ];
 
 /* ── Migration idempotente : ajoute au référentiel de prix les matériaux
@@ -64101,7 +64206,7 @@ async function calcMatSeedPrixManquants() {
   if (!DATA.prix_unitaire) DATA.prix_unitaire = [];
   var have = {};
   DATA.prix_unitaire.forEach(function(p) { have[(p.libelle || '').trim().toLowerCase()] = true; });
-  var candidats = ['mat_parpaing10','mat_parpaing15','mat_colle_carr','mat_joint_carr','mat_souscouche','mat_tole_alu','mat_chevrons'];
+  var candidats = ['mat_parpaing10','mat_parpaing15','mat_colle_carr','mat_joint_carr','mat_souscouche','mat_tole_alu','mat_chevrons','mat_beton350','mat_coffrage_banche','mat_treillis_soude'];
   var ajouts = 0;
   for (var i = 0; i < candidats.length; i++) {
     var src = PRIX_MATERIAUX_CI.find(function(p) { return p.id === candidats[i]; });
@@ -64117,6 +64222,196 @@ async function calcMatSeedPrixManquants() {
   }
   return ajouts;
 }
+
+/* ══════════════════════════════════════════════════════════
+   IMPORT CCTP → MAPPING COMPOSITION MURS (agglo 15/20 vs béton banché)
+   Le CCTP (cahier des clauses techniques particulières) prescrit
+   souvent une composition différente pour les murs porteurs/façade
+   et pour les cloisons. Jusqu'ici la génération "depuis le plan"
+   posait toujours du parpaing 20 pour les porteurs et du 10 pour les
+   cloisons, sans lire le CCTP. Ce module détecte la composition
+   prescrite dans le texte (collé ou importé en PDF/TXT), la propose
+   à validation, puis chiffre et injecte les postes de gros œuvre
+   correspondants dans la nomenclature DQE du type de logement choisi.
+══════════════════════════════════════════════════════════ */
+var CCTP_COMPOSITIONS_MUR = [
+  { cle:'agglo15', libelle:'Agglomérés (parpaings) creux 15 cm', epaisseur:0.15, materiau_id:'mat_parpaing15', unite:'unité', ratio_u_m2:12.5,
+    regex:/agglo(?:m[ée]r[ée]?s?)?\s*(?:creux\s*)?(?:de\s*)?15|parpaing[s]?\s*(?:creux\s*)?(?:de\s*)?15/i },
+  { cle:'agglo20', libelle:'Agglomérés (parpaings) creux 20 cm', epaisseur:0.20, materiau_id:'mat_parpaing', unite:'unité', ratio_u_m2:12.5,
+    regex:/agglo(?:m[ée]r[ée]?s?)?\s*(?:creux\s*)?(?:de\s*)?20|parpaing[s]?\s*(?:creux\s*)?(?:de\s*)?20/i },
+  { cle:'beton_banche', libelle:'Béton banché (voile béton armé)', epaisseur:0.15, materiau_id:'mat_beton350', coffrage_id:'mat_coffrage_banche', unite:'m³', ratio_u_m2:0.15,
+    regex:/b[ée]ton\s*banch[ée]|voile[s]?\s*(?:en\s*)?b[ée]ton|mur[s]?\s*banch[ée]s?/i }
+];
+function cctpCompoParCle(cle) { return CCTP_COMPOSITIONS_MUR.find(function(c) { return c.cle === cle; }) || CCTP_COMPOSITIONS_MUR[1]; }
+function _cctpLibellePrix(materiauId) {
+  var p = PRIX_MATERIAUX_CI.find(function(x) { return x.id === materiauId; });
+  return p ? p.libelle : materiauId;
+}
+function _cctpOptionsCompo(defaultCle) {
+  return CCTP_COMPOSITIONS_MUR.map(function(c) {
+    return '<option value="' + c.cle + '"' + (c.cle === (defaultCle || 'agglo20') ? ' selected' : '') + '>' + escHtml(c.libelle) + '</option>';
+  }).join('');
+}
+
+/* Détecte, paragraphe par paragraphe, la composition prescrite pour les
+   murs porteurs/façade et pour les cloisons/refends. Renvoie aussi les
+   extraits de texte ayant servi à la détection, pour que l'utilisateur
+   puisse vérifier avant de valider — jamais d'application automatique
+   silencieuse d'une lecture de texte libre. */
+function cctpDetecterComposition(texte) {
+  var t = String(texte || '');
+  var paras = t.split(/\n{1,}/).map(function(p) { return p.trim(); }).filter(Boolean);
+  var ciblesMurs = /mur[s]?\s*(?:ext[ée]rieur|porteur|de\s*fa[cç]ade)/i;
+  var ciblesCloisons = /cloison[s]?|refend[s]?|mur[s]?\s*int[ée]rieur/i;
+  var res = { mur_porteur: null, cloison: null, extraits: [] };
+  paras.forEach(function(p) {
+    var isMur = ciblesMurs.test(p), isCloison = ciblesCloisons.test(p);
+    if (!isMur && !isCloison) return;
+    var match = null;
+    for (var i = 0; i < CCTP_COMPOSITIONS_MUR.length; i++) {
+      if (CCTP_COMPOSITIONS_MUR[i].regex.test(p)) { match = CCTP_COMPOSITIONS_MUR[i]; break; }
+    }
+    if (!match) return;
+    var extrait = p.length > 220 ? p.slice(0, 220) + '…' : p;
+    if (isMur && !res.mur_porteur) { res.mur_porteur = match.cle; res.extraits.push({ cible: 'Murs porteurs / façade', compo: match.libelle, extrait: extrait }); }
+    if (isCloison && !res.cloison) { res.cloison = match.cle; res.extraits.push({ cible: 'Cloisons / refends', compo: match.libelle, extrait: extrait }); }
+  });
+  return res;
+}
+
+/* Réutilise pdf.js (déjà chargé par le module de scan de bornage si l'onglet
+   Foncier a été ouvert) pour extraire le texte d'un CCTP au format PDF. */
+function _cctpLoadPdfJs() {
+  return new Promise(function(resolve, reject) {
+    if (window.pdfjsLib) return resolve(window.pdfjsLib);
+    var s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    s.onload = function() {
+      try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; } catch (e) {}
+      resolve(window.pdfjsLib);
+    };
+    s.onerror = function() { reject(new Error('Chargement pdf.js impossible (hors ligne ?).')); };
+    document.head.appendChild(s);
+  });
+}
+
+function cctpOuvrirImport() {
+  var ta = document.getElementById('cctp-texte'); if (ta) ta.value = '';
+  var f = document.getElementById('cctp-file'); if (f) f.value = '';
+  var res = document.getElementById('cctp-resultats'); if (res) res.innerHTML = '';
+  var selMur = document.getElementById('cctp-sel-mur'); if (selMur) selMur.innerHTML = _cctpOptionsCompo('agglo20');
+  var selCloison = document.getElementById('cctp-sel-cloison'); if (selCloison) selCloison.innerHTML = _cctpOptionsCompo('agglo15');
+  var selType = document.getElementById('cctp-type'); if (selType) selType.value = (document.getElementById('dqe-type-logement') || {}).value || 'F2';
+  ['cctp-surf-mur', 'cctp-surf-cloison'].forEach(function(id) { var el = document.getElementById(id); if (el) el.value = ''; });
+  openModal('modal-cctp-import');
+}
+window.cctpOuvrirImport = cctpOuvrirImport;
+
+async function cctpChargerFichier(input) {
+  var fl = input.files && input.files[0];
+  if (!fl) return;
+  var isPdf = /pdf$/i.test(fl.name) || fl.type === 'application/pdf';
+  var ta = document.getElementById('cctp-texte');
+  if (ta) ta.value = 'Lecture du fichier…';
+  try {
+    var texte;
+    if (isPdf) {
+      var lib = await _cctpLoadPdfJs();
+      var buf = await fl.arrayBuffer();
+      var pdf = await lib.getDocument({ data: buf }).promise;
+      var full = '';
+      for (var p = 1; p <= pdf.numPages; p++) {
+        var page = await pdf.getPage(p);
+        var tc = await page.getTextContent();
+        full += tc.items.map(function(it) { return it.str; }).join(' ') + '\n\n';
+      }
+      texte = full;
+    } else {
+      texte = await fl.text();
+    }
+    if (ta) ta.value = texte;
+    if (window.toast) toast('Document chargé (' + texte.length + ' caractères) — cliquez sur Analyser.', 'success');
+  } catch (e) {
+    if (ta) ta.value = '';
+    if (window.toast) toast('Lecture impossible : ' + (e.message || e), 'error');
+  }
+  input.value = '';
+}
+window.cctpChargerFichier = cctpChargerFichier;
+
+function cctpAnalyser() {
+  var texte = (document.getElementById('cctp-texte') || {}).value || '';
+  var box = document.getElementById('cctp-resultats');
+  if (!texte.trim()) { if (window.toast) toast('Collez ou importez le texte du CCTP d\'abord.', 'error'); return; }
+  var det = cctpDetecterComposition(texte);
+  var selMur = document.getElementById('cctp-sel-mur');
+  var selCloison = document.getElementById('cctp-sel-cloison');
+  if (selMur && det.mur_porteur) selMur.value = det.mur_porteur;
+  if (selCloison && det.cloison) selCloison.value = det.cloison;
+  if (box) {
+    if (!det.extraits.length) {
+      box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Aucune composition de mur détectée automatiquement dans ce texte. Choisissez manuellement la composition ci-dessus pour les murs porteurs et les cloisons.</div>';
+    } else {
+      box.innerHTML = det.extraits.map(function(x) {
+        return '<div class="card" style="padding:10px;margin-bottom:8px;">'
+          + '<div style="font-size:11px;font-weight:700;color:var(--bleu);">' + escHtml(x.cible) + ' → ' + escHtml(x.compo) + '</div>'
+          + '<div style="font-size:11px;color:var(--dim);margin-top:4px;font-style:italic;">« ' + escHtml(x.extrait) + ' »</div>'
+        + '</div>';
+      }).join('')
+      + '<div class="alert alert-info" style="font-size:11px;margin-top:6px;">Vérifiez la composition proposée dans les listes ci-dessus avant de générer — elle reste modifiable.</div>';
+    }
+  }
+}
+window.cctpAnalyser = cctpAnalyser;
+
+/* Chiffre et injecte les postes Gros œuvre (murs porteurs + cloisons) dans
+   la nomenclature DQE du type choisi, selon la composition retenue et les
+   surfaces saisies. Le matériau est toujours écrit avec le libellé exact
+   du référentiel Prix unitaires pour que le prix se rattache automatiquement
+   (dqeMatch fait une correspondance stricte par libellé). */
+async function cctpGenererPostes() {
+  var type = (document.getElementById('cctp-type') || {}).value || 'F2';
+  var surfMur = parseFloat((document.getElementById('cctp-surf-mur') || {}).value) || 0;
+  var surfCloison = parseFloat((document.getElementById('cctp-surf-cloison') || {}).value) || 0;
+  var cleMur = (document.getElementById('cctp-sel-mur') || {}).value || 'agglo20';
+  var cleCloison = (document.getElementById('cctp-sel-cloison') || {}).value || 'agglo15';
+  if (!surfMur && !surfCloison) { if (window.toast) toast('Indiquez au moins une surface (murs porteurs ou cloisons).', 'error'); return; }
+
+  /* Les anciens postes générés depuis un CCTP pour ce type sont remplacés —
+     comme pour la génération depuis le plan — sans jamais toucher aux
+     lignes ajoutées manuellement par l'utilisateur. */
+  var anciennes = (DATA.nomenclatures || []).filter(function(n) { return n.type_logement === type && n._genere_cctp; });
+  for (var i = 0; i < anciennes.length; i++) { await deleteRecord('nomenclatures', anciennes[i].id, { skipIntegrity: true }); }
+
+  var lignes = [];
+  [['Murs porteurs / façade', cleMur, surfMur], ['Cloisons / refends', cleCloison, surfCloison]].forEach(function(g) {
+    var label = g[0], compo = cctpCompoParCle(g[1]), surf = g[2];
+    if (!surf) return;
+    if (compo.cle === 'beton_banche') {
+      var m3 = Math.round(surf * compo.epaisseur * 100) / 100;
+      var m2Coffrage = Math.round(surf * 2 * 10) / 10; /* coffrage sur les 2 faces du voile */
+      lignes.push({ poste: 'Gros œuvre — ' + label, materiau: _cctpLibellePrix(compo.materiau_id), unite: 'm³', quantite: m3 });
+      lignes.push({ poste: 'Gros œuvre — ' + label, materiau: _cctpLibellePrix(compo.coffrage_id), unite: 'm²', quantite: m2Coffrage });
+    } else {
+      var nb = Math.ceil(surf * compo.ratio_u_m2);
+      lignes.push({ poste: 'Gros œuvre — ' + label, materiau: _cctpLibellePrix(compo.materiau_id), unite: compo.unite, quantite: nb });
+    }
+  });
+
+  for (var j = 0; j < lignes.length; j++) {
+    var entry = Object.assign({ id: uid(), type_logement: type, prix_forfait: 0, ouvrage_id: '', _genere_cctp: true }, lignes[j]);
+    DATA.nomenclatures.push(entry);
+    await dbPut('nomenclatures', entry);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', entry);
+  }
+
+  closeModal('modal-cctp-import');
+  if (window.toast) toast(lignes.length + ' poste(s) de gros œuvre générés depuis le CCTP (' + type + ') — à vérifier dans la nomenclature.', 'success');
+  var typeElDqe = document.getElementById('dqe-type-logement');
+  if (typeElDqe) typeElDqe.value = type;
+  if (typeof chargerNomenclature === 'function') chargerNomenclature();
+}
+window.cctpGenererPostes = cctpGenererPostes;
 
 /* ── Nomenclatures types par logement ────────────────── */
 var NOMENCLATURES_PAR_DEFAUT = {}; /* prod : aucun gabarit DQE prérempli — à construire par l'utilisateur */
@@ -81731,6 +82026,200 @@ async function edsIndexerPrix() {
   toast('Prix indexés de ' + (pct>0?'+':'') + pct + '% — tous les ouvrages recalculés', 'success');
 }
 
+/* ══════════════════════════════════════════════════════════
+   IMPORT BPU EXTERNE (CSV SOUS-TRAITANTS)
+   Alimente le référentiel unifié eds_ressources (type 'st' par
+   défaut). Correspondance par code puis par libellé strict, à
+   l'image de dqeMatch. Jamais d'application automatique : chaque
+   ligne est prévisualisée (nouveau / mise à jour de prix) et
+   l'utilisateur choisit ce qu'il importe.
+══════════════════════════════════════════════════════════ */
+var _bpuImportRows = [];
+
+function _bpuParseCSV(texte) {
+  var firstLine = String(texte || '').split(/\r\n|\n|\r/)[0] || '';
+  var delim = (firstLine.split(';').length > firstLine.split(',').length) ? ';' : ',';
+  var rows = [], field = '', row = [], inQuotes = false;
+  var s = String(texte || ''), i = 0, len = s.length;
+  while (i < len) {
+    var c = s[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (s[i + 1] === '"') { field += '"'; i += 2; continue; }
+        inQuotes = false; i++; continue;
+      }
+      field += c; i++; continue;
+    }
+    if (c === '"') { inQuotes = true; i++; continue; }
+    if (c === delim) { row.push(field); field = ''; i++; continue; }
+    if (c === '\r') { i++; continue; }
+    if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; i++; continue; }
+    field += c; i++;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(function(r) { return r.some(function(c) { return (c || '').trim() !== ''; }); });
+}
+
+function _bpuNormKey(s) {
+  return String(s || '').trim().toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+var BPU_HEADER_ALIASES = {
+  code: ['code', 'ref', 'reference', 'code_poste'],
+  libelle: ['libelle', 'designation', 'desc', 'description', 'poste', 'article', 'prestation'],
+  unite: ['unite', 'unit', 'u'],
+  prix: ['prix', 'pu', 'prix_unitaire', 'montant_u', 'prix_ht', 'prix_unitaire_ht'],
+  fournisseur: ['fournisseur', 'sous_traitant', 'soustraitant', 'entreprise', 'st']
+};
+
+function _bpuMapHeader(headerRow) {
+  var map = {};
+  headerRow.forEach(function(h, idx) {
+    var norm = _bpuNormKey(h);
+    Object.keys(BPU_HEADER_ALIASES).forEach(function(key) {
+      if (BPU_HEADER_ALIASES[key].indexOf(norm) !== -1) map[idx] = key;
+    });
+  });
+  return map;
+}
+
+function edsOuvrirImportBPU() {
+  _bpuImportRows = [];
+  var f = document.getElementById('bpu-file'); if (f) f.value = '';
+  var zone = document.getElementById('bpu-preview-zone');
+  if (zone) zone.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:12px;">Choisissez un fichier CSV pour prévisualiser les lignes avant import.</div>';
+  var info = document.getElementById('bpu-import-footer-info'); if (info) info.textContent = '';
+  var btn = document.getElementById('bpu-btn-valider'); if (btn) btn.disabled = true;
+  openModal('modal-eds-import-bpu');
+}
+
+function edsChargerFichierBPU(input) {
+  var file = input.files && input.files[0];
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    try { _bpuTraiterTexte(String(e.target.result || '')); }
+    catch (err) { toast('Fichier illisible : ' + err.message, 'error'); }
+  };
+  reader.onerror = function() { toast('Erreur de lecture du fichier.', 'error'); };
+  reader.readAsText(file, 'UTF-8');
+}
+
+function _bpuTraiterTexte(texte) {
+  var rows = _bpuParseCSV(texte);
+  if (!rows.length) { toast('Fichier vide ou illisible.', 'error'); return; }
+  var headerMap = _bpuMapHeader(rows[0]);
+  var hasLibelle = Object.keys(headerMap).some(function(i) { return headerMap[i] === 'libelle'; });
+  var hasPrix = Object.keys(headerMap).some(function(i) { return headerMap[i] === 'prix'; });
+  if (!hasLibelle || !hasPrix) {
+    toast('Colonnes obligatoires introuvables (il faut au moins « Désignation » et « Prix »). Colonnes détectées : ' + rows[0].join(' | '), 'error');
+    return;
+  }
+  var parsed = rows.slice(1).map(function(r) {
+    var obj = { code: '', libelle: '', unite: '', prix: null, fournisseur: '' };
+    Object.keys(headerMap).forEach(function(idxStr) {
+      var idx = parseInt(idxStr, 10), key = headerMap[idx];
+      var val = (r[idx] || '').trim();
+      if (key === 'prix') {
+        var num = parseFloat(val.replace(/\s/g, '').replace(/[^0-9,.-]/g, '').replace(',', '.'));
+        obj.prix = isNaN(num) ? null : num;
+      } else { obj[key] = val; }
+    });
+    return obj;
+  }).filter(function(o) { return o.libelle; });
+
+  _bpuImportRows = parsed.map(function(o) {
+    var match = null;
+    if (o.code) {
+      match = (DATA.eds_ressources || []).find(function(r) { return (r.code || '').trim().toLowerCase() === o.code.trim().toLowerCase(); });
+    }
+    if (!match && o.libelle) {
+      match = (DATA.eds_ressources || []).find(function(r) { return (r.libelle || '').trim().toLowerCase() === o.libelle.trim().toLowerCase(); });
+    }
+    return {
+      code: o.code, libelle: o.libelle, unite: o.unite, prix: o.prix, fournisseur: o.fournisseur,
+      selected: o.prix != null, erreur: o.prix == null ? 'Prix illisible' : '',
+      match_id: match ? match.id : null, ancien_prix: match ? match.pu : null
+    };
+  });
+  _bpuRenderPreview();
+}
+
+function _bpuRenderPreview() {
+  var zone = document.getElementById('bpu-preview-zone');
+  if (!zone) return;
+  if (!_bpuImportRows.length) { zone.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:12px;">Aucune ligne exploitable dans ce fichier.</div>'; return; }
+  var nbNouveau = _bpuImportRows.filter(function(r) { return !r.match_id; }).length;
+  var nbMaj = _bpuImportRows.filter(function(r) { return r.match_id; }).length;
+  var nbErr = _bpuImportRows.filter(function(r) { return r.erreur; }).length;
+  var html = '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">'
+    + nbNouveau + ' nouvelle(s) ressource(s) · ' + nbMaj + ' mise(s) à jour de prix existant'
+    + (nbErr ? ' · <span style="color:var(--rouge);">' + nbErr + ' ligne(s) en erreur (ignorées)</span>' : '') + '</div>';
+  html += '<div class="table-wrap" style="max-height:340px;overflow:auto;"><table><thead><tr>'
+    + '<th></th><th>Désignation</th><th>Unité</th><th>Sous-traitant</th><th style="text-align:right;">Ancien PU</th><th style="text-align:right;">Nouveau PU</th><th>Statut</th></tr></thead><tbody>';
+  _bpuImportRows.forEach(function(r, i) {
+    var statut = r.erreur ? '<span style="color:var(--rouge);">' + r.erreur + '</span>'
+      : (r.match_id ? '<span style="color:var(--or);">Mise à jour</span>' : '<span style="color:var(--vert,#1A6B3A);">Nouveau</span>');
+    html += '<tr' + (r.erreur ? ' style="opacity:.5;"' : '') + '>'
+      + '<td><input type="checkbox" ' + (r.selected ? 'checked' : '') + (r.erreur ? ' disabled' : '') + ' onchange="_bpuToggleRow(' + i + ',this.checked)"></td>'
+      + '<td>' + escHtml(r.libelle) + (r.code ? ' <span style="font-size:10px;color:var(--muted);">(' + escHtml(r.code) + ')</span>' : '') + '</td>'
+      + '<td style="font-size:11px;color:var(--dim);">' + escHtml(r.unite || '—') + '</td>'
+      + '<td style="font-size:11px;">' + escHtml(r.fournisseur || '—') + '</td>'
+      + '<td style="text-align:right;font-size:11px;color:var(--muted);">' + (r.ancien_prix != null ? fmtF(r.ancien_prix) : '—') + '</td>'
+      + '<td style="text-align:right;font-weight:700;color:var(--or);">' + (r.prix != null ? fmtF(r.prix) : '—') + '</td>'
+      + '<td style="font-size:11px;">' + statut + '</td>'
+      + '</tr>';
+  });
+  html += '</tbody></table></div>';
+  zone.innerHTML = html;
+  var nbSel = _bpuImportRows.filter(function(r) { return r.selected; }).length;
+  var footInfo = document.getElementById('bpu-import-footer-info'); if (footInfo) footInfo.textContent = nbSel + ' ligne(s) sélectionnée(s) pour import.';
+  var btn = document.getElementById('bpu-btn-valider'); if (btn) btn.disabled = nbSel === 0;
+}
+
+function _bpuToggleRow(i, checked) {
+  if (!_bpuImportRows[i]) return;
+  _bpuImportRows[i].selected = checked;
+  var nbSel = _bpuImportRows.filter(function(r) { return r.selected; }).length;
+  var footInfo = document.getElementById('bpu-import-footer-info'); if (footInfo) footInfo.textContent = nbSel + ' ligne(s) sélectionnée(s) pour import.';
+  var btn = document.getElementById('bpu-btn-valider'); if (btn) btn.disabled = nbSel === 0;
+}
+
+async function edsValiderImportBPU() {
+  var lignes = _bpuImportRows.filter(function(r) { return r.selected && !r.erreur; });
+  if (!lignes.length) { toast('Aucune ligne sélectionnée.', 'error'); return; }
+  var nbMaj = 0, nbNouveau = 0;
+  var seq = (DATA.eds_ressources || []).filter(function(r) { return /^ST-\d+$/.test(r.code || ''); }).length;
+  for (var i = 0; i < lignes.length; i++) {
+    var l = lignes[i];
+    var r = l.match_id ? (DATA.eds_ressources || []).find(function(x) { return x.id === l.match_id; }) : null;
+    if (r) {
+      r.pu = l.prix;
+      if (l.unite) r.unite = l.unite;
+      if (l.fournisseur) r.fournisseur = l.fournisseur;
+      r.maj = today();
+      nbMaj++;
+    } else {
+      seq++;
+      r = { id: 'res_' + uid(), code: l.code || ('ST-' + String(seq).padStart(3, '0')), libelle: l.libelle,
+            type: 'st', unite: l.unite || '', pu: l.prix, fournisseur: l.fournisseur || '', maj: today() };
+      DATA.eds_ressources.push(r);
+      nbNouveau++;
+    }
+    await dbPut('eds_ressources', r);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_ressources', r);
+  }
+  closeModal('modal-eds-import-bpu');
+  edsRenderRes(); edsRenderBib(); if (typeof chargerPrix === 'function') chargerPrix();
+  toast('BPU importé : ' + nbNouveau + ' nouvelle(s) ressource(s), ' + nbMaj + ' prix mis à jour.', 'success');
+}
+window.edsOuvrirImportBPU = edsOuvrirImportBPU;
+window.edsChargerFichierBPU = edsChargerFichierBPU;
+window.edsValiderImportBPU = edsValiderImportBPU;
+window._bpuToggleRow = _bpuToggleRow;
+
 /* ════════ AUTO-MÉTRÉ depuis le programme (ratios) ════════ */
 function edsGenererMetreAuto() {
   var progId = (document.getElementById('eds-e-programme')||{}).value;
@@ -87349,7 +87838,8 @@ function qrSvgTag(text){
     escalier:    { fill: 'rgba(139,82,224,0.25)', stroke: '#8A52E0', label: '🪜 Escalier' },
     cote:        { fill: 'transparent',            stroke: '#EF4444', label: '📏 Cotation' },
     texte:       { fill: 'transparent',            stroke: '#1C1C2E', label: 'T Texte' },
-    lot:         { fill: 'rgba(245,158,11,0.18)',  stroke: '#F59E0B', label: '⬡ Lot' }
+    lot:         { fill: 'rgba(245,158,11,0.18)',  stroke: '#F59E0B', label: '⬡ Lot' },
+    equipement:  { fill: 'rgba(224,82,82,0.35)',   stroke: '#E05252', label: '🔧 Équipement' }
   };
 
   /* ── Gabarits de logements ── */
@@ -88420,7 +88910,12 @@ function qrSvgTag(text){
       /* VRD plan de masse : voirie (chaussée + réseaux enterrés), parking
          (revêtement + bordures) et espace vert (terrassement fin + engazonnement
          + plantations), en FCFA/m² d'emprise */
-      vrd_voirie: 18000, vrd_parking: 12000, vrd_espace_vert: 3500
+      vrd_voirie: 18000, vrd_parking: 12000, vrd_espace_vert: 3500,
+      /* Plomberie / Électricité / VRD réseaux : forfait moyen posé par unité
+         (FCFA/unité, fourniture + pose), détecté depuis les blocs du plan (DXF) */
+      equip_lavabo: 45000, equip_wc: 65000, equip_douche: 55000, equip_baignoire: 120000,
+      equip_evier: 40000, equip_cuisson: 35000, equip_prise: 6000, equip_luminaire: 8000,
+      equip_tableau: 150000, equip_regard: 25000
     };
   }
   function _archiGetCoutRatios() {
@@ -88668,20 +89163,24 @@ function qrSvgTag(text){
     var src = _dqeScope();
     var F = function(t) { return src.filter(function(e) { return e.type === t; }); };
     var pieces = F('piece'), mursPorteurs = F('mur'), cloisons = F('cloison'),
-        portes = F('porte'), fenetres = F('fenetre'), escaliers = F('escalier');
+        portes = F('porte'), fenetres = F('fenetre'), escaliers = F('escalier'),
+        equipements = F('equipement');
     var totalSurf = Math.round(pieces.reduce(function(a, p) { return a + p.w * p.h; }, 0) * 10) / 10;
     var longPorteurs = Math.round(mursPorteurs.reduce(function(a, m) { return a + Math.max(m.w, m.h); }, 0) * 10) / 10;
     var g = document.getElementById('gen-nomen-gros-oeuvre-wrap');
     if (g) g.style.display = (mursPorteurs.length || cloisons.length) ? '' : 'none';
     var m = document.getElementById('gen-nomen-menuiserie-wrap');
     if (m) m.style.display = (portes.length || fenetres.length || escaliers.length) ? '' : 'none';
+    var eq = document.getElementById('gen-nomen-equip-wrap');
+    if (eq) eq.style.display = equipements.length ? '' : 'none';
     var nbEl = document.getElementById('gen-nomen-nb');
     if (nbEl) nbEl.textContent = pieces.length + ' pièce(s) détectée(s) · ' + totalSurf + ' m² habitables'
       + (mursPorteurs.length ? ' · ' + mursPorteurs.length + ' mur(s) porteur(s), ' + longPorteurs + ' ml' : '')
       + (cloisons.length ? ' · ' + cloisons.length + ' cloison(s)' : '')
       + (portes.length ? ' · ' + portes.length + ' porte(s)' : '')
       + (fenetres.length ? ' · ' + fenetres.length + ' fenêtre(s)' : '')
-      + (escaliers.length ? ' · ' + escaliers.length + ' escalier(s)' : '') + '.';
+      + (escaliers.length ? ' · ' + escaliers.length + ' escalier(s)' : '')
+      + (equipements.length ? ' · ' + equipements.length + ' équipement(s) plomberie/électricité/VRD' : '') + '.';
   }
 
   window.archiOuvrirGenNomenclature = function() {
@@ -88691,7 +89190,8 @@ function qrSvgTag(text){
     var portes       = ED.elements.filter(function(e) { return e.type === 'porte'; });
     var fenetres     = ED.elements.filter(function(e) { return e.type === 'fenetre'; });
     var escaliers    = ED.elements.filter(function(e) { return e.type === 'escalier'; });
-    if (!pieces.length && !mursPorteurs.length && !cloisons.length && !portes.length && !fenetres.length && !escaliers.length) { if (window.toast) toast('Dessinez au moins une pièce ou un élément avant de générer la nomenclature.', 'error'); return; }
+    var equipements  = ED.elements.filter(function(e) { return e.type === 'equipement'; });
+    if (!pieces.length && !mursPorteurs.length && !cloisons.length && !portes.length && !fenetres.length && !escaliers.length && !equipements.length) { if (window.toast) toast('Dessinez au moins une pièce ou un élément avant de générer la nomenclature.', 'error'); return; }
     var typeBrut = (document.getElementById('archi-type-lgt') || {}).value || '';
     var selType = document.getElementById('gen-nomen-type');
     if (selType) selType.value = typeBrut ? typeBrut.toUpperCase() : 'F2';
@@ -88717,7 +89217,7 @@ function qrSvgTag(text){
       && !!(document.getElementById('gen-nomen-prefixe') || {}).checked;
     var _pf = function(e) { return _prefOn ? '[' + _nivCode(e.niv | 0) + '] ' : ''; };
     var pieces = _src.filter(function(e) { return e.type === 'piece'; });
-    var mursTousInit = _src.filter(function(e) { return e.type === 'mur' || e.type === 'cloison' || e.type === 'porte' || e.type === 'fenetre' || e.type === 'escalier'; });
+    var mursTousInit = _src.filter(function(e) { return e.type === 'mur' || e.type === 'cloison' || e.type === 'porte' || e.type === 'fenetre' || e.type === 'escalier' || e.type === 'equipement'; });
     if (!pieces.length && !mursTousInit.length) { closeModal('modal-archi-gen-nomen'); return; }
     var type      = (document.getElementById('gen-nomen-type')     || {}).value || 'F2';
     var hauteur   = parseFloat((document.getElementById('gen-nomen-hauteur')  || {}).value) || 2.7;
@@ -88729,6 +89229,7 @@ function qrSvgTag(text){
     var genFaience = !!(document.getElementById('gen-nomen-faience') || {}).checked;
     var genGros    = !!(document.getElementById('gen-nomen-gros-oeuvre') || {}).checked;
     var genMenuis  = !!(document.getElementById('gen-nomen-menuiserie') || {}).checked;
+    var genEquip   = !!(document.getElementById('gen-nomen-equip') || {}).checked;
 
     /* Retire les anciennes lignes générées depuis un plan pour ce type — ne touche jamais aux lignes saisies à la main */
     var anciennes = (DATA.nomenclatures || []).filter(function(n) { return n.type_logement === type && n._genere_plan; });
@@ -88792,6 +89293,26 @@ function qrSvgTag(text){
           var n = sel.filter(function(e) { return e.type === d[0]; }).length;
           if (!n) return;
           lignes.push({ poste: 'Menuiserie', materiau: px + d[1] + ' (forfait indicatif, ' + n + ' unité(s))', unite: 'unité', quantite: n, prix_forfait: Math.round(n * ratiosMenuis[d[2]]) });
+        });
+      });
+    }
+
+    /* ── Plomberie / Électricité / VRD : équipements détectés depuis les blocs DXF
+       (Lavabo, WC, Douche, Table de cuisson électrique, Prise, Point lumineux,
+       Tableau électrique, Regard...) — un poste par type d'équipement, forfait
+       fourniture + pose (FCFA/unité), ratios éditables dans l'éditeur de plans. ── */
+    if (genEquip) {
+      var ratiosEquip = _archiGetCoutRatios();
+      var _nivsE = _prefOn ? ED.niveaux.map(function(_, i) { return i; }) : [null];
+      _nivsE.forEach(function(ni) {
+        var sel = ni === null ? _src : _src.filter(function(e) { return (e.niv | 0) === ni; });
+        var px  = ni === null ? '' : '[' + _nivCode(ni) + '] ';
+        var equips = sel.filter(function(e) { return e.type === 'equipement'; });
+        var parType = {};
+        equips.forEach(function(e) { var t = e.subtype; if (!t || !EQUIP_TYPES[t]) return; parType[t] = (parType[t] || 0) + 1; });
+        Object.keys(parType).forEach(function(t) {
+          var def = EQUIP_TYPES[t], n = parType[t], ratio = ratiosEquip[def.ratio] || 0;
+          lignes.push({ poste: def.cat, materiau: px + def.label + ' (forfait indicatif, ' + n + ' unité(s))', unite: 'unité', quantite: n, prix_forfait: Math.round(n * ratio) });
         });
       });
     }
@@ -89446,6 +89967,45 @@ function qrSvgTag(text){
     return 'ignorer';
   }
 
+  /* ── Reconnaissance des BLOCS (INSERT) du DXF → équipements techniques ──
+     Contrairement au mapping par calque (murs/pièces), les équipements
+     plomberie/électricité/VRD sont presque toujours dessinés comme des
+     blocs (INSERT) nommés par le géomètre/archi : "Lavabo", "WC_suspendu",
+     "Douche_90x90", "Table_cuisson_electrique", "Prise_2P+T"... On
+     reconnaît le TYPE D'ÉQUIPEMENT sur le nom du bloc (le calque ne suffit
+     pas, un même calque "Sanitaire" pouvant contenir lavabo + WC + douche). */
+  var BLOC_MAP = [
+    { re:/lavabo|vasque|wash.?basin|hand.?basin/i,                    type:'equip_lavabo'    },
+    { re:/\bwc\b|toilette|cuvette|water.?closet|sanibroy/i,           type:'equip_wc'        },
+    { re:/douche|shower|receveur/i,                                   type:'equip_douche'    },
+    { re:/baignoire|bath.?tub/i,                                      type:'equip_baignoire' },
+    { re:/[ée]vier|kitchen.?sink|sink.?cuisine/i,                     type:'equip_evier'     },
+    { re:/cuisson|plaque|cuisini[eè]re|hob|cooktop|four/i,            type:'equip_cuisson'   },
+    { re:/prise|socket|outlet|pc\d|2p\+t/i,                           type:'equip_prise'     },
+    { re:/lumin|spot|dcl|plafonnier|point.?lum|applique/i,            type:'equip_luminaire' },
+    { re:/tableau|tgbt|disjonct|coffret|panel.?elec/i,                type:'equip_tableau'   },
+    { re:/regard|avaloir|grille.?eu|grille.?ep|fosse/i,               type:'equip_regard'    }
+  ];
+  function _blocTypeDefaut(nom) {
+    for (var i = 0; i < BLOC_MAP.length; i++) if (BLOC_MAP[i].re.test(nom || '')) return BLOC_MAP[i].type;
+    return 'ignorer';
+  }
+  /* Catalogue des postes DQE générés par équipement détecté : catégorie
+     (Plomberie / Électricité / VRD), libellé de poste, icône, clé du ratio
+     FCFA/unité (voir _archiCoutRatiosDefaut). */
+  var EQUIP_TYPES = {
+    equip_lavabo:    { cat:'Plomberie',   label:'Lavabo (vasque + robinetterie + siphon), posé',      icon:'🚰', ratio:'equip_lavabo'    },
+    equip_wc:        { cat:'Plomberie',   label:'WC complet (cuvette + réservoir), posé',              icon:'🚽', ratio:'equip_wc'        },
+    equip_douche:    { cat:'Plomberie',   label:'Receveur de douche + mitigeur + colonne',             icon:'🚿', ratio:'equip_douche'    },
+    equip_baignoire: { cat:'Plomberie',   label:'Baignoire posée',                                     icon:'🛁', ratio:'equip_baignoire' },
+    equip_evier:     { cat:'Plomberie',   label:'Évier de cuisine inox + mitigeur',                    icon:'🧺', ratio:'equip_evier'     },
+    equip_cuisson:   { cat:'Électricité', label:'Alimentation plaque de cuisson (circuit dédié 32A)',  icon:'🍳', ratio:'equip_cuisson'   },
+    equip_prise:     { cat:'Électricité', label:'Prise de courant 2P+T posée',                         icon:'🔌', ratio:'equip_prise'     },
+    equip_luminaire: { cat:'Électricité', label:'Point lumineux (DCL + interrupteur)',                 icon:'💡', ratio:'equip_luminaire' },
+    equip_tableau:   { cat:'Électricité', label:'Tableau électrique divisionnaire équipé',              icon:'⚡', ratio:'equip_tableau'   },
+    equip_regard:    { cat:'VRD',         label:'Regard de visite / avaloir EU-EP',                    icon:'🕳️', ratio:'equip_regard'    }
+  };
+
   window.archiOuvrirImport = function() {
     IMP.pending = null;
     var f = document.getElementById('imp-file'); if (f) f.value = '';
@@ -89646,6 +90206,10 @@ function qrSvgTag(text){
     }
 
     var geo = [];
+    /* Blocs (INSERT) nommés au 1er niveau — détection des équipements
+       plomberie/électricité/VRD (Lavabo, WC, Douche, Table de cuisson...).
+       Indépendant du calque : le nom du bloc porte le sens, pas la layer. */
+    var blocsBruts = [];
     /* POLYLINE + VERTEX (ancien format) */
     var polyCour = null;
     for (var r = 0; r < raw.length; r++) {
@@ -89657,8 +90221,14 @@ function qrSvgTag(text){
         polyCour = null; continue;
       }
       if (e.type === 'INSERT' && RE_VUE_ANNEXE.test(_g(e, 2, ''))) { vuesIgnorees++; continue; }
+      if (e.type === 'INSERT') {
+        blocsBruts.push({ nom: _g(e, 2, ''), lay: _g(e, 8, '0'), x: _gf(e, 10, 0), y: _gf(e, 20, 0) });
+      }
       _emit(e, geo, null, 0);
     }
+    /* Regroupement par nom de bloc (comptage) pour l'UI de conversion */
+    var blocsCount = {};
+    blocsBruts.forEach(function(b) { blocsCount[b.nom] = (blocsCount[b.nom] || 0) + 1; });
 
     /* Unité */
     var facteur = DXF_UNITS[insunits] || null;
@@ -89674,7 +90244,8 @@ function qrSvgTag(text){
 
     var bb = _dxfBBox(geo);
     return { ents: geo, layers: layers, facteur: facteur, uniteAuto: uniteAuto, uniteNom: uniteNom,
-             bbox: bb, wM: (bb.x2 - bb.x1) * facteur, hM: (bb.y2 - bb.y1) * facteur, blocsIgnores: blocsIgnores, vuesIgnorees: vuesIgnorees };
+             bbox: bb, wM: (bb.x2 - bb.x1) * facteur, hM: (bb.y2 - bb.y1) * facteur, blocsIgnores: blocsIgnores, vuesIgnorees: vuesIgnorees,
+             blocsBruts: blocsBruts, blocsCount: blocsCount };
   }
 
   function _dxfBBox(geo) {
@@ -89718,7 +90289,8 @@ function qrSvgTag(text){
       ED.fonds[ED.nivActif] = {
         nom: p.nom, kind: 'dxf', ents: p.data.ents, layers: p.data.layers,
         ox: bb.x1, oy: bb.y1, f: f, k: 1, dx: 0, dy: 0, op: 45, vis: true,
-        wM: (bb.x2 - bb.x1) * f, hM: (bb.y2 - bb.y1) * f
+        wM: (bb.x2 - bb.x1) * f, hM: (bb.y2 - bb.y1) * f,
+        blocsBruts: p.data.blocsBruts || [], blocsCount: p.data.blocsCount || {}
       };
       closeModal('modal-archi-import');
       _archiFondSync();
@@ -89941,6 +90513,31 @@ function qrSvgTag(text){
         + '</select></td>'
         + '<td><input type="number" step="0.05" min="0.05" class="form-control conv-ep" value="' + ep + '" style="font-size:12px;padding:3px 6px;width:80px;"></td></tr>';
     }).join('');
+
+    /* Blocs / équipements (plomberie, électricité, VRD) — hors mode plan de masse */
+    var wrap = document.getElementById('conv-blocs-wrap');
+    var tbB = document.getElementById('conv-blocs-tbody');
+    var blocsCount = f.blocsCount || {};
+    var nomsBlocs = Object.keys(blocsCount).sort();
+    if (wrap && tbB) {
+      if (ED.mode === 'masse' || !nomsBlocs.length) {
+        wrap.style.display = 'none';
+        tbB.innerHTML = '';
+      } else {
+        wrap.style.display = '';
+        var equipOpts = [{ v:'ignorer', l:'— Ignorer —' }].concat(Object.keys(EQUIP_TYPES).map(function(k) {
+          return { v:k, l:EQUIP_TYPES[k].icon + ' ' + EQUIP_TYPES[k].label };
+        }));
+        tbB.innerHTML = nomsBlocs.map(function(nom) {
+          var def = _blocTypeDefaut(nom);
+          return '<tr><td style="font-size:12px;font-weight:600;">' + nom + '</td>'
+            + '<td style="font-size:12px;color:var(--dim);">' + blocsCount[nom] + '</td>'
+            + '<td><select class="form-control conv-bloc-type" data-nom="' + encodeURIComponent(nom) + '" style="font-size:12px;padding:3px 6px;">'
+            + equipOpts.map(function(o) { return '<option value="' + o.v + '"' + (o.v === def ? ' selected' : '') + '>' + o.l + '</option>'; }).join('')
+            + '</select></td></tr>';
+        }).join('');
+      }
+    }
     openModal('modal-archi-conv');
   };
 
@@ -89998,6 +90595,20 @@ function qrSvgTag(text){
       }
     });
 
+    /* Blocs → équipements techniques (plomberie / électricité / VRD) */
+    var selsB = document.querySelectorAll('.conv-bloc-type');
+    var mapB = {};
+    for (var ib = 0; ib < selsB.length; ib++) mapB[decodeURIComponent(selsB[ib].dataset.nom)] = selsB[ib].value;
+    var nbEquip = 0;
+    (f.blocsBruts || []).forEach(function(b) {
+      var t = mapB[b.nom];
+      if (!t || t === 'ignorer' || !EQUIP_TYPES[t]) return;
+      var pt = { x: MX(b), y: MY(b) };
+      nouveaux.push({ id: _id(), type: 'equipement', subtype: t, niv: ED.nivActif,
+        x: _r2(pt.x - 0.2), y: _r2(pt.y - 0.2), w: 0.4, h: 0.4, label: EQUIP_TYPES[t].icon + ' ' + b.nom, _dxf: 1, _bloc: 1 });
+      nbEquip++;
+    });
+
     if (!nouveaux.length) { if (window.toast) toast('Aucun élément produit — vérifiez le mapping des calques.', 'error'); return; }
 
     /* Libellé des pièces par le texte contenu dans leur emprise */
@@ -90031,6 +90642,7 @@ function qrSvgTag(text){
     archiRedraw();
     _archiUpdateSurfKpis();
     if (window.toast) toast(nouveaux.length + ' élément(s) créés sur ' + _nivNom(nv)
+      + (nbEquip ? ' dont ' + nbEquip + ' équipement(s) plomberie/électricité/VRD' : '')
       + (purges ? ' (' + purges + ' de la conversion précédente remplacés)' : '')
       + ' — vérifiez les surfaces avant de chiffrer.', 'success');
   };
