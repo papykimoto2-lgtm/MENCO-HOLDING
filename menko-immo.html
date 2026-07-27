@@ -91179,8 +91179,21 @@ async function caisseSaveBon() {
 
   var prefix = type === 'entree' ? 'BE' : 'BS';
   var dateStr = date.replace(/-/g, '');
-  var count = (DATA.caisse_mouvements || []).filter(function(m){ return m.caisse_id === caisseId && m.type === type && (m.date||'').slice(0,10) === date; }).length + 1;
-  var numero = prefix + '-' + (c && c.compte ? c.compte : 'CSE') + '-' + dateStr + '-' + _caissePad3(count);
+  /* [FIX] Même bug que la numérotation des écritures (voir prochainNumeroRef) :
+     .filter(...).length+1 recalcule un compteur qui régresse après suppression
+     et collisionne entre deux postes créant un bon le même jour avant synchro.
+     Confirmé en production : 23 numéros de bons dupliqués dans le grand livre
+     du compte 571 (09-10/07/2026), ~539 000 F de solde faussé. On calcule
+     désormais le vrai maximum déjà attribué pour ce préfixe/caisse/jour. */
+  var pfxNum = prefix + '-' + (c && c.compte ? c.compte : 'CSE') + '-' + dateStr + '-';
+  var maxNum = 0;
+  (DATA.caisse_mouvements || []).forEach(function(m){
+    if (m && m.caisse_id === caisseId && m.type === type && m.numero && m.numero.indexOf(pfxNum) === 0) {
+      var n = parseInt(m.numero.slice(pfxNum.length), 10);
+      if (!isNaN(n) && n > maxNum) maxNum = n;
+    }
+  });
+  var numero = pfxNum + _caissePad3(maxNum + 1);
 
   var nouveau = {
     id: uid(), session_id: session.id, caisse_id: caisseId,
