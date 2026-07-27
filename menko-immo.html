@@ -90900,33 +90900,52 @@ function caisseConfigModal(caisseId) {
 
 async function caisseSaveConfig() {
   if (!exigerDroit('Caisse','m','le paramétrage de la caisse')) return;
-  var id = document.getElementById('cc-id').value;
-  var nom = document.getElementById('cc-nom').value.trim();
-  if (!nom) { toast('Le nom de la caisse est obligatoire.', 'error'); return; }
-  var divisionId = document.getElementById('cc-division').value;
-  if ((DATA.divisions||[]).length && !divisionId) { toast('Veuillez rattacher la caisse à une division.', 'error'); return; }
-  var compte = document.getElementById('cc-compte').value;
-  var actif = document.getElementById('cc-actif').value === '1';
-  var caissiereIds = Array.from(document.getElementById('cc-caissieres').selectedOptions).map(function(o){ return o.value; });
-  var destInternes = Array.from(document.getElementById('cc-dest-internes').selectedOptions).map(function(o){ return o.value; });
-  var destEmails = document.getElementById('cc-dest-emails').value.split(/[,;\n]/).map(function(s){ return s.trim(); }).filter(Boolean);
-  var envoiJour = document.getElementById('cc-envoi-auto-jour').checked;
-  var envoiMois = document.getElementById('cc-envoi-auto-mois').checked;
+  try {
+    var id = document.getElementById('cc-id').value;
+    var nom = document.getElementById('cc-nom').value.trim();
+    if (!nom) { toast('Le nom de la caisse est obligatoire.', 'error'); return; }
+    var divisionId = document.getElementById('cc-division').value;
+    if ((DATA.divisions||[]).length && !divisionId) { toast('Veuillez rattacher la caisse à une division.', 'error'); return; }
+    var compte = document.getElementById('cc-compte').value;
+    var actif = document.getElementById('cc-actif').value === '1';
+    var caissiereIds = Array.from(document.getElementById('cc-caissieres').selectedOptions).map(function(o){ return o.value; });
+    var destInternes = Array.from(document.getElementById('cc-dest-internes').selectedOptions).map(function(o){ return o.value; });
+    var destEmails = document.getElementById('cc-dest-emails').value.split(/[,;\n]/).map(function(s){ return s.trim(); }).filter(Boolean);
+    var envoiJour = document.getElementById('cc-envoi-auto-jour').checked;
+    var envoiMois = document.getElementById('cc-envoi-auto-mois').checked;
 
-  var c = id ? (DATA.caisses || []).find(function(x){ return x.id === id; }) : null;
-  if (!c) {
-    c = { id: uid(), created_at: today(), conversation_id: null, dernier_envoi_mensuel: null };
-    DATA.caisses.push(c);
+    var estNouvelle = !id;
+    var c = id ? (DATA.caisses || []).find(function(x){ return x.id === id; }) : null;
+    if (!c) {
+      c = { id: uid(), created_at: today(), conversation_id: null, dernier_envoi_mensuel: null };
+    }
+    c.nom = nom; c.division_id = divisionId; c.compte = compte; c.actif = actif;
+    c.caissiere_ids = caissiereIds; c.destinataires_internes = destInternes; c.destinataires_email = destEmails;
+    c.envoi_auto_journalier = envoiJour; c.envoi_auto_mensuel = envoiMois;
+
+    /* [FIX] dbPut() peut échouer (droits, store IndexedDB absent, base non
+       ouverte, exercice/verrou…) sans lever d'exception — il résout juste à
+       false. L'ancien code ignorait ce retour : la caisse était ajoutée à
+       DATA.caisses en mémoire (visible le temps de la session), le toast
+       « ✅ enregistrée » s'affichait quand même, la modale se fermait — mais
+       rien n'était réellement écrit ni localement ni sur le cloud. D'où des
+       caisses qui « existaient » à l'écran puis disparaissaient sans trace
+       (0 local / 0 cloud) au rechargement. On vérifie maintenant le retour,
+       et on n'ajoute au tableau qu'après confirmation de l'écriture. */
+    var ok = await dbPut('caisses', c);
+    if (ok === false) {
+      toast('❌ Échec de l\'enregistrement de la caisse — vérifiez vos droits ou réessayez.', 'error');
+      return;
+    }
+    if (estNouvelle) DATA.caisses.push(c);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisses', c);
+    closeModal('modal-caisse-config');
+    toast('✅ Caisse enregistrée.', 'success');
+    caisseRenderListe();
+  } catch (e) {
+    console.error('[caisseSaveConfig] Erreur inattendue :', e);
+    toast('❌ Erreur inattendue lors de l\'enregistrement — voir la console (F12).', 'error');
   }
-  c.nom = nom; c.division_id = divisionId; c.compte = compte; c.actif = actif;
-  c.caissiere_ids = caissiereIds; c.destinataires_internes = destInternes; c.destinataires_email = destEmails;
-  c.envoi_auto_journalier = envoiJour; c.envoi_auto_mensuel = envoiMois;
-
-  await dbPut('caisses', c);
-  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisses', c);
-  closeModal('modal-caisse-config');
-  toast('✅ Caisse enregistrée.', 'success');
-  caisseRenderListe();
 }
 
 /* ── Ouverture de caisse ─────────────────────────────────────────────── */
