@@ -91500,12 +91500,22 @@ function caisseUpdateEcartPreview() {
 
 async function caisseCloturer() {
   if (!exigerDroit('Caisse','v','la clôture de caisse')) return;
-  var _ses = (DATA.caisse_sessions || []).find(function(x){ return x.statut === 'ouverte'; });
-  if (_ses && !exigerPlafond(_ses.solde_theorique || _ses.total || 0, 'Cette clôture')) return;
   var caisseId = document.getElementById('ccl-caisse-id').value;
   var session = caisseGetSessionOuverte(caisseId);
   if (!session) { toast('Session introuvable.', 'error'); closeModal('modal-caisse-cloturer'); return; }
   var soldeTheorique = caisseSoldeSession(session);
+  /* [FIX] Le contrôle de plafond était doublement inopérant :
+     1) il cherchait la PREMIÈRE session ouverte toutes caisses confondues, pas
+        celle qu'on clôture — avec plusieurs caisses ouvertes, il contrôlait la
+        mauvaise ;
+     2) il lisait session.solde_theorique / session.total, deux champs qui
+        n'existent pas sur l'objet session (créé avec fond_ouverture,
+        fond_cloture_theorique, …) → l'expression valait toujours 0, donc
+        exigerPlafond(0) passait systématiquement.
+     Résultat : le plafond_validation du rôle était silencieusement ignoré sur
+     l'opération la plus sensible du module. On contrôle désormais le solde réel
+     de la session effectivement clôturée. */
+  if (!exigerPlafond(soldeTheorique, 'Cette clôture')) return;
   var fondReel = parseFloat(document.getElementById('ccl-fond-reel').value) || 0;
   var ecart = fondReel - soldeTheorique;
 
@@ -92602,11 +92612,22 @@ async function genererEcritureEcartCaisse(session){
     compte_debit:  exc ? compteCaisse : contrepartie,
     compte_credit: exc ? contrepartie : compteCaisse,
     compte: compteCaisse, montant: Math.abs(ec), type: exc?'produit':'charge', mode: 'especes',
+    division: (caisse && caisse.division_id) || '',
     notes: 'Régularisé par ' + ((APP.currentUser&&APP.currentUser.nom)||'—'), created_at: today()
   };
   var idx = DATA.ecritures.findIndex(function(e){ return e.id===ecr.id; });
   if (idx>=0) DATA.ecritures[idx]=ecr; else DATA.ecritures.push(ecr);
-  await dbPut('ecritures', ecr);
+  /* [FIX] Même protection que la ventilation : sans vérifier le retour, une
+     écriture d'écart rejetée (exercice clos) laissait quand même la session
+     marquée « régularisée » — l'écart disparaissait du suivi sans avoir été
+     comptabilisé nulle part. */
+  var _okEcart = await dbPut('ecritures', ecr);
+  if (_okEcart === false) {
+    var _iE = DATA.ecritures.findIndex(function(e){ return e.id===ecr.id; });
+    if (_iE >= 0) DATA.ecritures.splice(_iE, 1);
+    try { toast('❌ Écriture d\'écart refusée — l\'écart reste à régulariser.', 'error'); } catch(e){}
+    return null;
+  }
   if (typeof syncToSupabase==='function') syncToSupabase('pi_ecritures', ecr);
 
   session.ecart_regularise = true;
@@ -92623,7 +92644,8 @@ async function caisseRegulariserEcart(sessionId){
   var s = (DATA.caisse_sessions||[]).find(function(x){ return x.id===sessionId; });
   if (!s) return;
   if (s.ecart_regularise) { toast('Écart déjà régularisé.', 'info'); return; }
-  await genererEcritureEcartCaisse(s);
+  var _ecrEcart = await genererEcritureEcartCaisse(s);
+  if (!_ecrEcart) { caisseRenderEcarts(); return; }   /* échec déjà signalé */
   if (typeof buildBalance==='function') buildBalance();
   if (typeof buildGrandLivre==='function') buildGrandLivre();
   toast('✅ Écart régularisé — écriture SYSCOHADA générée.', 'success');
@@ -92635,10 +92657,14 @@ async function caisseRegulariserTousEcarts(){
   if (!exigerDroit('Caisse','v','les écarts de caisse')) return;
   var liste = _caisseEcartsEnAttente();
   if (!liste.length) return;
-  for (var i=0;i<liste.length;i++) await genererEcritureEcartCaisse(liste[i]);
+  var _nbOk = 0;
+  for (var i=0;i<liste.length;i++){ if (await genererEcritureEcartCaisse(liste[i])) _nbOk++; }
   if (typeof buildBalance==='function') buildBalance();
   if (typeof buildGrandLivre==='function') buildGrandLivre();
-  toast('⚡ '+liste.length+' écart(s) régularisé(s).', 'success');
+  toast(_nbOk === liste.length
+    ? ('⚡ '+_nbOk+' écart(s) régularisé(s).')
+    : ('⚡ '+_nbOk+' écart(s) régularisé(s) — '+(liste.length-_nbOk)+' refusé(s), voir les messages.'),
+    _nbOk === liste.length ? 'success' : 'info');
   caisseRenderEcarts();
   if (typeof caisseRenderDashboard==='function') caisseRenderDashboard();
 }
