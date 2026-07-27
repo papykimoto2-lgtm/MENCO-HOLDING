@@ -33477,6 +33477,23 @@ function dashDecaissements(filterFn) {
   return t;
 }
 
+/* Produits réels = somme des crédits de classe 7, pendant de dashDecaissements.
+   Même raison d'être : e.type n'est pas fiable selon le point d'entrée (il est
+   renseigné à la main par chaque générateur d'écriture, avec des valeurs
+   hétérogènes), et e.montant ne représente pas le total d'une écriture
+   multi-lignes. On raisonne donc par classe de compte sur les lignes, comme le
+   font déjà le Bilan et le Compte de Résultat via getSolde(). */
+function dashProduits(filterFn) {
+  var t = 0;
+  (DATA.ecritures || []).forEach(function(e){
+    if (filterFn && !filterFn(e)) return;
+    ecrLignes(e).forEach(function(l){
+      if (l.sens === 'C' && (l.compte||'').charAt(0) === '7') t += (parseFloat(l.montant)||0);
+    });
+  });
+  return t;
+}
+
 /* Bloc trésorerie/recouvrement cohérent, réutilisé par tous les onglets. */
 function dashFinanceCore(pmin) {
   var fPeriode = function(x){ return !pmin || (x.date||'') >= pmin; };
@@ -33782,7 +33799,7 @@ function buildTresorerie() {
     var label = new Date(year, m - 1, 1).toLocaleDateString('fr-FR', { month: 'short' });
     var encaissements = DATA.versements.filter(function(v) { return v.date && v.date.startsWith(mStr); }).reduce(function(a, v) { return a + (parseFloat(v.montant) || 0); }, 0)
       + (DATA.cessions_foncieres||[]).filter(function(c){ return c.date && c.date.startsWith(mStr); }).reduce(function(a, c){ return a + (parseFloat(c.montant_encaisse)||0); }, 0);
-    var decaissements = DATA.ecritures.filter(function(e) { return e.type === 'charge' && e.date && e.date.startsWith(mStr); }).reduce(function(a, e) { return a + e.montant; }, 0);
+    var decaissements = dashDecaissements(function(e){ return (e.date||'').startsWith(mStr); });
     months.push({ label: label, encaissements: encaissements, decaissements: decaissements, solde: encaissements - decaissements });
   }
 
@@ -63845,7 +63862,7 @@ function buildTresorerieDetaille() {
     var encVte = DATA.versements.filter(function(v){return v.date&&v.date.startsWith(mStr);}).reduce(function(a,v){return a+(parseFloat(v.montant)||0);},0);
     var encCes = cesPaie.filter(function(p){return p.date&&p.date.startsWith(mStr);}).reduce(function(a,p){return a+p.montant;},0);
     var enc = encVte + encCes;
-    var dec = DATA.ecritures.filter(function(e){return e.type==='charge'&&e.date&&e.date.startsWith(mStr);}).reduce(function(a,e){return a+e.montant;},0);
+    var dec = dashDecaissements(function(e){ return (e.date||'').startsWith(mStr); });
     var soldeM = enc - dec; soldeCumul += soldeM;
     months.push({label:label,enc:enc,dec:dec,solde:soldeM,cumul:soldeCumul});
   }
@@ -65577,7 +65594,6 @@ function _a360Metrics() {
   var lots = DATA.lots || [];
   var convs = DATA.conventions || [];
   var employes = DATA.employes || [];
-  var ecritures = DATA.ecritures || [];
   var commissions = DATA.commissions || [];
   var apporteurs = DATA.apporteurs || [];
   var now = today();
@@ -65604,8 +65620,8 @@ function _a360Metrics() {
   var effectif = employes.filter(function(e){ return e.statut!=='inactif' && e.statut!=='resilie'; }).length;
   var commerciaux = employes.filter(function(e){ return _estCommercial(e) && e.statut!=='inactif'; });
 
-  var produits = ecritures.filter(function(e){ return e.type==='produit'; }).reduce(function(s,e){ return s+(parseFloat(e.montant)||0); }, 0);
-  var charges  = ecritures.filter(function(e){ return e.type==='charge'; }).reduce(function(s,e){ return s+(parseFloat(e.montant)||0); }, 0);
+  var produits = dashProduits();
+  var charges  = dashDecaissements();
   var resultat = produits - charges;
   var margePct = produits>0 ? Math.round(resultat/produits*100) : 0;
 
