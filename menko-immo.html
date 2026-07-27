@@ -22275,9 +22275,25 @@ async function syncPushStore(store){
   if (!navigator.onLine) { toast('Connexion requise pour envoyer.', 'error'); return; }
   var e = SUPA_STORE_MAP.find(function(x){ return x[1]===store; }); if (!e) return;
   var table = e[0], rows = DATA[store] || [], ok=0, err=0;
-  for (var i=0;i<rows.length;i++){ var r = await syncToSupabase(table, rows[i]); if (r) ok++; else err++; }
+  /* [FIX] On mémorise le motif réel du premier échec. Sans cela, l'utilisateur
+     ne voyait que « 0 envoyé(s) · 4 échec(s) » — un compteur muet qui ne dit ni
+     s'il s'agit d'un droit refusé (401), d'une table absente (404) ou d'une
+     donnée rejetée (422). Ce silence a rendu le blocage du module Caisse
+     indiagnosticable pendant plusieurs cycles de correction. */
+  var motif = '';
+  for (var i=0;i<rows.length;i++){
+    window._lastSupaError = '';
+    var r = await syncToSupabase(table, rows[i]);
+    if (r) ok++;
+    else { err++; if (!motif && window._lastSupaError) motif = window._lastSupaError; }
+  }
   try { majDerniereSync('Synchro locale → Cloud'); } catch(_){}
-  toast('⬆️ ' + _libelleStore(store) + ' : ' + ok + ' envoyé(s)' + (err?(' · '+err+' échec(s)'):''), err?'info':'success');
+  if (err && motif) {
+    console.warn('[SYNC ' + table + '] Motif du rejet :', motif);
+    toast('⬆️ ' + _libelleStore(store) + ' : ' + ok + ' envoyé(s) · ' + err + ' échec(s) — ' + String(motif).slice(0,160), 'error');
+  } else {
+    toast('⬆️ ' + _libelleStore(store) + ' : ' + ok + ' envoyé(s)' + (err?(' · '+err+' échec(s)'):''), err?'info':'success');
+  }
   renderSyncStatus();
 }
 
@@ -91151,8 +91167,20 @@ async function caisseSaveBon() {
     mvt.modifie_le = new Date().toISOString();
 
     if (etaitVentile && compteV) {
-      /* Régénère l'écriture (même id → upsert) avec les nouvelles valeurs. */
-      await genererEcritureCaisseMouvement(mvt, compteV);
+      /* Régénère l'écriture (même id → upsert) avec les nouvelles valeurs.
+         Si elle est refusée (exercice clos), le mouvement repasse « à
+         ventiler » et reste persisté : on ne laisse jamais une modification
+         vivre uniquement en mémoire. */
+      var _regen = await genererEcritureCaisseMouvement(mvt, compteV);
+      if (!_regen) {
+        mvt.statut = 'a_ventiler'; mvt.ecriture_id = null;
+        await dbPut('caisse_mouvements', mvt);
+        if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', mvt);
+        closeModal('modal-caisse-bon');
+        caisseRenderListe();
+        if (typeof caisseRenderVentilation === 'function') caisseRenderVentilation();
+        return;
+      }
     } else {
       await dbPut('caisse_mouvements', mvt);
       if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', mvt);
@@ -92034,18 +92062,40 @@ async function genererEcritureCaisseMouvement(mvt, compteContrepartie) {
   var caisse = (DATA.caisses || []).find(function(c){ return c.id === mvt.caisse_id; });
   var compteCaisse = (caisse && caisse.compte) || '571';
   var libelle = (mvt.type === 'entree' ? 'Entrée caisse' : 'Sortie caisse') + ' — ' + (mvt.motif || '') + (mvt.beneficiaire ? ' — ' + mvt.beneficiaire : '');
+  /* [FIX] Le type était figé à 'actif' pour TOUTE écriture de caisse. Or ce
+     champ pilote de vrais calculs (décaissements du tableau de bord, cumul
+     charges/produits) : une sortie de caisse ventilée en 60/61/62/66 est une
+     charge réelle, mais typée 'actif' elle n'était comptée nulle part dans ces
+     agrégats. Le Bilan et le Compte de Résultat, eux, restaient justes (ils
+     raisonnent par préfixe de compte via getSolde) — d'où un écart inexpliqué
+     entre les tableaux de bord et les états officiels. On déduit désormais le
+     type de la classe du compte de contrepartie. */
+  var _cls = String(compteContrepartie || '').charAt(0);
+  var _type = _cls === '6' ? 'charge' : (_cls === '7' ? 'produit' : 'tresorerie');
   var ecr = {
     id: 'ecr_cse_' + mvt.id, ref: mvt.numero || mvt.id, date: (mvt.date || '').slice(0,10) || today(),
     piece: mvt.piece_ref || mvt.numero || '', libelle: libelle,
     compte_debit: mvt.type === 'entree' ? compteCaisse : compteContrepartie,
     compte_credit: mvt.type === 'entree' ? compteContrepartie : compteCaisse,
-    compte: compteCaisse, montant: parseFloat(mvt.montant) || 0, type: 'actif', mode: 'especes',
+    compte: compteCaisse, montant: parseFloat(mvt.montant) || 0, type: _type, mode: 'especes',
     division: (caisse && caisse.division_id) || '',
     notes: 'Ventilé par ' + ((APP.currentUser && APP.currentUser.nom) || '—'), created_at: today()
   };
+  /* [FIX] Le retour de dbPut n'était pas vérifié. Si l'écriture est rejetée
+     (exercice clos — dbPut la retire alors aussi de DATA.ecritures), le
+     mouvement était malgré tout marqué 'ventile' avec un ecriture_id pointant
+     vers une écriture inexistante : le bon disparaissait de la liste « à
+     ventiler » sans qu'aucune écriture n'existe en face. Trou comptable
+     silencieux. On ne bascule le statut qu'après confirmation de l'écriture. */
   var idx = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; });
   if (idx >= 0) DATA.ecritures[idx] = ecr; else DATA.ecritures.push(ecr);
-  await dbPut('ecritures', ecr);
+  var _okEcr = await dbPut('ecritures', ecr);
+  if (_okEcr === false) {
+    var _i2 = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; });
+    if (_i2 >= 0) DATA.ecritures.splice(_i2, 1);
+    try { toast('❌ Écriture refusée — le mouvement reste à ventiler.', 'error'); } catch(e){}
+    return null;
+  }
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecr);
   if (typeof buildBalance === 'function') buildBalance();
   if (typeof buildGrandLivre === 'function') buildGrandLivre();
@@ -92063,7 +92113,8 @@ async function caisseVentilerLigne(mvtId) {
   if (!compte) { toast('Sélectionnez un compte de contrepartie.', 'error'); return; }
   var mvt = (DATA.caisse_mouvements || []).find(function(m){ return m.id === mvtId; });
   if (!mvt) return;
-  await genererEcritureCaisseMouvement(mvt, compte);
+  var _ecr = await genererEcritureCaisseMouvement(mvt, compte);
+  if (!_ecr) { caisseRenderVentilation(); return; }   /* échec déjà signalé */
   toast('✅ Écriture générée et mouvement ventilé.', 'success');
   caisseRenderVentilation();
   if (CAISSE_UI.brouillardSessionId === mvt.session_id) caisseRenderBrouillardSession(mvt.session_id);
@@ -92163,7 +92214,7 @@ async function caisseVentilationAuto() {
     for (var j = 0; j < cles.length; j++) {
       if (motifLc.indexOf(cles[j].toLowerCase()) >= 0) { compteTrouve = map[cles[j]]; break; }
     }
-    if (compteTrouve) { await genererEcritureCaisseMouvement(m, compteTrouve); appliques++; }
+    if (compteTrouve) { if (await genererEcritureCaisseMouvement(m, compteTrouve)) appliques++; }
   }
   toast(appliques ? ('⚡ ' + appliques + ' mouvement(s) ventilé(s) automatiquement. ' + (enAttente.length - appliques) + ' restent à ventiler manuellement.') : 'Aucune correspondance trouvée — ventilation manuelle requise.', appliques ? 'success' : 'info');
   caisseRenderVentilation();
