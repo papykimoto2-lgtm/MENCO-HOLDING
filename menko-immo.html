@@ -7564,6 +7564,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div class="page-subtitle">Registre légal des salaires — CNPS · ITS · FDFP — Côte d'Ivoire</div>
           </div>
           <div class="spacer"></div>
+          <select class="filter-select" id="lp-division" onchange="loadLivrePaie()" title="Filtre le livre de paie sur une division : logo et informations légales de la division sur l'impression/export"><option value="">🏢 Toutes divisions</option></select>
           <select class="filter-select" id="lp-annee"></select>
           <button class="btn btn-secondary btn-sm" onclick="exportLivrePaieCSV()">⬇ Export CSV</button>
           <button class="btn btn-secondary btn-sm" onclick="printLivrePaie()">🖨️ Imprimer</button>
@@ -39198,6 +39199,8 @@ function populateDivisionSelects() {
   if (selRdDiv) { var curRD = selRdDiv.value; selRdDiv.innerHTML = '<option value="">— Toutes divisions (Groupe) —</option>' + DATA.divisions.map(function(d) { return '<option value="' + d.id + '">' + d.nom + '</option>'; }).join(''); selRdDiv.value = curRD; }
   var selRdFilter = document.getElementById('filter-rd-division');
   if (selRdFilter) { var curRF = selRdFilter.value; selRdFilter.innerHTML = '<option value="">🏢 Toutes divisions</option>' + DATA.divisions.map(function(d) { return '<option value="' + d.id + '">' + d.nom + '</option>'; }).join(''); selRdFilter.value = curRF; }
+  var selLpDiv = document.getElementById('lp-division');
+  if (selLpDiv) { var curLPD = selLpDiv.value; selLpDiv.innerHTML = '<option value="">🏢 Toutes divisions</option>' + DATA.divisions.map(function(d) { return '<option value="' + d.id + '">' + d.nom + '</option>'; }).join(''); selLpDiv.value = curLPD; }
 }
 
 /* Pré-remplit la division de l'écriture depuis celle du programme sélectionné (modifiable ensuite) */
@@ -40979,7 +40982,9 @@ function printBulletinData(d) {
     + '.tot td{background:#f3f3f3;}'
     + '.net{margin-top:8px;background:#dfe7cf;border:1px solid #c2cfa8;padding:8px 14px;display:flex;justify-content:space-between;font-size:14px;font-weight:bold;border-radius:4px;}'
     + 'table.cum{border-collapse:collapse;width:100%;margin-top:12px;} table.cum th,table.cum td{border:1px solid #999;padding:3px 5px;font-size:9px;text-align:right;} table.cum th{background:#eee;text-align:center;}'
-    + '.foot{margin-top:10px;font-size:9px;color:#444;text-align:center;} .sign{display:flex;justify-content:space-between;margin-top:28px;font-size:10px;}'
+    + '.foot{margin-top:10px;font-size:9px;color:#444;text-align:center;}'
+    + '.sign{margin-top:38px;display:grid;grid-template-columns:1fr 1fr;gap:40px;}'
+    + '.sign-box{font-size:10px;} .sign-box .ligne{margin-top:46px;border-top:1px solid #333;padding-top:4px;color:#555;}'
     + '@media print{body{padding:4mm;}}'
     + '</style></head><body>');
   /* En-tête */
@@ -41018,7 +41023,7 @@ function printBulletinData(d) {
     + '<tr><td class="c">Période</td><td>'+fmtF(r.brutSocial)+'</td><td>'+fmtF(r.brutImposable)+'</td><td>'+fmtF(r.itsNet)+'</td><td>'+fmtF(r.ricf)+'</td><td>'+fmtF(r.itsBrut)+'</td><td>'+fmtF(r.cnpsRetraiteSal)+'</td><td>'+fmtF(r.cmuSal)+'</td><td>'+congesSolde.toLocaleString('fr-FR',{minimumFractionDigits:1})+'</td></tr>'
     + '</tbody></table>');
   win.document.write('<div style="margin-top:4px;font-size:9px;color:#555;">Solde de congés payés acquis / non pris à ce jour : <b>'+congesSolde.toLocaleString('fr-FR',{minimumFractionDigits:1})+' jour(s)</b>.</div>');
-  win.document.write('<div class="sign"><span>Signature Employé</span><span>Signature Employeur</span></div>');
+  win.document.write('<div class="sign"><div class="sign-box"><div class="ligne">Signature de l\'Employé</div></div><div class="sign-box"><div class="ligne">Signature et cachet de l\'Employeur</div></div></div>');
   win.document.write('<div class="foot">Coût total employeur : '+fmtF(r.coutTotal)+' FCFA — Pour vous aider à faire valoir vos droits, conservez ce bulletin sans limitation de durée.</div>');
   try{ win.document.body.insertAdjacentHTML('beforeend',printQrFooter('BUL-'+(d&&d.nom?d.nom:'BULLETIN'))); }catch(e){ console.warn('printQrFooter indisponible :', e); }
   win.document.write('</body></html>');
@@ -41036,6 +41041,17 @@ function printBulletinData(d) {
 
 var LP_MOIS_LABELS = ['Janvier','Février','Mars','Avril','Mai','Juin',
                       'Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+
+/* ── Employés actifs, filtrés sur la division sélectionnée en haut de page
+   (id="lp-division") — utilisé par toutes les vues, le CSV et l'impression,
+   pour que le Livre de Paie « par division » soit cohérent partout. ── */
+function _lpDivisionFiltre() {
+  return (document.getElementById('lp-division') || {}).value || '';
+}
+function _lpActifs() {
+  var divF = _lpDivisionFiltre();
+  return (DATA.employes || []).filter(function(e) { return empEstActif(e) && (!divF || e.division === divF); });
+}
 
 /* ── Initialisation générale de la page ──────────────────────────── */
 function loadLivrePaie() {
@@ -41067,15 +41083,16 @@ function loadLivrePaie() {
       deptSel.appendChild(o);
     });
   }
-  /* Peupler select employé individuel */
+  /* Peupler select employé individuel — reconstruit à chaque appel pour
+     rester cohérent avec la division sélectionnée (lp-division) */
   var empSel = document.getElementById('lp-emp-individuel');
-  if (empSel && empSel.options.length <= 1) {
-    var actifs = (DATA.employes || []).filter(function(e) { return empEstActif(e); });
-    actifs.forEach(function(e) {
-      var o = document.createElement('option');
-      o.value = e.id; o.textContent = e.matricule + ' — ' + e.nom + ' ' + e.prenoms;
-      empSel.appendChild(o);
-    });
+  if (empSel) {
+    var curEmp = empSel.value;
+    var actifs = _lpActifs();
+    empSel.innerHTML = '<option value="">— Sélectionner —</option>' + actifs.map(function(e) {
+      return '<option value="' + e.id + '">' + e.matricule + ' — ' + e.nom + ' ' + e.prenoms + '</option>';
+    }).join('');
+    empSel.value = actifs.some(function(e) { return e.id === curEmp; }) ? curEmp : '';
   }
   _lpUpdateKPIs();
   renderLPJournal();
@@ -41106,7 +41123,7 @@ function _lpDataEmp(e, moisKey) {
 /* ── KPIs annuels ────────────────────────────────────────────────── */
 function _lpUpdateKPIs() {
   var annee = (document.getElementById('lp-annee') || {}).value || new Date().getFullYear();
-  var actifs = (DATA.employes || []).filter(function(e) { return empEstActif(e); });
+  var actifs = _lpActifs();
   var totBrut = 0, totNet = 0, totITS = 0, totCNPS = 0, totCout = 0;
   var sommePresents = 0;
   for (var m = 1; m <= 12; m++) {
@@ -41144,9 +41161,10 @@ function renderLPJournal() {
   var moisKey = annee + '-' + moisNum;
   var moisLabel = LP_MOIS_LABELS[parseInt(moisNum) - 1] + ' ' + annee;
   var filterDept = (document.getElementById('lp-filter-dept-journal') || {}).value || '';
+  var divF = _lpDivisionFiltre();
 
   var actifs = (DATA.employes || []).filter(function(e) {
-    return empEstActif(e) && (!filterDept || e.dept === filterDept) && _lpPresent(e, moisKey);
+    return empEstActif(e) && (!divF || e.division === divF) && (!filterDept || e.dept === filterDept) && _lpPresent(e, moisKey);
   });
 
   if (!actifs.length) {
@@ -41460,7 +41478,7 @@ function renderLPAnnuel() {
   var col = (document.getElementById('lp-col-annuel') || {}).value || 'net';
   var colLabels = { net: 'Net à payer', brut: 'Brut total', its: 'ITS', cnpsSal: 'CNPS sal.', coutTotal: 'Coût total' };
 
-  var actifs = (DATA.employes || []).filter(function(e) { return empEstActif(e); });
+  var actifs = _lpActifs();
   if (!actifs.length) { wrap.innerHTML = '<div style="color:var(--dim);padding:20px;">Aucun employé actif.</div>'; return; }
 
   /* En-têtes mois */
@@ -41630,7 +41648,7 @@ function renderLPCharges() {
   if (!wrap) return;
 
   var annee = (document.getElementById('lp-annee') || {}).value || new Date().getFullYear();
-  var actifs = (DATA.employes || []).filter(function(e) { return empEstActif(e); });
+  var actifs = _lpActifs();
 
   var cols = ['cnpsRetraitePat', 'cnpsAT', 'cnpsPF', 'itsPat', 'fdfpTA', 'fdfpFC', 'fdfpRegul', 'cmuPat', 'totalPatronal'];
   var colLabels = {
@@ -41701,7 +41719,7 @@ function renderLPCharges() {
 /* ── Export CSV du livre de paie complet ─────────────────────────── */
 function exportLivrePaieCSV() {
   var annee = (document.getElementById('lp-annee') || {}).value || new Date().getFullYear();
-  var actifs = (DATA.employes || []).filter(function(e) { return empEstActif(e); });
+  var actifs = _lpActifs();
   var rows = [];
   var header = ['Matricule','Nom','Prénoms','Poste','Mois','Jours','Sal.Catégoriel','Sursalaire','Ancienneté',
     'Primes imp.','H.Supp','Transport','Logement','Brut imposable','Brut total',
@@ -41738,7 +41756,12 @@ function exportLivrePaieCSV() {
   var blob = new Blob([bom + rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'livre_paie_' + annee + '_' + new Date().toISOString().slice(0,10) + '.csv';
+  var divSlugCSV = (function() {
+    var divF2 = _lpDivisionFiltre();
+    var d2 = divF2 ? (DATA.divisions || []).find(function(x) { return x.id === divF2; }) : null;
+    return d2 ? '_' + d2.nom.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') : '';
+  })();
+  a.download = 'livre_paie_' + annee + divSlugCSV + '_' + new Date().toISOString().slice(0,10) + '.csv';
   a.click();
   toast('Livre de paie exporté — ' + rows.length + ' lignes.', 'success');
 }
@@ -41746,9 +41769,22 @@ function exportLivrePaieCSV() {
 /* ── Impression du livre de paie ─────────────────────────────────── */
 function printLivrePaie() {
   var annee = (document.getElementById('lp-annee') || {}).value || new Date().getFullYear();
-  var actifs = (DATA.employes || []).filter(function(e) { return empEstActif(e); });
+  var actifs = _lpActifs();
   var params = DATA.params || {};
-  var ste = params.raison_sociale || params.nom_entreprise || '';
+  /* ── En-tête lié à la division sélectionnée (logo + identité légale) ──
+     Même logique de priorité que pour le bulletin de paie individuel :
+     si une division est choisie dans le filtre du Livre de Paie ET
+     qu'elle a ses informations légales renseignées, on imprime SON logo,
+     sa raison sociale, son siège social, son N°CNPS employeur et son
+     RCCM/NCC — sinon on retombe sur les paramètres globaux de la société. */
+  var divF = _lpDivisionFiltre();
+  var divLP = divF ? (DATA.divisions || []).find(function(d) { return d.id === divF; }) : null;
+  var ste = (divLP && divLP.raisonSociale) ? divLP.raisonSociale : (params.raison_sociale || params.nom_entreprise || '');
+  var adresseLP = (divLP && divLP.siegeSocial) ? divLP.siegeSocial : (params.adresse || '');
+  var cnpsLP = (divLP && divLP.cnpsEmployeur) ? divLP.cnpsEmployeur : (params.cnps || '');
+  var logoLP = (divLP && divLP.logo) ? divLP.logo : (typeof getLogoForPrint === 'function' ? getLogoForPrint() : '');
+  var idsLegalesLP = [(divLP && divLP.rccm) ? 'RCCM ' + divLP.rccm : '', (divLP && divLP.ncc) ? 'NCC ' + divLP.ncc : ''].filter(Boolean).join(' — ');
+  var titreLP = 'LIVRE DE PAIE' + (divLP ? ' — ' + divLP.nom : '') + ' — EXERCICE ' + annee;
 
   var moisBlocks = LP_MOIS_LABELS.map(function(moisLabel, i) {
     var mm = String(i + 1).padStart(2, '0');
@@ -41820,10 +41856,10 @@ function printLivrePaie() {
     + '@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}'
     + '</style></head><body>'
     + '<div class="header-print">'
-    + '<div><div class="company-name">' + ste + '</div>'
-    + '<div style="font-size:10px;color:#555;">' + (params.adresse || '') + ' — ' + (params.cnps || '') + '</div></div>'
+    + '<div>' + (logoLP ? '<img src="' + logoLP + '" style="max-height:90px;max-width:210px;object-fit:contain;margin-bottom:6px;display:block;">' : '') + '<div class="company-name">' + ste + '</div>'
+    + '<div style="font-size:10px;color:#555;">' + adresseLP + ' — CNPS ' + cnpsLP + (idsLegalesLP ? ' — ' + idsLegalesLP : '') + '</div></div>'
     + '<div style="text-align:right;">'
-    + '<div class="doc-title">LIVRE DE PAIE — EXERCICE ' + annee + '</div>'
+    + '<div class="doc-title">' + titreLP + '</div>'
     + '<div style="font-size:9px;color:#555;">Édité le ' + new Date().toLocaleDateString('fr-CI') + ' · ' + actifs.length + ' employé(s)</div>'
     + '</div></div>'
     + moisBlocks
