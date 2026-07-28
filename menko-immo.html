@@ -40903,7 +40903,22 @@ function printBulletinData(d) {
   var r = calcPaieCI(d);
   var e = d.employe;
   var P = DATA.params || {};
-  var societe = P.societe || 'ImmoSuite ERP';
+  /* ── En-tête lié à la division de l'employé ──────────────────────────
+     Chaque division est enregistrée comme une entreprise à part entière
+     (raison sociale, RCCM/NCC, siège social, N°CNPS employeur, logo).
+     Le bulletin doit donc porter le logo et les informations légales de
+     LA DIVISION de l'employé (e.division), et non systématiquement celles
+     de la société mère — sauf si l'employé n'est rattaché à aucune
+     division, ou si sa division n'a pas encore été complétée, auquel cas
+     on retombe sur les paramètres globaux (comportement identique à celui
+     déjà utilisé pour les ordres de mission). */
+  var divBul = e.division ? (DATA.divisions || []).find(function(x){ return x.id === e.division; }) : null;
+  var societe = (divBul && divBul.raisonSociale) ? divBul.raisonSociale : (P.societe || 'ImmoSuite ERP');
+  var adresseSoc = (divBul && divBul.siegeSocial) ? divBul.siegeSocial : (P.adresse || 'BP 696 Abidjan 28');
+  var cnpsEmployeur = (divBul && divBul.cnpsEmployeur) ? divBul.cnpsEmployeur : P.cnps_employeur;
+  var logoSoc = (divBul && divBul.logo) ? divBul.logo : (typeof getLogoForPrint === 'function' ? getLogoForPrint() : '');
+  var rccmSoc = divBul ? divBul.rccm : '';
+  var nccSoc = divBul ? divBul.ncc : '';
   var moisLib = (function(m){
     if (!m) return '';
     var parts = m.split('-'); var mn = ['JANVIER','FÉVRIER','MARS','AVRIL','MAI','JUIN','JUILLET','AOÛT','SEPTEMBRE','OCTOBRE','NOVEMBRE','DÉCEMBRE'];
@@ -40968,9 +40983,12 @@ function printBulletinData(d) {
     + '@media print{body{padding:4mm;}}'
     + '</style></head><body>');
   /* En-tête */
-  win.document.write('<div class="hd"><div class="soc"><b>'+societe+'</b><br>'
-    + (P.adresse||'BP 696 Abidjan 28')+'<br>'
-    + (P.cnps_employeur ? 'N°CNPS '+P.cnps_employeur : 'N°CNPS —')+'</div>');
+  var logoImg = logoSoc ? '<img src="'+logoSoc+'" style="max-height:52px;max-width:130px;object-fit:contain;margin-bottom:6px;display:block;">' : '';
+  var idsLegales = [rccmSoc ? 'RCCM '+rccmSoc : '', nccSoc ? 'NCC '+nccSoc : ''].filter(Boolean).join(' — ');
+  win.document.write('<div class="hd"><div class="soc">'+logoImg+'<b>'+societe+'</b><br>'
+    + adresseSoc+'<br>'
+    + (cnpsEmployeur ? 'N°CNPS '+cnpsEmployeur : 'N°CNPS —')
+    + (idsLegales ? '<br>'+idsLegales : '')+'</div>');
   var sourceTag = d.source_pointage ? '<div style="display:inline-block;background:#dbeafe;color:#1e40af;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:700;margin-top:4px;">&#x23F1; Généré depuis le Pointage</div>' : '';
   var consultantTag = r.exoCnps ? '<div style="display:inline-block;background:#fef3c7;color:#92400e;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:700;margin-top:4px;margin-left:4px;">⚠ Consultant — non déclaré CNPS</div>' : '';
   win.document.write('<div><h1>BULLETIN DE PAIE</h1><div class="sub">'+moisLib+'</div>'+sourceTag+consultantTag+'</div></div>');
@@ -40978,6 +40996,7 @@ function printBulletinData(d) {
   win.document.write('<div class="ident"><div class="col">'
     + '<div><span class="lbl">Matricule:</span> <b>'+(e.matricule||'—')+'</b></div>'
     + '<div><span class="lbl">CNPS N°:</span> '+(e.cnps_num||'—')+'</div>'
+    + (e.division ? '<div><span class="lbl">Division:</span> '+(typeof _nomDivision === 'function' ? _nomDivision(e.division) : e.division)+'</div>' : '')
     + '<div><span class="lbl">Direction:</span> '+(e.dept||'—')+'</div>'
     + '<div><span class="lbl">Emploi:</span> '+(e.poste||'—')+'</div>'
     + '<div><span class="lbl">Catégorie:</span> '+(e.categorie||'—')+'</div>'
@@ -91312,6 +91331,13 @@ function qrSvgTag(text){
                           reseau_type: rtR, label: (RESEAU_TYPES[rtR] || {}).label || 'Canalisation',
                           longueur: Math.round(lgR * 100) / 100, _dxf: 1 });
         } else if (m.type === 'mur' || m.type === 'cloison') {
+          /* Un contour extérieur/de refend s'étend sur plusieurs mètres au
+             moins ; une petite polyligne fermée sur ce même calque est bien
+             plus vraisemblablement un meuble (lit, placard, table…) qu'un
+             morceau de mur. On l'ignore plutôt que de créer un cadre de
+             murs miniature flottant dans le vide (ce qui produisait les
+             rectangles/bâtons isolés observés en 3D). */
+          if (Math.max(x2 - x1, y2 - y1) < 2.2) return;
           /* Un mur/une cloison tracé(e) comme UNE SEULE polyligne fermée (cas
              fréquent pour le contour extérieur d'un bâtiment) ne doit PAS
              devenir un unique rectangle plein sur toute son emprise — cela
@@ -91324,7 +91350,10 @@ function qrSvgTag(text){
             var wa = ptsW[we], wb = ptsW[(we + 1) % ptsW.length];
             var wlg = Math.hypot(wb.x - wa.x, wb.y - wa.y);
             if (wlg < 0.2) continue;
-            var whoriz = Math.abs(wb.x - wa.x) >= Math.abs(wb.y - wa.y);
+            var wdxA = Math.abs(wb.x - wa.x), wdyA = Math.abs(wb.y - wa.y);
+            var wAngle = Math.atan2(Math.min(wdxA, wdyA), Math.max(wdxA, wdyA) || 1e-9) * 180 / Math.PI;
+            if (wAngle > 12) continue;  /* arête diagonale = décor, pas un mur */
+            var whoriz = wdxA >= wdyA;
             nouveaux.push({ id: _id(), type: m.type, niv: ED.nivActif,
               x: _r2(Math.min(wa.x, wb.x) - (whoriz ? 0 : m.ep / 2)),
               y: _r2(Math.min(wa.y, wb.y) - (whoriz ? m.ep / 2 : 0)),
@@ -91350,6 +91379,17 @@ function qrSvgTag(text){
           return;
         }
         var horiz = Math.abs(b.x - a.x) >= Math.abs(b.y - a.y);
+        if (m.type === 'mur' || m.type === 'cloison') {
+          /* Un mur/une cloison réel est quasi toujours tracé horizontal ou
+             vertical dans ces plans (l'outil ne gère que des murs orthogonaux).
+             Un trait franchement diagonal sur un calque « mur/cloison » est
+             en réalité un symbole de mobilier (ex. croix d'oreiller sur un
+             lit) : le convertir produirait une esquisse de mur fantaisiste
+             au lieu de l'ignorer proprement. */
+          var dxA = Math.abs(b.x - a.x), dyA = Math.abs(b.y - a.y);
+          var angleDeg = Math.atan2(Math.min(dxA, dyA), Math.max(dxA, dyA) || 1e-9) * 180 / Math.PI;
+          if (angleDeg > 12) return;  /* > 12° d'écart par rapport à l'horizontale/verticale → ignoré */
+        }
         nouveaux.push({ id: _id(), type: m.type, niv: ED.nivActif,
           x: _r2(Math.min(a.x, b.x) - (horiz ? 0 : m.ep / 2)),
           y: _r2(Math.min(a.y, b.y) - (horiz ? m.ep / 2 : 0)),
