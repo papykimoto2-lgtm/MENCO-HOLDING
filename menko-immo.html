@@ -12584,7 +12584,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           </div>
           <div class="modal-body">
             <div style="font-size:12px;color:var(--dim);margin-bottom:10px;">
-              Chaque calque du fichier est mappé sur un type d'élément. Le pré-réglage suit le nom du calque — corrigez-le si besoin. Les éléments créés sont posés sur <b><span id="conv-niv"></span></b> et deviennent éditables et chiffrables en DQE.
+              Chaque calque du fichier est mappé sur un type d'élément. Le pré-réglage suit le nom du calque (DXF) ou, pour un PDF vectoriel sans noms de calques, l'épaisseur du trait la plus fréquente (trait le plus épais → mur, suivant → cloison) — <b>vérifiez et corrigez chaque ligne avant de valider</b>, sans quoi rien ne sera créé. Les éléments créés sont posés sur <b><span id="conv-niv"></span></b> et deviennent éditables et chiffrables en DQE.
             </div>
             <div class="table-wrap" style="max-height:340px;overflow:auto;">
               <table>
@@ -90490,6 +90490,33 @@ function qrSvgTag(text){
     return 'ignorer';
   }
 
+  /* ── Repli pour les PDF vectoriels : ceux-ci n'ont pas de vrais noms de
+     calques CAO (juste des styles de trait du type « Trait 0.5pt · 0,0,0 »
+     générés par _pdfVectorParse), donc _convTypeDefaut() ci-dessus ne peut
+     jamais matcher et tout finissait par défaut en « — Ignorer — » : rien
+     n'était converti en éléments, d'où un plan 3D vide même après un import
+     PDF réussi. On devine ici un type plausible à partir du CLASSEMENT des
+     épaisseurs de trait présentes dans le fichier (convention usuelle des
+     plans : le trait le plus épais = murs porteurs, le suivant = cloisons).
+     C'est une suggestion pré-remplie, modifiable ligne à ligne dans la
+     fenêtre « Convertir les calques en éléments » avant validation. */
+  function _convTypeDefautPdf(nom, allLayers, mode) {
+    var m = /^(Trait|Remplissage)\s+([\d.]+)pt/.exec(nom || '');
+    if (!m) return null;
+    if (m[1] === 'Remplissage') return 'ignorer';  /* trames/hachures : à traiter au cas par cas */
+    var pt = parseFloat(m[2]);
+    var uniq = Object.keys(allLayers || {})
+      .map(function(k) { var mm = /^Trait\s+([\d.]+)pt/.exec(k); return mm ? parseFloat(mm[1]) : null; })
+      .filter(function(v) { return v !== null; })
+      .filter(function(v, i, arr) { return arr.indexOf(v) === i; })
+      .sort(function(a, b) { return b - a; });
+    var rank = uniq.indexOf(pt);
+    if (mode === 'masse') return rank === 0 ? 'batiment' : 'ignorer';
+    if (rank === 0) return 'mur';
+    if (rank === 1) return 'cloison';
+    return 'ignorer';  /* traits fins = cotations, hachures, textes techniques */
+  }
+
   /* ── Devine le type de réseau (eau / assainissement / pluvial / élec / télécom)
      à partir du nom du calque ou du bloc DXF, pour préremplir reseau_type sans
      repasser par le sélecteur global de l'éditeur. ── */
@@ -91188,6 +91215,10 @@ function qrSvgTag(text){
                 regard:'🕳️ Regard (VRD)', poteau:'⚡ Poteau (VRD)', reseau:'〰️ Canalisation (VRD)' };
     tb.innerHTML = Object.keys(f.layers).sort().map(function(lay, i) {
       var def = _convTypeDefaut(lay);
+      if (def === 'ignorer') {
+        var guess = _convTypeDefautPdf(lay, f.layers, ED.mode);
+        if (guess) def = guess;
+      }
       if (types.indexOf(def) < 0) def = 'ignorer';
       var ep = def === 'mur' ? 0.2 : (def === 'cloison' ? 0.1 : 0.15);
       var epDisabled = (def === 'regard' || def === 'poteau' || def === 'reseau') ? ' disabled title="Sans objet pour les réseaux VRD"' : '';
