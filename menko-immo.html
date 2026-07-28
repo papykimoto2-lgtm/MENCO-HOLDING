@@ -12593,7 +12593,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               </table>
             </div>
             <div class="alert alert-info" style="margin-top:12px;font-size:12px;">
-              ℹ️ Polylignes fermées → rectangle d'encombrement. Lignes → mur/cloison d'épaisseur paramétrée. Les textes situés à l'intérieur d'une pièce servent de libellé. Vérifiez toujours les surfaces obtenues avant de chiffrer.
+              ℹ️ Polylignes fermées → rectangle d'encombrement (pièce/bâtiment/parking…) ; pour Mur/Cloison, chaque arête devient un segment de mur indépendant (pas de bloc plein). Lignes → mur/cloison d'épaisseur paramétrée. Les textes situés à l'intérieur d'une pièce servent de libellé. Vérifiez toujours les surfaces obtenues avant de chiffrer.
             </div>
             <div id="conv-blocs-wrap" style="display:none;margin-top:16px;">
               <div class="form-section-title">🔧 Équipements détectés (blocs plomberie / électricité / VRD)</div>
@@ -90504,6 +90504,14 @@ function qrSvgTag(text){
     var m = /^(Trait|Remplissage)\s+([\d.]+)pt/.exec(nom || '');
     if (!m) return null;
     if (m[1] === 'Remplissage') return 'ignorer';  /* trames/hachures : à traiter au cas par cas */
+    /* Une hachure/trame (carrelage, brique, remplissage de coupe…) génère
+       presque toujours des CENTAINES de petits segments sur un même style,
+       là où un vrai mur/cloison de logement n'en produit que quelques
+       dizaines au grand maximum. Ce garde-fou évite qu'un style de trait
+       très fréquent (mais qui n'est pas structurel) soit converti en murs
+       et n'écrase le plan sous un bloc plein — comme observé en pratique. */
+    var count = (allLayers || {})[nom] || 0;
+    if (count > 100) return 'ignorer';
     var pt = parseFloat(m[2]);
     var uniq = Object.keys(allLayers || {})
       .map(function(k) { var mm = /^Trait\s+([\d.]+)pt/.exec(k); return mm ? parseFloat(mm[1]) : null; })
@@ -91303,6 +91311,25 @@ function qrSvgTag(text){
                           x: _r2(x1), y: _r2(y1), w: _r2(x2 - x1), h: _r2(y2 - y1),
                           reseau_type: rtR, label: (RESEAU_TYPES[rtR] || {}).label || 'Canalisation',
                           longueur: Math.round(lgR * 100) / 100, _dxf: 1 });
+        } else if (m.type === 'mur' || m.type === 'cloison') {
+          /* Un mur/une cloison tracé(e) comme UNE SEULE polyligne fermée (cas
+             fréquent pour le contour extérieur d'un bâtiment) ne doit PAS
+             devenir un unique rectangle plein sur toute son emprise — cela
+             produirait un bloc solide recouvrant tout le logement. On
+             décompose donc chaque arête du contour en un segment de mur
+             indépendant, d'épaisseur paramétrée, comme pour un simple trait. */
+          var ptsW = e.pts.map(function(p) { return { x: MX(p), y: MY(p) }; });
+          var nEdges = e.closed ? ptsW.length : ptsW.length - 1;
+          for (var we = 0; we < nEdges; we++) {
+            var wa = ptsW[we], wb = ptsW[(we + 1) % ptsW.length];
+            var wlg = Math.hypot(wb.x - wa.x, wb.y - wa.y);
+            if (wlg < 0.2) continue;
+            var whoriz = Math.abs(wb.x - wa.x) >= Math.abs(wb.y - wa.y);
+            nouveaux.push({ id: _id(), type: m.type, niv: ED.nivActif,
+              x: _r2(Math.min(wa.x, wb.x) - (whoriz ? 0 : m.ep / 2)),
+              y: _r2(Math.min(wa.y, wb.y) - (whoriz ? m.ep / 2 : 0)),
+              w: _r2(whoriz ? wlg : m.ep), h: _r2(whoriz ? m.ep : wlg), label: '', _dxf: 1 });
+          }
         } else if (x2 - x1 > 0.05 && y2 - y1 > 0.05) {
           nouveaux.push({ id: _id(), type: m.type, niv: ED.nivActif, x: _r2(x1), y: _r2(y1), w: _r2(x2 - x1), h: _r2(y2 - y1), label: '', _dxf: 1 });
         }
