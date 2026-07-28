@@ -11650,6 +11650,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           </div>
           <div class="spacer"></div>
           <button class="btn btn-secondary btn-sm" onclick="accueilRafraichir()">🔄 Actualiser</button>
+          <button class="btn btn-secondary btn-sm" onclick="accueilEnvoyerRapportMessagerie()" title="Envoie la synthèse visiteurs &amp; hôtes dans la messagerie interne à l'admin et au DG">📨 Rapport → Messagerie</button>
           <button class="btn btn-secondary btn-sm" onclick="ouvrirModalRDV()" style="border-color:var(--bleu);color:var(--bleu);">📅 Planifier un RDV</button>
           <button class="btn btn-primary" onclick="ouvrirModalVisite(null)">🚶 Enregistrer une visite</button>
         </div>
@@ -59113,16 +59114,130 @@ function verifierBlacklist(nom, societe, tel) {
   }) || null;
 }
 
-/* ── Notification hôte ─────────────────────────────────── */
-function _notifierHote(visite) {
-  /* Message interne au collaborateur */
-  if (!visite.hote_id || typeof creerMessageInterne !== 'function') return;
+/* ── Rapport Visiteurs & Hôtes → Messagerie interne (admin + DG) ─────────
+   Même mécanisme que Caisse / RH / Foncier : une conversation de groupe
+   dédiée, créée une seule fois puis réutilisée. Destinataires par défaut
+   = administrateurs + validateurs, ou DATA.params.accueil_destinataires_internes. */
+function accueilMsgDestinatairesDefaut() {
+  return (DATA.users || []).filter(function(u){ return u.role === 'admin' || u.role === 'validateur'; }).map(function(u){ return u.id; });
+}
+async function accueilMsgGetOrCreateConversation() {
+  var userId = (APP.currentUser && APP.currentUser.id) || 'system';
+  if (!DATA.params) DATA.params = {};
+  var destConfig = DATA.params.accueil_destinataires_internes;
+  var dest = (destConfig && destConfig.length) ? destConfig : accueilMsgDestinatairesDefaut();
+  var membres = [userId].concat(dest).filter(function(v,i,a){ return v && a.indexOf(v) === i; });
+
+  var convId = DATA.params.accueil_conversation_id;
+  var conv = convId ? (DATA.conversations || []).find(function(x){ return x.id === convId; }) : null;
+  if (conv) {
+    var manquants = membres.filter(function(m){ return conv.participants.indexOf(m) < 0; });
+    if (manquants.length) { conv.participants = conv.participants.concat(manquants); await dbPut('conversations', conv); if (typeof syncToSupabase === 'function') syncToSupabase('pi_conversations', conv); }
+    return conv;
+  }
+  if (membres.length < 2) return null; /* pas de destinataire configuré (admin/validateur) */
+
+  conv = {
+    id: uid(), type: 'groupe', nom: '🏢 Accueil — Visiteurs & Hôtes', emoji: '🏢',
+    description: 'Rapports de synthèse des visites et rendez-vous transmis automatiquement.',
+    participants: membres, admin_id: userId, date_creation: new Date().toISOString()
+  };
+  DATA.conversations = DATA.conversations || []; DATA.conversations.push(conv);
+  await dbPut('conversations', conv); if (typeof syncToSupabase === 'function') syncToSupabase('pi_conversations', conv);
+  DATA.params.id = DATA.params.id || 'main'; DATA.params.accueil_conversation_id = conv.id;
+  await dbPut('params', DATA.params); if (typeof syncToSupabase === 'function') syncToSupabase('pi_params', DATA.params);
+  return conv;
+}
+async function accueilEnvoyerMessageInterne(texte, fichiers) {
+  var conv = await accueilMsgGetOrCreateConversation(); if (!conv) return false;
+  var msg = {
+    id: uid(), conversation_id: conv.id, expediteur_id: (APP.currentUser && APP.currentUser.id) || 'system',
+    contenu: texte, date: new Date().toISOString(), lu: false, fichiers: fichiers || []
+  };
+  DATA.messages = DATA.messages || []; DATA.messages.push(msg);
+  await dbPut('messages', msg); if (typeof syncToSupabase === 'function') syncToSupabase('pi_messages', msg);
+  if (typeof renderConversations === 'function') renderConversations();
+  if (typeof updateBadgeMessages === 'function') updateBadgeMessages();
+  return true;
+}
+
+/* Compose le texte du rapport (aujourd'hui + synthèse du mois en cours) — reprend les
+   mêmes calculs que renderAccueilStats()/renderAccueilToday(). */
+function _accueilTexteRapport() {
+  var log = DATA.visites_log || [], rdvAll = DATA.visites_rdv || [];
+  var todayStr = new Date().toISOString().slice(0, 10), now = new Date().toTimeString().slice(0, 5);
+  var mois = todayStr.slice(0, 7);
+
+  var logToday  = log.filter(function(v){ return (v.date || '').startsWith(todayStr); });
+  var presents  = logToday.filter(function(v){ return v.statut === 'en_cours'; });
+  var attente   = logToday.filter(function(v){ return v.statut === 'attente'; });
+  var rdvToday  = rdvAll.filter(function(r){ return r.date === todayStr; });
+  var rdvAvenir = rdvToday.filter(function(r){ return r.heure_debut >= now && r.statut !== 'annule' && r.statut !== 'termine'; });
+
+  var logMois    = log.filter(function(v){ return (v.date || '').startsWith(mois); });
+  var avecRDV    = logMois.filter(function(v){ return v.rdv_id; }).length;
+  var spontanees = logMois.filter(function(v){ return v.type === 'spontanee'; }).length;
+  var refuses    = logMois.filter(function(v){ return v.statut === 'refuse'; }).length;
+  var noShows    = rdvAll.filter(function(r){ return (r.date || '').startsWith(mois) && r.statut === 'no_show'; }).length;
+  var avecDuree  = logMois.filter(function(v){ return v.heure_arrivee && v.heure_depart; });
+  var dureeMoy   = avecDuree.length ? Math.round(avecDuree.reduce(function(s, v){ return s + _calcDuree(v.heure_arrivee, v.heure_depart); }, 0) / avecDuree.length) : 0;
+
+  var hoteCount = {}; logMois.forEach(function(v){ if (v.hote_id) hoteCount[v.hote_id] = (hoteCount[v.hote_id] || 0) + 1; });
+  var topHotes  = Object.keys(hoteCount).sort(function(a, b){ return hoteCount[b] - hoteCount[a]; }).slice(0, 5);
+
+  var typeCount = {}; logMois.forEach(function(v){ var t = v.type || 'autre'; typeCount[t] = (typeCount[t] || 0) + 1; });
+  var typeKeys  = Object.keys(typeCount).sort(function(a, b){ return typeCount[b] - typeCount[a]; });
+
+  var txt = '🏢 RAPPORT ACCUEIL — visiteurs & hôtes, synthèse du ' + todayStr + '\n\n'
+    + '📋 Aujourd\'hui :\n'
+    + ' - Visites enregistrées : ' + logToday.length + '\n'
+    + ' - Présents en ce moment : ' + presents.length + '\n'
+    + ' - En attente d\'accueil : ' + attente.length + '\n'
+    + ' - RDV du jour : ' + rdvToday.length + ' (dont ' + rdvAvenir.length + ' à venir)\n\n'
+    + '📊 Ce mois (' + mois + ') :\n'
+    + ' - Visites totales : ' + logMois.length + '\n'
+    + ' - Sur RDV : ' + avecRDV + ' · Spontanées : ' + spontanees + '\n'
+    + ' - Refusées : ' + refuses + ' · No-shows : ' + noShows + '\n'
+    + ' - Durée moyenne de visite : ' + dureeMoy + ' min\n';
+
+  if (topHotes.length) {
+    txt += '\n🏆 Top hôtes ce mois :\n' + topHotes.map(function(id, i){
+      return ' ' + (i + 1) + '. ' + _nomHote(id) + ' — ' + hoteCount[id] + ' visite(s)';
+    }).join('\n') + '\n';
+  }
+  if (typeKeys.length) {
+    txt += '\n📊 Répartition par type :\n' + typeKeys.map(function(t){
+      var pct = logMois.length ? Math.round(typeCount[t] / logMois.length * 100) : 0;
+      return ' - ' + (TYPE_VISITE_LABELS[t] || t) + ' : ' + typeCount[t] + ' (' + pct + '%)';
+    }).join('\n') + '\n';
+  }
+  if (attente.length) txt += '\n⚠️ ' + attente.length + ' visiteur(s) en attente d\'accueil actuellement.';
+  return txt;
+}
+
+async function accueilEnvoyerRapportMessagerie() {
+  var ok = await accueilEnvoyerMessageInterne(_accueilTexteRapport());
+  if (ok) toast('Rapport visiteurs & hôtes envoyé dans la messagerie interne (admin & DG).', 'success');
+  else toast('Aucun administrateur/validateur configuré pour recevoir le rapport.', 'error');
+}
+
+/* ── Notification hôte ───────────────────────────────────────────────────
+   Message direct dans la messagerie interne au collaborateur-hôte, s'il
+   possède un compte utilisateur (correspondance employé → compte, même
+   logique que le pont RH → Messagerie via rhEmployeVersUser). ─────────── */
+async function _notifierHote(visite) {
+  if (!visite.hote_id) return;
   var nom = visite.visiteur_nom + (visite.visiteur_prenoms ? ' ' + visite.visiteur_prenoms : '');
   var txt = '🔔 Visiteur en attente : ' + nom
     + (visite.visiteur_societe ? ' (' + visite.visiteur_societe + ')' : '')
     + ' — ' + (visite.objet || 'Objet non précisé')
     + ' — Badge ' + visite.badge_num;
-  creerMessageInterne(visite.hote_id, txt);
+  var emp = (DATA.employes || []).find(function(e){ return e.id === visite.hote_id; });
+  if (!emp || typeof rhEmployeVersUser !== 'function' || typeof rhMsgGetOrCreateDirect !== 'function' || typeof _rhMsgPoster !== 'function') return;
+  var u = rhEmployeVersUser(emp);
+  if (!u) return; /* hôte sans compte utilisateur : rien à notifier en messagerie */
+  var conv = await rhMsgGetOrCreateDirect(u.id);
+  if (conv) await _rhMsgPoster(conv, txt);
 }
 
 /* ── Export CSV ─────────────────────────────────────────── */
@@ -79731,6 +79846,70 @@ function afInactiveDays(op){ return afDaysSince(op.updated_at||op.stage_changed_
 function afOpActive(op){ return op && op.stage!=='commercialisation' && !op.archive && !op.clos; }
 function afAgentName(id){ var a=(DATA.af_agents||[]).find(function(x){return x.id===id;}); return a?a.nom:''; }
 function afRelanceBadge(n){ var b=document.getElementById('af-relance-badge'); if(b){ b.textContent=n; b.style.display=n>0?'':'none'; } }
+
+/* ── Pont Relances Foncier → Messagerie interne ─────────────────────────
+   Même mécanisme que Caisse (caisseGetOrCreateConversation /
+   caisseEnvoyerMessageInterne) et RH (rhMsgGetOrCreateConversation /
+   _rhMsgPoster) : une conversation de groupe dédiée est créée une seule
+   fois puis réutilisée, alimentée par les destinataires configurés dans
+   les paramètres de relance (⚙️ rôles à notifier). L'agent identifié
+   reçoit en plus un message direct s'il possède un compte utilisateur
+   (correspondance par email). ──────────────────────────────────────── */
+function afRelanceDestinataires(){
+  var c=afRelanceCfg(); var dest=[];
+  if((c.roles||[]).indexOf('admin')>=0)   dest=dest.concat((DATA.users||[]).filter(function(u){return u.role==='admin';}).map(function(u){return u.id;}));
+  if((c.roles||[]).indexOf('manager')>=0) dest=dest.concat((DATA.users||[]).filter(function(u){return u.role==='manager';}).map(function(u){return u.id;}));
+  return dest.filter(function(v,i,a){return v&&a.indexOf(v)===i;});
+}
+async function afRelanceGetOrCreateConversation(){
+  var userId=(APP.currentUser&&APP.currentUser.id)||'system';
+  var membres=[userId].concat(afRelanceDestinataires()).filter(function(v,i,a){return v&&a.indexOf(v)===i;});
+  DATA.params=DATA.params||{};
+  var conv=DATA.params.af_relance_conversation_id ? (DATA.conversations||[]).find(function(x){return x.id===DATA.params.af_relance_conversation_id;}) : null;
+  if(conv){
+    var manquants=membres.filter(function(m){return conv.participants.indexOf(m)<0;});
+    if(manquants.length){ conv.participants=conv.participants.concat(manquants); await dbPut('conversations',conv); if(typeof syncToSupabase==='function')syncToSupabase('pi_conversations',conv); }
+    return conv;
+  }
+  if(membres.length<2) return null; /* aucun destinataire (admin/manager) configuré */
+  conv={ id:uid(), type:'groupe', nom:'🔔 Foncier — Relances d\'inactivité', emoji:'🔔',
+    description:'Alertes automatiques des opérations foncières sans activité (module Acquisition & Aménagement Foncier).',
+    participants:membres, admin_id:userId, date_creation:new Date().toISOString() };
+  DATA.conversations=DATA.conversations||[]; DATA.conversations.push(conv);
+  await dbPut('conversations',conv); if(typeof syncToSupabase==='function')syncToSupabase('pi_conversations',conv);
+  DATA.params.id=DATA.params.id||'main'; DATA.params.af_relance_conversation_id=conv.id;
+  await dbPut('params',DATA.params); if(typeof syncToSupabase==='function')syncToSupabase('pi_params',DATA.params);
+  return conv;
+}
+async function afRelanceEnvoyerMessageInterne(texte, fichiers){
+  var conv=await afRelanceGetOrCreateConversation(); if(!conv) return false;
+  var msg={ id:uid(), conversation_id:conv.id, expediteur_id:(APP.currentUser&&APP.currentUser.id)||'system',
+    contenu:texte, date:new Date().toISOString(), lu:false, fichiers:fichiers||[] };
+  DATA.messages=DATA.messages||[]; DATA.messages.push(msg);
+  await dbPut('messages',msg); if(typeof syncToSupabase==='function')syncToSupabase('pi_messages',msg);
+  if(typeof renderConversations==='function') renderConversations();
+  if(typeof updateBadgeMessages==='function') updateBadgeMessages();
+  return true;
+}
+/* Message direct à l'agent identifié, s'il possède un compte utilisateur (email correspondant). */
+async function afRelanceMsgDirectAgent(agentId, texte, fichiers){
+  var ag=(DATA.af_agents||[]).find(function(a){return a.id===agentId;});
+  var mail=ag&&ag.email?String(ag.email).trim().toLowerCase():'';
+  var u=mail?(DATA.users||[]).find(function(x){return (x.email||'').trim().toLowerCase()===mail;}):null;
+  if(!u||typeof rhMsgGetOrCreateDirect!=='function') return false;
+  var conv=await rhMsgGetOrCreateDirect(u.id);
+  if(!conv||typeof _rhMsgPoster!=='function') return false;
+  return await _rhMsgPoster(conv, texte, fichiers);
+}
+/* Compose et pousse la notification (groupe + agent identifié) pour une opération donnée. */
+function afRelanceNotifierAuto(op, jours, seuil){
+  var st=afStage(op.stage);
+  var txt='🔔 Relance foncier — opération "'+(op.nom||'')+'" sans activité depuis '+jours+' jours (stade : '+st.t+', seuil '+seuil+' j).'
+    +(op.agent_id?(' Responsable : '+afAgentName(op.agent_id)+'.'):'')+' Merci de mettre à jour le dossier.';
+  if(typeof afRelanceEnvoyerMessageInterne==='function') afRelanceEnvoyerMessageInterne(txt);
+  if(op.agent_id && typeof afRelanceMsgDirectAgent==='function') afRelanceMsgDirectAgent(op.agent_id, txt);
+}
+
 function afCheckInactivity(){
   DATA.af_relances=DATA.af_relances||[];
   var c=afRelanceCfg();
@@ -79743,12 +79922,17 @@ function afCheckInactivity(){
     if(d>=seuil){
       if(rel){
         if(rel.statut==='reportee' && afDaysSince(rel.snooze_until)<0){ /* encore en report */ }
-        else { rel.statut='ouverte'; rel.jours=d; rel.seuil=seuil; rel.stage=op.stage; dbPut('af_relances',rel); if(typeof syncToSupabase==='function')syncToSupabase('pi_af_relances',rel); }
+        else {
+          var _dejaOuverte=rel.statut==='ouverte';
+          rel.statut='ouverte'; rel.jours=d; rel.seuil=seuil; rel.stage=op.stage; dbPut('af_relances',rel); if(typeof syncToSupabase==='function')syncToSupabase('pi_af_relances',rel);
+          if(!_dejaOuverte && typeof afRelanceNotifierAuto==='function') afRelanceNotifierAuto(op, d, seuil); /* ré-ouverture après report : notifier une seule fois */
+        }
       } else {
         var handled=DATA.af_relances.find(function(r){ return r.op_id===op.id && (r.statut==='traitee'||r.statut==='reportee') && ( (r.snooze_until&&afDaysSince(r.snooze_until)<0) || (r.closed_at&&afDaysSince(r.closed_at)<c.relance_tous) ); });
         if(handled)return;
         var nr={ id:'afr_'+uid(), op_id:op.id, op_nom:op.nom, stage:op.stage, jours:d, seuil:seuil, created_at:now, statut:'ouverte', notifie:[], note:'' };
         DATA.af_relances.push(nr); dbPut('af_relances',nr); if(typeof syncToSupabase==='function')syncToSupabase('pi_af_relances',nr);
+        if(typeof afRelanceNotifierAuto==='function') afRelanceNotifierAuto(op, d, seuil); /* nouvelle relance : notification automatique dans la messagerie interne */
       }
     } else if(rel && rel.statut==='ouverte'){
       rel.statut='traitee'; rel.note='Activité reprise'; rel.closed_at=now; dbPut('af_relances',rel); if(typeof syncToSupabase==='function')syncToSupabase('pi_af_relances',rel);
@@ -79769,7 +79953,7 @@ function afRenderRelances(){
   var hist=DATA.af_relances.filter(function(r){return r.statut!=='ouverte';}).sort(function(a,b){return String(b.closed_at||'').localeCompare(String(a.closed_at||''));}).slice(0,40);
   var who=[]; if((c.roles||[]).indexOf('admin')>=0)who.push('DG/Admin'); if((c.roles||[]).indexOf('manager')>=0)who.push('Manager'); if(c.agent_id)who.push(afAgentName(c.agent_id));
   var head='<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">'
-    +'<div><strong>🔔 Relances d\'inactivité</strong> <span style="font-size:12px;color:var(--blanc-dim);">— délai '+c.delai+' j · '+(c.actif?'actif':'<span style="color:var(--rouge);">désactivé</span>')+' · notifiés : '+(who.join(', ')||'—')+'</span></div>'
+    +'<div><strong>🔔 Relances d\'inactivité</strong> <span style="font-size:12px;color:var(--blanc-dim);">— délai '+c.delai+' j · '+(c.actif?'actif':'<span style="color:var(--rouge);">désactivé</span>')+' · notifiés (messagerie interne) : '+(who.join(', ')||'—')+'</span></div>'
     +'<div style="display:flex;gap:6px;"><button class="btn btn-secondary btn-sm" onclick="afCheckInactivity();afRenderRelances();toast(\'Vérification effectuée\',\'success\');">🔄 Vérifier</button>'
     +'<button class="btn btn-secondary btn-sm" onclick="afOpenRelanceCfg()">⚙️ Paramètres</button></div></div>';
   if(!open.length){ box.innerHTML=head+'<div class="card" style="text-align:center;color:var(--blanc-dim);padding:18px;">Aucune opération en retard d\'activité. 👍</div>'+afRelanceHist(hist); return; }
@@ -79801,16 +79985,20 @@ function afRelanceSnooze(id,days){
   dbPut('af_relances',r); if(typeof syncToSupabase==='function')syncToSupabase('pi_af_relances',r);
   afCheckInactivity(); afRenderRelances(); toast('Relance reportée de '+days+' jours.','success');
 }
-function afNotifierRelance(id){
+async function afNotifierRelance(id){
   var r=DATA.af_relances.find(function(x){return x.id===id;}); if(!r)return;
   var op=DATA.af_operations.find(function(x){return x.id===r.op_id;}); var st=afStage(r.stage);
   var msg='🔔 Relance foncier — opération "'+(r.op_nom||'')+'" sans activité depuis '+r.jours+' jours (stade : '+st.t+'). Merci de mettre à jour le dossier.';
   var ag=(DATA.af_agents||[]).find(function(a){return op&&a.id===op.agent_id;});
   var tel=ag&&(ag.tel||ag.telephone||ag.contact||ag.phone);
-  r.notifie=r.notifie||[]; r.notifie.push({date:_afNowTs(), canal:tel?'whatsapp':'app', cible:ag?ag.nom:'DG/Admin'});
+  /* Notification dans la messagerie interne (groupe DG/Admin/Manager + message direct à l'agent identifié, s'il a un compte) — même mécanisme que Caisse et RH. */
+  var okInterne=(typeof afRelanceEnvoyerMessageInterne==='function') ? await afRelanceEnvoyerMessageInterne(msg) : false;
+  if(op && op.agent_id && typeof afRelanceMsgDirectAgent==='function') await afRelanceMsgDirectAgent(op.agent_id, msg);
+  r.notifie=r.notifie||[]; r.notifie.push({date:_afNowTs(), canal:tel?'whatsapp':'app', cible:ag?ag.nom:'DG/Admin', messagerie:okInterne});
   dbPut('af_relances',r); if(typeof syncToSupabase==='function')syncToSupabase('pi_af_relances',r);
-  if(tel){ window.open('https://wa.me/'+String(tel).replace(/[^0-9]/g,'')+'?text='+encodeURIComponent(msg),'_blank'); toast('Notification WhatsApp préparée.','success'); }
-  else { toast('Notification enregistrée (agent sans n° — visible par le DG/Admin dans la boîte).','info'); }
+  if(tel){ window.open('https://wa.me/'+String(tel).replace(/[^0-9]/g,'')+'?text='+encodeURIComponent(msg),'_blank'); toast(okInterne?'Notification envoyée : WhatsApp + messagerie interne.':'Notification WhatsApp préparée.','success'); }
+  else if(okInterne){ toast('✉️ Notification envoyée dans la messagerie interne.','success'); }
+  else { toast('⚠️ Aucun destinataire configuré pour les relances (voir ⚙️ Paramètres).','error'); }
   afRenderRelances();
 }
 function afOpenRelanceCfg(){
