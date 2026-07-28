@@ -5918,6 +5918,22 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                     <option value="inactif">⛔ Inactif</option>
                   </select>
                 </div>
+                <div class="form-group span-2">
+                  <label>Division de rattachement</label>
+                  <select id="new-user-division" class="form-control">
+                    <option value="">— Non rattaché —</option>
+                  </select>
+                  <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">Détermine les caisses visibles par cet utilisateur : la caisse d'une autre division ne lui est jamais accessible.</div>
+                </div>
+                <div class="form-group span-2" id="new-user-pin-group" style="display:none;">
+                  <label>Code PIN caisse (4 chiffres) <span id="pin-req-star">*</span></label>
+                  <div style="position:relative;">
+                    <input type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" id="new-user-pin" class="form-control" placeholder="Ex: 4821" autocomplete="off">
+                    <button type="button" onclick="togglePwdVisibility('new-user-pin','eye-pin')"
+                      style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:16px;" id="eye-pin">👁️</button>
+                  </div>
+                  <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">Demandé à la caissière à chaque ouverture de sa caisse. Laisser vide en modification pour ne pas le changer.</div>
+                </div>
                 <div class="form-group">
                   <label>Mot de passe * <span id="pwd-strength-label" style="font-size:10px;font-weight:700;margin-left:6px;"></span></label>
                   <div style="position:relative;">
@@ -67256,7 +67272,7 @@ function imprimerOrdreMission(id) {
     + '@media print{.no-print{display:none;}body{padding:16px;}}</style>'
     + '</head><body>'
     + '<div class="no-print"><button onclick="window.print()">🖨️ Imprimer / Enregistrer en PDF</button></div>'
-    + '<div class="header">' + (logo ? '<img src="' + logo + '" style="height:60px;max-width:180px;object-fit:contain;">' : '')
+    + '<div class="header">' + (logo ? '<img src="' + logo + '" style="height:95px;max-width:220px;object-fit:contain;">' : '')
     + '<div style="text-align:center;flex:1;"><h1>ORDRE DE MISSION</h1>'
     + '<div style="font-size:11px;color:#6B6B9A;">Réf. : ' + escHtml(o.numero) + ' · Fait le ' + now + '</div></div>'
     + '<div style="text-align:right;font-size:11px;color:#6B6B9A;">' + escHtml(params.societe || 'ImmoSuite ERP') + '<br>' + (params.tel || '') + '</div></div>'
@@ -74669,6 +74685,17 @@ function applyRoleToSidebar() {
         return '<span style="background:#FEF2F2;color:#DC2626;padding:2px 6px;border-radius:10px;font-size:10px;border:1px solid #FECACA;">'+m+'</span>';
       }).join(' ');
     } else if (denied) { denied.innerHTML=''; }
+    /* Le PIN de caisse n'a de sens que pour le rôle Caissière : on l'affiche
+       uniquement dans ce cas, et on ne l'exige (astérisque) qu'à la création. */
+    var pinGroup = document.getElementById('new-user-pin-group');
+    if (pinGroup) {
+      var isCaissiere = (role === 'caissiere');
+      pinGroup.style.display = isCaissiere ? '' : 'none';
+      if (!isCaissiere) { var pinInp = document.getElementById('new-user-pin'); if (pinInp) pinInp.value = ''; }
+      var star = document.getElementById('pin-req-star');
+      var isEditModal = !!(document.getElementById('modal-user-create') && document.getElementById('modal-user-create').dataset.editId);
+      if (star) star.style.display = isEditModal ? 'none' : '';
+    }
   };
 })();
 
@@ -74731,6 +74758,18 @@ function togglePwdVisibility(inputId, eyeId) {
     refreshRoleSelectInModal();
     var elR = document.getElementById('new-user-role');
     if (elR && user) elR.value = user.role||'commercial';
+    /* Division de rattachement */
+    var selDivU = document.getElementById('new-user-division');
+    if (selDivU) {
+      selDivU.innerHTML = '<option value="">— Non rattaché —</option>' + (DATA.divisions||[]).map(function(d){
+        return '<option value="' + d.id + '">' + escHtml(d.nom) + '</option>';
+      }).join('');
+      selDivU.value = user ? (user.division_id || '') : '';
+    }
+    /* PIN caisse : jamais réaffiché en clair, laisser vide = inchangé */
+    var elPin = document.getElementById('new-user-pin'); if (elPin) elPin.value = '';
+    /* Marquer l'ID édité (nécessaire avant updateRolePreview pour ajuster l'astérisque du PIN) */
+    document.getElementById('modal-user-create').dataset.editId = editUserId||'';
     /* Reset indicateurs */
     ['pwd-strength-fill','pwd-strength-label','pwd-rules','pwd-match-msg'].forEach(function(id){
       var el=document.getElementById(id); if(el) el.innerHTML='';
@@ -74738,8 +74777,6 @@ function togglePwdVisibility(inputId, eyeId) {
     /* Titre */
     var title = document.getElementById('modal-user-title');
     if (title) title.textContent = isEdit ? '✏️ Modifier utilisateur' : '👤 Nouvel utilisateur';
-    /* Marquer l'ID édité */
-    document.getElementById('modal-user-create').dataset.editId = editUserId||'';
     /* Mot de passe : si édition, champ optionnel */
     var pwdLabel = document.querySelector('label[for="new-user-pwd"]');
     if (pwdLabel) pwdLabel.innerHTML = isEdit
@@ -74761,12 +74798,21 @@ function togglePwdVisibility(inputId, eyeId) {
     var email  = (document.getElementById('new-user-email')||{}).value.trim();
     var role   = (document.getElementById('new-user-role')||{}).value || 'commercial';
     var statut = (document.getElementById('new-user-statut')||{}).value || 'actif';
+    var divisionId = (document.getElementById('new-user-division')||{}).value || '';
+    var pin    = (document.getElementById('new-user-pin')||{}).value.trim();
     var pwd    = (document.getElementById('new-user-pwd')||{}).value;
     var pwd2   = (document.getElementById('new-user-pwd2')||{}).value;
 
     /* Validations communes */
     if (!nom)   { toast('⚠️ Nom obligatoire.', 'error'); return; }
     if (!login) { toast('⚠️ Identifiant obligatoire.', 'error'); return; }
+
+    /* Code PIN de caisse : obligatoire à la création d'une caissière (attribué
+       à ce moment, comme demandé), optionnel en modification (vide = inchangé). */
+    if (role === 'caissiere') {
+      if (!isEdit && !pin) { toast('⚠️ Le code PIN de caisse est obligatoire pour le rôle Caissière.', 'error'); return; }
+      if (pin && !/^[0-9]{4}$/.test(pin)) { toast('⚠️ Le code PIN doit comporter exactement 4 chiffres.', 'error'); return; }
+    }
 
     /* Email format check si renseigné */
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -74802,11 +74848,17 @@ function togglePwdVisibility(inputId, eyeId) {
       user.email  = email;
       user.role   = role;
       user.statut = statut;
+      user.division_id = divisionId;
       if (pwd) {
         user.salt          = generateSalt();
         user.password_hash = await hashPassword(pwd, user.salt);
         delete user.password;
       }
+      if (role === 'caissiere' && pin) {
+        user.caisse_pin_salt = generateSalt();
+        user.caisse_pin_hash = await hashPassword(pin, user.caisse_pin_salt);
+      }
+      if (role !== 'caissiere') { user.caisse_pin_hash = null; user.caisse_pin_salt = null; }
       await dbPut('users', user);
       if (typeof syncToSupabase === 'function') syncToSupabase('pi_users', user);
       await ajouterHistorique('user', user.id, 'modification', 'Modifié par '+APP.currentUser.nom);
@@ -74818,7 +74870,11 @@ function togglePwdVisibility(inputId, eyeId) {
       var salt = generateSalt();
       var hash = await hashPassword(pwd, salt);
       var newUser = { id:uid(), nom:nom, login:login, email:email, role:role, statut:statut,
-        password_hash:hash, salt:salt };
+        division_id: divisionId, password_hash:hash, salt:salt };
+      if (role === 'caissiere' && pin) {
+        newUser.caisse_pin_salt = generateSalt();
+        newUser.caisse_pin_hash = await hashPassword(pin, newUser.caisse_pin_salt);
+      }
       DATA.users.push(newUser);
       await dbPut('users', newUser);
       if (typeof syncToSupabase === 'function') syncToSupabase('pi_users', newUser);
@@ -92153,16 +92209,22 @@ function _caissePad3(n) { n = String(n); while (n.length < 3) n = '0' + n; retur
 
 function caisseRoleAdminLike() {
   var role = APP.currentUser && APP.currentUser.role;
+  /* Les administrateurs (et manager/comptable) voient et configurent TOUTES
+     les caisses, quelle que soit leur propre division de rattachement : le
+     cloisonnement par division ne s'applique jamais à ces rôles. */
   if (role === 'admin' || role === 'manager' || role === 'comptable') return true;
-  /* [FIX] Rôle personnalisé non restreint sur la Caisse (pas de scope_division,
-     pas de droits.Caisse limitatifs) → traité comme admin-like, sinon un
-     gérant ou tout rôle custom à accès complet se voyait filtré aux seules
-     caisses où il figure explicitement dans caissiere_ids, et voyait
-     « 0 caisse créée » alors qu'elles existent bel et bien. */
+  /* La Caissière reste toujours cloisonnée à ses caisses assignées / sa division. */
+  if (role === 'caissiere') return false;
+  /* [FIX] Rôle personnalisé : traité comme admin-like dès lors qu'il a un droit
+     de vue non limité à sa propre division sur le module Caisse — qu'il ait ou
+     non une chaîne de droits (c/m/s/v) définie pour ce module. Se baser sur la
+     seule présence de "droits.Caisse" faisait passer pour "restreint" tout rôle
+     personnalisé disposant pourtant d'un accès complet (ex: droits="cmv" sans
+     suppression) : il se retrouvait filtré aux seules caisses de sa division /
+     assignées via caissiere_ids, au lieu de voir l'ensemble pour la configuration. */
   if (typeof userScopeDivision === 'function' && typeof userPeut === 'function'
       && !userScopeDivision() && userPeut('Caisse', 'v')) {
-    var _r = (typeof getAllRoles === 'function') ? getAllRoles()[role] : null;
-    if (_r && (!_r.droits || _r.droits.Caisse === undefined || _r.droits.Caisse === null)) return true;
+    return true;
   }
   return false;
 }
@@ -92174,6 +92236,13 @@ function caisseUserPeut(caisseId) {
   if (caisseRoleAdminLike()) return true;
   var c = (DATA.caisses || []).find(function(x){ return x.id === caisseId; });
   if (!c) return false;
+  /* Cloisonnement par division : la caisse d'une division n'est jamais visible
+     par un utilisateur rattaché à une autre division (ex : une caissière ne voit
+     jamais les caisses des autres divisions, même si elle figurait par erreur
+     dans caissiere_ids d'une caisse d'une autre division). Un utilisateur non
+     rattaché à une division n'est pas restreint par cette règle (défensif). */
+  var userDiv = APP.currentUser.division_id || APP.currentUser.division || '';
+  if (userDiv && c.division_id && String(c.division_id) !== String(userDiv)) return false;
   if (!c.caissiere_ids || !c.caissiere_ids.length) return true;
   return c.caissiere_ids.indexOf(APP.currentUser.id) >= 0;
 }
@@ -92397,21 +92466,38 @@ function caisseConfigModal(caisseId) {
     return '<option value="' + d.id + '">' + escHtml(d.nom) + '</option>';
   }).join('');
   selDiv.value = c ? (c.division_id || '') : '';
+  selDiv.onchange = function(){ _caisseConfigRenderCaissieres(c); };
   document.getElementById('cc-compte').value = c ? (c.compte||'571') : '571';
   document.getElementById('cc-actif').value = (c && c.actif === false) ? '0' : '1';
   document.getElementById('cc-envoi-auto-jour').checked = !c || c.envoi_auto_journalier !== false;
   document.getElementById('cc-envoi-auto-mois').checked = !c || c.envoi_auto_mensuel !== false;
   document.getElementById('cc-dest-emails').value = c && c.destinataires_email ? c.destinataires_email.join(', ') : '';
 
-  var selCaissieres = document.getElementById('cc-caissieres');
   var selDest = document.getElementById('cc-dest-internes');
   var usersHtml = (DATA.users || []).map(function(u){ return '<option value="' + u.id + '">' + escHtml(u.nom) + ' (' + escHtml(u.role||'') + ')</option>'; }).join('');
-  selCaissieres.innerHTML = usersHtml;
   selDest.innerHTML = usersHtml;
-  Array.from(selCaissieres.options).forEach(function(o){ o.selected = !!(c && c.caissiere_ids && c.caissiere_ids.indexOf(o.value) >= 0); });
   Array.from(selDest.options).forEach(function(o){ o.selected = !!(c && c.destinataires_internes && c.destinataires_internes.indexOf(o.value) >= 0); });
+  _caisseConfigRenderCaissieres(c);
 
   openModal('modal-caisse-config');
+}
+
+/* Liste des caissières assignables : restreinte aux utilisateurs de la division
+   choisie (ou non rattachés à une division) afin de ne jamais pouvoir affecter à
+   une caisse quelqu'un d'une autre division — cohérent avec le cloisonnement
+   appliqué à la lecture dans caisseUserPeut(). */
+function _caisseConfigRenderCaissieres(c) {
+  var selCaissieres = document.getElementById('cc-caissieres');
+  if (!selCaissieres) return;
+  var divisionId = (document.getElementById('cc-division')||{}).value || '';
+  var candidats = (DATA.users || []).filter(function(u){
+    var uDiv = u.division_id || u.division || '';
+    return !divisionId || !uDiv || String(uDiv) === String(divisionId);
+  });
+  selCaissieres.innerHTML = candidats.map(function(u){
+    return '<option value="' + u.id + '">' + escHtml(u.nom) + ' (' + escHtml(u.role||'') + ')</option>';
+  }).join('');
+  Array.from(selCaissieres.options).forEach(function(o){ o.selected = !!(c && c.caissiere_ids && c.caissiere_ids.indexOf(o.value) >= 0); });
 }
 
 async function caisseSaveConfig() {
@@ -92478,6 +92564,14 @@ function caisseOuvrirModal(caisseId) {
   document.getElementById('co-fond-note').textContent = derniere
     ? 'Repris automatiquement du solde de clôture réel du ' + derniere.date + ' (' + fmtF(fondSuggere) + ' FCFA). Modifiable si besoin.'
     : 'Première ouverture de cette caisse — aucun solde antérieur.';
+  /* Le PIN n'est demandé que si le compte de l'utilisateur en cours en possède un
+     (attribué à sa création en tant que caissière). Sans PIN configuré, l'ouverture
+     reste possible sans blocage (défensif, cf. principe de la caisse). */
+  var pinGroup = document.getElementById('co-pin-group');
+  var pinInp = document.getElementById('co-pin');
+  var aUnPin = !!(APP.currentUser && APP.currentUser.caisse_pin_hash);
+  if (pinGroup) pinGroup.style.display = aUnPin ? '' : 'none';
+  if (pinInp) pinInp.value = '';
   openModal('modal-caisse-ouvrir');
 }
 
@@ -92486,6 +92580,14 @@ async function caisseOuvrir() {
   var caisseId = document.getElementById('co-caisse-id').value;
   var fond = parseFloat(document.getElementById('co-fond').value) || 0;
   if (caisseGetSessionOuverte(caisseId)) { toast('Cette caisse est déjà ouverte.', 'error'); closeModal('modal-caisse-ouvrir'); return; }
+  /* Vérification du code PIN de la caissière avant toute ouverture — le PIN est
+     personnel à l'utilisateur (attribué à la création de son compte), pas à la caisse. */
+  if (APP.currentUser && APP.currentUser.caisse_pin_hash) {
+    var pinSaisi = (document.getElementById('co-pin')||{}).value || '';
+    if (!pinSaisi) { toast('⚠️ Veuillez saisir votre code PIN.', 'error'); return; }
+    var pinHash = await hashPassword(pinSaisi, APP.currentUser.caisse_pin_salt || '');
+    if (pinHash !== APP.currentUser.caisse_pin_hash) { toast('❌ Code PIN incorrect.', 'error'); return; }
+  }
   var session = {
     id: uid(), caisse_id: caisseId, date: today(),
     fond_ouverture: fond, fond_cloture_theorique: null, fond_cloture_reel: null, ecart: null,
@@ -95550,6 +95652,11 @@ goTo = function(page) {
     <div class="modal-body">
       <input type="hidden" id="co-caisse-id">
       <div id="co-caisse-nom" style="font-weight:700;margin-bottom:10px;"></div>
+      <div class="form-group" id="co-pin-group" style="display:none;">
+        <label>Code PIN *</label>
+        <input type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" class="form-control" id="co-pin" placeholder="••••" autocomplete="off">
+        <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">Votre code PIN personnel, attribué à la création de votre compte caissière.</div>
+      </div>
       <div class="form-group">
         <label>Fond de caisse à l'ouverture (FCFA)</label>
         <input type="number" class="form-control" id="co-fond" value="0">
