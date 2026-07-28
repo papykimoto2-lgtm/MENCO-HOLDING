@@ -13117,6 +13117,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div class="etape-hd"><span class="etape-num">1</span>Référentiel</div>
             <div class="etape-btns">
               <button class="tab-btn" onclick="switchTab('af','agents')"><i>🧑‍💼</i>Agents du foncier</button>
+              <button class="tab-btn" onclick="switchTab('af','proprietaires')"><i>🗺️</i>Propriétaires</button>
             </div>
           </div>
           <div class="etape">
@@ -13150,6 +13151,23 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <button class="btn btn-primary btn-sm" onclick="afOpenAgent()">+ Nouvel agent</button>
           </div>
           <div id="af-agents-liste"></div>
+        </div>
+
+        <div class="tab-pane" id="tab-af-proprietaires">
+          <div class="filters-bar" style="margin-bottom:12px;">
+            <input type="text" class="search-input" id="af-prop-search" placeholder="🔍 Nom, contact, parcelle..." oninput="afRenderProprietairesListe()" style="flex:1;min-width:160px;">
+            <select class="filter-select" id="af-prop-filter-portail" onchange="afRenderProprietairesListe()">
+              <option value="">Tous</option>
+              <option value="avec_code">🔐 Avec accès portail</option>
+              <option value="sans_code">⚪ Sans accès portail</option>
+            </select>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Nom</th><th>Contact</th><th>Qualité</th><th>Parcelle / Opération</th><th>Étape</th><th>Portail</th><th></th></tr></thead>
+              <tbody id="af-tbody-proprietaires-liste"></tbody>
+            </table>
+          </div>
         </div>
 
         <div class="tab-pane" id="tab-af-dashboard">
@@ -24222,6 +24240,7 @@ function switchTab(context, tab) {
   if (context === 'declarations' && tab === 'teledeclaration' && typeof renderTeledeclaration === 'function') renderTeledeclaration();
   if (context === 'chantiers' && tab === 'controle' && typeof renderControleGestion === 'function') renderControleGestion();
   if (context === 'chantiers' && tab === 'cout' && typeof buildCoutRevient === 'function') buildCoutRevient();
+  if (context === 'af' && tab === 'proprietaires' && typeof afRenderProprietairesListe === 'function') afRenderProprietairesListe();
 
   /* Mettre à jour les boutons .tab-btn du même contexte */
   document.querySelectorAll('.tab-btn').forEach(function(b) {
@@ -79975,6 +79994,87 @@ async function afGenererCodeProprietaire(index){
   if (typeof syncToSupabase==='function') syncToSupabase('pi_af_operations', DATA.af_operations[idx]);
   toast('Code d\'accès généré pour '+(p.nom||'ce propriétaire')+' — transmettez-le via l\'invitation.','success');
   afRenderProp();
+  var isEmail = p.contact.indexOf('@')!==-1;
+  ouvrirInvitation({
+    nom: p.nom || 'Propriétaire', login: p.contact, secret: code,
+    email: isEmail?p.contact:'', tel: isEmail?'':p.contact,
+    type: 'proprietaire_foncier', secretLabel: "Code d'accès"
+  });
+}
+
+/* ══ Liste consolidée de TOUS les propriétaires, toutes opérations confondues
+   (onglet Référentiel → Propriétaires) — évite de devoir ouvrir chaque
+   opération une par une pour retrouver un propriétaire ou générer son code. ══ */
+function afRenderProprietairesListe(){
+  var tb = document.getElementById('af-tbody-proprietaires-liste'); if (!tb) return;
+  var q = ((document.getElementById('af-prop-search')||{}).value||'').toLowerCase().trim();
+  var filtrePortail = (document.getElementById('af-prop-filter-portail')||{}).value||'';
+  var lignes = [];
+  (DATA.af_operations||[]).forEach(function(op){
+    (op.proprietaires||[]).forEach(function(p, idx){
+      if (!p.id) p.id = uid();   /* rétro-compatibilité : anciennes fiches sans id */
+      lignes.push({ op:op, prop:p, idx:idx });
+    });
+  });
+  lignes = lignes.filter(function(l){
+    var hasCode = !!(l.prop.code_acces_hash && l.prop.code_acces_salt);
+    if (filtrePortail==='avec_code' && !hasCode) return false;
+    if (filtrePortail==='sans_code' && hasCode) return false;
+    if (!q) return true;
+    var hay = [l.prop.nom, l.prop.contact, l.prop.qualite, l.op.nom, l.op.village, l.op.commune].join(' ').toLowerCase();
+    return hay.indexOf(q)!==-1;
+  });
+  lignes.sort(function(a,b){ return (a.prop.nom||'').localeCompare(b.prop.nom||''); });
+  if (!lignes.length) {
+    tb.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted,#999);padding:18px;">Aucun propriétaire ne correspond. Ajoutez-en depuis l\'onglet « Propriétaires » d\'une opération.</td></tr>';
+    return;
+  }
+  tb.innerHTML = lignes.map(function(l){
+    var op=l.op, p=l.prop, hasCode=!!(p.code_acces_hash && p.code_acces_salt), st=afStage(op.stage);
+    var portailCell = '<span style="font-size:11px;color:'+(hasCode?'var(--vert)':'var(--muted,#999)')+';">'
+        + (hasCode ? ('🔐 Actif'+(p.derniere_connexion_portail?' · '+dateShort(p.derniere_connexion_portail):' · jamais connecté')) : '⚪ Aucun code')
+      + '</span>';
+    return '<tr>'
+      + '<td>'+afEsc(p.nom||'—')+'</td>'
+      + '<td>'+afEsc(p.contact||'—')+'</td>'
+      + '<td>'+afEsc(p.qualite||'—')+'</td>'
+      + '<td><a href="#" onclick="afOpenOperation(\''+op.id+'\');return false;" style="color:var(--or,#B8732F);">'+afEsc(op.nom||'Opération')+'</a>'
+        + '<div style="font-size:11px;color:var(--muted,#888);">'+afEsc(op.village||op.commune||'')+'</div></td>'
+      + '<td><span style="background:'+st.c+';color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;white-space:nowrap;">'+st.e+' '+st.t+'</span></td>'
+      + '<td>'+portailCell+'</td>'
+      + '<td style="white-space:nowrap;"><button class="btn btn-secondary btn-sm" '
+        + (p.contact ? '' : 'disabled title="Ajoutez un email/téléphone d\'abord (dans la fiche opération)"')
+        + ' onclick="afGenererCodeProprietaireDepuisListe(\''+op.id+'\',\''+p.id+'\')">🔑 '+(hasCode?'Régénérer':'Générer')+'</button></td>'
+      + '</tr>';
+  }).join('');
+}
+
+/* Génère le code portail directement depuis la liste consolidée, sans avoir à
+   ouvrir la fiche de l'opération. Garde _afOp synchronisé si cette même
+   opération est par ailleurs ouverte dans la modale d'édition. */
+async function afGenererCodeProprietaireDepuisListe(opId, propId){
+  if (!hasRole('admin') && !hasRole('manager') && !hasRole('commercial')) { toast('⛔ Accès refusé.','error'); return; }
+  var op = (DATA.af_operations||[]).find(function(x){ return x.id===opId; });
+  if (!op) return;
+  var p = (op.proprietaires||[]).find(function(x){ return x.id===propId; });
+  if (!p) return;
+  if (!p.contact) { toast('⚠️ Ajoutez un email ou un téléphone pour ce propriétaire avant de générer un code.','error'); return; }
+  var code = Math.floor(100000 + Math.random()*900000).toString();
+  var salt = generateSalt();
+  p.code_acces_hash = await hashPassword(code, salt);
+  p.code_acces_salt = salt;
+  p.code_acces_date = new Date().toISOString();
+  await dbPut('af_operations', op);
+  if (typeof syncToSupabase==='function') syncToSupabase('pi_af_operations', op);
+  /* Si la même opération est ouverte dans la modale d'édition, on la resynchronise
+     pour que l'onglet Propriétaires de la fiche reflète aussi le nouveau code. */
+  if (typeof _afOp !== 'undefined' && _afOp && _afOp.id === opId) {
+    var pInModal = (_afOp.proprietaires||[]).find(function(x){ return x.id===propId; });
+    if (pInModal) { pInModal.code_acces_hash = p.code_acces_hash; pInModal.code_acces_salt = p.code_acces_salt; pInModal.code_acces_date = p.code_acces_date; }
+    if (typeof afRenderProp === 'function') afRenderProp();
+  }
+  toast('Code d\'accès généré pour '+(p.nom||'ce propriétaire')+' — transmettez-le via l\'invitation.','success');
+  afRenderProprietairesListe();
   var isEmail = p.contact.indexOf('@')!==-1;
   ouvrirInvitation({
     nom: p.nom || 'Propriétaire', login: p.contact, secret: code,
