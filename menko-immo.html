@@ -93186,6 +93186,7 @@ function caisseRenderListe() {
       actions += '<button class="btn btn-secondary btn-sm" onclick="caisseOuvrirBonModal(\'' + c.id + '\',\'entree\')">📥 Entrée</button>'
         + '<button class="btn btn-secondary btn-sm" onclick="caisseOuvrirBonModal(\'' + c.id + '\',\'sortie\')">📤 Sortie</button>'
         + '<button class="btn btn-secondary btn-sm" onclick="caisseAfficherBrouillard(\'' + c.id + '\')">📋 Brouillard</button>'
+        + '<button class="btn btn-secondary btn-sm" onclick="caisseImportCSVModal(\'' + c.id + '\')">📥 Import CSV</button>'
         + '<button class="btn btn-danger btn-sm" onclick="caisseClôturerModal(\'' + c.id + '\')">🔒 Clôturer</button>';
     }
     if (caisseRoleAdminLike()) {
@@ -93660,6 +93661,117 @@ async function caisseSaveBon() {
 var _cbDocs = [];
 var _cbDocsToDelete = [];
 var _caisseDocIndex = {};
+
+/* ── Import CSV mouvements de caisse (date;libellé;numéro reçu;entrée;sortie) ── */
+var _cimRows = [];
+function caisseImportCSVModal(caisseId) {
+  var session = caisseGetSessionOuverte(caisseId);
+  if (!session) { toast('Ouvrez la caisse avant d\'importer des mouvements.', 'error'); return; }
+  document.getElementById('cim-caisse-id').value = caisseId;
+  document.getElementById('cim-file').value = '';
+  document.getElementById('cim-texte').value = '';
+  document.getElementById('cim-stats').innerHTML = '';
+  document.getElementById('cim-table').innerHTML = '';
+  document.getElementById('cim-btn-confirmer').disabled = true;
+  _cimRows = [];
+  openModal('modal-caisse-import');
+}
+function caisseImportCSVFichier(ev) {
+  var f = ev.target.files && ev.target.files[0]; if (!f) return;
+  var r = new FileReader();
+  r.onload = function(e) { document.getElementById('cim-texte').value = e.target.result; caisseImportCSVAnalyser(); };
+  r.readAsText(f, 'UTF-8');
+}
+function _cimParseLigne(cols) {
+  var date = _impDate(cols[0]||'');
+  var libelle = (cols[1]||'').trim().slice(0,150);
+  var piece = (cols[2]||'').trim().slice(0,40);
+  var entree = _impNum(cols[3]);
+  var sortie = _impNum(cols[4]);
+  return { date:date, libelle:libelle, piece:piece, entree:Math.abs(entree), sortie:Math.abs(sortie) };
+}
+function caisseImportCSVAnalyser() {
+  var text = document.getElementById('cim-texte').value;
+  var lines = text.replace(/^\uFEFF/,'').split(/\r?\n/).filter(function(l){ return l.trim(); });
+  var sep = lines.length && lines[0].indexOf(';')>=0 ? ';' : ',';
+  var start = 0;
+  if (lines.length && /date|libell|re[çc]u|entr[ée]e|sortie/i.test(lines[0])) start = 1;
+  var rows = [], erreurs = 0;
+  for (var i=start; i<lines.length; i++) {
+    var cols = _parseCSVLine(lines[i], sep);
+    if (cols.length < 2) continue;
+    var l = _cimParseLigne(cols);
+    var valide = !!l.date && !!l.libelle && ((l.entree>0) !== (l.sortie>0));
+    if (!valide) erreurs++;
+    rows.push({ l:l, valide:valide });
+  }
+  _cimRows = rows;
+  var okCount = rows.filter(function(r){return r.valide;}).length;
+  var totE = rows.filter(function(r){return r.valide&&r.l.entree>0;}).reduce(function(s,r){return s+r.l.entree;},0);
+  var totS = rows.filter(function(r){return r.valide&&r.l.sortie>0;}).reduce(function(s,r){return s+r.l.sortie;},0);
+  document.getElementById('cim-stats').innerHTML =
+    '✅ ' + okCount + ' ligne(s) valide(s) · ⚠️ ' + erreurs + ' erreur(s)'
+    + ' · Entrées ' + fmtF(totE) + ' FCFA · Sorties ' + fmtF(totS) + ' FCFA';
+  document.getElementById('cim-table').innerHTML =
+    '<tr style="background:var(--bord2);"><th style="padding:6px;text-align:left;">Date</th><th style="padding:6px;text-align:left;">Libellé</th><th style="padding:6px;text-align:left;">N° reçu</th><th style="padding:6px;text-align:right;">Entrée</th><th style="padding:6px;text-align:right;">Sortie</th><th style="padding:6px;"></th></tr>'
+    + rows.map(function(r){
+        var l = r.l;
+        return '<tr style="'+(r.valide?'':'background:rgba(220,38,38,0.12);')+'">'
+          + '<td style="padding:6px;">'+escHtml(l.date)+'</td>'
+          + '<td style="padding:6px;">'+escHtml(l.libelle)+'</td>'
+          + '<td style="padding:6px;">'+escHtml(l.piece)+'</td>'
+          + '<td style="padding:6px;text-align:right;">'+(l.entree>0?fmtF(l.entree):'')+'</td>'
+          + '<td style="padding:6px;text-align:right;">'+(l.sortie>0?fmtF(l.sortie):'')+'</td>'
+          + '<td style="padding:6px;">'+(r.valide?'':'❌')+'</td>'
+          + '</tr>';
+      }).join('');
+  document.getElementById('cim-btn-confirmer').disabled = okCount === 0;
+}
+async function caisseImportCSVConfirmer() {
+  var caisseId = document.getElementById('cim-caisse-id').value;
+  var session = caisseGetSessionOuverte(caisseId);
+  if (!session) { toast('Caisse clôturée entre-temps.', 'error'); closeModal('modal-caisse-import'); return; }
+  var c = (DATA.caisses||[]).find(function(x){ return x.id===caisseId; });
+  var valides = _cimRows.filter(function(r){ return r.valide; });
+  if (!valides.length) return;
+  var user = (APP.currentUser && APP.currentUser.nom) || '—';
+  var nCrees = 0, lot = [];
+  for (var i=0; i<valides.length; i++) {
+    var l = valides[i].l;
+    var type = l.entree > 0 ? 'entree' : 'sortie';
+    var montant = l.entree > 0 ? l.entree : l.sortie;
+    var prefix = type === 'entree' ? 'BE' : 'BS';
+    var dateStr = l.date.replace(/-/g,'');
+    var pfxNum = prefix + '-' + (c && c.compte ? c.compte : 'CSE') + '-' + dateStr + '-';
+    var maxN = 0;
+    (DATA.caisse_mouvements||[]).concat(lot).forEach(function(m){
+      if (m && m.caisse_id===caisseId && m.type===type && m.numero && m.numero.indexOf(pfxNum)===0) {
+        var n = parseInt(m.numero.slice(pfxNum.length), 10);
+        if (!isNaN(n) && n > maxN) maxN = n;
+      }
+    });
+    var numero = pfxNum + _caissePad3(maxN + 1);
+    var mvt = {
+      id: uid(), session_id: session.id, caisse_id: caisseId,
+      date: l.date + 'T' + new Date().toISOString().slice(11,19), numero: numero,
+      type: type, montant: montant, motif: l.libelle, beneficiaire: l.libelle,
+      piece_ref: l.piece, statut: 'a_ventiler', compte_ventile: null, ecriture_id: null,
+      ventile_par: null, ventile_le: null,
+      created_by: user + ' (import CSV)', created_at: new Date().toISOString()
+    };
+    lot.push(mvt);
+    DATA.caisse_mouvements.push(mvt);
+    await dbPut('caisse_mouvements', mvt);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', mvt);
+    nCrees++;
+  }
+  closeModal('modal-caisse-import');
+  toast('✅ ' + nCrees + ' mouvement(s) importé(s).', 'success');
+  caisseRenderListe();
+  if (typeof caisseRenderDashboard === 'function') caisseRenderDashboard();
+  if (typeof caisseRenderVentilation === 'function') caisseRenderVentilation();
+  if (CAISSE_UI.brouillardCaisseId === caisseId) caisseAfficherBrouillard(caisseId);
+}
 
 async function caisseLoadDocIndex(){
   _caisseDocIndex = {};
@@ -96900,6 +97012,33 @@ goTo = function(page) {
     </div>
     <div class="modal-body"><div id="cbv-list" style="font-size:13px;"></div></div>
     <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('modal-caisse-docs')">Fermer</button></div>
+  </div>
+</div>
+
+<!-- Modal : Import CSV mouvements de caisse -->
+<div class="modal-overlay" id="modal-caisse-import">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3>📥 Import CSV — mouvements de caisse</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-caisse-import')">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="cim-caisse-id">
+      <div style="font-size:11px;color:var(--blanc-dim);margin-bottom:8px;">Format : <b>date;libellé;numéro reçu;entrée;sortie</b>. Une seule colonne (entrée OU sortie) remplie par ligne. Séparateur <code>;</code> ou <code>,</code>. Décimale <code>,</code> ou <code>.</code>. Date <code>JJ/MM/AAAA</code> ou <code>AAAA-MM-JJ</code>.</div>
+      <div class="form-grid">
+        <div class="form-group"><label>Fichier CSV</label><input type="file" id="cim-file" class="form-control" accept=".csv,.txt" onchange="caisseImportCSVFichier(event)"></div>
+      </div>
+      <div class="form-group"><label>Ou collez le contenu ici</label><textarea class="form-control" id="cim-texte" rows="6" placeholder="09/07/2026;Vente ticket;RC-001;25000;
+09/07/2026;Achat fourniture;RC-002;;5000" oninput="caisseImportCSVAnalyser()"></textarea></div>
+      <div id="cim-stats" style="font-size:12px;margin:8px 0;"></div>
+      <div style="overflow-x:auto;max-height:280px;overflow-y:auto;border:1px solid var(--bord);border-radius:8px;">
+        <table id="cim-table" style="width:100%;font-size:11px;border-collapse:collapse;"></table>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-caisse-import')">Annuler</button>
+      <button class="btn btn-primary" id="cim-btn-confirmer" onclick="caisseImportCSVConfirmer()" disabled>✅ Importer les lignes valides</button>
+    </div>
   </div>
 </div>
 
