@@ -10849,6 +10849,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           </div>
           <div class="spacer"></div>
           <button class="btn btn-secondary btn-sm" id="btn-caisse-nouvelle" onclick="caisseConfigModal(null)" style="display:none;">➕ Nouvelle caisse</button>
+          <button class="btn btn-secondary btn-sm" onclick="caisseAuditDoublonsModal()">🔍 Audit doublons</button>
         </div>
 
         <div id="caisse-sync-banner"></div>
@@ -93713,6 +93714,7 @@ function caisseImportCSVModal(caisseId) {
   document.getElementById('cim-table').innerHTML = '';
   document.getElementById('cim-btn-confirmer').disabled = true;
   _cimRows = [];
+  window._cimDernierDoublons = [];
   openModal('modal-caisse-import');
 }
 function caisseImportCSVFichier(ev) {
@@ -93730,6 +93732,7 @@ function _cimParseLigne(cols) {
   return { date:date, libelle:libelle, piece:piece, entree:Math.abs(entree), sortie:Math.abs(sortie) };
 }
 function caisseImportCSVAnalyser() {
+  window._cimDernierDoublons = [];
   var text = document.getElementById('cim-texte').value;
   var lines = text.replace(/^\uFEFF/,'').split(/\r?\n/).filter(function(l){ return l.trim() && !l.trim().startsWith('#'); });
   var sep = lines.length && lines[0].indexOf(';')>=0 ? ';' : ',';
@@ -93740,9 +93743,14 @@ function caisseImportCSVAnalyser() {
     var cols = _parseCSVLine(lines[i], sep);
     if (cols.length < 2) continue;
     var l = _cimParseLigne(cols);
-    var valide = !!l.date && !!l.libelle && ((l.entree>0) !== (l.sortie>0));
+    var raisons = [];
+    if (!l.date) raisons.push('date illisible');
+    if (!l.libelle) raisons.push('libellé manquant');
+    if (l.entree>0 && l.sortie>0) raisons.push('entrée ET sortie renseignées (une seule attendue)');
+    if (l.entree<=0 && l.sortie<=0) raisons.push('ni entrée ni sortie renseignée');
+    var valide = raisons.length === 0;
     if (!valide) erreurs++;
-    rows.push({ l:l, valide:valide });
+    rows.push({ l:l, valide:valide, raison: raisons.join(' · '), ligneNum: i+1, brut: lines[i] });
   }
   _cimRows = rows;
   var okCount = rows.filter(function(r){return r.valide;}).length;
@@ -93750,21 +93758,51 @@ function caisseImportCSVAnalyser() {
   var totS = rows.filter(function(r){return r.valide&&r.l.sortie>0;}).reduce(function(s,r){return s+r.l.sortie;},0);
   document.getElementById('cim-stats').innerHTML =
     '✅ ' + okCount + ' ligne(s) valide(s) · ⚠️ ' + erreurs + ' erreur(s)'
-    + ' · Entrées ' + fmtF(totE) + ' FCFA · Sorties ' + fmtF(totS) + ' FCFA';
+    + ' · Entrées ' + fmtF(totE) + ' FCFA · Sorties ' + fmtF(totS) + ' FCFA'
+    + (erreurs ? ' <button class="btn btn-secondary btn-sm" style="margin-left:8px;" onclick="caisseImportCSVRapport()">📄 Rapport des lignes rejetées</button>' : '');
   document.getElementById('cim-table').innerHTML =
-    '<tr style="background:var(--bord2);"><th style="padding:6px;text-align:left;">Date</th><th style="padding:6px;text-align:left;">Libellé</th><th style="padding:6px;text-align:left;">N° reçu</th><th style="padding:6px;text-align:right;">Entrée</th><th style="padding:6px;text-align:right;">Sortie</th><th style="padding:6px;"></th></tr>'
+    '<tr style="background:var(--bord2);"><th style="padding:6px;text-align:left;">L.</th><th style="padding:6px;text-align:left;">Date</th><th style="padding:6px;text-align:left;">Libellé</th><th style="padding:6px;text-align:left;">N° reçu</th><th style="padding:6px;text-align:right;">Entrée</th><th style="padding:6px;text-align:right;">Sortie</th><th style="padding:6px;text-align:left;">Motif rejet</th></tr>'
     + rows.map(function(r){
         var l = r.l;
         return '<tr style="'+(r.valide?'':'background:rgba(220,38,38,0.12);')+'">'
+          + '<td style="padding:6px;">'+r.ligneNum+'</td>'
           + '<td style="padding:6px;">'+escHtml(l.date)+'</td>'
           + '<td style="padding:6px;">'+escHtml(l.libelle)+'</td>'
           + '<td style="padding:6px;">'+escHtml(l.piece)+'</td>'
           + '<td style="padding:6px;text-align:right;">'+(l.entree>0?fmtF(l.entree):'')+'</td>'
           + '<td style="padding:6px;text-align:right;">'+(l.sortie>0?fmtF(l.sortie):'')+'</td>'
-          + '<td style="padding:6px;">'+(r.valide?'':'❌')+'</td>'
+          + '<td style="padding:6px;color:var(--rouge);">'+escHtml(r.raison||'')+'</td>'
           + '</tr>';
       }).join('');
   document.getElementById('cim-btn-confirmer').disabled = okCount === 0;
+}
+function _cimCsvEsc(s) {
+  s = String(s == null ? '' : s).replace(/\r/g, '');
+  return '"' + s.replace(/"/g, '""') + '"';
+}
+function caisseImportCSVRapport() {
+  var rejets = _cimRows.filter(function(r){ return !r.valide; });
+  var doublons = window._cimDernierDoublons || [];
+  if (!rejets.length && !doublons.length) { toast('Aucune ligne rejetée à signaler.', 'info'); return; }
+  var csv = '# Rapport import Caisse — lignes NON importées — ' + new Date().toISOString().slice(0,19).replace('T',' ') + '\n';
+  csv += 'ligne;motif_rejet;contenu_brut\n';
+  rejets.forEach(function(r){
+    csv += r.ligneNum + ';' + _cimCsvEsc(r.raison) + ';' + _cimCsvEsc(r.brut) + '\n';
+  });
+  doublons.forEach(function(d){
+    csv += d.ligneNum + ';' + _cimCsvEsc('déjà importé précédemment (doublon ignoré)') + ';' + _cimCsvEsc(d.brut) + '\n';
+  });
+  var b = new Blob(['\uFEFF'+csv], {type:'text/csv;charset=utf-8;'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(b);
+  a.download = 'rapport_rejets_import_caisse_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+  toast('📄 Rapport téléchargé : ' + rejets.length + ' rejet(s)' + (doublons.length ? ' + ' + doublons.length + ' doublon(s)' : '') + '.', 'success');
+}
+function _caisseFingerprint(caisseId, date, type, montant, piece, motif) {
+  var p = (piece||'').replace(/\s+/g,'').trim().toLowerCase();
+  var base = caisseId + '|' + (date||'').slice(0,10) + '|' + type + '|' + Math.round(parseFloat(montant)||0);
+  return p ? base + '|' + p : base + '|' + (motif||'').trim().toLowerCase().slice(0,60);
 }
 async function caisseImportCSVConfirmer() {
   var caisseId = document.getElementById('cim-caisse-id').value;
@@ -93774,42 +93812,134 @@ async function caisseImportCSVConfirmer() {
   var valides = _cimRows.filter(function(r){ return r.valide; });
   if (!valides.length) return;
   var user = (APP.currentUser && APP.currentUser.nom) || '—';
-  var nCrees = 0, lot = [];
+
+  /* [Anti-réimport] Empreinte de tous les mouvements déjà existants pour cette
+     caisse : réimporter le même CSV (même date+type+montant+n° de pièce) ne
+     recrée pas de doublon — la ligne est simplement ignorée. */
+  var existants = {};
+  (DATA.caisse_mouvements||[]).forEach(function(m){
+    if (m.caisse_id === caisseId) existants[_caisseFingerprint(caisseId, m.date, m.type, m.montant, m.piece_ref, m.motif)] = true;
+  });
+  /* [Perf] Numéro max déjà utilisé PAR préfixe (type+jour), calculé une seule
+     fois — évite de re-scanner tout l'historique de la caisse à chaque ligne
+     (O(n²) qui bloquait le thread sur les gros lots). */
+  var maxParPrefixe = {};
+  (DATA.caisse_mouvements||[]).forEach(function(m){
+    if (m.caisse_id !== caisseId || !m.numero) return;
+    var pfx = m.numero.replace(/(\d+)$/, '');
+    var n = parseInt(m.numero.slice(pfx.length), 10);
+    if (!isNaN(n) && (!(pfx in maxParPrefixe) || n > maxParPrefixe[pfx])) maxParPrefixe[pfx] = n;
+  });
+
+  var nCrees = 0, nDoublons = 0, nSuggeres = 0, doublonsDetail = [];
   for (var i=0; i<valides.length; i++) {
     var l = valides[i].l;
     var type = l.entree > 0 ? 'entree' : 'sortie';
     var montant = l.entree > 0 ? l.entree : l.sortie;
+    var fp = _caisseFingerprint(caisseId, l.date, type, montant, l.piece, l.libelle);
+    if (existants[fp]) { nDoublons++; doublonsDetail.push({ ligneNum: valides[i].ligneNum, brut: valides[i].brut }); continue; }
+    existants[fp] = true;
+
     var prefix = type === 'entree' ? 'BE' : 'BS';
     var dateStr = l.date.replace(/-/g,'');
     var pfxNum = prefix + '-' + (c && c.compte ? c.compte : 'CSE') + '-' + dateStr + '-';
-    var maxN = 0;
-    (DATA.caisse_mouvements||[]).concat(lot).forEach(function(m){
-      if (m && m.caisse_id===caisseId && m.type===type && m.numero && m.numero.indexOf(pfxNum)===0) {
-        var n = parseInt(m.numero.slice(pfxNum.length), 10);
-        if (!isNaN(n) && n > maxN) maxN = n;
-      }
-    });
+    var maxN = maxParPrefixe[pfxNum] || 0;
     var numero = pfxNum + _caissePad3(maxN + 1);
+    maxParPrefixe[pfxNum] = maxN + 1;
+
     var mvt = {
       id: uid(), session_id: session.id, caisse_id: caisseId,
       date: l.date + 'T' + new Date().toISOString().slice(11,19), numero: numero,
       type: type, montant: montant, motif: l.libelle, beneficiaire: l.libelle,
       piece_ref: l.piece, statut: 'a_ventiler', compte_ventile: null, ecriture_id: null,
       ventile_par: null, ventile_le: null,
+      compte_suggere: _caisseRuleMatch(l.libelle) || null,
       created_by: user + ' (import CSV)', created_at: new Date().toISOString()
     };
-    lot.push(mvt);
     DATA.caisse_mouvements.push(mvt);
     await dbPut('caisse_mouvements', mvt);
     if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', mvt);
+    if (mvt.compte_suggere) nSuggeres++;
     nCrees++;
   }
   closeModal('modal-caisse-import');
-  toast('✅ ' + nCrees + ' mouvement(s) importé(s).', 'success');
+  window._cimDernierDoublons = doublonsDetail;
+  toast('✅ ' + nCrees + ' mouvement(s) importé(s).' + (nSuggeres ? ' · 💡 ' + nSuggeres + ' compte(s) déjà pré-suggéré(s) (ventilation en un clic).' : '') + (nDoublons ? ' · ⏭️ ' + nDoublons + ' déjà présent(s), ignoré(s).' : ''), 'success');
+  if (nDoublons) {
+    setTimeout(function(){
+      if (confirm(nDoublons + ' ligne(s) ignorée(s) car déjà importées. Télécharger le rapport détaillé ?')) caisseImportCSVRapport();
+    }, 300);
+  }
   caisseRenderListe();
-  if (typeof caisseRenderDashboard === 'function') caisseRenderDashboard();
-  if (typeof caisseRenderVentilation === 'function') caisseRenderVentilation();
-  if (CAISSE_UI.brouillardCaisseId === caisseId) caisseAfficherBrouillard(caisseId);
+  setTimeout(function(){ if (typeof caisseRenderDashboard === 'function') caisseRenderDashboard(); }, 0);
+  setTimeout(function(){ if (typeof caisseRenderVentilation === 'function') caisseRenderVentilation(); }, 0);
+  setTimeout(function(){ if (CAISSE_UI.brouillardCaisseId === caisseId) caisseAfficherBrouillard(caisseId); }, 0);
+}
+
+/* ── Audit & suppression des doublons de mouvements de caisse ─────────── */
+var _cadGroupes = [];
+function caisseAuditDoublonsModal() {
+  var groupes = {};
+  (DATA.caisse_mouvements||[]).forEach(function(m){
+    var fp = _caisseFingerprint(m.caisse_id, m.date, m.type, m.montant, m.piece_ref, m.motif);
+    (groupes[fp] = groupes[fp] || []).push(m);
+  });
+  _cadGroupes = Object.keys(groupes).map(function(fp){ return groupes[fp]; })
+    .filter(function(g){ return g.length > 1; })
+    .map(function(g){ return g.slice().sort(function(a,b){ return (a.created_at||'').localeCompare(b.created_at||''); }); });
+
+  var totalDoublons = _cadGroupes.reduce(function(s,g){ return s + (g.length - 1); }, 0);
+  document.getElementById('cad-stats').textContent = _cadGroupes.length
+    ? '⚠️ ' + _cadGroupes.length + ' groupe(s) de doublons · ' + totalDoublons + ' enregistrement(s) redondant(s) à supprimer'
+    : '✅ Aucun doublon détecté.';
+
+  var tbl = document.getElementById('cad-table');
+  if (!_cadGroupes.length) { tbl.innerHTML = ''; }
+  else {
+    tbl.innerHTML = '<tr style="background:var(--bord2);"><th style="padding:6px;"></th><th style="padding:6px;text-align:left;">Caisse</th><th style="padding:6px;text-align:left;">Date</th><th style="padding:6px;text-align:left;">N° bon</th><th style="padding:6px;text-align:left;">Motif</th><th style="padding:6px;text-align:right;">Montant</th><th style="padding:6px;text-align:left;">Statut</th><th style="padding:6px;text-align:left;">Créé le</th></tr>'
+      + _cadGroupes.map(function(g, gi){
+          var c = (DATA.caisses||[]).find(function(x){ return x.id===g[0].caisse_id; });
+          return g.map(function(m, mi){
+            var ref = mi === 0;
+            return '<tr style="'+(ref?'':'background:rgba(220,38,38,0.10);')+'border-top:'+(mi===0?'2px solid var(--bord)':'none')+';">'
+              + '<td style="padding:6px;text-align:center;">' + (ref ? '<span title="Référence conservée" style="color:var(--vert);">★</span>' : '<input type="checkbox" checked data-mvt-id="'+m.id+'" onchange="caisseAuditDoublonsToggleBtn()">') + '</td>'
+              + '<td style="padding:6px;">' + escHtml(c?c.nom:'') + '</td>'
+              + '<td style="padding:6px;">' + escHtml((m.date||'').slice(0,10)) + '</td>'
+              + '<td style="padding:6px;">' + escHtml(m.numero||'') + '</td>'
+              + '<td style="padding:6px;">' + escHtml((m.motif||'').slice(0,50)) + '</td>'
+              + '<td style="padding:6px;text-align:right;">' + fmtF(m.montant) + '</td>'
+              + '<td style="padding:6px;">' + (m.statut==='ventile'?'✓ ventilé':'⏳ à ventiler') + '</td>'
+              + '<td style="padding:6px;font-size:10px;">' + escHtml((m.created_at||'').slice(0,16).replace('T',' ')) + '</td>'
+              + '</tr>';
+          }).join('');
+        }).join('');
+  }
+  document.getElementById('cad-btn-supprimer').disabled = !totalDoublons;
+  openModal('modal-caisse-audit-doublons');
+}
+function caisseAuditDoublonsToggleBtn() {
+  var n = document.querySelectorAll('#cad-table input[type="checkbox"][data-mvt-id]:checked').length;
+  document.getElementById('cad-btn-supprimer').disabled = !n;
+}
+async function caisseAuditDoublonsSupprimer() {
+  if (!caisseRoleAdminLike()) { toast('Droit refusé.','error'); return; }
+  var cases = document.querySelectorAll('#cad-table input[type="checkbox"][data-mvt-id]:checked');
+  if (!cases.length) return;
+  if (!confirm('Supprimer définitivement ' + cases.length + ' mouvement(s) en double ? Les écritures comptables déjà générées pour ces bons seront supprimées avec eux.')) return;
+  var nSupprimes = 0, nBloques = 0;
+  for (var i=0; i<cases.length; i++) {
+    var id = cases[i].getAttribute('data-mvt-id');
+    var m = (DATA.caisse_mouvements||[]).find(function(x){ return x.id === id; });
+    if (!m) continue;
+    if (await _caisseDelMvt(m) === false) { nBloques++; continue; }
+    nSupprimes++;
+  }
+  toast('🗑️ ' + nSupprimes + ' doublon(s) supprimé(s).' + (nBloques ? ' · 🔒 ' + nBloques + ' bloqué(s) (exercice clôturé).' : ''), 'success');
+  closeModal('modal-caisse-audit-doublons');
+  caisseRenderListe();
+  setTimeout(function(){ if (typeof caisseRenderDashboard === 'function') caisseRenderDashboard(); }, 0);
+  setTimeout(function(){ if (typeof caisseRenderVentilation === 'function') caisseRenderVentilation(); }, 0);
+  setTimeout(function(){ if (CAISSE_UI.brouillardCaisseId) caisseAfficherBrouillard(CAISSE_UI.brouillardCaisseId); }, 0);
 }
 
 async function caisseLoadDocIndex(){
@@ -94094,11 +94224,17 @@ async function caisseCloturer() {
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_sessions', session);
   closeModal('modal-caisse-cloturer');
   toast('🔒 Caisse clôturée. Solde réel : ' + fmtF(fondReel) + ' FCFA.', 'success');
+
+  /* [Perf] Les 4 rendus (Liste/Ventilation/Écarts/Dashboard) rescannent chacun
+     tout l'historique des mouvements. Exécutés en un seul bloc synchrone, ils
+     pouvaient geler le thread sur un gros volume (import CSV massif, doublons
+     accumulés). setTimeout(0) entre chacun rend la main au navigateur — la
+     clôture reste instantanée à l'écran, le reste se peuple juste derrière. */
   caisseRenderListe();
-  if (typeof caisseRenderVentilation === 'function') caisseRenderVentilation();
-  if (typeof caisseRenderEcarts === 'function') caisseRenderEcarts();
-  if (typeof caisseRenderDashboard === 'function') caisseRenderDashboard();
-  if (CAISSE_UI.brouillardCaisseId === caisseId) caisseAfficherBrouillard(caisseId);
+  setTimeout(function(){ if (typeof caisseRenderVentilation === 'function') caisseRenderVentilation(); }, 0);
+  setTimeout(function(){ if (typeof caisseRenderEcarts === 'function') caisseRenderEcarts(); }, 0);
+  setTimeout(function(){ if (typeof caisseRenderDashboard === 'function') caisseRenderDashboard(); }, 0);
+  setTimeout(function(){ if (CAISSE_UI.brouillardCaisseId === caisseId) caisseAfficherBrouillard(caisseId); }, 0);
 
   var c = (DATA.caisses || []).find(function(x){ return x.id === caisseId; });
   if (c && c.envoi_auto_journalier !== false) {
@@ -94594,6 +94730,7 @@ function caisseRenderVentilation() {
     + divisionSelectHtml
     + '<button class="btn btn-secondary btn-sm" onclick="caisseOpenVentilationConfig()">⚙️ Configurer les règles</button>'
     + '<button class="btn btn-secondary btn-sm" onclick="caisseVentilationAuto()">⚡ Ventilation automatique</button>'
+    + '<button class="btn btn-secondary btn-sm" onclick="caisseGenererReglesHistorique()">🧠 Générer règles depuis l\'historique</button>'
     + '</div>'
     + '</div>'
     + '<div style="font-size:11px;color:var(--blanc-dim);margin-bottom:10px;">Seuls les mouvements des caisses <strong>clôturées</strong> apparaissent ici, après vérification.'
@@ -94603,7 +94740,12 @@ function caisseRenderVentilation() {
   if (!enAttente.length) {
     html += '<div style="padding:16px;text-align:center;color:var(--blanc-dim);">Aucun mouvement en attente de ventilation.</div>';
   } else {
-    var _cvDatalistHtml = _caissePrincipalDatalistHtml(); /* [FIX] calculé UNE fois — était recalculé (tri+HTML du plan comptable entier) à chaque ligne, bloquant le thread dès que « enAttente » dépassait quelques dizaines de lignes (ex: import CSV en masse). */
+    /* [FIX] Un seul <datalist> partagé par toutes les lignes (référencé via
+       list=) au lieu d'un <datalist> dupliqué par ligne : avec un gros lot
+       (ex: import CSV), ça évitait de multiplier le plan comptable entier en
+       DOM (n lignes × ~300+ <option> = dizaines de milliers de nœuds), seule
+       vraie source de lenteur restante après le calcul HTML mutualisé. */
+    html += '<datalist id="cv-principal-list-shared">' + _caissePrincipalDatalistHtml() + '</datalist>';
     html += '<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Date</th><th>Caisse</th>' + ((DATA.divisions||[]).length ? '<th>Division</th>' : '') + '<th>N°</th><th>Type</th><th>Motif</th><th style="text-align:right;">Montant</th><th>Compte de contrepartie</th><th></th></tr></thead><tbody>';
     enAttente.forEach(function(m) {
       var c = (DATA.caisses || []).find(function(x){ return x.id === m.caisse_id; });
@@ -94616,8 +94758,8 @@ function caisseRenderVentilation() {
         + '<td>' + escHtml(m.motif||'') + (m.beneficiaire ? ' — ' + escHtml(m.beneficiaire) : '') + '</td>'
         + '<td style="text-align:right;">' + fmtF(m.montant) + '</td>'
         + '<td style="min-width:250px;">'
-        + '<input type="text" class="form-control" id="cv-principal-' + m.id + '" list="cv-principal-list-' + m.id + '" placeholder="Compte principal (n°)" autocomplete="off" style="margin-bottom:4px;" oninput="caisseAppliquerPrincipal(\'cv-principal-' + m.id + '\',\'cv-compte-' + m.id + '\',\'cv-info-' + m.id + '\')">'
-        + '<datalist id="cv-principal-list-' + m.id + '">' + _cvDatalistHtml + '</datalist>'
+        + (m.compte_suggere ? '<div style="font-size:10px;color:var(--or,#B87333);margin-bottom:2px;">💡 Suggestion auto : ' + escHtml(m.compte_suggere) + '</div>' : '')
+        + '<input type="text" class="form-control" id="cv-principal-' + m.id + '" list="cv-principal-list-shared" placeholder="Compte principal (n°)" autocomplete="off" style="margin-bottom:4px;" oninput="caisseAppliquerPrincipal(\'cv-principal-' + m.id + '\',\'cv-compte-' + m.id + '\',\'cv-info-' + m.id + '\')">'
         + '<select class="form-control" id="cv-compte-' + m.id + '" style="display:none;margin-bottom:2px;" onchange="var i=document.getElementById(\'cv-info-' + m.id + '\'); if(i) i.textContent = this.value ? (\'Sous-compte retenu : \' + this.options[this.selectedIndex].text) : \'\';"></select>'
         + '<div id="cv-info-' + m.id + '" style="font-size:10px;color:var(--blanc-dim);"></div>'
         + '</td>'
@@ -94630,6 +94772,109 @@ function caisseRenderVentilation() {
   }
   html += '</div>';
   box.innerHTML = html;
+  /* Pré-remplissage des suggestions auto : posé après coup (et non en attribut
+     value=) pour réutiliser la même résolution principal→sous-compte que la
+     saisie manuelle (caisseAppliquerPrincipal), y compris pour les comptes
+     ayant des sous-comptes SYSCOHADA. */
+  enAttente.forEach(function(m) {
+    if (!m.compte_suggere) return;
+    var inp = document.getElementById('cv-principal-' + m.id);
+    if (inp) { inp.value = m.compte_suggere; caisseAppliquerPrincipal('cv-principal-' + m.id, 'cv-compte-' + m.id, 'cv-info-' + m.id); }
+  });
+}
+
+/* ── Helpers ventilation intelligente (règles auto, suggestion, apprentissage) ── */
+function _caisseRuleMatch(motif) {
+  var map = (DATA.params && DATA.params.caisse_ventilation_map) || {};
+  var motifLc = (motif || '').toLowerCase();
+  var cles = Object.keys(map);
+  for (var j = 0; j < cles.length; j++) {
+    if (motifLc.indexOf(cles[j].toLowerCase()) >= 0) return map[cles[j]];
+  }
+  return null;
+}
+/* Suggère un mot-clé stable pour une règle : la partie après « : » (nature de
+   la dépense/recette — « avance salaire », « carburant », « appro caisse »…)
+   plutôt que le nom du bénéficiaire, qui varie d'une ligne à l'autre. */
+function _caisseSuggestKeyword(motif) {
+  var m = String(motif || '');
+  var apres = m.indexOf(':') >= 0 ? m.split(':').slice(1).join(':') : m;
+  return apres.trim().toLowerCase().replace(/[.,;].*$/, '').split(/\s+/).slice(0, 3).join(' ').trim();
+}
+async function _caisseAjouterRegle(motCle, compte) {
+  if (!motCle || !compte) return false;
+  DATA.params = DATA.params || {};
+  DATA.params.caisse_ventilation_map = DATA.params.caisse_ventilation_map || {};
+  DATA.params.caisse_ventilation_map[motCle.trim().toLowerCase()] = compte;
+  DATA.params.id = 'main';
+  await dbPut('params', DATA.params);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_params', DATA.params);
+  return true;
+}
+
+/* ── Génération rétroactive de règles depuis l'historique déjà ventilé ──
+   Regroupe les mouvements déjà ventilés MANUELLEMENT par mot-clé suggéré
+   (_caisseSuggestKeyword), retient le compte majoritaire par groupe, et ne
+   propose que les mots-clés absents de la config actuelle — évite de
+   proposer une règle déjà couverte ou un mot-clé trop bruité (< 2 occurrences,
+   confiance calculée sur le compte majoritaire). */
+var _crhSuggestions = [];
+function caisseGenererReglesHistorique() {
+  if (!caisseRoleAdminLike()) { toast('Accès réservé au comptable / manager / admin.', 'error'); return; }
+  var map = (DATA.params && DATA.params.caisse_ventilation_map) || {};
+  var stats = {};
+  (DATA.caisse_mouvements || []).forEach(function(m) {
+    if (m.statut !== 'ventile' || !m.compte_ventile) return;
+    var kw = _caisseSuggestKeyword(m.motif);
+    if (!kw || map[kw]) return;
+    stats[kw] = stats[kw] || {};
+    stats[kw][m.compte_ventile] = (stats[kw][m.compte_ventile] || 0) + 1;
+  });
+  _crhSuggestions = Object.keys(stats).map(function(kw) {
+    var comptes = stats[kw];
+    var best = Object.keys(comptes).sort(function(a,b){ return comptes[b]-comptes[a]; })[0];
+    var total = Object.keys(comptes).reduce(function(s,cc){ return s+comptes[cc]; }, 0);
+    return { motCle: kw, compte: best, occurrences: comptes[best], total: total, confiance: comptes[best]/total };
+  }).filter(function(s){ return s.occurrences >= 2; })
+    .sort(function(a,b){ return b.occurrences - a.occurrences; })
+    .slice(0, 80);
+
+  var box = document.getElementById('crh-stats');
+  var tbl = document.getElementById('crh-table');
+  if (!_crhSuggestions.length) {
+    box.textContent = 'Aucune règle exploitable trouvée (historique insuffisant ou déjà couvert par les règles existantes).';
+    tbl.innerHTML = '';
+    document.getElementById('crh-btn-appliquer').disabled = true;
+  } else {
+    box.textContent = _crhSuggestions.length + ' règle(s) suggérée(s) — décochez celles à écarter avant d\'ajouter.';
+    tbl.innerHTML = '<tr style="background:var(--bord2);"><th style="padding:6px;"></th><th style="padding:6px;text-align:left;">Mot-clé</th><th style="padding:6px;text-align:left;">Compte proposé</th><th style="padding:6px;text-align:right;">Occurrences</th><th style="padding:6px;text-align:right;">Confiance</th></tr>'
+      + _crhSuggestions.map(function(s, idx) {
+          var cpt = (APP.planComptable || []).find(function(c){ return c.code === s.compte; });
+          var conf = Math.round(s.confiance * 100);
+          return '<tr>'
+            + '<td style="padding:6px;text-align:center;"><input type="checkbox" data-idx="' + idx + '" ' + (conf >= 70 ? 'checked' : '') + '></td>'
+            + '<td style="padding:6px;">' + escHtml(s.motCle) + '</td>'
+            + '<td style="padding:6px;">' + escHtml(s.compte) + (cpt ? ' — ' + escHtml(cpt.label) : '') + '</td>'
+            + '<td style="padding:6px;text-align:right;">' + s.occurrences + ' / ' + s.total + '</td>'
+            + '<td style="padding:6px;text-align:right;color:' + (conf>=70?'var(--vert)':'var(--or,#B87333)') + ';">' + conf + '%</td>'
+            + '</tr>';
+        }).join('');
+    document.getElementById('crh-btn-appliquer').disabled = false;
+  }
+  openModal('modal-caisse-regles-historique');
+}
+async function caisseGenererReglesHistoriqueAppliquer() {
+  var cases = document.querySelectorAll('#crh-table input[type="checkbox"]:checked');
+  var n = 0;
+  for (var i=0; i<cases.length; i++) {
+    var idx = parseInt(cases[i].getAttribute('data-idx'), 10);
+    var s = _crhSuggestions[idx];
+    if (!s) continue;
+    if (await _caisseAjouterRegle(s.motCle, s.compte)) n++;
+  }
+  toast('✅ ' + n + ' règle(s) ajoutée(s) à la ventilation automatique.', 'success');
+  closeModal('modal-caisse-regles-historique');
+  caisseRenderVentilation();
 }
 
 async function genererEcritureCaisseMouvement(mvt, compteContrepartie) {
@@ -94695,11 +94940,26 @@ async function caisseVentilerLigne(mvtId) {
   if (!compte) { toast('Sélectionnez un compte de contrepartie.', 'error'); return; }
   var mvt = (DATA.caisse_mouvements || []).find(function(m){ return m.id === mvtId; });
   if (!mvt) return;
+  var couvertParRegle = !!_caisseRuleMatch(mvt.motif); /* avant ventilation : ce motif a-t-il déjà une règle ? */
   var _ecr = await genererEcritureCaisseMouvement(mvt, compte);
   if (!_ecr) { caisseRenderVentilation(); return; }   /* échec déjà signalé */
   toast('✅ Écriture générée et mouvement ventilé.', 'success');
   caisseRenderVentilation();
   if (CAISSE_UI.brouillardSessionId === mvt.session_id) caisseRenderBrouillardSession(mvt.session_id);
+  /* [Apprentissage] Motif non couvert par une règle existante → on vient de
+     l'affecter manuellement : proposer d'enregistrer ce choix comme règle
+     pour que les prochains mouvements similaires se ventilent tout seuls. */
+  if (!couvertParRegle) {
+    setTimeout(function(){
+      var suggestion = _caisseSuggestKeyword(mvt.motif);
+      var kw = prompt('Créer une règle de ventilation automatique pour les prochains mouvements similaires ?\nMot-clé (laisser vide pour ignorer) :', suggestion);
+      if (kw && kw.trim()) {
+        _caisseAjouterRegle(kw.trim(), compte).then(function(){
+          toast('⚡ Règle ajoutée : « ' + kw.trim() + ' » → ' + compte, 'success');
+        });
+      }
+    }, 300);
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -94903,8 +95163,7 @@ async function caisseDeleteVentilationRule(mot) {
    Les mouvements sans correspondance restent en attente de ventilation manuelle. */
 async function caisseVentilationAuto() {
   var map = (DATA.params && DATA.params.caisse_ventilation_map) || {};
-  var cles = Object.keys(map);
-  if (!cles.length) { toast('Aucune règle de ventilation automatique configurée (bouton ⚙️ Configurer les règles).', 'error'); return; }
+  if (!Object.keys(map).length) { toast('Aucune règle de ventilation automatique configurée (bouton ⚙️ Configurer les règles).', 'error'); return; }
 
   var caissesIdsFiltre = (DATA.divisions || []).length ? _cvCaissesDeDivision(CAISSE_VENT.division).map(function(c){ return c.id; }) : null;
 
@@ -94919,11 +95178,7 @@ async function caisseVentilationAuto() {
   var appliques = 0;
   for (var i = 0; i < enAttente.length; i++) {
     var m = enAttente[i];
-    var motifLc = (m.motif || '').toLowerCase();
-    var compteTrouve = null;
-    for (var j = 0; j < cles.length; j++) {
-      if (motifLc.indexOf(cles[j].toLowerCase()) >= 0) { compteTrouve = map[cles[j]]; break; }
-    }
+    var compteTrouve = _caisseRuleMatch(m.motif);
     if (compteTrouve) { if (await genererEcritureCaisseMouvement(m, compteTrouve)) appliques++; }
   }
   toast(appliques ? ('⚡ ' + appliques + ' mouvement(s) ventilé(s) automatiquement. ' + (enAttente.length - appliques) + ' restent à ventiler manuellement.') : 'Aucune correspondance trouvée — ventilation manuelle requise.', appliques ? 'success' : 'info');
@@ -97078,6 +97333,48 @@ goTo = function(page) {
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-caisse-import')">Annuler</button>
       <button class="btn btn-primary" id="cim-btn-confirmer" onclick="caisseImportCSVConfirmer()" disabled>✅ Importer les lignes valides</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Audit & suppression des doublons de mouvements de caisse -->
+<div class="modal-overlay" id="modal-caisse-audit-doublons">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3>🔍 Audit doublons — mouvements de caisse</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-caisse-audit-doublons')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:11px;color:var(--blanc-dim);margin-bottom:10px;">Détection par empreinte : même caisse + même date + même type (entrée/sortie) + même montant + même n° de pièce/reçu. Un groupe = plusieurs bons identiques. Le premier enregistré (référence) est conservé par défaut ; coche les autres à supprimer.</div>
+      <div id="cad-stats" style="font-size:12px;margin-bottom:10px;font-weight:600;"></div>
+      <div style="overflow-x:auto;max-height:420px;overflow-y:auto;border:1px solid var(--bord);border-radius:8px;">
+        <table id="cad-table" style="width:100%;font-size:11px;border-collapse:collapse;"></table>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-caisse-audit-doublons')">Fermer</button>
+      <button class="btn btn-danger" id="cad-btn-supprimer" onclick="caisseAuditDoublonsSupprimer()" disabled>🗑️ Supprimer les doublons cochés</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Génération rétroactive de règles de ventilation depuis l'historique -->
+<div class="modal-overlay" id="modal-caisse-regles-historique">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3>🧠 Règles suggérées depuis l'historique ventilé</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-caisse-regles-historique')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:11px;color:var(--blanc-dim);margin-bottom:10px;">Analyse des mouvements déjà ventilés manuellement : regroupe par nature de dépense/recette (mot-clé après « : » dans le motif), retient le compte le plus fréquent. Confiance ≥ 70% cochée par défaut.</div>
+      <div id="crh-stats" style="font-size:12px;margin-bottom:10px;font-weight:600;"></div>
+      <div style="overflow-x:auto;max-height:420px;overflow-y:auto;border:1px solid var(--bord);border-radius:8px;">
+        <table id="crh-table" style="width:100%;font-size:11px;border-collapse:collapse;"></table>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-caisse-regles-historique')">Fermer</button>
+      <button class="btn btn-primary" id="crh-btn-appliquer" onclick="caisseGenererReglesHistoriqueAppliquer()" disabled>✅ Ajouter les règles cochées</button>
     </div>
   </div>
 </div>
