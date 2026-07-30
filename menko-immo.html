@@ -34434,6 +34434,33 @@ function ckActions() {
     boutons: [ { lib:'👥 Module RH', fn:"goTo('rh-employes')" } ]
   });
 
+  /* R12 — Échéance déclarative du 15 : ITS, FDFP et CNPS du mois précédent.
+     Une déclaration en retard coûte des pénalités calculées sur le montant dû,
+     donc bien plus que le temps de la faire. On alerte à partir du 8 pour
+     laisser une semaine ouvrée. */
+  (function(){
+    var jour = now.getDate();
+    if (jour < 8 || jour > 20) return;
+    var prev = new Date(now.getFullYear(), now.getMonth()-1, 1);
+    var moisDecl = prev.getFullYear() + '-' + String(prev.getMonth()+1).padStart(2,'0');
+    var nbBull = (DATA.bulletins||[]).filter(function(b){ return b.mois === moisDecl; }).length;
+    if (!nbBull) return;   /* pas de paie sur le mois : rien à déclarer */
+    var restant = 15 - jour;
+    push({
+      aid: 'decl15_' + moisDecl,
+      prio: restant <= 2 ? 95 : (restant <= 5 ? 75 : 58),
+      urgent: restant <= 2, icone: '🏛️',
+      titre: 'Déclarer ITS · FDFP · CNPS de ' + moisDecl + (restant > 0 ? ' — J-' + restant : ' — ÉCHÉANCE DÉPASSÉE'),
+      detail: nbBull + ' bulletin(s) sur le mois. Échéance légale le 15'
+        + (restant < 0 ? '. Des pénalités courent déjà.' : '. Le FDFP et l\'ITS patronal se déclarent à la DGI, pas à la CNPS.'),
+      boutons: [
+        { lib:'📋 Montants à reporter', fn:"goTo('rh-declarations')" },
+        { lib:'🏛️ e-Impôts', href:'https://e-impots.gouv.ci/' },
+        { lib:'🏥 e-CNPS', href:'https://www.cnps.ci/' }
+      ]
+    });
+  })();
+
   /* R11 — Échéances de cession qui tombent dans les 7 prochains jours :
      appeler AVANT l'échéance coûte moins cher que relancer après. */
   (DATA.cessions_foncieres||[]).forEach(function(c){
@@ -46370,34 +46397,156 @@ function renderTeledeclaration() {
   if (lbl) lbl.textContent = new Date(mois + '-01').toLocaleDateString('fr-FR', { month:'long', year:'numeric' });
 
   var actifs = (DATA.employes || []).filter(function(e){ return empEstActif(e); });
-  var totITS = 0, totCNPSSal = 0, totCNPSPat = 0, totBrut = 0;
+
+  /* [FIX CRITIQUE] La version précédente sommait r.cnpsPat et l'affichait sous
+     « CNPS patronal », puis dans « Total CNPS à verser ». Or calcPaieCI()
+     renvoie dans cnpsPat la TOTALITÉ des charges patronales : CNPS retraite,
+     AT, PF, MAIS AUSSI l'ITS patronal (1,2 %), le FDFP (TA 0,4 % + FC 0,6 % +
+     régul 0,6 %) et la CMU patronale.
+
+     Conséquence sur la déclaration réelle : le montant reporté sur e-CNPS était
+     surévalué de tout le FDFP, de l'ITS patronal et de la CMU — et
+     symétriquement, le FDFP n'apparaissait NULLE PART dans la télédéclaration,
+     donc n'était jamais déclaré à la DGI alors qu'il est mensuel et exigible.
+     Trop payé d'un côté, omission de l'autre : les deux sont sanctionnables.
+
+     On ventile désormais par ORGANISME COLLECTEUR, seule maille qui compte pour
+     remplir un formulaire :
+       · e-CNPS  → retraite (sal. + pat.), AT, PF
+       · e-Impôts (DGI) → ITS salarié, ITS patronal, FDFP TA/FC/régul
+       · CNAM    → CMU salarié + patronal (organisme distinct des deux autres) */
+  var T = { brut:0, brutImp:0,
+            itsSal:0, itsPat:0,
+            cnpsRetSal:0, cnpsRetPat:0, cnpsAT:0, cnpsPF:0,
+            fdfpTA:0, fdfpFC:0, fdfpRegul:0,
+            cmuSal:0, cmuPat:0 };
   actifs.forEach(function(e){
     var bull = (DATA.bulletins || []).find(function(b){ return b.employe_id === e.id && b.mois === mois; });
-    var r = calcPaieEmploye(e, bull);
-    totITS += r.its; totCNPSSal += r.cnpsSal; totCNPSPat += r.cnpsPat; totBrut += r.brut;
+    var r = calcPaieEmploye(e, bull) || {};
+    var N = function(v){ return parseFloat(v) || 0; };
+    T.brut       += N(r.brut || r.brutTotal);
+    T.brutImp    += N(r.brutImposable != null ? r.brutImposable : (r.brut || r.brutTotal));
+    T.itsSal     += N(r.itsNet != null ? r.itsNet : r.its);
+    T.itsPat     += N(r.itsPat);
+    T.cnpsRetSal += N(r.cnpsRetraiteSal != null ? r.cnpsRetraiteSal : r.cnpsSal);
+    T.cnpsRetPat += N(r.cnpsRetraitePat);
+    T.cnpsAT     += N(r.cnpsAT);
+    T.cnpsPF     += N(r.cnpsPF);
+    T.fdfpTA     += N(r.fdfpTA);
+    T.fdfpFC     += N(r.fdfpFC);
+    T.fdfpRegul  += N(r.fdfpRegul);
+    T.cmuSal     += N(r.cmuSal);
+    T.cmuPat     += N(r.cmuPat);
   });
-  var cnpsTotal = totCNPSSal + totCNPSPat;
 
-  /* TVA collectée sur factures FNE du mois (exigible à l'encaissement — indicatif) */
-  var tvaFactures = (DATA.factures_client || []).filter(function(f){ return (f.date||'').slice(0,7) === mois; })
-    .reduce(function(s,f){ return s + (f.tva||0); }, 0);
+  /* Repli : si les composantes détaillées sont absentes (bulletin ancien
+     format), on retombe sur l'agrégat en le signalant, plutôt que de présenter
+     une ventilation fausse comme si elle était exacte. */
+  var _detailManquant = (T.cnpsRetPat + T.cnpsAT + T.cnpsPF + T.fdfpTA + T.fdfpFC) === 0;
+  if (_detailManquant) {
+    actifs.forEach(function(e){
+      var bull = (DATA.bulletins || []).find(function(b){ return b.employe_id === e.id && b.mois === mois; });
+      var r = calcPaieEmploye(e, bull) || {};
+      T.cnpsRetPat += (parseFloat(r.cnpsPat) || 0);   /* agrégat non ventilable */
+    });
+  }
+
+  var totITS      = T.itsSal;
+  var totBrut     = T.brut;
+  var cnpsAVerser = T.cnpsRetSal + T.cnpsRetPat + T.cnpsAT + T.cnpsPF;
+  var fdfpTotal   = T.fdfpTA + T.fdfpFC + T.fdfpRegul;
+  var dgiSalaires = T.itsSal + T.itsPat + fdfpTotal;
+  var cmuTotal    = T.cmuSal + T.cmuPat;
+
+  /* TVA : la déclaration ivoirienne porte sur la TVA NETTE à payer, soit
+     collectée − déductible (+ report de crédit antérieur). N'afficher que la
+     collectée conduisait à surestimer le décaissement, parfois massivement sur
+     un mois d'achats importants.
+     Source : les écritures du mois plutôt que les factures — c'est la
+     comptabilité qui fait foi devant la DGI, et elle capte aussi la TVA des
+     opérations saisies hors module facturation. */
+  var _cd = (DATA.params && DATA.params.comptes_defaut) || {};
+  var _cptCol = String(_cd.tva_collectee || '4431');
+  var _cptDed = [String(_cd.tva_deductible || '4452'), String(_cd.tva_deductible_travaux || '4451')];
+  var tvaCollectee = 0, tvaDeductible = 0;
+  (DATA.ecritures || []).forEach(function(ec){
+    if ((ec.date || '').slice(0,7) !== mois) return;
+    (typeof ecrLignes === 'function' ? ecrLignes(ec) : (ec.lignes || [])).forEach(function(l){
+      var cpt = String(l.compte || ''), m = parseFloat(l.montant) || 0;
+      /* TVA collectée : compte de dette, elle vit au CRÉDIT ; un débit la
+         diminue (annulation, avoir) et doit donc être retranché. */
+      if (cpt.indexOf(_cptCol) === 0) tvaCollectee += (l.sens === 'C' ? m : -m);
+      /* TVA déductible : créance, au DÉBIT. Symétrie inverse. */
+      if (_cptDed.some(function(p){ return p && cpt.indexOf(p) === 0; })) tvaDeductible += (l.sens === 'D' ? m : -m);
+    });
+  });
+  tvaCollectee = Math.max(0, Math.round(tvaCollectee));
+  tvaDeductible = Math.max(0, Math.round(tvaDeductible));
+  var tvaNette = tvaCollectee - tvaDeductible;   /* négatif = crédit reportable */
+
+  /* Conservé pour l'affichage de la base taxable indicative. */
+  var tvaFactures = tvaCollectee;
 
   var _tauxTvaDecl = ((DATA.params && DATA.params.comptes_defaut && DATA.params.comptes_defaut.terrain_taux_tva != null) ? DATA.params.comptes_defaut.terrain_taux_tva : 18) / 100;
   var box = document.getElementById('teledecl-recap');
   if (!box) return;
   var line = function(portail, impot, base, montant, echeance, col) {
-    return '<tr><td><strong>' + portail + '</strong></td><td>' + impot + '</td><td style="text-align:right;">' + fmtF(base) + '</td>'
+    /* base peut être un effectif ('3 pers.') pour la CMU, assise par personne et
+       non sur une masse : on ne formate en monnaie que les nombres. */
+    var baseTxt = (typeof base === 'number') ? (base ? fmtF(base) : '—') : String(base);
+    return '<tr><td><strong>' + portail + '</strong></td><td>' + impot + '</td><td style="text-align:right;">' + baseTxt + '</td>'
       + '<td style="text-align:right;font-weight:700;color:' + col + ';">' + fmtF(montant) + ' FCFA</td><td style="font-size:11px;color:var(--blanc-dim);">' + echeance + '</td></tr>';
   };
+  var sep = function(titre, total, col) {
+    return '<tr style="background:rgba(184,115,51,0.07);"><td colspan="3" style="font-weight:800;padding:7px 4px;">' + titre + '</td>'
+      + '<td style="text-align:right;font-weight:800;color:' + col + ';">' + fmtF(total) + ' FCFA</td><td></td></tr>';
+  };
+
   box.innerHTML = '<div class="table-wrap"><table style="width:100%;font-size:12px;">'
-    + '<thead><tr><th>Portail</th><th>Impôt / Cotisation</th><th style="text-align:right;">Base</th><th style="text-align:right;">Montant</th><th>Échéance</th></tr></thead><tbody>'
-    + line('e-Impôts', 'ITS (salaires)', totBrut, totITS, 'le 15 du mois suivant', 'var(--rouge)')
-    + line('e-Impôts', 'TVA collectée', tvaFactures ? tvaFactures/_tauxTvaDecl : 0, tvaFactures, 'le 15 (à l\'encaissement)', 'var(--or)')
-    + line('e-CNPS', 'CNPS salarié', totBrut, totCNPSSal, 'le 15 du mois suivant', 'var(--rouge)')
-    + line('e-CNPS', 'CNPS patronal', totBrut, totCNPSPat, 'le 15 du mois suivant', 'var(--violet)')
-    + '<tr style="border-top:2px solid var(--bord);font-weight:800;"><td colspan="3">Total CNPS à verser</td><td style="text-align:right;color:var(--bleu);">' + fmtF(cnpsTotal) + ' FCFA</td><td></td></tr>'
+    + '<thead><tr><th>Organisme</th><th>Impôt / Cotisation</th><th style="text-align:right;">Base</th><th style="text-align:right;">Montant</th><th>Échéance</th></tr></thead><tbody>'
+
+    /* ── DGI (e-Impôts) ─────────────────────────────────────────────── */
+    + line('e-Impôts (DGI)', 'ITS — part salariale', T.brutImp, T.itsSal, 'le 15 du mois suivant', 'var(--rouge)')
+    + line('e-Impôts (DGI)', 'ITS — part patronale (1,2 %)', T.brutImp, T.itsPat, 'le 15 du mois suivant', 'var(--violet)')
+    + line('e-Impôts (DGI)', 'FDFP — taxe d\'apprentissage (0,4 %)', T.brutImp, T.fdfpTA, 'le 15 du mois suivant', 'var(--violet)')
+    + line('e-Impôts (DGI)', 'FDFP — formation continue (0,6 %)', T.brutImp, T.fdfpFC, 'le 15 du mois suivant', 'var(--violet)')
+    + (T.fdfpRegul ? line('e-Impôts (DGI)', 'FDFP — régularisation (0,6 %)', T.brutImp, T.fdfpRegul, 'annuel — régularisation', 'var(--violet)') : '')
+    + sep('▸ Total DGI sur salaires (ITS + FDFP)', dgiSalaires, 'var(--rouge)')
+
+    /* ── TVA ────────────────────────────────────────────────────────── */
+    + line('e-Impôts (DGI)', 'TVA collectée (compte ' + _cptCol + ')', tvaCollectee ? Math.round(tvaCollectee/_tauxTvaDecl) : 0, tvaCollectee, 'le 15 (exigibilité)', 'var(--or)')
+    + line('e-Impôts (DGI)', 'TVA déductible (à déduire)', 0, -tvaDeductible, 'sur achats du mois', 'var(--vert)')
+    + sep(tvaNette >= 0 ? '▸ TVA nette à payer' : '▸ Crédit de TVA reportable', Math.abs(tvaNette), tvaNette >= 0 ? 'var(--rouge)' : 'var(--vert)')
+
+    /* ── CNPS ───────────────────────────────────────────────────────── */
+    + line('e-CNPS', 'Retraite — part salariale (6,3 %)', T.brut, T.cnpsRetSal, 'le 15 du mois suivant', 'var(--rouge)')
+    + line('e-CNPS', 'Retraite — part patronale (7,7 %)', T.brut, T.cnpsRetPat, 'le 15 du mois suivant', 'var(--violet)')
+    + line('e-CNPS', 'Accidents du travail', Math.min(T.brut, PAIE_CI.cnps.plafondATPF * actifs.length), T.cnpsAT, 'le 15 du mois suivant', 'var(--violet)')
+    + line('e-CNPS', 'Prestations familiales (5,75 %)', Math.min(T.brut, PAIE_CI.cnps.plafondATPF * actifs.length), T.cnpsPF, 'le 15 du mois suivant', 'var(--violet)')
+    + sep('▸ Total CNPS à verser', cnpsAVerser, 'var(--bleu)')
+
+    /* ── CMU / CNAM ─────────────────────────────────────────────────── */
+    + (cmuTotal ? (
+        line('CNAM (CMU)', 'CMU — part salariale', actifs.length + ' pers.', T.cmuSal, 'mensuel', 'var(--rouge)')
+      + line('CNAM (CMU)', 'CMU — part patronale', actifs.length + ' pers.', T.cmuPat, 'mensuel', 'var(--violet)')
+      + sep('▸ Total CMU', cmuTotal, 'var(--or)')
+      ) : '')
+
     + '</tbody></table></div>'
-    + '<div style="font-size:11px;color:var(--blanc-dim);margin-top:8px;">Montants calculés depuis les bulletins du mois. Reporter sur les portails officiels. TVA indicative — vérifier exigibilité réelle (encaissement).</div>';
+
+    + (_detailManquant
+        ? '<div style="background:rgba(224,82,82,.10);border-left:3px solid var(--rouge);border-radius:6px;padding:10px 12px;margin-top:10px;font-size:11px;">'
+          + '⚠️ Les bulletins de ce mois ne fournissent pas le détail des charges patronales : le montant CNPS affiché contient encore l\'agrégat global '
+          + '(ITS patronal et FDFP inclus). <strong>Ne pas reporter tel quel sur e-CNPS.</strong> Régénérez les bulletins du mois pour obtenir la ventilation exacte.'
+          + '</div>'
+        : '')
+
+    + '<div style="font-size:11px;color:var(--blanc-dim);margin-top:10px;line-height:1.8;">'
+    + '<strong>Ventilation par organisme collecteur.</strong> Le FDFP et l\'ITS patronal se déclarent à la DGI, <em>pas</em> à la CNPS : les additionner aux cotisations sociales fait payer deux fois d\'un côté et omettre une déclaration de l\'autre.<br>'
+    + 'TVA calculée depuis les écritures du mois (comptes ' + _cptCol + ' au crédit, ' + _cptDed.filter(Boolean).join(' et ') + ' au débit)'
+    + (tvaNette < 0 ? ' — <strong>crédit de ' + fmtF(-tvaNette) + ' F à reporter sur le mois suivant</strong>, aucun versement à effectuer.' : '.')
+    + '<br>Rappel : la TVA sur prestations de services est exigible à l\'<strong>encaissement</strong> en Côte d\'Ivoire ; vérifiez que les écritures du mois reflètent bien les encaissements et non les seules facturations.'
+    + '</div>';
 }
 
 function loadDeclarations() {
