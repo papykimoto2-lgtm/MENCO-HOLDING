@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.35 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.36 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -44232,6 +44232,45 @@ function tfwBuild(p){
    retombaient donc sur l'id technique (« parc_mr3k5t0v93vd0 »), illisible
    dans les listes déroulantes. On complète avec la localisation et la
    superficie pour distinguer deux parcelles de même référence. */
+/* ══ QUOTE-PART DU PROMOTEUR SUR UNE PARCELLE ═════════════════════════════
+   Une parcelle issue d'un partenariat de lotissement n'appartient pas
+   intégralement au promoteur : une fraction des lots revient au partenaire
+   foncier en rémunération de son apport en terrain.
+
+   Conséquence comptable (SYSCOHADA) : seule la quote-part revenant au
+   promoteur constitue un actif pour lui. La part du partenaire n'est ni un
+   stock (compte 31/331) ni une immobilisation (compte 22) : le promoteur ne
+   la détient pas, il la viabilise pour autrui. L'inscrire au bilan
+   surévaluerait l'actif et le résultat de sortie de stock lors des cessions.
+
+   La contrepartie de l'apport du partenaire relève d'un engagement à livrer,
+   suivi hors bilan (classe 8) ou en dette de rétrocession selon la convention
+   — jamais en actif immobilisé du promoteur.
+
+   Ces fonctions donnent la fraction retenue partout où une valeur patrimoniale
+   est calculée. Une parcelle sans indivision renvoie 1 : le comportement des
+   parcelles détenues en propre est strictement inchangé.
+   ═══════════════════════════════════════════════════════════════════════════ */
+function parcelleQuotePart(p) {
+  var co = p && p.copropriete;
+  if (!co || co.type !== 'partenaire_lotissement') return 1;
+  var tot = parseFloat(co.lots_total) || 0;
+  var prom = parseFloat(co.lots_promoteur);
+  if (!tot || !isFinite(prom)) return 1;   /* répartition non renseignée : on ne minore pas arbitrairement */
+  return Math.max(0, Math.min(1, prom / tot));
+}
+function parcelleEnIndivision(p) {
+  return !!(p && p.copropriete && p.copropriete.type === 'partenaire_lotissement');
+}
+/* Valeur réellement portée au patrimoine du promoteur. */
+function parcelleValeurPatrimoniale(p) {
+  return Math.round((parseFloat(p && p.cout_total) || 0) * parcelleQuotePart(p));
+}
+/* Superficie correspondant à la quote-part — utile pour les ratios au m². */
+function parcelleSuperficiePropre(p) {
+  return Math.round((parseFloat(p && p.superficie) || 0) * parcelleQuotePart(p));
+}
+
 function parcelleLabel(p, avecDetail) {
   if (!p) return '';
   var base = p.ref || p.designation || p.reference || p.numero || p.num_titre || '';
@@ -47886,10 +47925,34 @@ function sigRenderParcelles(){
     if(path){
       nb++;
       if (_sig.map && _sig.layers.parcelles) {
-        var poly=L.polygon(path,{color:color,weight:2,fillColor:color,fillOpacity:0.25}).addTo(_sig.parcLayer);
+        /* Indivision : trait discontinu et remplissage allégé. La couleur de
+           statut est conservée — elle porte une information distincte — mais le
+           tracé change, seul moyen de repérer d'un coup d'œil sur une carte
+           chargée que la parcelle n'appartient pas entièrement au promoteur. */
+        var _indiv = (typeof parcelleEnIndivision === 'function') && parcelleEnIndivision(p);
+        var _styleP = _indiv
+          ? { color:color, weight:3, fillColor:color, fillOpacity:0.12, dashArray:'8,5' }
+          : { color:color, weight:2, fillColor:color, fillOpacity:0.25 };
+        var poly=L.polygon(path,_styleP).addTo(_sig.parcLayer);
+        if (_indiv) {
+          /* Second contour intérieur : rend la distinction lisible même quand
+             la carte est dézoomée et que le pointillé se confond avec le trait. */
+          L.polygon(path,{ color:'#B87333', weight:1, fill:false, dashArray:'2,4', interactive:false }).addTo(_sig.parcLayer);
+        }
+
         var sup=p.superficie?(p.superficie/10000).toFixed(4)+' ha':'—';
         var per=_sigPerimM(path);
-        poly.bindPopup('<strong>'+escHtml(p.ref||p.id)+'</strong><br>'+escHtml(p.localisation||p.commune||'')+'<br>Statut : '+st+'<br>Superficie : '+sup+'<br>Périmètre : '+Math.round(per)+' m'+(p.affectation?'<br>Affectation : '+escHtml(p.affectation):'')+(p.systeme_geodesique?'<br>Réf. : '+escHtml(p.systeme_geodesique):'')+'<br><button class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="sigOpenParcelleFiche(\''+p.id+'\')">✏️ Fiche / historique</button>');
+        poly.bindPopup('<strong>'+escHtml(p.ref||p.id)+'</strong><br>'+escHtml(p.localisation||p.commune||'')+'<br>Statut : '+st+'<br>Superficie : '+sup+'<br>Périmètre : '+Math.round(per)+' m'+(p.affectation?'<br>Affectation : '+escHtml(p.affectation):'')+(p.systeme_geodesique?'<br>Réf. : '+escHtml(p.systeme_geodesique):'')
+          + (_indiv
+              ? '<div style="margin-top:6px;padding:6px 8px;background:rgba(184,115,51,.15);border-left:3px solid #B87333;border-radius:4px;font-size:11px;line-height:1.6;">'
+                + '<strong>🤝 Parcelle en indivision</strong><br>'
+                + Math.round(parcelleQuotePart(p)*100) + ' % au promoteur'
+                + ((p.copropriete.lots_total) ? ' (' + (p.copropriete.lots_promoteur||0) + '/' + p.copropriete.lots_total + ' lots)' : '')
+                + (p.copropriete.partenaire_nom ? '<br>Partenaire : ' + escHtml(p.copropriete.partenaire_nom) : '')
+                + (p.cout_total ? '<br>Valeur au patrimoine : ' + fmtF(parcelleValeurPatrimoniale(p)) + ' F sur ' + fmtF(p.cout_total) + ' F' : '')
+                + '</div>'
+              : '')
+          + '<br><button class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="sigOpenParcelleFiche(\''+p.id+'\')">✏️ Fiche / historique</button>');
       }
       if (_sig.map && _sig.layers.labels && _sig.labelLayer) {
         var c = L.polygon(path).getBounds().getCenter();
@@ -47900,7 +47963,12 @@ function sigRenderParcelles(){
         + checkboxHtml
         +'<span style="width:10px;height:10px;border-radius:2px;background:'+color+';display:inline-block;cursor:pointer;" onclick="sigZoomParcelle(\''+p.id+'\')"></span>'
         +'<div style="flex:1;min-width:0;cursor:pointer;" onclick="sigZoomParcelle(\''+p.id+'\')"><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+escHtml(p.ref||p.id)+'</div>'
-        +'<div style="font-size:10px;color:var(--blanc-dim);">'+sup2+' · '+st+'</div></div>'
+        +'<div style="font-size:10px;color:var(--blanc-dim);">'+sup2+' · '+st
+          + (((typeof parcelleEnIndivision==='function') && parcelleEnIndivision(p))
+              ? ' · <span style="color:var(--or);" title="Indivision avec ' + escHtml(p.copropriete.partenaire_nom||'un partenaire') + '">🤝 ' + Math.round(parcelleQuotePart(p)*100) + ' %</span>'
+              : '')
+          + '</div></div>'
+
         +'<button class="btn btn-secondary btn-sm btn-icon" title="Fiche / historique" onclick="sigOpenParcelleFiche(\''+p.id+'\')">✏️</button>'
         +'<button class="btn btn-secondary btn-sm btn-icon" title="Plan cadastral PDF" onclick="sigPlanCadastralPDF(\''+p.id+'\')">🖨️</button></div>';
     } else if(p.geo_centroid && p.geo_centroid.lat){
@@ -64627,9 +64695,15 @@ async function deleteParcelle(id) {
 }
 
 function exportFoncierCSV() {
-  var rows = ['Réf,Localisation,Commune,Superficie,Type titre,N° Titre,Statut,Coût total'];
+  var rows = ['Réf,Localisation,Commune,Superficie,Type titre,N° Titre,Statut,Coût total,Quote-part promoteur (%),Valeur patrimoniale,Indivision avec'];
   DATA.parcelles.forEach(function(p) {
-    rows.push([p.ref,p.localisation,p.commune,p.superficie,p.type_titre,p.num_titre,p.statut,p.cout_total||0].join(','));
+    /* Le coût total ET la valeur patrimoniale : un export qui ne donnerait que
+       l'un des deux serait ininterprétable pour un comptable. */
+    rows.push([p.ref,p.localisation,p.commune,p.superficie,p.type_titre,p.num_titre,p.statut,
+               p.cout_total||0,
+               Math.round(parcelleQuotePart(p)*100),
+               parcelleValeurPatrimoniale(p),
+               parcelleEnIndivision(p) ? (p.copropriete.partenaire_nom||'oui') : ''].join(','));
   });
   var blob=new Blob([rows.join('\n')],{type:'text/csv'}); var a=document.createElement('a');
   a.href=URL.createObjectURL(blob); a.download='foncier_export.csv'; a.click();
@@ -64831,7 +64905,8 @@ function renderTitresFonciers() {
       + '<div style="font-size:13px;font-weight:700;color:var(--or);padding:8px 0;border-bottom:1px solid var(--bord);margin-bottom:12px;">'
       + (labelsTypes[type]||type) + ' <span style="font-size:11px;color:var(--blanc-dim);font-weight:400;">(' + liste.length + ' parcelle'+(liste.length>1?'s':'')+' — '
       + fmtF(liste.reduce(function(s,p){return s+(p.superficie||0);},0))+' m² — '
-      + fmtF(liste.reduce(function(s,p){return s+(p.cout_total||0);},0))+' FCFA)</span></div>'
+      + fmtF(liste.reduce(function(s,p){return s+parcelleValeurPatrimoniale(p);},0))+' FCFA'
+      + (liste.some(parcelleEnIndivision) ? ' — quote-part promoteur' : '') + ')</span></div>'
       + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;">'
       + liste.map(function(p) {
           var prog = p.programme_id ? ((DATA.programmes.find(function(x){return x.id===p.programme_id;})||{}).nom||'—') : '—';
@@ -64844,7 +64919,18 @@ function renderTitresFonciers() {
             + '<div style="font-size:11px;color:var(--blanc-dim);font-family:monospace;margin-bottom:6px;">N° : '+escHtml(p.num_titre||'—')+'</div>'
             + '<div style="display:flex;justify-content:space-between;font-size:11px;">'
             + '<span>📐 '+fmtF(p.superficie||0)+' m²</span>'
-            + '<span style="color:var(--or);">'+fmtF(p.cout_total||0)+' F</span></div>'
+            + '<span style="color:var(--or);">'+fmtF(parcelleValeurPatrimoniale(p))+' F</span></div>'
+            /* Indivision : on affiche la mention AVANT tout le reste, parce que
+               le montant ci-dessus n'est pas le coût de la parcelle mais la part
+               du promoteur — sans la mention, l'écart avec le coût saisi
+               passerait pour une erreur. */
+            + (parcelleEnIndivision(p)
+                ? '<div style="font-size:10px;margin-top:4px;padding:4px 6px;background:rgba(184,115,51,.14);border-left:2px solid var(--or);border-radius:4px;line-height:1.5;">'
+                  + '🤝 Indivision — ' + Math.round(parcelleQuotePart(p)*100) + ' % au promoteur'
+                  + (p.copropriete.partenaire_nom ? '<br><span style="color:var(--blanc-dim);">avec ' + escHtml(p.copropriete.partenaire_nom) + '</span>' : '')
+                  + (p.cout_total ? '<br><span style="color:var(--blanc-dim);">coût total ' + fmtF(p.cout_total) + ' F</span>' : '')
+                  + '</div>'
+                : '')
             + (p.programme_id ? '<div style="font-size:10px;color:var(--bleu);margin-top:4px;">🏗️ '+escHtml(prog)+'</div>' : '')
             + (p.date_titre ? '<div style="font-size:10px;color:var(--blanc-dim);margin-top:2px;">📅 Obtenu le '+p.date_titre+'</div>' : '')
             + (p.risque && p.risque!=='faible' ? '<div style="font-size:10px;margin-top:4px;color:'+risqueColor+';">⚠️ Risque '+escHtml(p.risque)+'</div>' : '')
@@ -85352,7 +85438,22 @@ function cesOnSource(){
     + (dejaCedes ? '<br>Déjà cédés sur cette parcelle : <strong>' + dejaCedes + '</strong> lot(s).' : '')
     + '<br><strong style="color:' + (restants>0?'var(--vert)':'var(--rouge)') + ';">'
     + (restants>0 ? restants + ' lot(s) encore cessible(s).' : 'Part promoteur épuisée — aucune cession supplémentaire possible.')
-    + '</strong>';
+    + '</strong>'
+    /* Subtilité de coût de revient, à rappeler ici parce qu'elle ne se voit
+       nulle part ailleurs : le promoteur supporte le coût d'acquisition et de
+       viabilisation de TOUTE la parcelle, mais ne vend que sa quote-part. Son
+       coût de revient par lot vendu se calcule donc sur les lots qui LUI
+       reviennent, pas sur le total morcelé. Diviser par le total sous-évalue le
+       coût sorti du stock et gonfle artificiellement la marge affichée. */
+    + ((co.lots_total && co.lots_promoteur && co.lots_total !== co.lots_promoteur)
+        ? '<div style="margin-top:7px;padding-top:7px;border-top:1px solid rgba(184,115,51,.3);font-size:11px;line-height:1.6;">'
+          + '📐 <strong>Coût de revient</strong> : les frais portent sur les ' + co.lots_total + ' lots, mais seuls '
+          + co.lots_promoteur + ' vous reviennent. Le coût par lot vendu doit être calculé sur <strong>'
+          + co.lots_promoteur + '</strong>, pas sur ' + co.lots_total
+          + ' — sinon la marge affichée est surévaluée d\'environ '
+          + Math.round((co.lots_total / co.lots_promoteur - 1) * 100) + ' %.'
+          + '</div>'
+        : '');
   if (nbEl && restants > 0) nbEl.setAttribute('max', String(restants));
 }
 
