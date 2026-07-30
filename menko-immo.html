@@ -13452,7 +13452,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <!-- P6 Répartition -->
             <div class="tab-pane" id="tab-af-op-repartition">
               <div class="form-grid">
-                <div class="form-group"><label>Nombre total de lots</label><input type="number" id="af-nb-lots" class="form-control" value="0" oninput="afCalcRepartition()"></div>
+                <div class="form-group"><label>Nombre total de lots</label><input type="number" id="af-nb-lots" class="form-control" value="0" oninput="afCalcRepartition();afRenderLotsMorcellement();"><div id="af-lots-morc-info"></div></div>
                 <div class="form-group"><label>Propriétaires (%)</label><input type="number" id="af-cle-prop" class="form-control" value="40" step="0.1" oninput="afCalcRepartition()"></div>
                 <div class="form-group"><label>Aménageur (%)</label><input type="number" id="af-cle-amen" class="form-control" value="35" step="0.1" oninput="afCalcRepartition()"></div>
                 <div class="form-group"><label>Financier (%)</label><input type="number" id="af-cle-fin" class="form-control" value="25" step="0.1" oninput="afCalcRepartition()"></div>
@@ -80638,6 +80638,7 @@ function afBindOperation(isEdit) {
   set('af-prix-lot',_afOp.prix_lot); set('af-lots-reserves',_afOp.lots_reserves); set('af-lots-vendus',_afOp.lots_vendus); set('af-titres',_afOp.titres);
   afRenderProp(); afRenderDoc(); afRenderRenc(); afRenderLit(); afRenderDem(); afRenderVrd();
   afCalcRepartition();
+  afRenderLotsMorcellement();
   afLoadStageDocs();
   switchTab('af-op','prospection');
   afStageBadge();
@@ -80947,6 +80948,58 @@ function afRenderVrd(){
 }
 
 /* P6 répartition (paramétrable) */
+/* ── Nombre de lots : reprise depuis le morcellement réel ────────────────
+   Le nombre de lots saisi ici est une prévision de prospection. Dès que le
+   morcellement est fait (plan + parcelles découpées), le compte réel existe
+   déjà en base : le ressaisir à la main crée un écart silencieux entre
+   l'opération et le plan, qui fausse ensuite la répartition (quotas
+   propriétaires/aménageur/financier) et le coût moyen par lot.
+   Chaîne suivie : opération → parcelle (operation_id) → programme →
+   parcelles_morcellement. */
+function afLotsMorcellement(opId) {
+  if (!opId) return null;
+  var parc = (DATA.parcelles || []).filter(function(p){ return p.operation_id === opId; });
+  if (!parc.length) return null;
+  var progIds = {}, progNoms = [];
+  parc.forEach(function(p){
+    if (p.programme_id && !progIds[p.programme_id]) {
+      progIds[p.programme_id] = true;
+      var pr = (DATA.programmes || []).find(function(x){ return x.id === p.programme_id; });
+      progNoms.push(pr ? (pr.nom || p.programme_id) : p.programme_id);
+    }
+  });
+  var ids = Object.keys(progIds);
+  if (!ids.length) return null;
+  var lots = (DATA.parcelles_morcellement || []).filter(function(m){ return ids.indexOf(m.programme_id) >= 0; });
+  if (!lots.length) return null;
+  var surf = lots.reduce(function(s,m){ return s + (parseFloat(m.superficie) || 0); }, 0);
+  return { nb: lots.length, surface: surf, programmes: progNoms };
+}
+function afRenderLotsMorcellement() {
+  var box = document.getElementById('af-lots-morc-info');
+  if (!box) return;
+  var info = _afOp ? afLotsMorcellement(_afOp.id) : null;
+  if (!info) { box.innerHTML = ''; return; }
+  var saisi = parseInt((document.getElementById('af-nb-lots') || {}).value, 10) || 0;
+  var ecart = saisi !== info.nb;
+  box.innerHTML = '<div style="font-size:11px;margin-top:4px;color:' + (ecart ? 'var(--or,#B87333)' : 'var(--vert,#16a34a)') + ';">'
+    + (ecart ? '⚠️ ' : '✅ ')
+    + 'Morcellement réalisé : <b>' + info.nb + ' lot(s)</b>'
+    + (info.surface ? ' · ' + Math.round(info.surface).toLocaleString('fr-FR') + ' m² découpés' : '')
+    + ' <span style="color:var(--blanc-dim);">(' + escHtml(info.programmes.join(', ')) + ')</span>'
+    + (ecart ? ' — saisi ici : ' + saisi + ' <button class="btn btn-secondary btn-sm" style="padding:1px 6px;font-size:10px;" onclick="afReprendreLotsMorcellement()">↧ Reprendre ' + info.nb + '</button>' : '')
+    + '</div>';
+}
+function afReprendreLotsMorcellement() {
+  var info = _afOp ? afLotsMorcellement(_afOp.id) : null;
+  if (!info) { toast('Aucun morcellement rattaché à cette opération.', 'error'); return; }
+  var el = document.getElementById('af-nb-lots');
+  if (el) el.value = info.nb;
+  afCalcRepartition();
+  afRenderLotsMorcellement();
+  toast('↧ ' + info.nb + ' lot(s) repris depuis le morcellement.', 'success');
+}
+
 function afCalcRepartition(){
   if(!_afOp) return;
   var nb=parseInt((document.getElementById('af-nb-lots')||{}).value)||0;
