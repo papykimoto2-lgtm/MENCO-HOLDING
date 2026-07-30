@@ -2716,7 +2716,8 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           background:#F1F5F9; border-radius:12px;
           box-shadow: inset 0 1px 3px rgba(0,0,0,0.06);
         ">
-          <button id="dtab-vue"          onclick="switchDashTab('vue')"          class="dash-tab active">📊 Vue générale</button>
+          <button id="dtab-cockpit"       onclick="switchDashTab('cockpit')"      class="dash-tab active">🎛️ Cockpit</button>
+          <button id="dtab-vue"          onclick="switchDashTab('vue')"          class="dash-tab">📊 Vue générale</button>
           <button id="dtab-finance"       onclick="switchDashTab('finance')"       class="dash-tab">💰 Finance</button>
           <button id="dtab-compta"        onclick="switchDashTab('compta')"        class="dash-tab">📒 Compta &amp; Trésorerie</button>
           <button id="dtab-commercial"    onclick="switchDashTab('commercial')"    class="dash-tab">🎯 Commercial</button>
@@ -2729,8 +2730,38 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <button id="dtab-alertes"       onclick="switchDashTab('alertes')"       class="dash-tab">⚠️ Alertes <span id="alertes-count" style="background:#EF4444;color:#fff;font-size:9px;padding:1px 5px;border-radius:8px;margin-left:2px;"></span></button>
         </div>
 
+        <!-- ══ TAB : COCKPIT — le tableau de bord qui travaille ═══════════ -->
+        <div id="dpane-cockpit" style="display:none;">
+          <div id="ck-briefing" style="margin-bottom:16px;"></div>
+          <div style="display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:16px;align-items:start;" class="ck-grid">
+            <div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                <div style="font-size:10px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:#8B5520;">⚡ File d'actions — à traiter maintenant</div>
+                <div style="display:flex;gap:6px;align-items:center;">
+                  <span id="ck-compteur" style="font-size:11px;color:var(--blanc-dim);"></span>
+                  <button class="btn btn-secondary btn-sm" onclick="ckResetIgnores()" title="Réafficher les actions reportées ou ignorées">↺</button>
+                </div>
+              </div>
+              <div id="ck-actions"></div>
+            </div>
+            <div>
+              <div style="font-size:10px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:#8B5520;margin-bottom:10px;">🫀 Pouls de l'activité</div>
+              <div id="ck-pouls" style="margin-bottom:16px;"></div>
+              <div style="font-size:10px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:#8B5520;margin-bottom:10px;">🩺 Santé par domaine</div>
+              <div id="ck-sante"></div>
+            </div>
+          </div>
+          <style>
+            @media (max-width: 900px){ .ck-grid{ grid-template-columns:1fr !important; } }
+            .ck-item{ transition: opacity .25s ease, transform .25s ease; }
+            .ck-item.ck-done{ opacity:0; transform:translateX(24px); }
+            @keyframes ckPulse { 0%,100%{opacity:1;} 50%{opacity:.45;} }
+            .ck-urgent-dot{ animation: ckPulse 1.6s infinite; }
+          </style>
+        </div>
+
         <!-- ══ TAB : VUE GÉNÉRALE ══════════════════════════════════════════ -->
-        <div id="dpane-vue">
+        <div id="dpane-vue" style="display:none;">
           <!-- Stepper workflow -->
           <div id="dash-stepper"></div>
 
@@ -24850,11 +24881,11 @@ function closeModal(id) {
 ────────────────────────────────────────────────────── */
 
 // ══ ONGLETS TABLEAU DE BORD ═══════════════════════════════════════════════════
-var _currentDashTab = 'vue';
+var _currentDashTab = 'cockpit';   /* le Cockpit est l'écran d'accueil : on arrive sur ce qu'il y a À FAIRE, pas sur des chiffres à contempler */
 
 function switchDashTab(tab) {
   _currentDashTab = tab;
-  var tabs  = ['vue','finance','compta','commercial','travaux','rh','stock','foncier','juridique','direction','alertes'];
+  var tabs  = ['cockpit','vue','finance','compta','commercial','travaux','rh','stock','foncier','juridique','direction','alertes'];
   tabs.forEach(function(t) {
     var btn  = document.getElementById('dtab-' + t);
     var pane = document.getElementById('dpane-' + t);
@@ -25974,7 +26005,8 @@ function refreshDashboard() {
   buildDashStepper();
   buildDashKPI2();
   // Builder spécifique à l'onglet actif
-  var _tab = _currentDashTab || 'vue';
+  var _tab = _currentDashTab || 'cockpit';
+  if (_tab === 'cockpit')    buildDashTabCockpit();
   if (_tab === 'vue')        buildDashTabVue();
   if (_tab === 'finance')    { buildDashTabFinance(); buildBarChart(); buildDonut(); buildRecentPayments(); }
   if (_tab === 'compta')     buildDashTabCompta();
@@ -34157,6 +34189,460 @@ function dashProduits(filterFn) {
 }
 
 /* Bloc trésorerie/recouvrement cohérent, réutilisé par tous les onglets. */
+/* ═══════════════════════════════════════════════════════════════════════════
+   COCKPIT — LE TABLEAU DE BORD QUI TRAVAILLE
+   ───────────────────────────────────────────────────────────────────────────
+   Parti pris : un tableau de bord classique DÉCRIT ; celui-ci PRESCRIT puis
+   AGIT. Trois moteurs :
+
+   1. ckActions()  — scanne toutes les données et produit une file d'actions
+      priorisées. Chaque règle répond à trois questions : qu'est-ce qui est
+      bloqué ? combien ça coûte ? quel est le geste qui débloque ? L'action
+      porte le geste (appeler, ventiler, clôturer…), pas seulement le constat.
+   2. ckBriefing() — synthèse en langage naturel, comme un chef de cabinet qui
+      résume la journée en trois phrases avant la première réunion.
+   3. ckSante()    — score 0-100 par domaine, calculé sur des critères
+      vérifiables (pas d'appréciation), avec la cause dominante affichée.
+
+   Les actions traitées ÉCRIVENT dans la base (relance tracée, etc.) via les
+   mêmes dbPut/sync que les modules — le cockpit est un poste de travail, pas
+   une vitrine. Les reports/ignores vivent en localStorage : décision d'écran,
+   propre à chaque poste, sans valeur métier — elle n'a rien à faire dans la
+   base partagée.
+═══════════════════════════════════════════════════════════════════════════ */
+
+var CK_SNOOZE_KEY = 'ck_snooze_v1';
+
+function _ckSnoozes() {
+  try { return JSON.parse(localStorage.getItem(CK_SNOOZE_KEY) || '{}'); }
+  catch(e) { return {}; }
+}
+function _ckEstMasquee(aid) {
+  var s = _ckSnoozes()[aid];
+  if (!s) return false;
+  if (s === 'always') return true;
+  return new Date(s) > new Date();   /* date d'expiration du report */
+}
+function ckSnooze(aid, mode) {
+  var s = _ckSnoozes();
+  if (mode === 'always') s[aid] = 'always';
+  else {
+    var d = new Date();
+    if (mode === 'demain') { d.setDate(d.getDate()+1); d.setHours(6,0,0,0); }
+    else d.setDate(d.getDate()+7);
+    s[aid] = d.toISOString();
+  }
+  localStorage.setItem(CK_SNOOZE_KEY, JSON.stringify(s));
+  var el = document.getElementById('ck-item-'+aid);
+  if (el) { el.classList.add('ck-done'); setTimeout(buildDashTabCockpit, 260); }
+  else buildDashTabCockpit();
+}
+function ckResetIgnores() {
+  localStorage.removeItem(CK_SNOOZE_KEY);
+  toast('Actions reportées ou ignorées réaffichées.', 'info');
+  buildDashTabCockpit();
+}
+
+/* ── Moteur de règles ────────────────────────────────────────────────────── */
+function ckActions() {
+  var A = [];
+  var now = new Date();
+  var aujourd = today();
+  function push(a){ if (!_ckEstMasquee(a.aid)) A.push(a); }
+
+  /* R1 — Exigible : les dossiers dont l'échéance est dépassée. Le geste est
+     l'appel, pas la contemplation du montant. Top 6 par exigible décroissant :
+     au-delà, ce n'est plus une file d'actions, c'est une liste de lecture. */
+  try {
+    var lignes = (typeof rarCollecter === 'function') ? rarCollecter() : [];
+    lignes.filter(function(l){ return l.duAJour > 0; })
+      .sort(function(a,b){ return b.duAJour - a.duAJour; })
+      .slice(0, 6)
+      .forEach(function(l){
+        push({
+          aid: 'exig_' + l.id,
+          prio: 100 + Math.min(80, Math.round(l.duAJour/500000)) + l.moisRetard*2,
+          urgent: l.moisRetard >= 3,
+          icone: '📞',
+          titre: 'Relancer ' + l.nom,
+          detail: fmtF(l.duAJour) + ' F exigibles · ' + (l.nature==='cession'?'cession':'souscription')
+                + (l.moisRetard ? ' · retard ' + l.moisRetard + ' mois' : '')
+                + (l.commercial && l.commercial!=='—' ? ' · ' + l.commercial : ''),
+          montant: l.duAJour,
+          boutons: [
+            l.tel ? { lib:'📞 Appeler', href:'tel:'+l.tel } : null,
+            l.tel ? { lib:'💬 WhatsApp', href:'https://wa.me/'+String(l.tel).replace(/\D/g,'')
+                     + '?text=' + encodeURIComponent('Bonjour ' + l.nom + ', nous revenons vers vous au sujet de votre dossier '
+                       + (l.dossier||'') + ' : un solde de ' + fmtF(l.duAJour) + ' FCFA est arrivé à échéance. Merci de nous contacter pour convenir du règlement.') } : null,
+            { lib:'✓ Relance faite', fn:"ckMarquerRelance('"+l.id+"','"+String(l.nom).replace(/'/g,"\\'")+"')" },
+            { lib:'🔎 Détail', fn:'rarOuvrir()' }
+          ].filter(Boolean)
+        });
+      });
+  } catch(e){}
+
+  /* R2 — Sessions de caisse restées ouvertes un autre jour que celui de leur
+     ouverture : chaque jour sans clôture est un jour sans contrôle du fond. */
+  (DATA.caisse_sessions||[]).filter(function(s){
+    return s.statut==='ouverte' && s.date_ouverture && String(s.date_ouverture).slice(0,10) < aujourd;
+  }).forEach(function(s){
+    var caisse = (DATA.caisses||[]).find(function(c){ return c.id===s.caisse_id; });
+    push({
+      aid: 'sess_'+s.id, prio: 90, urgent: true, icone: '🔐',
+      titre: 'Clôturer la session de caisse' + (caisse ? ' — '+caisse.nom : ''),
+      detail: 'Ouverte le ' + String(s.date_ouverture).slice(0,10) + ' et jamais clôturée : le fond n\'est plus contrôlé.',
+      boutons: [ { lib:'🔐 Aller clôturer', fn:"goTo('caisse')" } ]
+    });
+  });
+
+  /* R3 — Mouvements de caisse à ventiler : de l'argent réel absent de la
+     comptabilité tant que ce n'est pas fait. */
+  try {
+    var st = (typeof caisseAVentilerStats==='function') ? caisseAVentilerStats() : {nb:0,montant:0};
+    if (st.nb > 0) push({
+      aid: 'vent_'+aujourd,   /* re-proposée chaque jour tant que non traitée */
+      prio: 60 + Math.min(25, Math.round(st.nb/30)), urgent: st.nb > 300, icone: '🧾',
+      titre: 'Ventiler ' + st.nb + ' mouvement(s) de caisse',
+      detail: fmtF(st.montant) + ' F encaissés ou décaissés encore absents de la comptabilité.',
+      montant: st.montant,
+      boutons: [ { lib:'🧾 Ouvrir la ventilation', fn:"goTo('caisse')" } ]
+    });
+  } catch(e){}
+
+  /* R4 — Souscriptions signées restées à 0 F versé depuis plus de 60 jours :
+     ni vraie vente ni vrai prospect. Statuer libère le lot ou relance le
+     client — dans les deux cas, ça débloque de la valeur. */
+  (DATA.clients||[]).forEach(function(c){
+    if (!c.date_debut || !(parseFloat(c.montant_total)>0)) return;
+    var verse = (DATA.versements||[]).filter(function(v){ return v.client_id===c.id; })
+      .reduce(function(s,v){ return s+(parseFloat(v.montant)||0); }, 0);
+    if (verse > 0) return;
+    var jours = Math.floor((now - new Date(c.date_debut)) / 86400000);
+    if (jours < 60) return;
+    push({
+      aid: 'zero_'+c.id, prio: 55 + Math.min(20, Math.round(jours/30)), icone: '🧊',
+      titre: 'Statuer : ' + (((c.nom||'')+' '+(c.prenoms||'')).trim()||'dossier') + ' — 0 F versé depuis ' + jours + ' j',
+      detail: 'Souscription de ' + fmtF(c.montant_total) + ' F sans le moindre versement. Annuler libère le lot ; sinon, relancer fermement.',
+      boutons: [
+        c.tel ? { lib:'📞 Appeler', href:'tel:'+c.tel } : null,
+        { lib:'📂 Ouvrir le dossier', fn:"goTo('clients')" }
+      ].filter(Boolean)
+    });
+  });
+
+  /* R5 — Lots réservés sans aucun souscripteur rattaché : une réservation
+     fantôme stérilise un lot vendable. */
+  var resOrphelins = (DATA.lots||[]).filter(function(l){
+    return l.statut==='reserve' && !(DATA.clients||[]).some(function(c){ return c.lot_id===l.id; });
+  });
+  if (resOrphelins.length) push({
+    aid: 'resorph_'+resOrphelins.length, prio: 45, icone: '🏷️',
+    titre: resOrphelins.length + ' lot(s) réservé(s) sans client rattaché',
+    detail: 'Réservation sans dossier : le lot est bloqué à la vente sans que personne ne le porte. Libérer ou rattacher.',
+    boutons: [ { lib:'🏘️ Voir les lots', fn:"goTo('lots')" } ]
+  });
+
+  /* R6 — Cessions sans bien rattaché : de l'argent encaissé sans traçabilité
+     de ce qui a été vendu — indéfendable en cas de contrôle ou de litige. */
+  var cesSansBien = (DATA.cessions_foncieres||[]).filter(function(c){ return !c.source_key && !c.parcelle_id; });
+  if (cesSansBien.length) push({
+    aid: 'cesbien_'+cesSansBien.length, prio: 50, icone: '🧩',
+    titre: cesSansBien.length + ' cession(s) sans bien rattaché',
+    detail: 'Le prix est suivi mais on ne sait pas quel terrain a été cédé. À compléter avant tout contrôle.',
+    boutons: [ { lib:'🏞️ Ouvrir les cessions', fn:"goTo('foncierops')" } ]
+  });
+
+  /* R7 — Dossiers actifs sans commercial : personne n'est responsable du
+     recouvrement, et le classement des commerciaux ment par omission. */
+  var sansComm = (DATA.clients||[]).filter(function(c){
+    if (c.commercial || c.commercial_id) return false;
+    var verse = (DATA.versements||[]).filter(function(v){ return v.client_id===c.id; }).length;
+    return (parseFloat(c.montant_total)>0);
+  });
+  if (sansComm.length >= 1) push({
+    aid: 'nocomm_'+sansComm.length, prio: 35, icone: '👤',
+    titre: sansComm.length + ' dossier(s) sans commercial affecté',
+    detail: 'Sans responsable, pas de relance. Et le classement des commerciaux est faussé d\'autant.',
+    boutons: [ { lib:'📂 Affecter', fn:"goTo('clients')" } ]
+  });
+
+  /* R8 — Loyers du mois non quittancés sur les baux actifs. */
+  try {
+    var moisCour = aujourd.slice(0,7);
+    var bauxActifs = (DATA.baux||[]).filter(function(b){ return (b.statut||'actif')==='actif'; });
+    var sansQuit = bauxActifs.filter(function(b){
+      return !(DATA.quittances||[]).some(function(q){
+        return q.bail_id===b.id && String(q.periode||q.mois||'').indexOf(moisCour)===0;
+      });
+    });
+    if (bauxActifs.length && sansQuit.length) push({
+      aid: 'loyer_'+moisCour+'_'+sansQuit.length, prio: 40, icone: '🏠',
+      titre: sansQuit.length + ' loyer(s) du mois sans quittance',
+      detail: 'Sur ' + bauxActifs.length + ' bail(s) actif(s). Une quittance non émise retarde l\'encaissement et prive le locataire de son justificatif.',
+      boutons: [ { lib:'🏠 Gestion locative', fn:"goTo('locatif')" } ]
+    });
+  } catch(e){}
+
+  /* R9 — Données de test mêlées aux vraies : tout KPI est faux tant que ça
+     traîne en base. */
+  var tests = (DATA.clients||[]).filter(function(c){ return /test|neant|néant/i.test((c.nom||'')+' '+(c.prenoms||'')); });
+  if (tests.length) push({
+    aid: 'testdata_'+tests.length, prio: 30, icone: '🧪',
+    titre: tests.length + ' dossier(s) de test dans les données réelles',
+    detail: tests.map(function(c){ return ((c.nom||'')+' '+(c.prenoms||'')).trim(); }).slice(0,3).join(', ')
+      + (tests.length>3?'…':'') + ' — encours artificiel : ' + fmtF(tests.reduce(function(s,c){ return s+(parseFloat(c.montant_total)||0); },0)) + ' F.',
+    boutons: [ { lib:'🧹 Nettoyer', fn:"goTo('clients')" } ]
+  });
+
+  /* R10 — Fiches commerciales introuvables (leads pointant vers un employé
+     supprimé) : de la performance sans responsable identifiable. */
+  var idsEmp = {};
+  (DATA.employes||[]).forEach(function(e){ idsEmp[e.id]=1; if(e.matricule) idsEmp[e.matricule]=1; });
+  (DATA.users||[]).forEach(function(u){ idsEmp[u.id]=1; if(u.username) idsEmp[u.username]=1; });
+  var orphIds = {};
+  (DATA.leads||[]).forEach(function(l){
+    var a = l.commercial_id || l.commercial;
+    if (a && !idsEmp[a] && /^[a-z0-9]{10,}$/i.test(String(a))) orphIds[a]=(orphIds[a]||0)+1;
+  });
+  var nbOrph = Object.keys(orphIds).length;
+  if (nbOrph) push({
+    aid: 'orphcomm_'+nbOrph, prio: 25, icone: '🪪',
+    titre: nbOrph + ' identifiant(s) commercial sans fiche employé',
+    detail: 'Des leads pointent vers des fiches supprimées ou mal importées : leur performance n\'est attribuée à personne.',
+    boutons: [ { lib:'👥 Module RH', fn:"goTo('rh-employes')" } ]
+  });
+
+  /* R11 — Échéances de cession qui tombent dans les 7 prochains jours :
+     appeler AVANT l'échéance coûte moins cher que relancer après. */
+  (DATA.cessions_foncieres||[]).forEach(function(c){
+    var ech = c.echeance || c.date_echeance; if (!ech) return;
+    var reste = (parseFloat(c.prix_cession)||0) - (parseFloat(c.montant_encaisse)||0);
+    if (reste <= 0) return;
+    var d = new Date(ech); if (isNaN(d.getTime())) return;
+    var dans = Math.ceil((d - now)/86400000);
+    if (dans < 0 || dans > 7) return;
+    push({
+      aid: 'echprox_'+c.id, prio: 70 - dans*3, urgent: dans<=2, icone: '⏰',
+      titre: 'Échéance ' + (dans===0?'AUJOURD\'HUI':'dans '+dans+' j') + ' — ' + (c.acquereur||'cession'),
+      detail: fmtF(reste) + ' F attendus le ' + String(ech).slice(0,10) + '. Un rappel courtois avant l\'échéance vaut mieux qu\'une relance après.',
+      montant: reste,
+      boutons: [
+        c.contact ? { lib:'📞 Appeler', href:'tel:'+c.contact } : null,
+        { lib:'🏞️ Voir la cession', fn:"goTo('foncierops')" }
+      ].filter(Boolean)
+    });
+  });
+
+  A.sort(function(a,b){ return b.prio - a.prio; });
+  return A;
+}
+
+/* Action rapide : tracer la relance SANS quitter le cockpit. Écrit dans le
+   même store que le module Relances — la trace est réelle, partagée, synchronisée. */
+async function ckMarquerRelance(clientId, nom) {
+  var r = {
+    id: uid(), client_id: clientId, date: today(), type: 'appel',
+    notes: '[Cockpit] Relance effectuée depuis la file d\'actions.',
+    created_at: today()
+  };
+  DATA.relances = DATA.relances || [];
+  DATA.relances.push(r);
+  await dbPut('relances', r);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_relances', r);
+  toast('Relance tracée pour ' + nom + '.', 'success');
+  var el = document.getElementById('ck-item-exig_'+clientId);
+  if (el) { el.classList.add('ck-done'); setTimeout(buildDashTabCockpit, 260); }
+  else buildDashTabCockpit();
+}
+
+/* ── Briefing en langage naturel ─────────────────────────────────────────── */
+function ckBriefing(actions) {
+  var h = new Date().getHours();
+  var salut = h < 12 ? 'Bonjour' : (h < 18 ? 'Bon après-midi' : 'Bonsoir');
+  var user = (APP.currentUser && (APP.currentUser.prenoms || APP.currentUser.nom)) || '';
+  var core = dashFinanceCore(null);
+  var exig = 0, nbExig = 0;
+  try {
+    (typeof rarCollecter==='function' ? rarCollecter() : []).forEach(function(l){
+      if (l.duAJour>0) { exig += l.duAJour; nbExig++; }
+    });
+  } catch(e){}
+  var st = (typeof caisseAVentilerStats==='function') ? caisseAVentilerStats() : {nb:0};
+  var urgents = actions.filter(function(a){ return a.urgent; }).length;
+
+  var phrases = [];
+  if (exig > 0) phrases.push('<strong>' + fmtF(exig) + ' F</strong> sont exigibles chez ' + nbExig + ' client(s) — chaque jour d\'attente réduit la probabilité d\'encaisser');
+  else phrases.push('aucun montant exigible en souffrance — le portefeuille est à jour');
+  if (st.nb) phrases.push(st.nb + ' mouvement(s) de caisse attendent leur ventilation comptable');
+  if (urgents) phrases.push(urgents + ' action(s) marquée(s) urgentes dans la file');
+  var trois = phrases.slice(0,3).join(' · ');
+
+  var reco = actions.length
+    ? 'Première action recommandée : <strong>' + escHtml(actions[0].titre) + '</strong>.'
+    : 'File vide — rien d\'urgent ne requiert votre attention. Bon moment pour la prospection ou le terrain.';
+
+  return '<div class="card" style="border-left:4px solid #B87333;padding:14px 18px;">'
+    + '<div style="font-size:15px;font-weight:700;margin-bottom:4px;">' + salut + (user?' '+escHtml(user):'') + ' 👋</div>'
+    + '<div style="font-size:12px;color:var(--blanc-dim);line-height:1.8;">' + trois + '.</div>'
+    + '<div style="font-size:12px;margin-top:6px;">' + reco + '</div>'
+    + '</div>';
+}
+
+/* ── Pouls : sparkline des encaissements 30 jours + 3 chiffres vifs ──────── */
+function ckPouls() {
+  var jours = [], vals = [], max = 0;
+  for (var i = 29; i >= 0; i--) {
+    var d = new Date(); d.setDate(d.getDate()-i);
+    var k = d.toISOString().slice(0,10);
+    var v = (DATA.versements||[]).filter(function(x){ return _versementSurPrix(x) && (x.date||'').slice(0,10)===k; })
+      .reduce(function(s,x){ return s+(parseFloat(x.montant)||0); }, 0);
+    /* Les encaissements de cession n'ont pas de date de versement propre
+       (montant_encaisse cumulé sur la fiche) : la courbe reste donc sur les
+       versements souscripteurs, seuls datés au jour. */
+    jours.push(k); vals.push(v); if (v>max) max=v;
+  }
+  var W=280, H=54, pts='';
+  for (var j=0;j<vals.length;j++){
+    var x = Math.round(j*(W-8)/(vals.length-1))+4;
+    var y = H-6 - (max>0 ? Math.round((vals[j]/max)*(H-16)) : 0);
+    pts += (j?' L':'M')+x+' '+y;
+  }
+  var tot30 = vals.reduce(function(s,v){return s+v;},0);
+  var t7 = vals.slice(-7).reduce(function(s,v){return s+v;},0);
+  var t7prec = vals.slice(-14,-7).reduce(function(s,v){return s+v;},0);
+  var tendance = t7prec>0 ? Math.round((t7-t7prec)/t7prec*100) : (t7>0?100:0);
+  var solde = (typeof caisseSoldeGlobalTempsReel==='function') ? caisseSoldeGlobalTempsReel() : 0;
+
+  return '<div class="card" style="padding:12px 14px;">'
+    + '<div style="display:flex;justify-content:space-between;align-items:baseline;">'
+    +   '<div style="font-size:11px;color:var(--blanc-dim);">Encaissements sur prix — 30 jours</div>'
+    +   '<div style="font-size:13px;font-weight:700;color:var(--or);">' + fmtF(tot30) + ' F</div>'
+    + '</div>'
+    + '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:'+H+'px;margin-top:4px;">'
+    +   '<path d="'+pts+'" fill="none" stroke="#B87333" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>'
+    + '</svg>'
+    + '<div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap;">'
+    +   '<div style="flex:1;min-width:80px;"><div style="font-size:10px;color:var(--blanc-dim);">7 derniers jours</div><div style="font-weight:700;">' + fmtF(t7) + ' F</div></div>'
+    +   '<div style="flex:1;min-width:80px;"><div style="font-size:10px;color:var(--blanc-dim);">Tendance vs 7 j préc.</div><div style="font-weight:700;color:'+(tendance>=0?'var(--vert)':'var(--rouge)')+';">' + (tendance>=0?'▲ +':'▼ ') + Math.abs(tendance) + ' %</div></div>'
+    +   '<div style="flex:1;min-width:80px;"><div style="font-size:10px;color:var(--blanc-dim);">Espèces en caisse</div><div style="font-weight:700;">' + fmtF(solde) + ' F</div></div>'
+    + '</div>'
+    + '</div>';
+}
+
+/* ── Santé par domaine : des critères vérifiables, pas des impressions ───── */
+function ckSante() {
+  var doms = [];
+  function dom(nom, icone, score, cause, page){
+    doms.push({nom:nom, icone:icone, score:Math.max(0,Math.min(100,Math.round(score))), cause:cause, page:page});
+  }
+
+  /* Recouvrement : part de l'encours qui n'est PAS exigible. */
+  try {
+    var L = (typeof rarCollecter==='function') ? rarCollecter() : [];
+    var reste=0, exig=0; L.forEach(function(l){ reste+=l.reste; exig+=l.duAJour; });
+    var sc = reste>0 ? 100 - Math.round(exig/reste*100) : 100;
+    dom('Recouvrement','💰', sc, exig>0 ? fmtF(exig)+' F exigibles sur '+fmtF(reste)+' F d\'encours' : 'Aucun exigible en souffrance', 'relances');
+  } catch(e){ dom('Recouvrement','💰',100,'—','relances'); }
+
+  /* Caisse : ventilation + sessions clôturées. */
+  try {
+    var st = (typeof caisseAVentilerStats==='function') ? caisseAVentilerStats() : {nb:0};
+    var mvts = (DATA.caisse_mouvements||[]).length || 1;
+    var sessTard = (DATA.caisse_sessions||[]).filter(function(s){ return s.statut==='ouverte' && String(s.date_ouverture||'').slice(0,10) < today(); }).length;
+    var sc = 100 - Math.min(70, Math.round(st.nb/mvts*100)) - sessTard*15;
+    dom('Caisse','💵', sc, st.nb ? st.nb+' mvt à ventiler'+(sessTard?(' · '+sessTard+' session(s) non clôturée(s)'):'') : (sessTard? sessTard+' session(s) non clôturée(s)':'Ventilation à jour'), 'caisse');
+  } catch(e){ dom('Caisse','💵',100,'—','caisse'); }
+
+  /* Qualité des données : dossiers complets (commercial + bien rattachés). */
+  var cls = (DATA.clients||[]).filter(function(c){ return parseFloat(c.montant_total)>0; });
+  var ces = (DATA.cessions_foncieres||[]);
+  var totD = cls.length + ces.length;
+  if (totD) {
+    var incomplets = cls.filter(function(c){ return !(c.commercial||c.commercial_id) || !c.lot_id; }).length
+                   + ces.filter(function(c){ return !c.source_key && !c.parcelle_id; }).length;
+    dom('Données','🧬', 100 - Math.round(incomplets/totD*100),
+        incomplets ? incomplets+' dossier(s) incomplet(s) sur '+totD : 'Dossiers complets', 'clients');
+  } else dom('Données','🧬',100,'Aucun dossier','clients');
+
+  /* Commercial : leads sans mouvement depuis 14 jours. */
+  var leads = (DATA.leads||[]).filter(function(l){ return l.stade!=='reservation' && l.stade!=='perdu'; });
+  if (leads.length) {
+    var froids = leads.filter(function(l){
+      var ref = l.updated_at || l.date || l.created_at; if(!ref) return true;
+      return (new Date() - new Date(ref)) > 14*86400000;
+    }).length;
+    dom('Pipeline','🎯', 100 - Math.round(froids/leads.length*100),
+        froids ? froids+' lead(s) sans contact depuis 14 j sur '+leads.length : 'Pipeline animé', 'leads');
+  } else dom('Pipeline','🎯',100,'Aucun lead actif','leads');
+
+  return doms.map(function(d){
+    var col = d.score>=75 ? 'var(--vert)' : (d.score>=45 ? '#EF9F27' : 'var(--rouge)');
+    return '<div class="card" style="padding:10px 12px;margin-bottom:8px;cursor:pointer;" onclick="goTo(\''+d.page+'\')" title="Ouvrir le module">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">'
+      +   '<span style="font-size:12px;font-weight:700;">'+d.icone+' '+d.nom+'</span>'
+      +   '<span style="font-size:13px;font-weight:800;color:'+col+';">'+d.score+'</span>'
+      + '</div>'
+      + '<div style="height:6px;background:var(--bord2,#E2E8F0);border-radius:4px;overflow:hidden;">'
+      +   '<div style="height:100%;width:'+d.score+'%;background:'+col+';border-radius:4px;transition:width .5s ease;"></div>'
+      + '</div>'
+      + '<div style="font-size:10px;color:var(--blanc-dim);margin-top:5px;">'+escHtml(d.cause)+'</div>'
+      + '</div>';
+  }).join('');
+}
+
+/* ── Rendu de la file d'actions ──────────────────────────────────────────── */
+function buildDashTabCockpit() {
+  var hostA = document.getElementById('ck-actions');
+  var hostB = document.getElementById('ck-briefing');
+  var hostP = document.getElementById('ck-pouls');
+  var hostS = document.getElementById('ck-sante');
+  if (!hostA) return;
+
+  var actions = ckActions();
+  if (hostB) hostB.innerHTML = ckBriefing(actions);
+  if (hostP) hostP.innerHTML = ckPouls();
+  if (hostS) hostS.innerHTML = ckSante();
+
+  var cpt = document.getElementById('ck-compteur');
+  if (cpt) cpt.textContent = actions.length ? (actions.length + ' action(s) en file') : '';
+
+  if (!actions.length) {
+    hostA.innerHTML = '<div class="card" style="text-align:center;padding:28px;">'
+      + '<div style="font-size:34px;margin-bottom:8px;">🏁</div>'
+      + '<div style="font-weight:700;margin-bottom:4px;">File vide — tout est traité.</div>'
+      + '<div style="font-size:12px;color:var(--blanc-dim);">Le cockpit re-scannera vos données au prochain passage. Les actions reportées reviendront à leur échéance.</div>'
+      + '</div>';
+    return;
+  }
+
+  hostA.innerHTML = actions.slice(0, 12).map(function(a){
+    return '<div class="card ck-item" id="ck-item-'+a.aid+'" style="padding:12px 14px;margin-bottom:10px;'
+      + (a.urgent ? 'border-left:4px solid var(--rouge);' : 'border-left:4px solid var(--bord);') + '">'
+      + '<div style="display:flex;align-items:flex-start;gap:10px;">'
+      +   '<div style="font-size:20px;line-height:1;">'+a.icone+'</div>'
+      +   '<div style="flex:1;min-width:0;">'
+      +     '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;flex-wrap:wrap;">'
+      +       '<strong style="font-size:13px;">' + (a.urgent?'<span class="ck-urgent-dot" style="color:var(--rouge);">●</span> ':'') + escHtml(a.titre) + '</strong>'
+      +       (a.montant ? '<span style="font-size:12px;font-weight:800;color:var(--or);white-space:nowrap;">'+fmtF(a.montant)+' F</span>' : '')
+      +     '</div>'
+      +     '<div style="font-size:11px;color:var(--blanc-dim);margin-top:3px;line-height:1.6;">'+a.detail+'</div>'
+      +     '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">'
+      +       a.boutons.map(function(b){
+                return b.href
+                  ? '<a class="btn btn-secondary btn-sm" target="_blank" rel="noopener" href="'+b.href+'" style="text-decoration:none;">'+b.lib+'</a>'
+                  : '<button class="btn btn-secondary btn-sm" onclick="'+b.fn+'">'+b.lib+'</button>';
+              }).join('')
+      +       '<span style="flex:1;"></span>'
+      +       '<button class="btn btn-sm" style="opacity:.55;" title="Revoir demain matin" onclick="ckSnooze(\''+a.aid+'\',\'demain\')">🌙 Demain</button>'
+      +       '<button class="btn btn-sm" style="opacity:.55;" title="Ne plus proposer cette action" onclick="ckSnooze(\''+a.aid+'\',\'always\')">✕</button>'
+      +     '</div>'
+      +   '</div>'
+      + '</div>'
+      + '</div>';
+  }).join('')
+  + (actions.length > 12 ? '<div style="text-align:center;font-size:11px;color:var(--blanc-dim);padding:6px;">'+(actions.length-12)+' action(s) de moindre priorité non affichée(s) — traitez celles-ci d\'abord.</div>' : '');
+}
+
 /* ══ ANALYSE DU RESTE À RECOUVRER ══════════════════════════════════════════
    Le KPI donnait un montant global sans dire de qui il s'agissait : impossible
    d'agir dessus. Cette analyse décompose l'encours par dossier, par commercial
