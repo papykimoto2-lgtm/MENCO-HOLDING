@@ -5344,6 +5344,42 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                   <label>N° Télédéclarant FNE</label>
                   <input type="text" id="param-teledeclarant-fne" class="form-control" placeholder="Identifiant fne.dgi.gouv.ci">
                 </div>
+                <div class="form-group span-2" style="border-top:1px dashed var(--bord);margin-top:6px;padding-top:10px;">
+                  <label style="font-weight:700;">🧾 Intégration API FNE (télétransmission DGI)</label>
+                  <div style="font-size:11px;color:var(--blanc-dim);margin-bottom:6px;">Certification automatique des factures auprès de la plateforme FNE dès leur émission dans le module Facturation.</div>
+                </div>
+                <div class="form-group">
+                  <label>Environnement</label>
+                  <select id="param-fne-environnement" class="form-control">
+                    <option value="test">Test (environnement DGI)</option>
+                    <option value="production">Production</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Clé API FNE</label>
+                  <input type="password" id="param-fne-api-key" class="form-control" placeholder="Fournie par la DGI après inscription sur le portail test">
+                </div>
+                <div class="form-group span-2">
+                  <label>URL API — environnement test</label>
+                  <input type="text" id="param-fne-url-test" class="form-control" placeholder="http://54.247.95.108/ws">
+                </div>
+                <div class="form-group span-2">
+                  <label>URL API — production (transmise par la DGI après validation de l'interfaçage)</label>
+                  <input type="text" id="param-fne-url-prod" class="form-control" placeholder="Communiquée par support.fne@dgi.gouv.ci après validation des spécimens">
+                </div>
+                <div class="form-group">
+                  <label>Point de vente (FNE)</label>
+                  <input type="text" id="param-fne-point-vente" class="form-control" placeholder="ex : Siège">
+                </div>
+                <div class="form-group">
+                  <label>Établissement (FNE)</label>
+                  <input type="text" id="param-fne-etablissement" class="form-control" placeholder="ex : MENKO IMMO Siège">
+                </div>
+                <div class="form-group span-2">
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="fneTesterConnexion()">🔌 Tester la connexion à l'API FNE</button>
+                  <div id="fne-test-resultat" style="font-size:11px;margin-top:6px;"></div>
+                </div>
+                <div class="form-group span-2" style="font-size:10.5px;color:var(--blanc-dim);">⚠️ La plateforme de test DGI n'est accessible qu'en <strong>HTTP</strong> (non chiffré). Si l'ERP est servi en HTTPS, la plupart des navigateurs bloquent cet appel (contenu mixte) — voir le message d'erreur du bouton ci-dessus en cas d'échec.</div>
                 <div class="form-group">
                   <label>N° Agrément promoteur</label>
                   <input type="text" id="param-agrement" class="form-control">
@@ -35075,6 +35111,12 @@ async function saveParams() {
     regime:      gv('param-regime')||'reel_normal',
     tva_assujetti: gv('param-tva-assujetti')||'oui',
     fne_actif:   gv('param-fne-actif')||'non',
+    fne_environnement: gv('param-fne-environnement')||'test',
+    fne_api_key: gv('param-fne-api-key'),
+    fne_url_test: gv('param-fne-url-test')||'http://54.247.95.108/ws',
+    fne_url_prod: gv('param-fne-url-prod'),
+    fne_point_vente: gv('param-fne-point-vente'),
+    fne_etablissement: gv('param-fne-etablissement'),
     teledeclarant_dgi:  gv('param-teledeclarant-dgi'),
     teledeclarant_cnps: gv('param-teledeclarant-cnps'),
     teledeclarant_fne:  gv('param-teledeclarant-fne'),
@@ -35307,6 +35349,9 @@ function loadParamFields() {
   sv('param-societe',p.societe||'ImmoSuite ERP');
   sv('param-rccm',p.rccm); sv('param-dgi',p.dgi); sv('param-cnps',p.cnps||'422483');
   sv('param-regime',p.regime||'reel_normal'); sv('param-tva-assujetti',p.tva_assujetti||'oui'); sv('param-fne-actif',p.fne_actif||'non');
+  sv('param-fne-environnement',p.fne_environnement||'test'); sv('param-fne-api-key',p.fne_api_key);
+  sv('param-fne-url-test',p.fne_url_test||'http://54.247.95.108/ws'); sv('param-fne-url-prod',p.fne_url_prod);
+  sv('param-fne-point-vente',p.fne_point_vente); sv('param-fne-etablissement',p.fne_etablissement||p.societe||'');
   sv('param-teledeclarant-dgi',p.teledeclarant_dgi); sv('param-teledeclarant-cnps',p.teledeclarant_cnps); sv('param-teledeclarant-fne',p.teledeclarant_fne);
   sv('param-agrement',p.agrement); sv('param-adresse',p.adresse);
   sv('param-email',p.email); sv('param-tel',p.tel); sv('param-site',p.site);
@@ -92942,13 +92987,141 @@ function _fneQrSvg(payload) {
 }
 
 /* Ouvre le modal facturation depuis une cession */
+/* ── Intégration API FNE (DGI) — certification réelle des factures ──
+   Réf. « PROCEDURE D'INTERFACAGE DES ENTREPRISES PAR API » (DGI, mai 2025).
+   Environnement test par défaut : http://54.247.95.108/ws (configurable
+   dans Paramètres → Société → API FNE, jamais codé en dur ici). */
+var FNE_URL_TEST_DEFAUT = 'http://54.247.95.108/ws';
+
+function fneBaseUrl() {
+  var p = DATA.params || {};
+  if (p.fne_environnement === 'production') return (p.fne_url_prod || '').replace(/\/$/, '');
+  return (p.fne_url_test || FNE_URL_TEST_DEFAUT).replace(/\/$/, '');
+}
+
+/* Construit le corps JSON attendu par POST /external/invoices/sign à partir
+   d'une facture locale (f) et des paramètres société (p). Une seule ligne
+   d'article reprenant la désignation ; TVA au taux légal ou exonérée. */
+function fneConstruireCorpsFacture(f, p) {
+  var taxeCode = f.taux_tva > 0 ? 'TVA' : 'TVAD';
+  return {
+    invoiceType: 'sale',
+    paymentMethod: f.fne_payment_method || 'cash',
+    template: f.fne_template || (f.ncc_client ? 'B2B' : 'B2C'),
+    isRne: false,
+    clientNcc: f.ncc_client || undefined,
+    clientCompanyName: f.client,
+    clientPhone: f.client_tel || '',
+    clientEmail: f.client_email || '',
+    pointOfSale: p.fne_point_vente || p.societe || 'Siège',
+    establishment: p.fne_etablissement || p.societe || 'Siège',
+    commercialMessage: '',
+    footer: '',
+    foreignCurrency: '',
+    foreignCurrencyRate: 0,
+    items: [{
+      taxes: [taxeCode],
+      reference: f.ref_id || f.numero,
+      description: f.designation,
+      quantity: 1,
+      amount: f.ht,
+      discount: 0,
+      measurementUnit: 'unité'
+    }],
+    discount: 0
+  };
+}
+
+/* Appel réel à l'API FNE (test ou production selon paramétrage). Met à jour
+   et sauvegarde la facture avec le résultat de la certification DGI (ou
+   l'erreur rencontrée). Ne lève pas d'exception non gérée : le statut de la
+   facture reflète toujours le dernier résultat connu. */
+async function fneCertifierFacture(f) {
+  var p = DATA.params || {};
+  if (!p.fne_api_key) { f.statut_fne = 'erreur'; f.fne_erreur = 'Clé API FNE non configurée (Paramètres → Société → API FNE).'; return f; }
+  var url = fneBaseUrl();
+  if (!url) { f.statut_fne = 'erreur'; f.fne_erreur = 'URL API FNE non configurée pour l\'environnement « ' + (p.fne_environnement||'test') + ' ».'; return f; }
+  var corps = fneConstruireCorpsFacture(f, p);
+  try {
+    var res = await fetch(url + '/external/invoices/sign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer ' + p.fne_api_key },
+      body: JSON.stringify(corps)
+    });
+    var data = null;
+    try { data = await res.json(); } catch (eJson) { /* réponse non JSON */ }
+    if (!res.ok) {
+      f.statut_fne = 'erreur';
+      f.fne_erreur = (data && data.message) ? data.message + ' (HTTP ' + res.status + ')' : ('Erreur HTTP ' + res.status);
+      f.fne_reponse_brute = data || null;
+      return f;
+    }
+    f.statut_fne = 'certifiee';
+    f.fne_erreur = '';
+    f.fne_environnement_utilise = p.fne_environnement || 'test';
+    f.fne_ncc = data && data.ncc;
+    f.fne_reference = data && data.reference;
+    f.fne_token = data && data.token;
+    f.fne_invoice_id = data && data.invoice && data.invoice.id;
+    f.fne_balance_sticker = data && data.balance_sticker;
+    f.fne_warning = !!(data && data.warning);
+    f.fne_certifie_le = new Date().toISOString();
+    return f;
+  } catch (eNet) {
+    f.statut_fne = 'erreur';
+    /* Cas très fréquent : appel HTTP direct depuis une page HTTPS (contenu
+       mixte) ou absence d'en-têtes CORS côté serveur DGI — le navigateur
+       bloque alors la requête avant même qu'elle n'atteigne la plateforme. */
+    f.fne_erreur = 'Requête bloquée par le navigateur (probable contenu mixte HTTPS→HTTP ou CORS) : ' + (eNet && eNet.message ? eNet.message : eNet);
+    return f;
+  } finally {
+    await dbPut('factures_client', f);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_factures_client', f);
+  }
+}
+
+/* Nouvelle tentative de certification pour une facture déjà créée (ex. après
+   correction de la clé API ou résolution d'un blocage réseau). */
+async function fneRecertifier(facId) {
+  var f = (DATA.factures_client || []).find(function(x){ return x.id === facId; });
+  if (!f) { toast('Facture introuvable.', 'error'); return; }
+  toast('Nouvelle tentative de certification FNE…', 'info');
+  await fneCertifierFacture(f);
+  if (f.statut_fne === 'certifiee') toast('✅ Facture ' + f.numero + ' certifiée (réf. DGI ' + f.fne_reference + ').', 'success');
+  else toast('❌ Certification échouée : ' + f.fne_erreur, 'error');
+  if (typeof renderFacturesClient === 'function') renderFacturesClient();
+  imprimerFactureFNE(f.id);
+}
+
+/* Test de connectivité simple (Paramètres → Société), pour diagnostiquer
+   rapidement un blocage CORS/contenu mixte avant de facturer pour de vrai. */
+async function fneTesterConnexion() {
+  var gv = function(id){ var e=document.getElementById(id); return e?e.value:''; };
+  var url = (gv('param-fne-environnement') === 'production' ? gv('param-fne-url-prod') : gv('param-fne-url-test')) || FNE_URL_TEST_DEFAUT;
+  var apiKey = gv('param-fne-api-key');
+  var out = document.getElementById('fne-test-resultat');
+  if (out) out.innerHTML = '⏳ Test en cours…';
+  try {
+    var res = await fetch(url.replace(/\/$/,'') + '/external/invoices/sign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Authorization': 'Bearer ' + (apiKey||'') },
+      body: JSON.stringify({ invoiceType:'sale', paymentMethod:'cash', template:'B2C', isRne:false, clientCompanyName:'TEST', clientPhone:'0000000000', clientEmail:'test@test.ci', pointOfSale:'Test', establishment:'Test', items:[{taxes:['TVA'],description:'Test connexion',quantity:1,amount:1}] })
+    });
+    if (res.status === 401) { if(out) out.innerHTML = '<span style="color:#d97706;">🔐 Serveur joignable, mais clé API refusée (401) — vérifiez la clé.</span>'; return; }
+    if (res.ok || res.status === 400) { if(out) out.innerHTML = '<span style="color:#059669;">✅ Serveur FNE joignable (réponse HTTP ' + res.status + ').</span>'; return; }
+    if (out) out.innerHTML = '<span style="color:#d97706;">⚠️ Réponse inattendue : HTTP ' + res.status + '.</span>';
+  } catch (e) {
+    if (out) out.innerHTML = '<span style="color:#dc2626;">❌ Requête bloquée par le navigateur (contenu mixte HTTPS→HTTP et/ou CORS). L\'app étant servie en HTTPS, un appel direct au serveur de test DGI (HTTP) est généralement refusé par le navigateur. Une passerelle serveur (proxy) sera nécessaire pour cet environnement.</span>';
+  }
+}
+
+/* Ouvre le modal facturation depuis une cession */
 function facturerCession(cesId) {
   var c = (DATA.cessions_foncieres || []).find(function(x){ return x.id === cesId; });
   if (!c) { toast('Cession introuvable.', 'error'); return; }
-  var p = DATA.params || {};
   var acquereur = c.acquereur || ((c.raison||'') || (c.nom||'') + ' ' + (c.prenoms||'')).trim() || 'Acquéreur';
   var designation = c.designation || (typeof cesSourceRef==='function' ? cesSourceRef(c.source_key) : 'Cession foncière');
-  _fneOuvrirModal({ type:'cession', ref_id: c.id, client: acquereur, ncc_client: c.ncc||'', designation: designation, montant_ht: c.prix_cession || 0 });
+  _fneOuvrirModal({ type:'cession', ref_id: c.id, client: acquereur, ncc_client: c.ncc||'', tel: c.tel||c.telephone||'', email: c.email||'', designation: designation, montant_ht: c.prix_cession || 0 });
 }
 
 /* Ouvre le modal facturation depuis une souscription/lot */
@@ -92957,7 +93130,7 @@ function facturerLot(lotId) {
   if (!l) { toast('Lot introuvable.', 'error'); return; }
   var cli = l.client_id ? (DATA.clients || []).find(function(x){ return x.id === l.client_id; }) : null;
   var client = cli ? (cli.nom + ' ' + cli.prenoms) : 'Souscripteur';
-  _fneOuvrirModal({ type:'commercialisation', ref_id: l.id, client: client, ncc_client: (cli&&cli.ncc)||'', designation: 'Lot ' + (l.numero||'') + ' — ' + (l.type||''), montant_ht: l.prix || 0 });
+  _fneOuvrirModal({ type:'commercialisation', ref_id: l.id, client: client, ncc_client: (cli&&cli.ncc)||'', tel:(cli&&cli.tel)||'', email:(cli&&cli.email)||'', designation: 'Lot ' + (l.numero||'') + ' — ' + (l.type||''), montant_ht: l.prix || 0 });
 }
 
 function _fneOuvrirModal(data) {
@@ -92965,12 +93138,24 @@ function _fneOuvrirModal(data) {
   var p = DATA.params || {};
   document.getElementById('fne-mode-toggle').value = 'fne';
   document.getElementById('fne-client').value = data.client;
+  document.getElementById('fne-client-tel').value = data.tel || '';
+  document.getElementById('fne-client-email').value = data.email || '';
   document.getElementById('fne-ncc-client').value = data.ncc_client || '';
   document.getElementById('fne-designation').value = data.designation;
   document.getElementById('fne-montant-ht').value = data.montant_ht;
   document.getElementById('fne-tva-toggle').value = (p.tva_assujetti === 'non') ? 'non' : 'oui';
+  document.getElementById('fne-payment-method').value = 'cash';
+  var certifStatut = document.getElementById('fne-certif-statut'); if (certifStatut) certifStatut.innerHTML = '';
+  _fneTemplateAuto();
   _fneModeChange();
   document.getElementById('modal-fne').classList.add('open');
+}
+
+/* Bascule automatiquement B2B/B2C selon la présence d'un NCC (modifiable manuellement ensuite) */
+function _fneTemplateAuto() {
+  var ncc = (document.getElementById('fne-ncc-client')||{}).value || '';
+  var sel = document.getElementById('fne-template');
+  if (sel) sel.value = ncc.trim() ? 'B2B' : 'B2C';
 }
 
 function _fneModeChange() {
@@ -92982,7 +93167,7 @@ function _fneModeChange() {
     hint.innerHTML = 'Document interne. <strong>Ne passe pas par la certification DGI.</strong> Non valable comme facture normalisée pour un client assujetti exigeant le FNE.';
   } else {
     title.textContent = '🧾 Facture normalisée (FNE)';
-    hint.textContent = 'Certifiable DGI — QR + numéro normatif. Obligatoire pour clients assujettis.';
+    hint.textContent = 'Transmise et certifiée automatiquement auprès de la plateforme FNE (DGI) à l\'enregistrement.';
   }
   _fneRecalc();
 }
@@ -93008,6 +93193,12 @@ async function _fneEnregistrer() {
   var tvaActive = document.getElementById('fne-tva-toggle').value === 'oui';
   var tauxTva = tvaActive ? (p.tva || 18) : 0;
   var tva = Math.round(ht * tauxTva / 100);
+  var clientTel = document.getElementById('fne-client-tel').value.trim();
+  var clientEmail = document.getElementById('fne-client-email').value.trim();
+  if (mode === 'fne' && p.fne_actif === 'oui' && (!clientTel || !clientEmail)) {
+    toast('⚠️ Téléphone et email client sont obligatoires pour la certification FNE (API DGI).', 'error');
+    return;
+  }
   var f = {
     id: 'fac_' + Date.now(),
     numero: mode === 'simple' ? _fneNumeroSimple() : _fneNumero(),
@@ -93015,7 +93206,11 @@ async function _fneEnregistrer() {
     type: d.type,
     ref_id: d.ref_id,
     client: document.getElementById('fne-client').value.trim(),
+    client_tel: clientTel,
+    client_email: clientEmail,
     ncc_client: document.getElementById('fne-ncc-client').value.trim(),
+    fne_template: document.getElementById('fne-template').value,
+    fne_payment_method: document.getElementById('fne-payment-method').value,
     designation: document.getElementById('fne-designation').value.trim(),
     ht: ht, taux_tva: tauxTva, tva: tva, ttc: ht + tva,
     date: today(),
@@ -93025,8 +93220,18 @@ async function _fneEnregistrer() {
   DATA.factures_client.push(f);
   await dbPut('factures_client', f);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_factures_client', f);
+
+  var btn = document.querySelector('#modal-fne .modal-footer .btn-primary');
+  if (mode === 'fne' && p.fne_actif === 'oui') {
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Certification DGI en cours…'; }
+    await fneCertifierFacture(f);
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Émettre la facture'; }
+  }
+
   closeModal('modal-fne');
-  toast((mode==='simple'?'Facture simple ':'Facture FNE ') + f.numero + ' enregistrée.', 'success');
+  if (f.statut_fne === 'certifiee') toast('✅ Facture ' + f.numero + ' certifiée par la DGI (réf. ' + f.fne_reference + ').', 'success');
+  else if (f.statut_fne === 'erreur') toast('⚠️ Facture ' + f.numero + ' enregistrée, mais la certification FNE a échoué : ' + f.fne_erreur, 'error');
+  else toast((mode==='simple'?'Facture simple ':'Facture ') + f.numero + ' enregistrée.', 'success');
   imprimerFactureFNE(f.id);
   if (typeof renderFacturesClient === 'function') renderFacturesClient();
 }
@@ -93043,17 +93248,27 @@ function imprimerFactureFNE(facId) {
   var p = DATA.params || {};
   var logo = getLogoForPrint ? getLogoForPrint() : '';
   var estSimple = f.mode_facture === 'simple';
-  var fneActif = !estSimple && p.fne_actif === 'oui';
-  var qrPayload = _fneQrPayload(f, p.dgi);
-  var qrSvg = fneActif ? _fneQrSvg(qrPayload) : '';
+  var certifiee = f.statut_fne === 'certifiee';
+  var enErreur = f.statut_fne === 'erreur';
+  var enAttente = f.statut_fne === 'a_certifier';
+  /* QR scannable réel (lib qrcode-generator embarquée) encodant le lien de vérification DGI renvoyé par l'API */
+  var qrSvg = '';
+  if (certifiee && f.fne_token) {
+    try {
+      var qrUrl = /^https?:\/\//.test(f.fne_token) ? f.fne_token : (fneBaseUrl().replace(/\/ws$/,'') + '/fr/verification/' + f.fne_token);
+      var q = qrcode(0, 'M'); q.addData(qrUrl); q.make();
+      qrSvg = '<img src="' + q.createDataURL(4, 4) + '" style="width:90px;height:90px;">';
+    } catch (eQr) { qrSvg = ''; }
+  }
   var typeLabel = f.type === 'cession' ? 'Cession foncière' : 'Vente immobilière';
   var dateLbl = new Date(f.date).toLocaleDateString('fr-FR', { year:'numeric', month:'long', day:'numeric' });
-  var docTitre = estSimple ? 'FACTURE' : 'FACTURE';
+  var docTitre = 'FACTURE';
   var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Facture ' + f.numero + '</title>'
     + '<style>body{font-family:Arial,sans-serif;font-size:12px;color:#1C1C2E;padding:24px;line-height:1.55;}'
     + '.header{display:flex;justify-content:space-between;border-bottom:3px solid #B87333;padding-bottom:14px;margin-bottom:18px;}'
     + '.fne-mark{display:inline-block;background:#1A6B3A;color:#fff;font-weight:800;font-size:11px;padding:3px 10px;border-radius:5px;letter-spacing:1px;}'
     + '.simple-mark{display:inline-block;background:#64748B;color:#fff;font-weight:700;font-size:10px;padding:3px 10px;border-radius:5px;}'
+    + '.err-mark{display:inline-block;background:#C0392B;color:#fff;font-weight:700;font-size:10px;padding:3px 10px;border-radius:5px;}'
     + '.parties{display:flex;justify-content:space-between;gap:20px;margin-bottom:18px;}'
     + '.party{flex:1;background:#F6F1EA;border-radius:8px;padding:12px;font-size:11px;}'
     + '.party h4{margin:0 0 6px;color:#B87333;font-size:11px;text-transform:uppercase;}'
@@ -93061,31 +93276,35 @@ function imprimerFactureFNE(facId) {
     + '.totaux{margin-left:auto;width:280px;} .totaux td{padding:6px 8px;}'
     + '.ttc-row{border-top:2px solid #1C1C2E;font-size:15px;font-weight:800;color:#1A6B3A;}'
     + '.fne-block{margin-top:18px;display:flex;gap:16px;align-items:center;background:#F0FBF4;border:1px solid #1A6B3A;border-radius:8px;padding:12px;}'
+    + '.err-block{margin-top:18px;background:#FDF0EE;border:1px solid #C0392B;border-radius:8px;padding:12px;font-size:11px;color:#C0392B;}'
+    + '.wait-block{margin-top:18px;background:#FFF8E6;border:1px solid #D97706;border-radius:8px;padding:12px;font-size:11px;color:#92400E;}'
     + '.legal{font-size:10px;color:#6B6B9A;margin-top:16px;}'
-    + '.no-print{text-align:center;margin-bottom:16px;} .no-print button{padding:9px 20px;background:#B87333;color:#fff;border:none;border-radius:6px;cursor:pointer;}'
+    + '.no-print{text-align:center;margin-bottom:16px;} .no-print button{padding:9px 20px;background:#B87333;color:#fff;border:none;border-radius:6px;cursor:pointer;margin:0 4px;}'
     + '@media print{.no-print{display:none;}body{padding:0;}}</style></head><body>'
-    + '<div class="no-print"><button onclick="window.print()">🖨️ Imprimer / PDF</button></div>'
+    + '<div class="no-print"><button onclick="window.print()">🖨️ Imprimer / PDF</button>'
+    + (enErreur ? '<button onclick="window.opener && window.opener.fneRecertifier(\'' + f.id + '\')">🔁 Retenter la certification DGI</button>' : '')
+    + '</div>'
     + '<div class="header"><div style="display:flex;gap:12px;align-items:center;">' + (logo?'<img src="'+logo+'" style="height:50px;">':'')
     + '<div><div style="font-size:18px;font-weight:800;color:#B87333;">' + escHtml(p.societe || 'ImmoSuite ERP') + '</div>'
     + '<div style="font-size:10px;color:#6B6B9A;">' + escHtml(p.adresse || '') + '</div>'
     + '<div style="font-size:10px;color:#6B6B9A;">RCCM ' + escHtml(p.rccm || '—') + ' · NCC ' + escHtml(p.dgi || '—') + '</div></div></div>'
     + '<div style="text-align:right;"><div style="font-size:20px;font-weight:800;">' + docTitre + '</div>'
-    + '<div style="font-size:13px;color:#B87333;font-weight:700;">' + escHtml(f.numero) + '</div>'
+    + '<div style="font-size:13px;color:#B87333;font-weight:700;">' + escHtml(f.numero) + (certifiee && f.fne_reference ? ' · DGI ' + escHtml(f.fne_reference) : '') + '</div>'
     + '<div style="font-size:11px;color:#6B6B9A;">' + dateLbl + '</div>'
-    + '<div style="margin-top:6px;">' + (fneActif ? '<span class="fne-mark">✓ FNE</span>' : (estSimple ? '<span class="simple-mark">Facture simple — hors FNE</span>' : '')) + '</div></div></div>'
+    + '<div style="margin-top:6px;">' + (certifiee ? '<span class="fne-mark">✓ FNE certifiée DGI</span>' : estSimple ? '<span class="simple-mark">Facture simple — hors FNE</span>' : enErreur ? '<span class="err-mark">✗ Certification DGI échouée</span>' : enAttente ? '<span class="simple-mark">En attente de certification</span>' : '') + '</div></div></div>'
     + '<div class="parties">'
     + '<div class="party"><h4>Vendeur</h4>' + escHtml(p.societe || '') + '<br>NCC : ' + escHtml(p.dgi || '—') + '<br>' + escHtml(p.tel || '') + '</div>'
-    + '<div class="party"><h4>Client</h4>' + escHtml(f.client) + (f.ncc_client ? '<br>NCC : ' + escHtml(f.ncc_client) : '') + '</div></div>'
+    + '<div class="party"><h4>Client</h4>' + escHtml(f.client) + (f.ncc_client ? '<br>NCC : ' + escHtml(f.ncc_client) : '') + (f.client_tel?'<br>Tél : '+escHtml(f.client_tel):'') + (f.client_email?'<br>'+escHtml(f.client_email):'') + '</div></div>'
     + '<table><thead><tr><th>Désignation</th><th style="text-align:center;">Nature</th><th style="text-align:right;">Montant HT</th></tr></thead>'
     + '<tbody><tr><td>' + escHtml(f.designation) + '</td><td style="text-align:center;">' + typeLabel + '</td><td style="text-align:right;">' + fmtF(f.ht) + ' FCFA</td></tr></tbody></table>'
     + '<table class="totaux"><tr><td>Total HT</td><td style="text-align:right;">' + fmtF(f.ht) + ' FCFA</td></tr>'
     + '<tr><td>TVA (' + f.taux_tva + '%)</td><td style="text-align:right;">' + fmtF(f.tva) + ' FCFA</td></tr>'
     + '<tr class="ttc-row"><td>Total TTC</td><td style="text-align:right;">' + fmtF(f.ttc) + ' FCFA</td></tr></table>'
-    + (estSimple
-        ? ''
-        : (fneActif
-            ? '<div class="fne-block">' + qrSvg + '<div style="font-size:11px;"><strong style="color:#1A6B3A;">Facture Normalisée Électronique</strong><br>Réf. FNE : ' + escHtml(f.numero) + '<br>NCC émetteur : ' + escHtml(p.dgi || '—') + (p.teledeclarant_fne ? '<br>N° Télédéclarant : ' + escHtml(p.teledeclarant_fne) : '') + '<br><span style="color:#6B6B9A;">Vérifiable sur fne.dgi.gouv.ci</span></div></div>'
-            : '<div class="legal" style="color:#C0392B;">⚠ Facturation FNE non activée. Certification DGI requise avant remise au client (Paramètres → Société → FNE).</div>'))
+    + (estSimple ? ''
+        : certifiee ? '<div class="fne-block">' + qrSvg + '<div style="font-size:11px;"><strong style="color:#1A6B3A;">Facture Normalisée Électronique — certifiée DGI</strong><br>Réf. DGI : ' + escHtml(f.fne_reference||'—') + '<br>NCC contribuable : ' + escHtml(f.fne_ncc || p.dgi || '—') + (p.teledeclarant_fne ? '<br>N° Télédéclarant : ' + escHtml(p.teledeclarant_fne) : '') + (f.fne_environnement_utilise==='test' ? '<br><span style="color:#D97706;">⚠ Certifiée en environnement TEST — non valable en production.</span>' : '') + '<br><span style="color:#6B6B9A;">Vérifiable sur fne.dgi.gouv.ci</span></div></div>'
+        : enErreur ? '<div class="err-block">⚠ Certification DGI échouée : ' + escHtml(f.fne_erreur||'erreur inconnue') + '<br>La facture a été enregistrée localement mais n\'est <strong>pas encore valable comme FNE</strong>. Corrigez la configuration (Paramètres → Société → API FNE) puis relancez la certification.</div>'
+        : enAttente ? '<div class="wait-block">⏳ Facture en attente de certification auprès de la plateforme FNE.</div>'
+        : '<div class="legal" style="color:#C0392B;">⚠ Facturation FNE non activée. Certification DGI requise avant remise au client (Paramètres → Société → FNE).</div>')
     + '<div class="legal">' + (f.taux_tva===0 ? 'Opération non soumise à TVA. ' : '') + (estSimple ? 'Document interne non certifié DGI. ' : 'Facture émise conformément au Code Général des Impôts de Côte d\'Ivoire. ') + 'Conservation légale : 10 ans.</div>'
     + '</body></html>';
   var w = window.open('', '_blank');
@@ -97230,7 +97449,9 @@ goTo = function(page) {
       </div>
       <div class="form-grid">
         <div class="form-group span-2"><label>Client *</label><input class="form-control" id="fne-client"></div>
-        <div class="form-group span-2"><label>NCC client (si personne morale)</label><input class="form-control" id="fne-ncc-client" placeholder="Facultatif"></div>
+        <div class="form-group"><label>Téléphone client * <span style="font-weight:400;color:var(--dim);">(requis par l'API FNE)</span></label><input class="form-control" id="fne-client-tel" placeholder="07 09 08 07 65"></div>
+        <div class="form-group"><label>Email client * <span style="font-weight:400;color:var(--dim);">(requis par l'API FNE)</span></label><input type="email" class="form-control" id="fne-client-email"></div>
+        <div class="form-group span-2"><label>NCC client (si personne morale)</label><input class="form-control" id="fne-ncc-client" placeholder="Facultatif" oninput="_fneTemplateAuto()"></div>
         <div class="form-group span-2"><label>Désignation *</label><input class="form-control" id="fne-designation"></div>
         <div class="form-group"><label>Montant HT (FCFA)</label><input type="number" class="form-control" id="fne-montant-ht" oninput="_fneRecalc()"></div>
         <div class="form-group"><label>Assujetti TVA</label>
@@ -97239,8 +97460,27 @@ goTo = function(page) {
             <option value="non">Non (exonéré)</option>
           </select>
         </div>
+        <div class="form-group"><label>Type de client (FNE)</label>
+          <select class="form-control" id="fne-template">
+            <option value="B2C">B2C — Particulier</option>
+            <option value="B2B">B2B — Entreprise (NCC)</option>
+            <option value="B2G">B2G — Institution gouvernementale</option>
+            <option value="B2F">B2F — Client international</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Mode de paiement (FNE)</label>
+          <select class="form-control" id="fne-payment-method">
+            <option value="cash">Espèces</option>
+            <option value="mobile-money">Mobile Money</option>
+            <option value="transfer">Virement bancaire</option>
+            <option value="check">Chèque</option>
+            <option value="card">Carte bancaire</option>
+            <option value="deferred">À terme</option>
+          </select>
+        </div>
       </div>
       <div class="card" id="fne-recap" style="background:var(--card2);margin-top:10px;"></div>
+      <div id="fne-certif-statut" style="font-size:12px;margin-top:8px;"></div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-fne')">Annuler</button>
