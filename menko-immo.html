@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.38 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.39 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -19229,11 +19229,19 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="form-group"><label>Référence *</label><input type="text" class="form-control" id="conc-ref" placeholder="CONC-F3-2024"></div>
           <div class="form-group"><label>Programme *</label><select class="form-control" id="conc-programme"><option value="">— Sélectionner —</option></select></div>
           <div class="form-group"><label>Nature du projet</label><select class="form-control" id="conc-nature"><option value="villa">Villa / Maison individuelle</option><option value="immeuble">Immeuble collectif (appartements)</option></select></div>
-          <div class="form-group span-2"><label>Type(s) de logement / d'appartement *</label><input type="text" class="form-control" id="conc-type-logements" placeholder="F3 / F4   (pour un immeuble : les types d'appartements vendus)"></div>
+          <div class="form-group span-2"><label>Type(s) de logement / d'appartement *</label><input type="text" class="form-control" id="conc-type-logements" placeholder="F3 / F4   (pour un immeuble : les types d'appartements vendus)" oninput="concMajDQE()"></div>
           <div class="form-group"><label>Architecte / Bureau d'études</label><input type="text" class="form-control" id="conc-architecte"></div>
           <div class="form-group"><label>Surface plancher (m²)</label><input type="number" class="form-control" id="conc-surface"></div>
-          <div class="form-group"><label>Nombre d'unités prévues</label><input type="number" class="form-control" id="conc-nb-unites"></div>
-          <div class="form-group"><label>Coût conception (FCFA)</label><input type="number" class="form-control" id="conc-cout" value="0"></div>
+          <div class="form-group"><label>Nombre d'unités prévues</label><input type="number" class="form-control" id="conc-nb-unites" oninput="concMajDQE()"></div>
+          <div class="form-group"><label>Coût conception (FCFA)</label><input type="number" class="form-control" id="conc-cout" value="0" oninput="concMajDQE()"></div>
+          <!-- Rattachement du DQE. Le lien se fait par le type de logement : les
+               lignes de nomenclature générées depuis l'éditeur de plan portent
+               ce type, la conception le déclare. On rend ce lien visible et on
+               permet de reprendre le montant calculé plutôt que de le retaper. -->
+          <div class="form-group span-2" id="conc-dqe-bloc" style="display:none;">
+            <label>📐 Devis quantitatif estimatif rattaché</label>
+            <div id="conc-dqe-detail" style="font-size:12px;line-height:1.9;background:var(--card2);border:1px solid var(--bord);border-radius:8px;padding:10px 12px;"></div>
+          </div>
           <div class="form-group"><label>Phase actuelle</label>
             <select class="form-control" id="conc-phase">
               <option value="esquisse">Esquisse</option>
@@ -58758,6 +58766,7 @@ function openConceptionFull(id){
   document.getElementById('conc-modal-title').textContent=id?'Modifier conception':'Nouveau projet';
   switchTab('modal-conc','general');
   document.getElementById('modal-conception').classList.add('open');
+  concMajDQE();   /* rattachement DQE affiché dès l'ouverture, pas seulement après saisie */
 }
 
 function renderPhasesConception(phases){
@@ -58774,6 +58783,130 @@ function addPhaseConception(){var box=document.getElementById('conc-phases-list'
 function addDocConception(){var box=document.getElementById('conc-docs-list');if(!box)return;var n=box.querySelectorAll('[id^="doc-nom-"]').length;var div=document.createElement('div');div.style.cssText='display:flex;gap:8px;margin-bottom:8px;align-items:center;';div.innerHTML='<input type="text" class="form-control" id="doc-nom-'+n+'" placeholder="Nom document" style="flex:3;"><input type="text" class="form-control" id="doc-ref-'+n+'" placeholder="Réf." style="flex:1;"><button class="btn btn-danger btn-sm btn-icon" onclick="this.parentElement.remove()">✕</button>';box.appendChild(div);}
 
 function collectPhasesConception(){var phases=[];document.querySelectorAll('[id^="phase-nom-"]').forEach(function(el){var s=document.getElementById(el.id.replace('nom','statut'));var p=document.getElementById(el.id.replace('nom','pct'));if(el.value.trim())phases.push({nom:el.value.trim(),statut:s?s.value:'a_faire',pct:parseInt(p?p.value:0)||0});});return phases;}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   RATTACHEMENT DU DQE À LA CONCEPTION
+   ──────────────────────────────────────────────────────────────────────────
+   L'éditeur de plan génère des lignes de nomenclature portant un TYPE DE
+   LOGEMENT (« Villa F4 », « F3 »…). La fiche de conception déclare de son côté
+   le ou les types qu'elle couvre. Le lien existe donc déjà dans les données —
+   il n'était simplement affiché nulle part, et le champ « coût conception »
+   restait saisi à la main alors que le DQE le calcule au franc près.
+
+   Deux écueils traités ici :
+
+   · Le champ conception liste PLUSIEURS types en texte libre (« F3 / F4 »,
+     « F3, F4 »). On découpe sur les séparateurs usuels et on additionne les
+     DQE correspondants, plutôt que d'exiger une saisie normée qui aurait
+     invalidé les fiches existantes.
+
+   · Un type déclaré sans DQE correspondant est signalé nommément. C'est le cas
+     le plus fréquent — une faute de frappe entre le plan et la fiche — et il
+     se traduit sinon par un coût silencieusement sous-estimé.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+function _concTypes(txt) {
+  return String(txt || '')
+    .split(/[\/,;+]|\s{2,}/)
+    .map(function(s){ return s.trim(); })
+    .filter(Boolean)
+    .filter(function(v,i,a){ return a.indexOf(v) === i; });
+}
+
+/* Retrouve le type de nomenclature correspondant à un libellé de conception,
+   en tolérant casse et espaces — « villa f4 » et « Villa F4 » sont le même. */
+function _concTypeDQE(libelle) {
+  var norm = function(s){ return String(s||'').toUpperCase().replace(/\s+/g,' ').trim(); };
+  var cible = norm(libelle);
+  var types = {};
+  (DATA.nomenclatures || []).forEach(function(n){ if (n.type_logement) types[n.type_logement] = true; });
+  var liste = Object.keys(types);
+  var exact = liste.find(function(t){ return norm(t) === cible; });
+  if (exact) return exact;
+  /* Repli : correspondance par inclusion (« F4 » trouve « Villa F4 »). On ne
+     l'applique que si UNE seule correspondance existe — deux candidats
+     signifient une ambiguïté qu'il vaut mieux signaler que trancher. */
+  var partiels = liste.filter(function(t){ return norm(t).indexOf(cible) !== -1 || cible.indexOf(norm(t)) !== -1; });
+  return partiels.length === 1 ? partiels[0] : null;
+}
+
+function concDQEInfo() {
+  var libelles = _concTypes((document.getElementById('conc-type-logements') || {}).value);
+  var nbUnites = parseInt((document.getElementById('conc-nb-unites') || {}).value) || 0;
+  var res = { lignes:[], total:0, manquants:[], nbUnites:nbUnites };
+  libelles.forEach(function(lib){
+    var t = _concTypeDQE(lib);
+    if (!t) { res.manquants.push(lib); return; }
+    var nb = (DATA.nomenclatures || []).filter(function(n){ return n.type_logement === t; }).length;
+    var cout = (typeof calculerCoutParType === 'function') ? calculerCoutParType(t) : 0;
+    res.lignes.push({ libelle:lib, type:t, nbPostes:nb, cout:cout });
+    res.total += cout;
+  });
+  return res;
+}
+
+function concMajDQE() {
+  var bloc = document.getElementById('conc-dqe-bloc');
+  var box  = document.getElementById('conc-dqe-detail');
+  if (!bloc || !box) return;
+  var info = concDQEInfo();
+  if (!info.lignes.length && !info.manquants.length) { bloc.style.display = 'none'; return; }
+  bloc.style.display = '';
+
+  var h = '';
+  info.lignes.forEach(function(l){
+    h += '<div style="display:flex;justify-content:space-between;gap:10px;">'
+      + '<span>📐 ' + escHtml(l.type) + ' <span style="color:var(--blanc-dim);">— ' + l.nbPostes + ' poste(s)</span></span>'
+      + '<strong>' + fmtF(l.cout) + ' F</strong></div>';
+  });
+
+  if (info.manquants.length) {
+    h += '<div style="margin-top:6px;padding:6px 8px;background:rgba(239,159,39,.14);border-left:3px solid #EF9F27;border-radius:4px;">'
+      + '⚠️ Aucun DQE pour : <strong>' + escHtml(info.manquants.join(', ')) + '</strong><br>'
+      + '<span style="color:var(--blanc-dim);">Générez-le depuis l\'éditeur de plan, ou vérifiez que le libellé correspond exactement au type utilisé dans la nomenclature.</span>'
+      + '</div>';
+  }
+
+  if (info.lignes.length) {
+    var coutSaisi = parseFloat((document.getElementById('conc-cout') || {}).value) || 0;
+    /* Coût par unité × nombre d'unités : le DQE chiffre UN logement type, la
+       conception en produit plusieurs. Confondre les deux fait varier le
+       montant d'un facteur égal au nombre d'unités — l'erreur la plus coûteuse
+       possible à ce stade du montage. */
+    var totalProgramme = info.nbUnites > 1 ? info.total * info.nbUnites : info.total;
+    h += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--bord);">'
+      + '<div style="display:flex;justify-content:space-between;"><span>Total DQE par unité</span><strong style="color:var(--or);">' + fmtF(info.total) + ' F</strong></div>';
+    if (info.nbUnites > 1) {
+      h += '<div style="display:flex;justify-content:space-between;"><span>× ' + info.nbUnites + ' unités</span><strong style="color:var(--or);">' + fmtF(totalProgramme) + ' F</strong></div>';
+    }
+    if (coutSaisi > 0) {
+      var ecart = coutSaisi - totalProgramme;
+      var pct = totalProgramme > 0 ? Math.round(Math.abs(ecart) / totalProgramme * 100) : 0;
+      if (Math.abs(ecart) > totalProgramme * 0.02) {
+        h += '<div style="margin-top:5px;color:' + (ecart > 0 ? '#EF9F27' : 'var(--rouge)') + ';">'
+          + (ecart > 0 ? '▲' : '▼') + ' Écart de ' + fmtF(Math.abs(ecart)) + ' F (' + pct + ' %) avec le coût saisi'
+          + (ecart < 0 ? ' — le coût saisi est <strong>inférieur</strong> au DQE : la marge du programme est surévaluée d\'autant.' : '.')
+          + '</div>';
+      } else {
+        h += '<div style="margin-top:5px;color:var(--vert);">✅ Coût saisi cohérent avec le DQE.</div>';
+      }
+    }
+    h += '<button type="button" class="btn btn-secondary btn-sm" style="margin-top:8px;" onclick="concReprendreDQE()">↧ Reprendre ' + fmtF(totalProgramme) + ' F</button>';
+    h += '</div>';
+  }
+  box.innerHTML = h;
+}
+
+/* Reprise volontaire, jamais automatique : le coût de conception peut
+   légitimement différer du DQE (honoraires, aléas, remise négociée). Écraser
+   sans demander effacerait un arbitrage. */
+function concReprendreDQE() {
+  var info = concDQEInfo();
+  if (!info.lignes.length) return;
+  var total = info.nbUnites > 1 ? info.total * info.nbUnites : info.total;
+  var el = document.getElementById('conc-cout');
+  if (el) { el.value = total; concMajDQE(); toast('Coût repris du DQE : ' + fmtF(total) + ' F.', 'success'); }
+}
 
 async function saveConception(){
   if(APP._savingConception)return; /* anti double-clic / double-tap mobile */
