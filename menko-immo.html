@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.36 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.37 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -8275,6 +8275,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <button class="btn btn-secondary btn-sm" onclick="openModal('modal-hierarchie-foncier');fhTab('schema')">📊 Schéma des flux</button>
           <button class="btn btn-secondary btn-sm" onclick="ouvrirCarteFoncier()">🗺️ Géolocaliser</button>
           <button class="btn btn-secondary btn-sm" onclick="exportFoncierCSV()">⬇ Export</button>
+          <button class="btn btn-secondary btn-sm" onclick="pfApercuRapport()" title="État du portefeuille, constats chiffrés et actions proposées — à transmettre à la direction">🗺️ Rapport stratégique</button>
           <button class="btn btn-primary" onclick="openParcelle()">+ Nouvelle parcelle</button>
         </div>
         <div class="kpi-grid">
@@ -34627,6 +34628,212 @@ function ckResetIgnores() {
   localStorage.removeItem(CK_SNOOZE_KEY);
   toast('Actions reportées ou ignorées réaffichées.', 'info');
   buildDashTabCockpit();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   RAPPORT STRATÉGIQUE DU PORTEFEUILLE FONCIER
+   ──────────────────────────────────────────────────────────────────────────
+   Destiné à l'administrateur et à la direction, pas à l'exécutant. Il ne liste
+   pas des tâches : il établit un ÉTAT, en tire des CONSTATS chiffrés, et
+   propose des ACTIONS hiérarchisées avec ce qu'elles engagent.
+
+   Trois principes de construction :
+
+   1. Toute valeur patrimoniale passe par parcelleValeurPatrimoniale(). Sur un
+      portefeuille comportant des partenariats, la valeur brute surestime
+      l'actif de la part revenant aux partenaires : un rapport de direction qui
+      annoncerait le coût total comme un actif serait faux au bilan.
+
+   2. Les actions sont classées par ce qu'elles font gagner ou évitent de
+      perdre, pas par ordre de module. Un titre manquant sur 150 M d'actif passe
+      avant dix parcelles sans coordonnées.
+
+   3. Le rapport NOMME les parcelles concernées. Un constat agrégé
+      (« 4 parcelles en litige ») n'est pas actionnable sans savoir lesquelles.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+function _pfLabel(p) { return (typeof parcelleLabel === 'function') ? parcelleLabel(p) : (p.ref || p.id); }
+function _pfVal(p) { return (typeof parcelleValeurPatrimoniale === 'function') ? parcelleValeurPatrimoniale(p) : (parseFloat(p.cout_total)||0); }
+
+function _pfCollecter() {
+  var P = (DATA.parcelles || []).filter(function(p){ return p && !p.fusionnee_dans && !p.decoupee_dans; });
+  var now = new Date();
+  var r = { total:P.length, superficie:0, valeurBrute:0, valeurPatrimoine:0, parStatut:{},
+            sansGeo:[], sansTitre:[], enLitige:[], risqueEleve:[], indivision:[],
+            sansCout:[], sansProgramme:[], dormantes:[], titreAncien:[], parcelles:P };
+
+  P.forEach(function(p){
+    r.superficie += parseFloat(p.superficie) || 0;
+    r.valeurBrute += parseFloat(p.cout_total) || 0;
+    r.valeurPatrimoine += _pfVal(p);
+
+    var st = p.statut || 'non_defini';
+    r.parStatut[st] = r.parStatut[st] || { nb:0, superficie:0, valeur:0 };
+    r.parStatut[st].nb++;
+    r.parStatut[st].superficie += parseFloat(p.superficie) || 0;
+    r.parStatut[st].valeur += _pfVal(p);
+
+    var aGeo = (p.geo_polygon && p.geo_polygon.length >= 3) || (p.bornes && p.bornes.length >= 3);
+    if (!aGeo) r.sansGeo.push(p);
+
+    /* « Sans titre » au sens du risque juridique : ni TF ni ACD. Une parcelle en
+       prospection n'est pas concernée — on ne titre pas un terrain non acquis. */
+    var titre = String(p.type_titre || '').toLowerCase();
+    var titreSolide = /titre|tf|acd|arret|arrêt/.test(titre) && p.num_titre;
+    var actif = ['acquis','amenage','disponible'].indexOf(p.statut) !== -1;
+    if (!titreSolide && actif) r.sansTitre.push(p);
+
+    if (p.statut === 'litige' || (p.litiges && p.litiges.length)) r.enLitige.push(p);
+    if (p.risque === 'eleve') r.risqueEleve.push(p);
+    if (typeof parcelleEnIndivision === 'function' && parcelleEnIndivision(p)) r.indivision.push(p);
+    if (!(parseFloat(p.cout_total) > 0)) r.sansCout.push(p);
+    if (!p.programme_id && actif) r.sansProgramme.push(p);
+
+    /* Dormante : acquise depuis plus de 18 mois, sans programme. Du foncier
+       immobilisé sans affectation est un capital qui ne travaille pas — c'est
+       le constat qu'attend une direction. */
+    var ref = p.date_acquisition || p.date_titre || p.created_at;
+    if (ref && p.statut === 'acquis' && !p.programme_id) {
+      var mois = (now - new Date(ref)) / (30.44 * 86400000);
+      if (mois > 18) { p._moisDormance = Math.round(mois); r.dormantes.push(p); }
+    }
+    if (p.date_titre && !p.programme_id) {
+      var ans = (now - new Date(p.date_titre)) / (365.25 * 86400000);
+      if (ans > 3) { p._ansTitre = Math.round(ans); r.titreAncien.push(p); }
+    }
+  });
+
+  r.cessions = (DATA.cessions_foncieres || []).filter(function(c){ return c.source_key && c.source_key.indexOf('parcelle:') === 0; });
+  r.caCessions = r.cessions.reduce(function(s,c){ return s + (parseFloat(c.prix_cession)||0); }, 0);
+  r.encaisseCessions = r.cessions.reduce(function(s,c){ return s + (parseFloat(c.montant_encaisse)||0); }, 0);
+  return r;
+}
+
+function _pfActions(r) {
+  var A = [];
+  var noms = function(list, n){
+    n = n || 4;
+    return list.slice(0,n).map(_pfLabel).join(', ') + (list.length > n ? ' … (+' + (list.length-n) + ')' : '');
+  };
+  var val = function(list){ return list.reduce(function(s,p){ return s + _pfVal(p); }, 0); };
+
+  if (r.enLitige.length) A.push({ p:100, titre:'Traiter les litiges fonciers',
+    detail:r.enLitige.length + ' parcelle(s) en litige représentant ' + fmtF(val(r.enLitige)) + ' F d\'actif : ' + noms(r.enLitige),
+    action:'Faire le point avec le conseil juridique sur chaque dossier. Une parcelle en litige n\'est ni cessible ni finançable : elle immobilise du capital sans rendement.' });
+
+  if (r.sansTitre.length) A.push({ p:92, titre:'Sécuriser les titres manquants',
+    detail:r.sansTitre.length + ' parcelle(s) acquises ou aménagées sans titre ni ACD, pour ' + fmtF(val(r.sansTitre)) + ' F : ' + noms(r.sansTitre),
+    action:'Engager ou relancer l\'immatriculation. Sans titre, la cession reste précaire et la parcelle ne peut être donnée en garantie bancaire.' });
+
+  if (r.risqueEleve.length) A.push({ p:85, titre:'Arbitrer les parcelles à risque élevé',
+    detail:r.risqueEleve.length + ' parcelle(s) classées à risque élevé : ' + noms(r.risqueEleve),
+    action:'Décider pour chacune : sécuriser, provisionner, ou céder. Un risque élevé maintenu sans décision se transforme en perte.' });
+
+  if (r.dormantes.length) A.push({ p:78, titre:'Affecter le foncier dormant',
+    detail:r.dormantes.length + ' parcelle(s) acquises depuis plus de 18 mois sans programme, immobilisant ' + fmtF(val(r.dormantes)) + ' F : '
+      + r.dormantes.slice(0,4).map(function(p){ return _pfLabel(p) + ' (' + (p._moisDormance||'?') + ' mois)'; }).join(', '),
+    action:'Lancer un programme, mettre en location, ou céder. Du foncier détenu sans affectation supporte les charges sans produire de recette.' });
+
+  if (r.indivision.length) A.push({ p:70, titre:'Suivre les engagements de rétrocession',
+    detail:r.indivision.length + ' parcelle(s) en indivision. Part promoteur ' + fmtF(val(r.indivision)) + ' F sur '
+      + fmtF(r.indivision.reduce(function(s,p){ return s + (parseFloat(p.cout_total)||0); },0)) + ' F engagés : ' + noms(r.indivision),
+    action:'Vérifier que les lots réservés aux partenaires sont exclus de la commercialisation et que les échéances de rétrocession sont tenues. Un lot vendu deux fois se solde par une résolution judiciaire.' });
+
+  if (r.sansGeo.length) A.push({ p:55, titre:'Géoréférencer les parcelles sans contour',
+    detail:r.sansGeo.length + ' parcelle(s) sur ' + r.total + ' sans polygone : ' + noms(r.sansGeo),
+    action:'Importer les plans DXF des géomètres. Sans contour, ni la superficie ni les limites ne sont opposables, et le morcellement ne peut être préparé.' });
+
+  if (r.sansCout.length) A.push({ p:48, titre:'Compléter les coûts d\'acquisition',
+    detail:r.sansCout.length + ' parcelle(s) sans coût saisi : ' + noms(r.sansCout),
+    action:'Renseigner prix et frais. Tant qu\'ils manquent, la valorisation du portefeuille et la marge des cessions sont sous-estimées.' });
+
+  if (r.sansProgramme.length) A.push({ p:40, titre:'Rattacher les parcelles à un programme',
+    detail:r.sansProgramme.length + ' parcelle(s) actives hors programme : ' + noms(r.sansProgramme),
+    action:'Le rattachement conditionne le suivi de marge par opération et l\'imputation analytique des coûts.' });
+
+  if (r.titreAncien.length) A.push({ p:35, titre:'Réévaluer les titres anciens',
+    detail:r.titreAncien.length + ' parcelle(s) titrées depuis plus de 3 ans sans programme : '
+      + r.titreAncien.slice(0,4).map(function(p){ return _pfLabel(p) + ' (' + (p._ansTitre||'?') + ' ans)'; }).join(', '),
+    action:'Réévaluer leur valeur vénale : un foncier titré ancien s\'est souvent apprécié, et l\'inscrire au coût historique fausse la lecture du patrimoine.' });
+
+  return A.sort(function(a,b){ return b.p - a.p; });
+}
+
+function _pfTexteRapport() {
+  var r = _pfCollecter();
+  var A = _pfActions(r);
+  var jour = new Date().toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
+  var L = [];
+  L.push('🗺️ RAPPORT STRATÉGIQUE — PORTEFEUILLE FONCIER');
+  L.push(jour.charAt(0).toUpperCase() + jour.slice(1));
+  L.push('');
+  if (!r.total) { L.push('Aucune parcelle au portefeuille.'); return L.join('\n'); }
+
+  L.push('▸ ÉTAT DU PORTEFEUILLE');
+  L.push('  ' + r.total + ' parcelle(s) · ' + (r.superficie/10000).toFixed(2) + ' ha');
+  L.push('  Valeur au patrimoine : ' + fmtF(r.valeurPatrimoine) + ' F');
+  if (r.valeurBrute !== r.valeurPatrimoine) {
+    L.push('    Coût total engagé ' + fmtF(r.valeurBrute) + ' F, dont ' + fmtF(r.valeurBrute - r.valeurPatrimoine)
+      + ' F revenant aux partenaires fonciers —');
+    L.push('    exclus de l\'actif : ces lots sont viabilisés sans être détenus.');
+  }
+  L.push('');
+  L.push('▸ RÉPARTITION PAR STATUT');
+  Object.keys(r.parStatut).sort(function(a,b){ return r.parStatut[b].valeur - r.parStatut[a].valeur; }).forEach(function(st){
+    var d = r.parStatut[st];
+    L.push('  · ' + String(st).replace(/_/g,' ') + ' : ' + d.nb + ' parcelle(s) · ' + (d.superficie/10000).toFixed(2) + ' ha · ' + fmtF(d.valeur) + ' F');
+  });
+  L.push('');
+  if (r.cessions.length) {
+    L.push('▸ VALORISATION RÉALISÉE');
+    L.push('  ' + r.cessions.length + ' cession(s) pour ' + fmtF(r.caCessions) + ' F');
+    L.push('  Encaissé ' + fmtF(r.encaisseCessions) + ' F'
+      + (r.caCessions > r.encaisseCessions ? ' — reste à recouvrer ' + fmtF(r.caCessions - r.encaisseCessions) + ' F' : ''));
+    L.push('');
+  }
+  L.push('▸ ACTIONS PROPOSÉES');
+  if (!A.length) {
+    L.push('  Aucune anomalie : titres en règle, aucun litige, portefeuille entièrement affecté.');
+  } else {
+    A.forEach(function(a,i){
+      L.push('');
+      L.push('  ' + (i+1) + '. ' + a.titre + (a.p>=85 ? '   [PRIORITÉ HAUTE]' : (a.p>=55 ? '   [à planifier]' : '   [de fond]')));
+      L.push('     Constat : ' + a.detail);
+      L.push('     Action  : ' + a.action);
+    });
+  }
+  L.push('');
+  L.push('▸ SYNTHÈSE');
+  var hautes = A.filter(function(a){ return a.p >= 85; }).length;
+  if (hautes) L.push('  ' + hautes + ' sujet(s) appellent une décision à court terme, portant sur la sécurisation juridique du portefeuille.');
+  else if (A.length) L.push('  Aucun sujet urgent : les actions listées relèvent de la structuration et peuvent être planifiées.');
+  else L.push('  Portefeuille sain, aucune action requise.');
+  L.push('  Montants exprimés en quote-part promoteur.');
+  return L.join('\n');
+}
+
+async function pfEnvoyerRapportStrategique() {
+  var texte = _pfTexteRapport();
+  var conv = await _synthGetConversation();
+  if (!conv) { toast('Aucun administrateur/DG identifié pour recevoir le rapport.', 'error'); return; }
+  var msg = { id:uid(), conversation_id:conv.id,
+    expediteur_id:(APP.currentUser && APP.currentUser.id) || 'system',
+    contenu:texte, date:new Date().toISOString(), lu:false, fichiers:[],
+    type_message:'rapport_foncier_strategique' };
+  DATA.messages = DATA.messages || [];
+  DATA.messages.push(msg);
+  await dbPut('messages', msg);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_messages', msg);
+  if (typeof renderConversations === 'function') renderConversations();
+  toast('🗺️ Rapport stratégique foncier envoyé (admin & DG).', 'success');
+}
+
+/* Aperçu avant envoi : un rapport de direction qui nomme des parcelles et
+   chiffre des risques ne se transmet pas sans relecture. */
+function pfApercuRapport() {
+  var el = document.getElementById('pf-rapport-contenu');
+  if (el) el.textContent = _pfTexteRapport();
+  openModal('modal-rapport-foncier');
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -100972,6 +101179,27 @@ goTo = function(page) {
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-pl-transfert-foncier')">Annuler</button>
       <button class="btn btn-primary" onclick="plTfEnregistrer()">🗺️ Créer / mettre à jour la parcelle</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : rapport stratégique du portefeuille foncier -->
+<div class="modal-overlay" id="modal-rapport-foncier">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3>🗺️ Rapport stratégique — Portefeuille foncier</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-rapport-foncier')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:11px;color:var(--blanc-dim);margin-bottom:8px;">
+        Relisez avant transmission : le rapport nomme les parcelles et chiffre les risques.
+      </div>
+      <pre id="pf-rapport-contenu" style="white-space:pre-wrap;font-family:inherit;font-size:12px;line-height:1.7;background:var(--card2);border:1px solid var(--bord);border-radius:8px;padding:14px;max-height:60vh;overflow:auto;margin:0;"></pre>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-rapport-foncier')">Fermer</button>
+      <button class="btn btn-secondary" onclick="(function(){var t=document.getElementById('pf-rapport-contenu').textContent;navigator.clipboard.writeText(t).then(function(){toast('Rapport copié.','success');});})()">📋 Copier</button>
+      <button class="btn btn-primary" onclick="closeModal('modal-rapport-foncier');pfEnvoyerRapportStrategique()">📨 Transmettre (admin &amp; DG)</button>
     </div>
   </div>
 </div>
