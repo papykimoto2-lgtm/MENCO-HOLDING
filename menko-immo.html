@@ -47724,6 +47724,13 @@ function _lcBuild(){
     toast('Lot '+(lot.numero||lot.id)+' positionné sur la carte.', 'success');
   });
   lcRender(); lcFitAll();
+  /* [FIX] Leaflet mesure la taille du conteneur au moment du L.map(). L'onglet
+     venant tout juste d'être affiché, cette mesure vaut souvent 0 : la carte
+     s'initialise sur une surface nulle et ne rend qu'une zone grise jusqu'à ce
+     qu'un déplacement force un recalcul. D'où l'impression qu'« aucun système
+     de commercialisation » n'apparaît à l'ouverture. On force la remesure une
+     fois la mise en page appliquée. */
+  setTimeout(function(){ if (_lc.map) { _lc.map.invalidateSize(); lcFitAll(); } }, 250);
 }
 function lcSetFond(v){
   ['osm','sat'].forEach(function(k){ if(_lc.fonds[k]&&_lc.map.hasLayer(_lc.fonds[k])) _lc.map.removeLayer(_lc.fonds[k]); });
@@ -47781,14 +47788,55 @@ function lcRender(){
     {l:'CA vendu',v:fmtF(caVendu)+' F',c:'var(--or)'}
   ].map(function(k){ return '<div class="kpi-card" style="border-top:3px solid '+k.c+';padding:8px;"><div class="kpi-label" style="font-size:10px;">'+k.l+'</div><div class="kpi-value" style="font-size:14px;color:'+k.c+';">'+k.v+'</div></div>'; }).join('');
   var cnt = document.getElementById('lc-nonpositionnes-count'); if (cnt) cnt.textContent = sansPos.length;
+
+  /* Aucun lot positionné : la carte s'affiche vide sans rien expliquer.
+     On le dit, plutôt que de laisser croire à une panne. */
+  var _lcVide = document.getElementById('lc-vide-msg');
+  var _nbPos = lots.length - sansPos.length;
+  if (!_lcVide && _lc.map && !_nbPos && lots.length) {
+    _lcVide = document.createElement('div');
+    _lcVide.id = 'lc-vide-msg';
+    _lcVide.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:400;'
+      + 'background:var(--card,#fff);border:1px solid var(--bord);border-radius:10px;padding:14px 18px;'
+      + 'max-width:320px;text-align:center;font-size:12px;line-height:1.7;box-shadow:0 2px 12px rgba(0,0,0,.15);';
+    var _host = document.getElementById('lc-map');
+    if (_host) { _host.style.position = _host.style.position || 'relative'; _host.appendChild(_lcVide); }
+  }
+  if (_lcVide) {
+    if (!_nbPos && lots.length) {
+      _lcVide.innerHTML = '<strong>Aucun lot positionné</strong><br>'
+        + lots.length + ' lot(s) correspondent aux filtres, mais aucun ne porte de coordonnées.<br>'
+        + 'Importez le plan de masse (DXF) depuis la fiche de la parcelle, ou placez-les à la main via le panneau de droite.';
+      _lcVide.style.display = 'block';
+    } else {
+      _lcVide.style.display = 'none';
+    }
+  }
   var liste = document.getElementById('lc-liste-nonpositionnes');
-  if (liste) liste.innerHTML = sansPos.length ? sansPos.map(function(l){
+  /* [FIX] La liste injectait UNE ligne avec bouton par lot non positionné.
+     Sur un lotissement complet (2512 lots sans coordonnées), cela produisait
+     plus de 2500 blocs DOM d'un coup : le navigateur gelait et le panneau
+     restait vide. On plafonne l'affichage et on invite à filtrer, le placement
+     un par un n'ayant de toute façon aucun sens à cette échelle — l'import du
+     plan de masse DXF est la voie normale pour positionner en masse. */
+  var LC_MAX_LISTE = 200;
+  var sansPosVue = sansPos.slice(0, LC_MAX_LISTE);
+  if (liste) liste.innerHTML = sansPos.length ? (
+    (sansPos.length > LC_MAX_LISTE
+      ? '<div style="padding:8px;background:var(--bord2);border-radius:6px;margin-bottom:6px;font-size:11px;line-height:1.6;">'
+        + '<strong>' + sansPos.length + ' lots sans position.</strong> Les ' + LC_MAX_LISTE + ' premiers sont listés ci-dessous.<br>'
+        + 'Pour en positionner autant, utilisez l\'import du plan de masse (DXF) plutôt que le placement manuel. '
+        + 'Filtrez par programme pour réduire la liste.'
+        + '</div>'
+      : '')
+    + sansPosVue.map(function(l){
     var color = LC_STATUT_COLORS[l.statut]||'#94a3b8';
     return '<div style="display:flex;align-items:center;gap:8px;padding:5px 6px;border-bottom:1px solid var(--bord);">'
       + '<span style="width:9px;height:9px;border-radius:50%;background:'+color+';flex-shrink:0;"></span>'
       + '<div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+escHtml(l.numero||l.id)+' <span style="font-size:10px;color:var(--blanc-dim);">'+escHtml(l.type||'')+'</span></div>'
       + '<button class="btn btn-secondary btn-sm" onclick="lcPlacer(\''+l.id+'\')">📍 Placer</button></div>';
-  }).join('') : '<span style="color:var(--blanc-dim);">Tous les lots filtrés sont positionnés.</span>';
+    }).join('')
+  ) : '<span style="color:var(--blanc-dim);">Tous les lots filtrés sont positionnés.</span>';
 }
 function lcFitAll(){
   if(!_lc.map) return;
