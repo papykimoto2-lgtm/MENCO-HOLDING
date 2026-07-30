@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.33 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.35 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -11529,7 +11529,19 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
 
         <div class="kpi-grid" id="pl-kpis" style="margin-bottom:16px;"></div>
 
-        <div class="card">
+        <!-- Bascule d'affichage. Le tableau reste le mode par défaut : il est
+             dense et comparable colonne par colonne, ce qu'on veut sur un
+             portefeuille de partenaires. La grille sert quand chaque fiche
+             porte plusieurs terrains — l'information tient mieux dans une carte
+             que dans une cellule où les noms s'empilent. -->
+        <div style="display:flex;justify-content:flex-end;gap:6px;margin-bottom:10px;">
+          <div style="display:inline-flex;border:1px solid var(--bord);border-radius:8px;overflow:hidden;">
+            <button id="pl-vue-tableau" class="btn btn-sm" style="border:none;border-radius:0;" onclick="plSetVue('tableau')" title="Vue tableau — comparaison dense">☰ Tableau</button>
+            <button id="pl-vue-grille"  class="btn btn-sm" style="border:none;border-radius:0;" onclick="plSetVue('grille')"  title="Vue grille — une carte par partenaire">▦ Grille</button>
+          </div>
+        </div>
+
+        <div class="card" id="pl-bloc-tableau">
           <div class="table-wrap">
             <table>
               <thead><tr>
@@ -11539,6 +11551,10 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <tbody id="pl-tbody"></tbody>
             </table>
           </div>
+        </div>
+
+        <div id="pl-bloc-grille" style="display:none;">
+          <div id="pl-grille" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;"></div>
         </div>
       </div>
 
@@ -98640,6 +98656,109 @@ async function plVerifierTablesCloud() {
   host.innerHTML = html;
 }
 
+/* ══ Affichage grille / tableau ═══════════════════════════════════════════
+   Le filtrage est extrait du rendu : une seule source de vérité pour les deux
+   vues, sinon un filtre corrigé d'un côté finit par diverger de l'autre. */
+function plListeFiltree() {
+  var q = ((document.getElementById('pl-search')||{}).value || '').toLowerCase().trim();
+  var fStatut = (document.getElementById('pl-filter-statut')||{}).value || '';
+  return DATA.partenaires_lot.slice()
+    .sort(function(a,b){ return (b.created_at||'').localeCompare(a.created_at||''); })
+    .filter(function(p) {
+      if (fStatut && p.statut !== fStatut) return false;
+      if (!q) return true;
+      var dossiers = DATA.dossiers_lot.filter(function(d){ return d.partenaire_id===p.id; });
+      var hay = [p.nom, p.tel, p.email].concat(dossiers.map(function(d){ return d.nom_terrain; })).join(' ').toLowerCase();
+      return hay.indexOf(q) !== -1;
+    });
+}
+
+function plVueCourante() {
+  try { return localStorage.getItem('pl_vue') === 'grille' ? 'grille' : 'tableau'; }
+  catch(e) { return 'tableau'; }
+}
+function plSetVue(v) {
+  try { localStorage.setItem('pl_vue', v); } catch(e) {}
+  plAppliquerVue();
+}
+function plAppliquerVue() {
+  var v = plVueCourante();
+  var bt = document.getElementById('pl-bloc-tableau');
+  var bg = document.getElementById('pl-bloc-grille');
+  if (bt) bt.style.display = (v === 'grille') ? 'none' : '';
+  if (bg) bg.style.display = (v === 'grille') ? '' : 'none';
+  ['tableau','grille'].forEach(function(k){
+    var b = document.getElementById('pl-vue-' + k);
+    if (!b) return;
+    var actif = (k === v);
+    b.style.background = actif ? 'var(--or,#B87333)' : 'transparent';
+    b.style.color = actif ? '#fff' : 'var(--blanc-dim)';
+    b.style.fontWeight = actif ? '700' : '400';
+  });
+}
+
+function plRenderGrille(liste) {
+  var host = document.getElementById('pl-grille');
+  if (!host) return;
+  if (!liste.length) {
+    host.innerHTML = '<div class="card" style="grid-column:1/-1;text-align:center;color:var(--blanc-dim);padding:24px;">Aucun partenaire enregistré.</div>';
+    return;
+  }
+  host.innerHTML = liste.map(function(p) {
+    var dossiers = DATA.dossiers_lot.filter(function(d){ return d.partenaire_id===p.id; });
+    var superficie = dossiers.reduce(function(a,d){ return a + (parseFloat(d.superficie_m2)||0); }, 0);
+    var lotsTot  = dossiers.reduce(function(a,d){ return a + (parseInt(d.nb_lots_prevus)||0); }, 0);
+    var lotsPart = dossiers.reduce(function(a,d){ return a + (parseInt(d.nb_lots_partenaire)||0); }, 0);
+    var av = _plPartenaireAvancement(p.id);
+    var hasCode = !!(p.code_acces_hash && p.code_acces_salt);
+    var badge = { prospect:'badge-bleu', actif:'badge-vert', inactif:'badge-neutre' }[p.statut] || 'badge-bleu';
+    var col = av >= 75 ? 'var(--vert)' : (av >= 30 ? '#EF9F27' : 'var(--rouge)');
+
+    return '<div class="card" style="padding:14px;cursor:pointer;display:flex;flex-direction:column;gap:8px;" onclick="plOuvrirFiche(\''+p.id+'\')">'
+      + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">'
+      +   '<div style="min-width:0;">'
+      +     '<div style="font-weight:700;font-size:14px;overflow:hidden;text-overflow:ellipsis;">'+escHtml(p.nom)+'</div>'
+      +     '<div style="font-size:11px;color:var(--dim);">'+(p.type==='entreprise'?'🏢 Entreprise':'👤 Particulier')+'</div>'
+      +   '</div>'
+      +   '<span class="badge '+badge+'" style="flex-shrink:0;">'+escHtml(p.statut||'—')+'</span>'
+      + '</div>'
+      + '<div style="font-size:11px;color:var(--blanc-dim);">'+escHtml([p.tel,p.email].filter(Boolean).join(' · ')||'Aucun contact')+'</div>'
+
+      /* Les terrains sont listés, pas comptés : dans une carte on a la place, et
+         c'est l'information que l'on cherche quand on parcourt un portefeuille. */
+      + (dossiers.length
+          ? '<div style="font-size:12px;line-height:1.7;">'
+            + dossiers.slice(0,4).map(function(d){
+                return '🗺️ ' + escHtml(d.nom_terrain||'—')
+                     + (d.nb_lots_prevus ? ' <span style="color:var(--dim);">('+d.nb_lots_prevus+' lots)</span>' : '');
+              }).join('<br>')
+            + (dossiers.length>4 ? '<br><span style="color:var(--dim);">+ '+(dossiers.length-4)+' autre(s)</span>' : '')
+            + '</div>'
+          : '<div style="font-size:12px;color:var(--dim);">Aucun terrain confié</div>')
+
+      + '<div style="display:flex;gap:10px;font-size:11px;color:var(--blanc-dim);flex-wrap:wrap;">'
+      +   (superficie ? '<span>📐 '+(superficie/10000).toFixed(2)+' ha</span>' : '')
+      +   (lotsTot ? '<span>🏘️ '+lotsTot+' lots</span>' : '')
+      +   (lotsPart ? '<span>🤝 '+lotsPart+' au partenaire</span>' : '')
+      + '</div>'
+
+      + '<div>'
+      +   '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--blanc-dim);margin-bottom:3px;"><span>Avancement</span><span>'+av+' %</span></div>'
+      +   '<div class="phase-bar-track"><div class="phase-bar-fill" style="width:'+av+'%;background:'+col+';"></div></div>'
+      + '</div>'
+
+      + '<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:2px;" onclick="event.stopPropagation();">'
+      +   '<span style="font-size:11px;">'+(hasCode ? '<span style="color:var(--vert);">🔐 Portail actif</span>' : '<span style="color:var(--dim);">⚪ Sans accès</span>')+'</span>'
+      +   '<span style="white-space:nowrap;">'
+      +     '<button class="btn btn-secondary btn-sm btn-icon" onclick="plOpenPartenaireModal(\''+p.id+'\')" title="Modifier">✏️</button> '
+      +     '<button class="btn btn-secondary btn-sm btn-icon" onclick="plGenererCodeAcces(\''+p.id+'\')" title="Code accès portail">🔑</button> '
+      +     '<button class="btn btn-danger btn-sm btn-icon" onclick="plDeletePartenaire(\''+p.id+'\')" title="Supprimer">🗑</button>'
+      +   '</span>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+}
+
 function renderPartenairesLot() {
   _plInit();
   var box = document.getElementById('pl-kpis');
@@ -98655,16 +98774,13 @@ function renderPartenairesLot() {
   }
   var tbody = document.getElementById('pl-tbody');
   if (!tbody) return;
-  var q = ((document.getElementById('pl-search')||{}).value || '').toLowerCase().trim();
-  var fStatut = (document.getElementById('pl-filter-statut')||{}).value || '';
-  var liste = DATA.partenaires_lot.slice().sort(function(a,b){ return (b.created_at||'').localeCompare(a.created_at||''); });
-  liste = liste.filter(function(p) {
-    if (fStatut && p.statut !== fStatut) return false;
-    if (!q) return true;
-    var dossiers = DATA.dossiers_lot.filter(function(d){ return d.partenaire_id===p.id; });
-    var hay = [p.nom, p.tel, p.email].concat(dossiers.map(function(d){return d.nom_terrain;})).join(' ').toLowerCase();
-    return hay.indexOf(q) !== -1;
-  });
+  var liste = plListeFiltree();
+
+  /* Le rendu grille partage exactement le même jeu filtré : basculer de vue ne
+     doit jamais changer ce qui est montré, seulement la façon de le montrer. */
+  plRenderGrille(liste);
+  plAppliquerVue();
+
   if (!liste.length) {
     tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--blanc-dim);padding:20px;">Aucun partenaire enregistré.</td></tr>';
     return;
