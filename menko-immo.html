@@ -8467,7 +8467,9 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="modal-body">
             <div style="font-weight:700;color:var(--vert,#1A6B3A);margin:2px 0 6px;">① Bien cédé</div>
             <div class="form-grid">
-              <div class="form-group span-2"><label>Source (part entreprise) *</label><select id="ces-source" class="form-control" onchange="cesOnSource()"></select></div>
+              <div class="form-group span-2"><label>Source (part entreprise) *</label><select id="ces-source" class="form-control" onchange="cesOnSource()"></select>
+                <div id="ces-copro-alerte" style="display:none;margin-top:6px;background:rgba(184,115,51,.12);border-left:3px solid var(--or);border-radius:6px;padding:9px 11px;font-size:12px;line-height:1.7;"></div>
+              </div>
               <div class="form-group"><label>Nature</label><select id="ces-nature" class="form-control"><option value="lots">Lots</option><option value="portion_parcelle">Portion de parcelle</option></select></div>
               <div class="form-group"><label>Date de l'opération</label><input type="date" id="ces-date" class="form-control"></div>
               <div class="form-group span-2"><label>Désignation cédée</label><input id="ces-designation" class="form-control" placeholder="Ex : 5 lots îlot B / portion 1 200 m²"></div>
@@ -80248,7 +80250,13 @@ function _dxfToBornes(parsed){
   // Choisit la polyligne à plus grande surface comme contour parcellaire.
   function area(vs){ if(vs.length<3) return 0; var s=0; for(var i=0;i<vs.length;i++){ var a=vs[i],b=vs[(i+1)%vs.length]; s+=a.x*b.y-b.x*a.y; } return Math.abs(s/2); }
   var best=null, ba=0;
-  parsed.polylines.forEach(function(p){ var vs=(p.verts||[]).filter(function(v){return v.x||v.y;}); var a=area(vs); if(vs.length>=3 && a>ba){ ba=a; best=vs; } });
+  /* [FIX] Le filtre écartait les sommets à (0,0). Sur un plan géoréférencé
+     cela n'arrive jamais, mais sur un plan en coordonnées d'atelier — cas
+     fréquent quand le géomètre n'a pas calé son dessin — l'origine EST un
+     sommet du contour. Le retirer transformait un quadrilatère en triangle et
+     divisait la surface par deux, silencieusement. On ne rejette donc que les
+     valeurs non numériques. */
+  parsed.polylines.forEach(function(p){ var vs=(p.verts||[]).filter(function(v){return isFinite(v.x)&&isFinite(v.y);}); var a=area(vs); if(vs.length>=3 && a>ba){ ba=a; best=vs; } });
   var pts=[];
   if (best){ pts = best.slice(); }
   else if (parsed.points.length>=3){ pts = parsed.points.map(function(p){ return { x:p.x, y:p.y, z:p.z||0 }; }); }
@@ -84769,7 +84777,21 @@ function cesSourceList() {
      géré par le module dédié « 🤝 Financiers partenaires ». */
   (DATA.parcelles || []).forEach(function(p) {
     var sansTitre = !p.statut || p.statut === 'sans_titre' || p.statut === 'prospection' || p.statut === 'negociation';
-    out.push({ key:'parcelle:'+p.id, label:(sansTitre?'⚠️ ':'🗺️ ')+'Parcelle — ' + (p.ref || p.localisation || p.id) + (sansTitre?' (sans titre — valeur pré-titrage)':''), type:'parcelle', id:p.id });
+    /* Parcelle en indivision avec un partenaire de lotissement : on le dit dans
+       le libellé même du sélecteur. Sans cette mention, rien à l'écran ne
+       distingue un terrain détenu en propre d'un terrain dont seule une
+       fraction des lots revient au promoteur — et la cession se signe sur des
+       lots appartenant au partenaire. */
+    var co = p.copropriete;
+    var mentionCo = '';
+    if (co && co.type === 'partenaire_lotissement') {
+      mentionCo = ' 🤝 conjointe ' + (co.partenaire_nom ? '(' + co.partenaire_nom + ') ' : '')
+                + '— ' + (co.lots_promoteur || 0) + '/' + (co.lots_total || 0) + ' lots cessibles';
+    }
+    out.push({ key:'parcelle:'+p.id,
+      label:(sansTitre?'⚠️ ':(mentionCo?'🤝 ':'🗺️ '))+'Parcelle — ' + (p.ref || p.localisation || p.id)
+            + (sansTitre?' (sans titre — valeur pré-titrage)':'') + mentionCo,
+      type:'parcelle', id:p.id, copropriete: co || null });
   });
   return out;
 }
@@ -84804,7 +84826,64 @@ function cesNewFromParcelle(id){ cesNew('parcelle:'+id); }
 function cesNewFromOperation(id){ cesNew('operation:'+id); }
 
 /* [v31] Duplicata supprimé : ancienne version de cesOpen() — la définition active est plus bas dans ce fichier. */
-function cesOnSource(){ /* hook éventuel */ }
+/* Alerte d'indivision à la sélection d'une parcelle conjointe. Le sélecteur
+   mentionne déjà le partenaire, mais un libellé se survole sans se lire : ici
+   le nombre de lots cessibles est rappelé au moment précis où l'on s'apprête à
+   saisir combien on en cède, et le champ « nombre de lots » est plafonné. */
+function cesOnSource(){
+  var sel = document.getElementById('ces-source');
+  var box = document.getElementById('ces-copro-alerte');
+  var nbEl = document.getElementById('ces-nblots');
+  if (!sel || !box) return;
+  var p = null;
+  if (sel.value && sel.value.indexOf('parcelle:') === 0) {
+    p = (DATA.parcelles||[]).find(function(x){ return x.id === sel.value.slice(9); });
+  }
+  var co = p && p.copropriete && p.copropriete.type === 'partenaire_lotissement' ? p.copropriete : null;
+  if (!co) {
+    box.style.display = 'none';
+    if (nbEl) nbEl.removeAttribute('max');
+    return;
+  }
+  var dejaCedes = (DATA.cessions_foncieres||[]).filter(function(c){
+    return c.source_key === sel.value && c.id !== APP.editingId;
+  }).reduce(function(s,c){ return s + (parseInt(c.nb_lots)||0); }, 0);
+  var restants = Math.max(0, (co.lots_promoteur||0) - dejaCedes);
+
+  box.style.display = 'block';
+  box.innerHTML = '🤝 <strong>Parcelle en indivision</strong>'
+    + (co.partenaire_nom ? ' avec <strong>' + escHtml(co.partenaire_nom) + '</strong>' : '')
+    + '.<br>Répartition : <strong>' + (co.lots_promoteur||0) + '</strong> lot(s) au promoteur · '
+    + (co.lots_partenaire||0) + ' au partenaire (total ' + (co.lots_total||0) + ').'
+    + (dejaCedes ? '<br>Déjà cédés sur cette parcelle : <strong>' + dejaCedes + '</strong> lot(s).' : '')
+    + '<br><strong style="color:' + (restants>0?'var(--vert)':'var(--rouge)') + ';">'
+    + (restants>0 ? restants + ' lot(s) encore cessible(s).' : 'Part promoteur épuisée — aucune cession supplémentaire possible.')
+    + '</strong>';
+  if (nbEl && restants > 0) nbEl.setAttribute('max', String(restants));
+}
+
+/* Contrôle bloquant avant enregistrement d'une cession sur parcelle conjointe :
+   céder au-delà de la part promoteur revient à vendre les lots du partenaire.
+   L'avertissement visuel ne suffit pas — on refuse. */
+function cesVerifierIndivision() {
+  var sel = document.getElementById('ces-source');
+  if (!sel || !sel.value || sel.value.indexOf('parcelle:') !== 0) return { ok:true };
+  var p = (DATA.parcelles||[]).find(function(x){ return x.id === sel.value.slice(9); });
+  var co = p && p.copropriete && p.copropriete.type === 'partenaire_lotissement' ? p.copropriete : null;
+  if (!co) return { ok:true };
+  var demande = parseInt((document.getElementById('ces-nblots')||{}).value) || 0;
+  if (demande <= 0) return { ok:true };
+  var dejaCedes = (DATA.cessions_foncieres||[]).filter(function(c){
+    return c.source_key === sel.value && c.id !== APP.editingId;
+  }).reduce(function(s,c){ return s + (parseInt(c.nb_lots)||0); }, 0);
+  var restants = Math.max(0, (co.lots_promoteur||0) - dejaCedes);
+  if (demande > restants) {
+    return { ok:false, msg:'Cession de ' + demande + ' lot(s) impossible : seulement ' + restants
+      + ' lot(s) restent dans la part du promoteur'
+      + (co.partenaire_nom ? ' (le reste appartient à ' + co.partenaire_nom + ')' : '') + '.' };
+  }
+  return { ok:true };
+}
 /* [v31] Duplicata supprimé : ancienne version de cesSync() — la définition active est plus bas dans ce fichier. */
 
 /* Estime, avant enregistrement, le coût de sortie de stock (331) de la
@@ -85216,6 +85295,11 @@ function cesOpen(id) {
 async function cesSave() {
   var src=_cesGet('ces-source');
   if (!src) { toast('Choisissez la source (parcelle / opération)', 'error'); return; }
+
+  /* Indivision : refuser de céder au-delà de la part revenant au promoteur. */
+  var _vi = cesVerifierIndivision();
+  if (!_vi.ok) { toast(_vi.msg, 'error'); return; }
+
   var type=_cesGet('ces-type');
   var acheteur={
     type:type,
@@ -98236,6 +98320,7 @@ function plRenderDossiers() {
       + '<div><div style="font-weight:700;font-size:15px;">'+escHtml(d.nom_terrain)+'</div>'
       + '<div style="font-size:12px;color:var(--dim);">'+escHtml(d.localisation||'—')+' · '+(d.superficie_m2?(parseFloat(d.superficie_m2)/10000).toFixed(2)+' ha':'—')+' · '+(d.nb_lots_prevus||0)+' '+unite+'(s) prévu(s)</div></div>'
       + '<div style="display:flex;gap:6px;">'
+      + '<button class="btn ' + (d.parcelle_id ? 'btn-secondary' : 'btn-primary') + ' btn-sm" onclick="plOuvrirTransfertFoncier(\''+d.id+'\')" title="' + (d.parcelle_id ? 'Parcelle déjà créée — revoir le géopositionnement' : 'Créer la parcelle au Portefeuille Foncier et la géopositionner') + '">' + (d.parcelle_id ? '🗺️ Parcelle liée' : '📤 Vers le Foncier') + '</button>'
       + '<button class="btn btn-secondary btn-sm" onclick="plOpenDossierModal(\''+d.id+'\')">✏️ Modifier</button>'
       + '<button class="btn btn-danger btn-sm" onclick="plDeleteDossier(\''+d.id+'\')">🗑</button>'
       + '</div></div>'
@@ -98437,6 +98522,343 @@ async function plSaveDossier() {
   renderPartenairesLot();
   toast('Terrain enregistré.', 'success');
 }
+/* ═══════════════════════════════════════════════════════════════════════════
+   TRANSFERT DOSSIER LOTISSEMENT → PORTEFEUILLE FONCIER
+   ───────────────────────────────────────────────────────────────────────────
+   Un terrain confié par un partenaire n'appartient pas au promoteur : il est
+   exploité en commun, et seule la part revenant au promoteur est cessible. Le
+   Portefeuille Foncier étant l'unique source des cessions (voir cesSourceList),
+   il faut y faire entrer ces terrains — mais en conservant la trace de
+   l'indivision, faute de quoi rien n'empêcherait de vendre les lots du
+   partenaire.
+
+   La parcelle créée porte donc un bloc `copropriete` : identité du partenaire,
+   répartition en lots, et part promoteur. Les modules de cession s'appuient
+   dessus pour n'ouvrir à la vente que ce qui est vendable.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+var PLTF = { dossierId:null, pts:[], map:null, layer:null, draw:null };
+
+function plOuvrirTransfertFoncier(dossierId) {
+  var d = (DATA.dossiers_lot||[]).find(function(x){ return x.id===dossierId; });
+  if (!d) return;
+  PLTF.dossierId = dossierId;
+  PLTF.pts = [];
+
+  var part = (DATA.partenaires_lot||[]).find(function(p){ return p.id===d.partenaire_id; });
+  var parcelleLiee = d.parcelle_id ? (DATA.parcelles||[]).find(function(p){ return p.id===d.parcelle_id; }) : null;
+  if (parcelleLiee && parcelleLiee.geo_polygon && parcelleLiee.geo_polygon.length>=3) {
+    PLTF.pts = parcelleLiee.geo_polygon.slice();
+  }
+
+  var total = parseInt(d.nb_lots_prevus) || 0;
+  var auPartenaire = parseInt(d.nb_lots_partenaire) || 0;
+  var auPromoteur = Math.max(0, total - auPartenaire);
+
+  document.getElementById('pltf-titre').textContent = d.nom_terrain || 'Terrain';
+  document.getElementById('pltf-sous').textContent =
+    (d.localisation || '—') + (d.commune ? ' · ' + d.commune : '') + (part ? ' · partenaire : ' + (part.nom||'—') : '');
+  document.getElementById('pltf-ref').value = parcelleLiee ? (parcelleLiee.ref||'') : ((d.reference_cadastrale || d.nom_terrain || '').slice(0,40));
+  document.getElementById('pltf-lots-total').value = total;
+  document.getElementById('pltf-lots-partenaire').value = auPartenaire;
+  document.getElementById('pltf-lots-promoteur').textContent = auPromoteur;
+
+  var st = document.getElementById('pltf-statut');
+  if (st) st.value = parcelleLiee ? (parcelleLiee.statut||'prospection') : 'prospection';
+
+  plTfMajResume();
+  openModal('modal-pl-transfert-foncier');
+  setTimeout(plTfInitCarte, 220);
+}
+
+function plTfMajResume() {
+  var total = parseInt(document.getElementById('pltf-lots-total').value) || 0;
+  var auPart = parseInt(document.getElementById('pltf-lots-partenaire').value) || 0;
+  var auProm = Math.max(0, total - auPart);
+  document.getElementById('pltf-lots-promoteur').textContent = auProm;
+
+  var surf = PLTF.pts.length >= 3 ? _sigAreaM2(PLTF.pts) : 0;
+  var el = document.getElementById('pltf-resume-geo');
+  if (el) {
+    el.innerHTML = PLTF.pts.length >= 3
+      ? '✅ Contour tracé — <strong>' + (surf/10000).toFixed(4) + ' ha</strong> (' + fmtF(Math.round(surf)) + ' m²) · ' + PLTF.pts.length + ' sommets'
+      : (PLTF.pts.length ? '✏️ ' + PLTF.pts.length + ' point(s) — il en faut au moins 3 pour fermer le contour.'
+                         : '📍 Cliquez sur la carte pour tracer le contour du terrain.');
+  }
+
+  var alerte = document.getElementById('pltf-alerte');
+  if (alerte) {
+    if (total > 0 && auPart > total) {
+      alerte.style.display = 'block';
+      alerte.innerHTML = '⛔ La part du partenaire (' + auPart + ') dépasse le total (' + total + ').';
+    } else if (auProm === 0 && total > 0) {
+      alerte.style.display = 'block';
+      alerte.innerHTML = '⚠️ Aucun lot ne revient au promoteur : la parcelle sera créée mais <strong>aucune cession ne pourra en être tirée</strong>.';
+    } else { alerte.style.display = 'none'; }
+  }
+}
+
+function plTfInitCarte() {
+  var host = document.getElementById('pltf-map');
+  if (!host || typeof L === 'undefined') return;
+  if (PLTF.map) { PLTF.map.invalidateSize(); plTfRedessine(); return; }
+
+  var centre = PLTF.pts.length ? PLTF.pts[0] : [5.3599, -4.0083];
+  PLTF.map = L.map('pltf-map').setView(centre, PLTF.pts.length ? 16 : 8);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19, attribution:'© OpenStreetMap' }).addTo(PLTF.map);
+  PLTF.layer = L.layerGroup().addTo(PLTF.map);
+
+  PLTF.map.on('click', function(e){
+    PLTF.pts.push([e.latlng.lat, e.latlng.lng]);
+    plTfRedessine(); plTfMajResume();
+  });
+  setTimeout(function(){ PLTF.map.invalidateSize(); plTfRedessine(); }, 120);
+}
+
+function plTfRedessine() {
+  if (!PLTF.layer) return;
+  PLTF.layer.clearLayers();
+  PLTF.pts.forEach(function(p, i){
+    L.circleMarker(p, { radius:5, color:'#B87333', fillColor:'#B87333', fillOpacity:1 })
+      .bindTooltip('B'+(i+1), {permanent:false}).addTo(PLTF.layer);
+  });
+  if (PLTF.pts.length >= 3) {
+    L.polygon(PLTF.pts, { color:'#0f4c81', weight:2, fillOpacity:.18 }).addTo(PLTF.layer);
+    PLTF.map.fitBounds(L.latLngBounds(PLTF.pts), { padding:[30,30] });
+  } else if (PLTF.pts.length === 2) {
+    L.polyline(PLTF.pts, { color:'#B87333', weight:2, dashArray:'4,4' }).addTo(PLTF.layer);
+  }
+}
+
+function plTfAnnulerDernierPoint() { PLTF.pts.pop(); plTfRedessine(); plTfMajResume(); }
+function plTfEffacer() { PLTF.pts = []; plTfRedessine(); plTfMajResume(); }
+
+/* Saisie manuelle de coordonnées : sur le terrain, un géomètre fournit des
+   points UTM ou des coordonnées GPS relevées — pas toujours un fond de carte
+   exploitable. On accepte « lat,lng » par ligne, ou « X,Y » en UTM 30N. */
+function plTfImporterPoints() {
+  var txt = prompt('Collez les sommets, un par ligne.\n\nFormat WGS84 : 5.359900, -4.008300\nFormat UTM 30N : 388500, 593200  (préfixez la première ligne par UTM)');
+  if (!txt) return;
+  var lignes = txt.split('\n').map(function(s){ return s.trim(); }).filter(Boolean);
+  var estUtm = /^utm/i.test(lignes[0] || '');
+  if (estUtm) lignes.shift();
+  var pts = [];
+  lignes.forEach(function(l){
+    var m = l.replace(/;/g, ',').split(',').map(function(s){ return parseFloat(s.trim().replace(',', '.')); });
+    if (m.length < 2 || !isFinite(m[0]) || !isFinite(m[1])) return;
+    if (estUtm) {
+      if (typeof utm30ToLatLng === 'function') {
+        var c = utm30ToLatLng(m[0], m[1], 30);
+        if (c) pts.push([c[0] !== undefined ? c[0] : c.lat, c[1] !== undefined ? c[1] : c.lng]);
+      }
+    } else {
+      /* Garde-fou : une inversion lat/lng est l'erreur la plus fréquente et
+         place le terrain à des centaines de kilomètres sans que rien ne le
+         signale. En Côte d'Ivoire la latitude est positive (~4 à 11) et la
+         longitude négative (~-2 à -8). */
+      var lat = m[0], lng = m[1];
+      if (Math.abs(lat) > 90 || (lat < 0 && lng > 0)) { var t = lat; lat = lng; lng = t; }
+      pts.push([lat, lng]);
+    }
+  });
+  if (pts.length < 3) { toast('Au moins 3 sommets valides sont nécessaires.', 'error'); return; }
+  PLTF.pts = pts;
+  plTfInitCarte(); plTfRedessine(); plTfMajResume();
+  toast(pts.length + ' sommets importés.', 'success');
+}
+
+/* ── Import DXF/DWG du plan du géomètre ──────────────────────────────────────
+   Le plan d'un géomètre ivoirien est livré en coordonnées projetées UTM 30N
+   (parfois 29N à l'ouest du pays), pas en degrés. Le fichier lui-même ne dit
+   pas dans quelle projection il travaille : c'est au lecteur de le savoir. On
+   détecte donc la zone d'après l'ordre de grandeur des coordonnées et on
+   propose une vérification, plutôt que de placer silencieusement la parcelle
+   à côté de sa position réelle.
+   ─────────────────────────────────────────────────────────────────────────── */
+function _plTfDetecterZone(pts) {
+  /* En UTM, l'easting reste entre 100 000 et 900 000 et le northing est
+     positif dans l'hémisphère nord. La Côte d'Ivoire est à cheval sur les
+     zones 29N (ouest de 6°O) et 30N. */
+  var mx = pts.reduce(function(s,p){ return s + p.x; }, 0) / pts.length;
+  var my = pts.reduce(function(s,p){ return s + p.y; }, 0) / pts.length;
+  if (Math.abs(mx) <= 180 && Math.abs(my) <= 90) return { zone:0, geo:true };   /* déjà en degrés */
+  for (var z = 29; z <= 30; z++) {
+    var c = utm30ToLatLng(mx, my, z);
+    var lat = (c && c.lat !== undefined) ? c.lat : (c ? c[0] : null);
+    var lng = (c && c.lng !== undefined) ? c.lng : (c ? c[1] : null);
+    /* Emprise large de la Côte d'Ivoire et de ses voisins immédiats. */
+    if (lat !== null && lat > 3.5 && lat < 11.5 && lng > -9 && lng < -2) return { zone:z, geo:false, lat:lat, lng:lng };
+  }
+  return { zone:30, geo:false, incertain:true };
+}
+
+async function plTfImporterDxf(input) {
+  var f = input && input.files && input.files[0];
+  if (!f) return;
+  input.value = '';   /* permet de réimporter le même fichier après correction */
+  var info = document.getElementById('pltf-resume-geo');
+  if (info) info.innerHTML = '⏳ Lecture de ' + escHtml(f.name) + '…';
+
+  try {
+    var txt;
+    if (/\.dwg$/i.test(f.name)) {
+      /* DWG : conversion via LibreDWG (WASM chargé à la volée, réseau requis). */
+      if (info) info.innerHTML = '⏳ Conversion DWG → DXF (premier usage : téléchargement du convertisseur)…';
+      txt = await _dwgToDxf(await f.arrayBuffer());
+    } else {
+      txt = await f.text();
+    }
+
+    var parsed = _dxfParse(txt);
+    var brut = _dxfToBornes(parsed);
+    /* Ne rejeter que les sommets non numériques. L'ancien filtre écartait aussi
+       le point (0,0) : légitime dans un plan en coordonnées d'atelier, où il
+       est souvent le point d'origine. Le supprimer ramenait un quadrilatère à
+       un triangle et divisait la surface par deux — sans le moindre message. */
+    var pts = (brut && brut.length ? brut : []).filter(function(p){ return isFinite(p.x) && isFinite(p.y); });
+    if (pts.length < 3) {
+      toast('Aucun contour fermé exploitable dans ce fichier. Vérifiez qu\'il contient une polyligne fermée (LWPOLYLINE).', 'error');
+      plTfMajResume();
+      return;
+    }
+
+    /* Un contour DXF répète souvent le premier point en fin de polyligne : le
+       conserver crée un sommet doublon et fausse le décompte de bornes. */
+    var p0 = pts[0], pN = pts[pts.length-1];
+    if (pts.length > 3 && Math.abs(p0.x-pN.x) < 0.01 && Math.abs(p0.y-pN.y) < 0.01) pts.pop();
+
+    var det = _plTfDetecterZone(pts);
+    var latlng;
+    if (det.geo) {
+      latlng = pts.map(function(p){ return [p.y, p.x]; });   /* DXF : x=lng, y=lat */
+    } else {
+      latlng = pts.map(function(p){
+        var c = utm30ToLatLng(p.x, p.y, det.zone);
+        return [ (c && c.lat !== undefined) ? c.lat : c[0], (c && c.lng !== undefined) ? c.lng : c[1] ];
+      });
+    }
+
+    var hors = latlng.filter(function(c){ return !(c[0] > 3.5 && c[0] < 11.5 && c[1] > -9 && c[1] < -2); }).length;
+    if (det.incertain || hors > latlng.length / 2) {
+      /* On ne rejette pas — un plan peut légitimement concerner un pays voisin
+         — mais on refuse de faire croire que la position est vérifiée. */
+      if (!confirm('Les coordonnées de ce plan ne tombent pas en Côte d\'Ivoire une fois converties '
+        + '(zone UTM supposée : ' + det.zone + 'N).\n\nCauses fréquentes : plan en zone 29N, en Lambert local, '
+        + 'ou en coordonnées d\'atelier non géoréférencées.\n\nImporter quand même le contour ?')) {
+        plTfMajResume();
+        return;
+      }
+    }
+
+    PLTF.pts = latlng;
+    plTfInitCarte(); plTfRedessine(); plTfMajResume();
+
+    var surf = _sigAreaM2(latlng);
+    /* Comparaison avec la surface calculée directement en UTM : un écart
+       important trahit une mauvaise projection, ce qu'aucun contrôle visuel ne
+       révèle sur un fond de carte à petite échelle. */
+    var surfDxf = 0;
+    for (var i=0;i<pts.length;i++){ var a=pts[i], b=pts[(i+1)%pts.length]; surfDxf += a.x*b.y - b.x*a.y; }
+    surfDxf = Math.abs(surfDxf/2);
+    var ecart = surfDxf > 0 ? Math.abs(surf - surfDxf) / surfDxf * 100 : 0;
+
+    if (info) {
+      info.innerHTML = '✅ <strong>' + escHtml(f.name) + '</strong> — ' + latlng.length + ' sommets · '
+        + (surf/10000).toFixed(4) + ' ha'
+        + (det.geo ? ' · coordonnées géographiques' : ' · UTM ' + det.zone + 'N')
+        + (ecart > 2
+            ? '<br><span style="color:var(--rouge);">⚠️ Surface du plan : ' + (surfDxf/10000).toFixed(4)
+              + ' ha — écart de ' + ecart.toFixed(1) + ' %. Projection probablement incorrecte : vérifiez la zone auprès du géomètre.</span>'
+            : '');
+    }
+    toast('Plan importé : ' + latlng.length + ' sommets, ' + (surf/10000).toFixed(4) + ' ha.', 'success');
+
+  } catch(e) {
+    toast('Lecture impossible : ' + (e && e.message ? e.message : 'fichier illisible') + '.', 'error');
+    plTfMajResume();
+  }
+}
+
+async function plTfEnregistrer() {
+  var d = (DATA.dossiers_lot||[]).find(function(x){ return x.id===PLTF.dossierId; });
+  if (!d) return;
+  var ref = (document.getElementById('pltf-ref').value || '').trim();
+  if (!ref) { toast('Référence de la parcelle obligatoire.', 'error'); return; }
+  if (PLTF.pts.length < 3) { toast('Tracez au moins 3 sommets pour délimiter la parcelle.', 'error'); return; }
+
+  var total  = parseInt(document.getElementById('pltf-lots-total').value) || 0;
+  var auPart = parseInt(document.getElementById('pltf-lots-partenaire').value) || 0;
+  if (total > 0 && auPart > total) { toast('Part partenaire supérieure au total.', 'error'); return; }
+  var auProm = Math.max(0, total - auPart);
+
+  var part = (DATA.partenaires_lot||[]).find(function(p){ return p.id===d.partenaire_id; });
+  var pts  = PLTF.pts.slice();
+  var a    = _sigAreaM2(pts);
+  var zone = latLngToUtm(pts[0][0], pts[0][1]).zone;
+  var bornes = pts.map(function(p,i){
+    var u = latLngToUtm(p[0], p[1], zone);
+    return { nom:'B'+(i+1), x:+u.E.toFixed(3), y:+u.N.toFixed(3), z:0, angle:0, distance:0 };
+  });
+
+  DATA.parcelles = DATA.parcelles || [];
+  var parc = d.parcelle_id ? DATA.parcelles.find(function(p){ return p.id===d.parcelle_id; }) : null;
+  var creation = !parc;
+  if (!parc) {
+    parc = { id: uid(), created_at: today(), statut: 'prospection' };
+    DATA.parcelles.push(parc);
+  }
+
+  parc.ref = ref;
+  parc.localisation = d.localisation || parc.localisation || '';
+  parc.commune = d.commune || parc.commune || '';
+  parc.superficie = Math.round(a);
+  parc.bornes = bornes;
+  parc.geo_polygon = pts;
+  parc.utm_zone = zone;
+  parc.systeme_geodesique = 'UTM' + zone + 'N-WGS84';
+  parc.lat = pts[0][0];
+  parc.lng = pts[0][1];
+  parc.statut = (document.getElementById('pltf-statut')||{}).value || parc.statut || 'prospection';
+
+  /* Marquage d'indivision. C'est ce bloc qui protège la part du partenaire :
+     les écrans de cession le lisent pour n'ouvrir que les lots du promoteur. */
+  parc.copropriete = {
+    type: 'partenaire_lotissement',
+    partenaire_id: d.partenaire_id || '',
+    partenaire_nom: part ? (part.nom || '') : '',
+    dossier_lot_id: d.id,
+    lots_total: total,
+    lots_partenaire: auPart,
+    lots_promoteur: auProm,
+    pct_promoteur: total > 0 ? Math.round(auProm / total * 100) : 0,
+    type_convention: d.type_convention || '',
+    date_marquage: today()
+  };
+  parc.origine = 'partenariat_lotissement';
+  parc.dossier_lot_id = d.id;
+
+  if (typeof _sigLogHist === 'function') {
+    _sigLogHist(parc, creation ? 'Création (partenariat)' : 'Géométrie mise à jour',
+      'Issue du dossier de lotissement « ' + (d.nom_terrain||'') + ' »'
+      + (part ? ', partenaire ' + (part.nom||'') : '') + '. '
+      + (a/10000).toFixed(4) + ' ha, ' + bornes.length + ' sommets. '
+      + 'Répartition : ' + auProm + ' lot(s) promoteur / ' + auPart + ' lot(s) partenaire.');
+  }
+
+  await dbPut('parcelles', parc);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_parcelles', parc);
+
+  d.parcelle_id = parc.id;
+  await dbPut('dossiers_lot', d);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_dossiers_lot', d);
+
+  closeModal('modal-pl-transfert-foncier');
+  plRenderDossiers();
+  if (typeof renderParcelles === 'function') renderParcelles();
+  toast((creation ? 'Parcelle créée' : 'Parcelle mise à jour') + ' — ' + (a/10000).toFixed(4) + ' ha · '
+        + auProm + ' lot(s) cessibles par le promoteur.', 'success');
+}
+
 async function plDeleteDossier(id) {
   if (!confirm('Supprimer ce terrain et ses rapports d\'avancement ?')) return;
   var rapIds = DATA.rapports_lot.filter(function(r){ return r.dossier_id===id; }).map(function(r){ return r.id; });
@@ -99682,6 +100104,71 @@ goTo = function(page) {
 <!-- Modal : Audit & suppression des doublons de mouvements de caisse -->
 <!-- Modal : Contrôle d'intégrité de la caisse -->
 <!-- Modal : Analyse du reste à recouvrer -->
+<!-- Modal : transfert d'un terrain de lotissement vers le Portefeuille Foncier -->
+<div class="modal-overlay" id="modal-pl-transfert-foncier">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div>
+        <h3>📤 <span id="pltf-titre">Terrain</span> → Portefeuille Foncier</h3>
+        <div style="font-size:12px;color:var(--blanc-dim);" id="pltf-sous"></div>
+      </div>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-pl-transfert-foncier')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:14px;align-items:start;" class="pltf-grid">
+        <div>
+          <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
+            <button class="btn btn-secondary btn-sm" onclick="plTfAnnulerDernierPoint()">↶ Dernier point</button>
+            <button class="btn btn-secondary btn-sm" onclick="plTfEffacer()">🧹 Effacer</button>
+            <button class="btn btn-secondary btn-sm" onclick="plTfImporterPoints()" title="Coller des coordonnées relevées par le géomètre">📋 Coller</button>
+            <button class="btn btn-primary btn-sm" onclick="document.getElementById('pltf-dxf-file').click()" title="Importer le plan du géomètre (DXF ou DWG)">📐 Import DXF</button>
+            <input type="file" id="pltf-dxf-file" accept=".dxf,.DXF,.dwg,.DWG" style="display:none;" onchange="plTfImporterDxf(this)">
+          </div>
+          <div id="pltf-map" style="height:340px;border-radius:8px;border:1px solid var(--bord);"></div>
+          <div id="pltf-resume-geo" style="font-size:12px;margin-top:8px;color:var(--blanc-dim);"></div>
+        </div>
+        <div>
+          <div class="form-group">
+            <label>Référence de la parcelle *</label>
+            <input type="text" class="form-control" id="pltf-ref" placeholder="Ex. PARC-DABOU-01">
+          </div>
+          <div class="form-group">
+            <label>Statut foncier</label>
+            <select class="form-control" id="pltf-statut">
+              <option value="prospection">Prospection</option>
+              <option value="negociation">En négociation</option>
+              <option value="sans_titre">Sans titre</option>
+              <option value="acd">ACD obtenu</option>
+              <option value="titre_foncier">Titre foncier</option>
+            </select>
+          </div>
+          <div class="form-section-title" style="margin-top:14px;">🤝 Indivision avec le partenaire</div>
+          <div class="form-group">
+            <label>Nombre total de lots</label>
+            <input type="number" class="form-control" id="pltf-lots-total" min="0" oninput="plTfMajResume()">
+          </div>
+          <div class="form-group">
+            <label>Lots revenant au partenaire</label>
+            <input type="number" class="form-control" id="pltf-lots-partenaire" min="0" oninput="plTfMajResume()">
+          </div>
+          <div style="background:rgba(39,174,96,.10);border-left:3px solid var(--vert);border-radius:6px;padding:9px 11px;font-size:12px;">
+            Lots cessibles par le promoteur : <strong id="pltf-lots-promoteur" style="font-size:15px;">0</strong>
+          </div>
+          <div id="pltf-alerte" style="display:none;background:rgba(224,82,82,.10);border-left:3px solid var(--rouge);border-radius:6px;padding:9px 11px;font-size:12px;margin-top:8px;"></div>
+          <div style="font-size:11px;color:var(--blanc-dim);margin-top:10px;line-height:1.7;">
+            La parcelle sera marquée <strong>conjointe</strong> : les écrans de cession n'ouvriront à la vente que la part du promoteur, et rappelleront le nom du partenaire.
+          </div>
+        </div>
+      </div>
+      <style>@media (max-width:820px){ .pltf-grid{ grid-template-columns:1fr !important; } }</style>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-pl-transfert-foncier')">Annuler</button>
+      <button class="btn btn-primary" onclick="plTfEnregistrer()">🗺️ Créer / mettre à jour la parcelle</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-reste-recouvrer">
   <div class="modal modal-lg">
     <div class="modal-header">
