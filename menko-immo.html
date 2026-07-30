@@ -24946,11 +24946,11 @@ function buildDashTabFinance() {  var cessions      = DATA.cessions_foncieres ||
     {l:'Décaissements du mois',    v:fmtF(decM)+' FCFA',       i:'📉', c:'',         d:'Charges du mois en cours'},
     {l:'Solde net (Enc. − Déc.)',  v:fmtF(soldeNet)+' FCFA',   i:'📊', c:soldeNet>=0?'kpi-green':'kpi-red', d:soldeNet>=0?'Trésorerie positive':'Attention : tension trésorerie'},
     (function(){ var s=(typeof caisseSoldeGlobalTempsReel==='function')?caisseSoldeGlobalTempsReel():0; return {l:'Espèces en caisse', v:fmtF(s)+' FCFA', i:'💵', c:'kpi-copper', d:'Sessions ouvertes · temps réel'}; })(),
-    (function(){ var st=(typeof caisseAVentilerStats==='function')?caisseAVentilerStats():{nb:0,montant:0}; return {l:'Caisse — à ventiler', v:st.nb+' mvt', i:'🧾', c:st.nb?'kpi-red':'kpi-green', d:fmtF(st.montant)+' FCFA en attente'}; })(),
+    (function(){ var st=(typeof caisseAVentilerStats==='function')?caisseAVentilerStats():{nb:0,montant:0}; return {l:'Caisse — à ventiler', v:st.nb+' mvt', i:'🧾', c:st.nb?'kpi-red':'kpi-green', d:fmtF(st.montant)+' FCFA en attente', click:'goTo(\'caisse\')'}; })(),
     {l:'Reste à recouvrer', v:fmtF(encours)+' FCFA',   i:'⏳', c:encours>100000000?'kpi-red':'', d:DATA.clients.length+' souscripteurs + '+cessions.length+' cession(s)', click:'rarOuvrir()'},
     {l:'Taux de recouvrement',      v:tauxRecouv+'%',           i:'📈', c:tauxRecouv>=50?'kpi-green':'kpi-red', d:fmtF(totalVerse)+' / '+fmtF(totalDu)},
-    {l:'Clients en retard',         v:retard,                   i:'⚠️', c:retard>0?'kpi-red':'kpi-green', d:retard+' dossiers à relancer'},
-    {l:'Lots vendus',              v:DATA.lots.filter(function(l){return l.statut==='vendu';}).length+' / '+DATA.lots.length, i:'🏠', c:'', d:DATA.lots.filter(function(l){return l.statut==='disponible';}).length+' disponibles'},
+    {l:'Clients en retard',         v:retard,                   i:'⚠️', c:retard>0?'kpi-red':'kpi-green', d:retard+' dossiers à relancer', click:'goTo(\'relances\')'},
+    {l:'Lots vendus',              v:DATA.lots.filter(function(l){return l.statut==='vendu';}).length+' / '+DATA.lots.length, i:'🏠', c:'', d:DATA.lots.filter(function(l){return l.statut==='disponible';}).length+' disponibles', click:'goTo(\'lots\')'},
   ].map(function(k){
     return '<div class="kpi-card '+k.c+'" data-icon="'+k.i+'"'+(k.click?' style="cursor:pointer;" title="Cliquer pour le détail" onclick="'+k.click+'"':'')+'><div class="kpi-label">'+k.l+'</div>'
       +'<div class="kpi-value or" style="font-size:17px;">'+k.v+'</div>'
@@ -25148,9 +25148,26 @@ function cmrcBuildSources(leads) {
 function cmrcBuildAgents(leads, ticketMoyen) {
   var host = document.getElementById('cmrc-agents');
   if (!host) return;
+  /* [FIX] La résolution ne cherchait que dans DATA.users. Or les commerciaux
+     sont saisis dans le module RH : leurs identifiants (emp_MS037…) vivent dans
+     DATA.employes, pas dans users. Aucun ne correspondait, et le classement
+     affichait l'identifiant technique à la place du nom — illisible pour
+     arbitrer une performance commerciale. On cherche désormais dans les deux
+     référentiels, employés d'abord. */
   var nomAgent = function(id){
+    if (!id || id === '__none__') return 'Non assigné';
+    var e = (DATA.employes||[]).find(function(x){ return x.id===id || x.matricule===id; });
+    /* _nomEmploye : même formatage que le classement de la page Rapports
+       commerciaux, pour qu'un même commercial s'affiche à l'identique partout. */
+    if (e) return (typeof _nomEmploye==='function' ? _nomEmploye(e) : ((e.prenoms||'')+' '+(e.nom||'')).trim()) || id;
     var u = (DATA.users||[]).find(function(x){ return x.id===id || x.username===id; });
-    return u ? ((u.prenoms?u.prenoms+' ':'')+(u.nom||u.username||id)) : (id||'Non assigné');
+    if (u) return ((u.prenoms?u.prenoms+' ':'') + (u.nom||u.username||id)).trim();
+    /* Identifiant introuvable dans les deux référentiels : soit l'employé a été
+       supprimé alors que ses leads subsistent, soit le champ `commercial` d'un
+       lead contient un identifiant au lieu d'un nom. On le signale au lieu
+       d'afficher l'identifiant nu, qui laisse croire à un bug d'affichage
+       alors que c'est une donnée à réparer. */
+    return '⚠️ fiche introuvable (' + String(id).slice(0, 10) + ')';
   };
   var agg = {};
   leads.forEach(function(l){
@@ -25857,6 +25874,16 @@ function buildDashTabVue() {
   if (eSrc && eDst) eDst.innerHTML = eSrc.innerHTML;
 }
 
+/* Libellé lisible de la période active, pour que les KPI filtrés le disent
+   explicitement au lieu de s'annoncer comme des totaux. */
+function _dashLibellePeriode() {
+  var sel = document.getElementById('dash-periode');
+  var v = sel ? sel.value : '';
+  if (v === 'mois')  return 'ce mois';
+  if (v === 'trim')  return 'ce trimestre';
+  if (v === 'annee') return 'cette année';
+  return 'total';
+}
 function getDashPeriodeFilter() {
   var sel = document.getElementById('dash-periode');
   var v = sel ? sel.value : '';
@@ -25895,24 +25922,31 @@ function refreshDashboard() {
   // Remplir KPI grid dynamiquement
   var kpiEl = document.getElementById('kpi-grid');
   if (kpiEl) kpiEl.innerHTML = [
-    {l:'CA Encaissé total', v:fmtF(totalVerse)+' FCFA', i:'💰', c:'kpi-green',
+    /* [FIX] Le libellé disait « total » alors que la valeur suit le filtre de
+       période du bandeau. Avec « Ce mois » sélectionné et aucun encaissement du
+       mois, le KPI affichait 0 FCFA pendant que le stepper Finance annonçait
+       1 000 000 FCFA encaissé — deux chiffres contradictoires sur le même
+       écran, dont l'un laissait croire à une perte totale de données. Le
+       libellé reflète désormais la période réellement appliquée. */
+    {l:(_pmin ? ('CA encaissé — ' + _dashLibellePeriode()) : 'CA encaissé total'),
+     v:fmtF(totalVerse)+' FCFA', i:'💰', c:'kpi-green',
      d:(deltaCA>=0?'▲ +':'▼ ')+Math.abs(deltaCA)+'% vs mois préc.'},
     {l:'Reste à recouvrer', v:fmtF(encours)+' FCFA', i:'⏳', c:encours>100000000?'kpi-red':'',
      d:DATA.clients.length+' souscripteurs + '+_cesAll.length+' cession(s)', click:'rarOuvrir()'},
     {l:'Lots vendus', v:lotsVendus+' / '+DATA.lots.length, i:'🏠', c:'kpi-copper',
-     d:lotsDispo+' lots encore disponibles'},
+     d:lotsDispo+' lots encore disponibles', click:'goTo(\'lots\')'},
     {l:'Taux de recouvrement', v:tauxRecouv+'%', i:'📈', c:tauxRecouv>=50?'kpi-green':tauxRecouv>=30?'':'kpi-red',
      d:fmtF(totalVerse)+' / '+fmtF(totalDu)},
     {l:'Clients en retard', v:retardataires, i:'⚠️', c:retardataires>5?'kpi-red':'',
-     d:retardataires+' dossiers à relancer'},
+     d:retardataires+' dossiers à relancer', click:'goTo(\'relances\')'},
     {l:'Programmes actifs', v:DATA.programmes.filter(function(p){return p.statut!=='termine';}).length, i:'🏗️', c:'',
-     d:DATA.terrains.length+' terrains en portefeuille'},
+     d:((DATA.parcelles||[]).length + (DATA.terrains||[]).length)+' parcelle(s) en portefeuille', click:'goTo(\'programmes\')'},   /* [FIX] lisait le store déprécié terrains */
     (function(){ var ms = calcMasseSalariale(); return {
       l:'Masse salariale (mois)', v:fmtF(ms.masseBrute)+' FCFA', i:'👥', c:'',
-      d:ms.effectif+' actifs · coût '+fmtF(ms.coutEmployeur)+' F'}; })(),
+      d:ms.effectif+' actifs · coût '+fmtF(ms.coutEmployeur)+' F', click:'goTo(\'rh-employes\')'}; })(),
     (function(){ var s=(typeof caisseSoldeGlobalTempsReel==='function')?caisseSoldeGlobalTempsReel():0; var st=(typeof caisseAVentilerStats==='function')?caisseAVentilerStats():{nb:0}; return {
       l:'Espèces en caisse', v:fmtF(s)+' FCFA', i:'💵', c:'kpi-copper',
-      d:(st.nb? st.nb+' mvt à ventiler':'Sessions ouvertes · temps réel')}; })(),
+      d:(st.nb? st.nb+' mvt à ventiler':'Sessions ouvertes · temps réel'), click:'goTo(\'caisse\')'}; })(),
   ].map(function(k){
     return '<div class="kpi-card '+k.c+'" data-icon="'+k.i+'"'+(k.click?' style="cursor:pointer;" title="Cliquer pour le détail" onclick="'+k.click+'"':'')+'>'
       +'<div class="kpi-label">'+k.l+'</div>'
@@ -26384,13 +26418,25 @@ function buildDashActivite() {
 function buildDashStepper() {
   var el = document.getElementById('dash-stepper');
   if (!el) return;
-  var totalCA = DATA.clients.reduce(function(s,c){return s+(c.montant_total||0);},0);
-  var totalVerse = DATA.versements.reduce(function(s,v){return s+(v.montant||0);},0);
-  var pctR = totalCA>0 ? Math.round(totalVerse/totalCA*100) : 0;
+  /* [FIX] Le stepper sommait TOUS les versements, frais de souscription inclus
+     et hors filtre de période, tandis que les KPI utilisent dashFinanceCore()
+     (encaissé sur prix + cessions). Les deux valeurs se contredisaient sur le
+     même écran. On passe par la source canonique, comme les KPI. */
+  var _stepCore = dashFinanceCore(getDashPeriodeFilter());
+  var totalVerse = _stepCore.encaisse;
+  var pctR = _stepCore.tauxRecouv;
   var chEnCours = DATA.conventions.filter(function(c){return c.statut==='en_cours';}).length;
   var chFinis = DATA.conventions.filter(function(c){return ['reception_provisoire','reception_definitive'].indexOf(c.statut)>=0;}).length;
   var steps = [
-    {n:'①',label:'Foncier',sub:DATA.terrains.length+' terrains',done:DATA.terrains.length>0,page:'foncier'},
+    /* [FIX] Lisait DATA.terrains, store déprécié et migré vers parcelles : le
+       jalon Foncier restait donc à « 0 terrains » et grisé alors que le
+       portefeuille est rempli. On compte les parcelles, en gardant les terrains
+       résiduels non encore migrés pour ne pas sous-évaluer le portefeuille. */
+    (function(){
+      var nbP = (DATA.parcelles||[]).length, nbT = (DATA.terrains||[]).length;
+      var tot = nbP + nbT;
+      return {n:'①',label:'Foncier',sub:tot+' parcelle'+(tot>1?'s':'')+(nbT?(' (dont '+nbT+' à migrer)'):''),done:tot>0,page:'foncier'};
+    })(),
     {n:'②',label:'Conception',sub:DATA.conceptions.length+' projets · '+(DATA.permis||[]).filter(function(p){return p.statut==='obtenu';}).length+' permis',done:DATA.conceptions.length>0,page:'conception'},
     {n:'③',label:'CRM',sub:DATA.leads.length+' prospects',done:DATA.leads.length>0,page:'leads'},
     {n:'④',label:'Ventes',sub:DATA.clients.length+' souscripteurs · '+pctR+'% recouvrement',done:DATA.clients.length>0,page:'clients'},
