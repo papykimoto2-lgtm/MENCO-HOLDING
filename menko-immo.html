@@ -97920,16 +97920,25 @@ function caisseEcartNonRegularise(){
    Portail : SESSION_PARTLOT (auth code_acces_hash/salt, comme foncier)
 ══════════════════════════════════════════════════════════════════ */
 
+/* Le champ `poids` traduit la charge réelle de chaque étape dans un dossier de
+   lotissement ivoirien. Une moyenne arithmétique donnait 12,5 % d'avancement dès
+   qu'une simple étude était cochée, à égalité avec les VRD qui pèsent l'essentiel
+   du budget et du délai — un partenaire pouvait ainsi afficher 25 % sans avoir
+   posé une borne. Les poids sont modifiables ici sans toucher au calcul. */
 var PL_ETAPES_TPL = [
-  { cle:'etude',            label:'Étude & diagnostic foncier',              icon:'📋' },
-  { cle:'bornage',          label:'Bornage & levé topographique',            icon:'📐' },
-  { cle:'morcellement',     label:'Plan de morcellement',                    icon:'🗺️' },
-  { cle:'autorisations',    label:'Autorisations administratives (ACD)',     icon:'🏛️' },
-  { cle:'vrd',               label:'VRD — Voirie & réseaux divers',           icon:'🚧' },
-  { cle:'immatriculation',  label:'Immatriculation / Titres',                icon:'📜' },
-  { cle:'commercialisation',label:'Commercialisation des lots',              icon:'🏷️' },
-  { cle:'cloture',          label:'Clôture & rétrocession',                  icon:'✅' }
+  { cle:'etude',            label:'Étude & diagnostic foncier',              icon:'📋', poids: 5 },
+  { cle:'bornage',          label:'Bornage & levé topographique',            icon:'📐', poids: 10 },
+  { cle:'morcellement',     label:'Plan de morcellement',                    icon:'🗺️', poids: 15 },
+  { cle:'autorisations',    label:'Autorisations administratives (ACD)',     icon:'🏛️', poids: 20 },
+  { cle:'vrd',               label:'VRD — Voirie & réseaux divers',           icon:'🚧', poids: 25 },
+  { cle:'immatriculation',  label:'Immatriculation / Titres',                icon:'📜', poids: 15 },
+  { cle:'commercialisation',label:'Commercialisation des lots',              icon:'🏷️', poids: 8 },
+  { cle:'cloture',          label:'Clôture & rétrocession',                  icon:'✅', poids: 2 }
 ];
+function _plEtapePoids(cle){
+  var e = PL_ETAPES_TPL.find(function(x){ return x.cle===cle; });
+  return e && e.poids ? e.poids : 1;   /* étape hors référentiel : poids neutre */
+}
 function _plEtapeLabel(cle){ var e = PL_ETAPES_TPL.find(function(x){return x.cle===cle;}); return e ? e.label : cle; }
 function _plEtapeIcon(cle){ var e = PL_ETAPES_TPL.find(function(x){return x.cle===cle;}); return e ? e.icon : '🏗️'; }
 function _plInit() {
@@ -97940,14 +97949,32 @@ function _plInit() {
 function _plDossierAvancement(d) {
   var et = d.etapes || [];
   if (!et.length) return 0;
-  var s = et.reduce(function(a,e){ return a + (e.avancement||0); }, 0);
-  return Math.round(s / et.length);
+  /* Moyenne PONDÉRÉE par le poids de chaque étape (voir PL_ETAPES_TPL) : c'est
+     l'avancement que le partenaire et le maître d'ouvrage reconnaîtront tous
+     deux, et il sert de base aux droits à rétrocession. */
+  var num = 0, den = 0;
+  et.forEach(function(e){
+    var p = _plEtapePoids(e.cle);
+    num += (parseFloat(e.avancement) || 0) * p;
+    den += p;
+  });
+  return den > 0 ? Math.round(num / den) : 0;
 }
 function _plPartenaireAvancement(partenaireId) {
   var dossiers = (DATA.dossiers_lot||[]).filter(function(d){ return d.partenaire_id===partenaireId; });
   if (!dossiers.length) return 0;
-  var s = dossiers.reduce(function(a,d){ return a + _plDossierAvancement(d); }, 0);
-  return Math.round(s / dossiers.length);
+  /* Pondération par le nombre de lots : une moyenne simple mettait sur le même
+     plan un site de 200 lots à peine entamé et un site de 5 lots achevé. Le
+     partenaire affichait alors ~55 % alors que 98 % de son périmètre restait à
+     faire — lecture dangereuse quand elle sert à décider d'un nouveau confiage. */
+  var num = 0, den = 0;
+  dossiers.forEach(function(d){
+    var lots = parseFloat(d.nb_lots_prevus) || 0;
+    var p = lots > 0 ? lots : 1;   /* dossier sans volume saisi : poids minimal */
+    num += _plDossierAvancement(d) * p;
+    den += p;
+  });
+  return den > 0 ? Math.round(num / den) : 0;
 }
 
 /* ═══ ADMIN — Liste des partenaires ═══ */
@@ -98099,14 +98126,25 @@ async function plSavePartenaire() {
 }
 async function plDeletePartenaire(id) {
   if (!confirm('Supprimer ce partenaire et tous ses dossiers/rapports liés ?')) return;
+  _plInit();
   var dossierIds = DATA.dossiers_lot.filter(function(d){ return d.partenaire_id===id; }).map(function(d){ return d.id; });
-  for (var i=0;i<DATA.rapports_lot.length;i++) {
-    if (dossierIds.indexOf(DATA.rapports_lot[i].dossier_id) !== -1) await deleteRecord('rapports_lot', DATA.rapports_lot[i].id);
-  }
+
+  /* [FIX] La boucle itérait sur DATA.rapports_lot en le mutant : deleteRecord()
+     réassigne DATA[store] avec un tableau filtré, donc à chaque suppression le
+     tableau raccourcit sous l'index i qui continue d'avancer. Un rapport sur
+     deux était sauté. Résultat : des rapports d'avancement orphelins restaient
+     en base, rattachés à des dossiers supprimés — invisibles dans l'interface
+     mais toujours synchronisés, et réinjectés chez les autres postes.
+     On figera donc la liste des ids AVANT toute suppression. */
+  var rapportIds = DATA.rapports_lot
+    .filter(function(r){ return dossierIds.indexOf(r.dossier_id) !== -1; })
+    .map(function(r){ return r.id; });
+
+  for (var i=0;i<rapportIds.length;i++) await deleteRecord('rapports_lot', rapportIds[i]);
   for (var j=0;j<dossierIds.length;j++) await deleteRecord('dossiers_lot', dossierIds[j]);
   await deleteRecord('partenaires_lot', id);
   renderPartenairesLot();
-  toast('Partenaire supprimé.', 'info');
+  toast('Partenaire supprimé — ' + dossierIds.length + ' dossier(s) et ' + rapportIds.length + ' rapport(s) liés.', 'info');
 }
 
 /* Code d'accès portail (même mécanisme que souscripteur / foncier) */
@@ -98343,6 +98381,22 @@ function plMajRepartitionLots() {
 async function plSaveDossier() {
   var nom = document.getElementById('pld-nom').value.trim();
   if (!nom) { toast('Nom du terrain obligatoire.', 'error'); return; }
+
+  /* [FIX] La répartition n'était que signalée à l'écran, jamais bloquée : on
+     pouvait enregistrer une part partenaire SUPÉRIEURE au nombre de lots prévus.
+     Or ce chiffre fonde les droits à rétrocession — l'écrire faux, c'est
+     promettre des lots qui n'existent pas et fabriquer un litige. On refuse. */
+  var _nbTotal = parseInt((document.getElementById('pld-nb-lots')||{}).value) || 0;
+  var _nbPart  = parseInt((document.getElementById('pld-nb-lots-partenaire')||{}).value) || 0;
+  if (_nbTotal > 0 && _nbPart > _nbTotal) {
+    toast('Part partenaire (' + _nbPart + ') supérieure au total prévu (' + _nbTotal + ') : corrigez la répartition.', 'error');
+    return;
+  }
+  if (_nbPart > 0 && _nbTotal === 0) {
+    toast('Renseignez d\'abord le nombre total de lots avant la part du partenaire.', 'error');
+    return;
+  }
+
   var existing = APP.editingId ? DATA.dossiers_lot.find(function(x){ return x.id===APP.editingId; }) : null;
   var d = {
     id: APP.editingId || uid(),
