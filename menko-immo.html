@@ -2740,6 +2740,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                 <div style="display:flex;gap:6px;align-items:center;">
                   <span id="ck-compteur" style="font-size:11px;color:var(--blanc-dim);"></span>
                   <button class="btn btn-secondary btn-sm" onclick="ckEnvoyerFileActionsMessagerie()" title="Envoie la file d'actions dans la messagerie interne à l'admin et au DG">📨 Envoyer</button>
+                  <button class="btn btn-secondary btn-sm" onclick="ckEnvoyerBulletinDirigeant()" title="Bulletin de pilotage : santé par domaine, tendance des encaissements et évolutions depuis le dernier envoi">📊 Bulletin</button>
                   <button class="btn btn-secondary btn-sm" onclick="ckResetIgnores()" title="Réafficher les actions reportées ou ignorées">↺</button>
                 </div>
               </div>
@@ -34389,6 +34390,205 @@ function ckResetIgnores() {
   localStorage.removeItem(CK_SNOOZE_KEY);
   toast('Actions reportées ou ignorées réaffichées.', 'info');
   buildDashTabCockpit();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   BULLETIN DIRIGEANT — ce que la file d'actions ne dit pas
+   ──────────────────────────────────────────────────────────────────────────
+   La file d'actions transmet l'OPÉRATIONNEL : ce qu'un exécutant doit faire
+   aujourd'hui. Elle ne dit rien de trois choses qu'un dirigeant a besoin de
+   savoir, et qui n'appellent pas un geste mais une décision :
+
+   1. La SANTÉ par domaine et sa cause dominante. Un score « Données 40/100 »
+      ne produit aucune action urgente, mais explique pourquoi les indicateurs
+      commerciaux sont inexploitables. C'est une décision d'organisation.
+   2. La TENDANCE des encaissements. Une file vide un jour où les encaissements
+      s'effondrent est une bonne nouvelle trompeuse.
+   3. Ce qui a CHANGÉ depuis le dernier envoi. C'est le point décisif : un
+      destinataire qui reçoit chaque jour le même état cesse de le lire au bout
+      d'une semaine. On compare donc à l'envoi précédent et on met le delta en
+      tête — nouvelles alertes, alertes levées, variation de l'encours.
+
+   Un bulletin sans delta n'est qu'un rappel ; avec delta, c'est une
+   information.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+var CK_BULLETIN_KEY = 'ck_bulletin_precedent_v1';
+
+function _ckEtatCourant(actions) {
+  var core = (typeof dashFinanceCore === 'function') ? dashFinanceCore(null) : { encours:0, encaisse:0 };
+  var exig = 0, nbExig = 0;
+  try {
+    _ckLignes().forEach(function(l){ if (l.duAJour > 0) { exig += l.duAJour; nbExig++; } });
+  } catch(e) {}
+  return {
+    date: new Date().toISOString(),
+    nbActions: actions.length,
+    urgents: actions.filter(function(a){ return a.urgent; }).length,
+    aids: actions.map(function(a){ return a.aid; }),
+    titres: actions.reduce(function(m,a){ m[a.aid] = a.titre; return m; }, {}),
+    exigible: Math.round(exig),
+    nbExigible: nbExig,
+    encours: Math.round(core.encours || 0),
+    encaisse: Math.round(core.encaisse || 0)
+  };
+}
+
+function _ckBulletinPrecedent() {
+  try { return JSON.parse(localStorage.getItem(CK_BULLETIN_KEY) || 'null'); } catch(e) { return null; }
+}
+
+/* Domaines de santé sous forme de données, pour pouvoir les écrire en texte
+   sans dépendre du HTML produit par ckSante(). Extraire des scores d'une
+   chaîne HTML par expression régulière casserait au premier changement de
+   présentation — on recalcule proprement. */
+function _ckSanteData() {
+  var doms = [];
+  try {
+    var L = _ckLignes(), reste = 0, exig = 0;
+    L.forEach(function(l){ reste += l.reste; exig += l.duAJour; });
+    doms.push({ nom:'Recouvrement', score: reste > 0 ? 100 - Math.round(exig/reste*100) : 100,
+      cause: exig > 0 ? fmtF(exig) + ' F exigibles sur ' + fmtF(reste) + ' F d\'encours' : 'Aucun exigible en souffrance' });
+  } catch(e) {}
+  try {
+    var st = (typeof caisseAVentilerStats === 'function') ? caisseAVentilerStats() : { nb:0 };
+    var mvts = (DATA.caisse_mouvements || []).length || 1;
+    var sessTard = (DATA.caisse_sessions || []).filter(function(s){
+      return s.statut === 'ouverte' && String(s.date_ouverture||'').slice(0,10) < today(); }).length;
+    doms.push({ nom:'Caisse', score: 100 - Math.min(70, Math.round(st.nb/mvts*100)) - sessTard*15,
+      cause: st.nb ? st.nb + ' mouvement(s) à ventiler' + (sessTard ? ' · ' + sessTard + ' session(s) non clôturée(s)' : '')
+                   : (sessTard ? sessTard + ' session(s) non clôturée(s)' : 'Ventilation à jour') });
+  } catch(e) {}
+  var cls = (DATA.clients||[]).filter(function(c){ return parseFloat(c.montant_total) > 0; });
+  var ces = (DATA.cessions_foncieres||[]);
+  var totD = cls.length + ces.length;
+  if (totD) {
+    var inc = cls.filter(function(c){ return !(c.commercial || c.commercial_id) || !c.lot_id; }).length
+            + ces.filter(function(c){ return !c.source_key && !c.parcelle_id; }).length;
+    doms.push({ nom:'Données', score: 100 - Math.round(inc/totD*100),
+      cause: inc ? inc + ' dossier(s) incomplet(s) sur ' + totD : 'Dossiers complets' });
+  }
+  var leads = (DATA.leads||[]).filter(function(l){ return l.stade !== 'reservation' && l.stade !== 'perdu'; });
+  if (leads.length) {
+    var froids = leads.filter(function(l){
+      var refs = [l.date_relance, l.date_contact, l.updated_at, l.date, l.created_at].filter(Boolean).sort();
+      if (!refs.length) return false;
+      return (new Date() - new Date(refs[refs.length-1])) > 14*86400000;
+    }).length;
+    doms.push({ nom:'Pipeline', score: 100 - Math.round(froids/leads.length*100),
+      cause: froids ? froids + ' lead(s) sans contact depuis 14 j sur ' + leads.length : 'Pipeline animé' });
+  }
+  return doms.map(function(d){ d.score = Math.max(0, Math.min(100, Math.round(d.score))); return d; });
+}
+
+function _ckTendanceEncaissements() {
+  var j7 = 0, j7prec = 0;
+  for (var i = 0; i < 14; i++) {
+    var d = new Date(); d.setDate(d.getDate() - i);
+    var k = d.toISOString().slice(0,10);
+    var v = (DATA.versements||[]).filter(function(x){
+      return _versementSurPrix(x) && (x.date||'').slice(0,10) === k;
+    }).reduce(function(s,x){ return s + (parseFloat(x.montant)||0); }, 0);
+    if (i < 7) j7 += v; else j7prec += v;
+  }
+  return { j7: j7, j7prec: j7prec,
+           pct: j7prec > 0 ? Math.round((j7 - j7prec) / j7prec * 100) : (j7 > 0 ? 100 : 0) };
+}
+
+function _ckTexteBulletin(actions) {
+  var etat = _ckEtatCourant(actions);
+  var prec = _ckBulletinPrecedent();
+  var jour = new Date().toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
+  var L = [];
+
+  L.push('📊 BULLETIN DIRIGEANT — ImmoSuite');
+  L.push(jour.charAt(0).toUpperCase() + jour.slice(1));
+  L.push('');
+
+  /* ── Ce qui a changé ── */
+  if (prec) {
+    var depuis = Math.max(1, Math.round((new Date() - new Date(prec.date)) / 3600000));
+    var nouvelles = etat.aids.filter(function(a){ return (prec.aids||[]).indexOf(a) === -1; });
+    var levees    = (prec.aids||[]).filter(function(a){ return etat.aids.indexOf(a) === -1; });
+    L.push('▸ DEPUIS LE DERNIER BULLETIN (' + (depuis < 48 ? depuis + ' h' : Math.round(depuis/24) + ' j') + ')');
+    if (nouvelles.length) {
+      L.push('  🆕 ' + nouvelles.length + ' nouvelle(s) alerte(s) :');
+      nouvelles.slice(0, 5).forEach(function(a){ L.push('     · ' + (etat.titres[a] || a)); });
+    }
+    if (levees.length) L.push('  ✅ ' + levees.length + ' alerte(s) levée(s) ou traitée(s)');
+    if (!nouvelles.length && !levees.length) L.push('  → Situation inchangée');
+    var dExig = etat.exigible - (prec.exigible || 0);
+    if (dExig) L.push('  💰 Exigible : ' + (dExig > 0 ? '+' : '') + fmtF(dExig) + ' F → ' + fmtF(etat.exigible) + ' F');
+    var dEnc = etat.encaisse - (prec.encaisse || 0);
+    if (dEnc > 0) L.push('  📈 Encaissé depuis : +' + fmtF(dEnc) + ' F');
+    L.push('');
+  } else {
+    L.push('▸ Premier bulletin — les prochains signaleront les évolutions.');
+    L.push('');
+  }
+
+  /* ── Situation ── */
+  L.push('▸ SITUATION');
+  L.push('  Encours total : ' + fmtF(etat.encours) + ' F');
+  L.push('  Exigible immédiatement : ' + fmtF(etat.exigible) + ' F chez ' + etat.nbExigible + ' client(s)');
+  var t = _ckTendanceEncaissements();
+  L.push('  Encaissé 7 derniers jours : ' + fmtF(t.j7) + ' F ('
+    + (t.pct >= 0 ? '▲ +' : '▼ ') + Math.abs(t.pct) + ' % vs 7 j précédents)');
+  L.push('');
+
+  /* ── Santé ── */
+  var doms = _ckSanteData();
+  if (doms.length) {
+    L.push('▸ SANTÉ PAR DOMAINE');
+    doms.sort(function(a,b){ return a.score - b.score; }).forEach(function(d){
+      var pic = d.score >= 75 ? '🟢' : (d.score >= 45 ? '🟠' : '🔴');
+      L.push('  ' + pic + ' ' + d.nom + ' : ' + d.score + '/100 — ' + d.cause);
+    });
+    var faibles = doms.filter(function(d){ return d.score < 45; });
+    if (faibles.length) {
+      L.push('');
+      L.push('  ⚠️ ' + faibles.map(function(d){ return d.nom; }).join(', ')
+        + ' sous le seuil critique : correction structurelle à arbitrer, pas une action ponctuelle.');
+    }
+    L.push('');
+  }
+
+  /* ── Charge opérationnelle (renvoi, sans doublonner la file) ── */
+  L.push('▸ CHARGE OPÉRATIONNELLE');
+  L.push('  ' + etat.nbActions + ' action(s) en file' + (etat.urgents ? ', dont ' + etat.urgents + ' urgente(s)' : ''));
+  if (actions.length) {
+    L.push('  Priorité du moment : ' + actions[0].titre);
+  } else {
+    L.push('  🏁 File vide — aucune action opérationnelle en attente.');
+  }
+
+  return { texte: L.join('\n'), etat: etat };
+}
+
+async function ckEnvoyerBulletinDirigeant() {
+  var actions = ckActions();
+  var res = _ckTexteBulletin(actions);
+  var conv = await _synthGetConversation();
+  if (!conv) { toast('Aucun administrateur/DG identifié pour recevoir le bulletin.', 'error'); return; }
+
+  var msg = {
+    id: uid(), conversation_id: conv.id,
+    expediteur_id: (APP.currentUser && APP.currentUser.id) || 'system',
+    contenu: res.texte, date: new Date().toISOString(), lu: false, fichiers: [],
+    type_message: 'cockpit_bulletin_dirigeant'
+  };
+  DATA.messages = DATA.messages || [];
+  DATA.messages.push(msg);
+  await dbPut('messages', msg);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_messages', msg);
+  if (typeof renderConversations === 'function') renderConversations();
+
+  /* On ne mémorise l'état qu'APRÈS envoi réussi : sinon un échec ferait
+     disparaître le delta du bulletin suivant, qui repartirait d'une référence
+     jamais transmise. */
+  try { localStorage.setItem(CK_BULLETIN_KEY, JSON.stringify(res.etat)); } catch(e) {}
+
+  toast('📊 Bulletin dirigeant envoyé (santé, tendance et évolutions).', 'success');
 }
 
 /* ── Envoi de la file d'actions du Cockpit → Messagerie interne (admin + DG) ──
