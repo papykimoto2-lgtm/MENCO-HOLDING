@@ -21106,7 +21106,25 @@ async function loadAllData() {
   /* v141 — Tombstones partagés (anti-réinjection multi-postes) */
   'suppressions_sync',
   /* v142 — Propriétaires mandants (gestion locative pour compte de tiers) */
-  'proprietaires_bailleurs'
+  'proprietaires_bailleurs',
+  /* [FIX] Ces stores étaient déclarés dans ALL_STORES (donc créés dans
+     IndexedDB et correctement écrits par dbPut) mais absents de allKeys :
+     ils n'étaient JAMAIS relus au démarrage. Les enregistrements
+     existaient bien en base, DATA[store] repartait vide à chaque
+     rechargement — d'où l'impression que « rien ne persiste ». Signalé
+     sur les partenaires de lotissement, le défaut touchait en réalité
+     53 stores, dont des modules entiers (baux, quittances,
+     factures, fournisseurs, immobilisations, morcellement, aménagement,
+     diaspora, copropriété…). */
+  'quinzainiers','factures_client','financements_programme','immobilisations','modeles_logement','plans_morcellement',
+  'parcelles_morcellement','agrement_promoteur','agrement_programme','conv_agrement','previsionnels','amenageurs',
+  'partenaires_lot','dossiers_lot','rapports_lot','conventions_amenagement','situations_amenagement','avenants_amenagement',
+  'stock_mouvements','chantier_couts','depots','fournisseurs','tiers_comptables','bons_commande',
+  'receptions','factures_fournisseur','validations','receptions_travaux','livraisons','receptions_dossiers',
+  'conges_rh','candidats_rh','postes_ouverts','formations_rh','paiements_online','baux',
+  'quittances','loc_relances','diaspo_dossiers','diaspo_preuves','diaspo_jalons','diaspo_parts',
+  'diaspo_ancrages','signalements','artisans','ordres_travaux','kyc_fiches','lbc_declarations',
+  'lbc_alertes','candidatures_loc','biens_locatifs','af_manifestations','masse_dxf_presets'
   ];
   /* Chargement en PARALLÈLE plutôt que séquentiel : chaque dbGetAll() ouvre
      sa propre transaction IndexedDB 'readonly' indépendante (voir dbGetAll
@@ -34142,11 +34160,20 @@ function rarCollecter() {
       : '—';
     var typeBien = lot ? (lot.usage || lot.type || 'Lot') : '—';
 
+    /* Le client porte normalement le nom du commercial en clair, mais les
+       dossiers anciens n'ont parfois que commercial_id : même repli que pour
+       les cessions, sinon ces dossiers se retrouvent classés sous « — ». */
+    var commCli = c.commercial || '';
+    if (!commCli && c.commercial_id) {
+      var empCli = (DATA.employes || []).find(function(x){ return x.id === c.commercial_id; });
+      if (empCli) commCli = ((empCli.nom||'') + ' ' + (empCli.prenoms||'')).trim();
+    }
+
     lignes.push({
       nature: 'souscripteur', id: c.id,
       nom: ((c.nom||'') + ' ' + (c.prenoms||'')).trim() || '—',
       dossier: c.dossier || '', tel: c.tel || '', email: c.email || '',
-      commercial: c.commercial || '—',
+      commercial: commCli || '—',
       bien: bien, typeBien: typeBien,
       du: du, verse: verse, reste: reste,
       pctVerse: du > 0 ? Math.round(verse/du*100) : 0,
@@ -34164,19 +34191,35 @@ function rarCollecter() {
 
     /* Cession foncière : échéance unique. Le retard se compte en jours depuis
        la date d'échéance, pas en mensualités impayées. */
-    var jrsRetard = 0, ech = c.date_echeance || c.echeance || '';
+    var jrsRetard = 0, ech = c.echeance || c.date_echeance || '';   /* champ réel de la cession : echeance */
     if (ech) {
       var d = new Date(ech);
       if (!isNaN(d.getTime()) && d < now) jrsRetard = Math.floor((now - d) / 86400000);
     }
-    var parc = c.parcelle_id ? (DATA.parcelles || []).find(function(p){ return p.id === c.parcelle_id; }) : null;
+    /* [FIX revue] Une cession ne porte pas les mêmes champs qu'un client : le
+       bien est désigné par source_key (et non parcelle_id), le téléphone vit
+       dans `contact` (et non `tel`), et le commercial n'existe qu'en
+       commercial_id. Sans résolution vers le module RH, la colonne
+       « Commercial » restait vide pour TOUTES les cessions — l'analyse par
+       commercial était donc faussée sur la moitié du portefeuille. */
+    var bienCes = (c.source_key && typeof cesSourceRef === 'function')
+      ? cesSourceRef(c.source_key)
+      : (function(){
+          var p = c.parcelle_id ? (DATA.parcelles||[]).find(function(x){ return x.id === c.parcelle_id; }) : null;
+          return p ? (typeof parcelleLabel === 'function' ? parcelleLabel(p) : (p.ref||'Parcelle')) : '—';
+        })();
+    var commCes = c.commercial || '';
+    if (!commCes && c.commercial_id) {
+      var empCes = (DATA.employes || []).find(function(x){ return x.id === c.commercial_id; });
+      if (empCes) commCes = ((empCes.nom||'') + ' ' + (empCes.prenoms||'')).trim();
+    }
 
     lignes.push({
       nature: 'cession', id: c.id,
       nom: c.acquereur || c.acquereur_nom || '—',
-      dossier: c.dossier || '', tel: c.tel || '', email: c.email || '',
-      commercial: c.commercial || '—',
-      bien: parc ? (typeof parcelleLabel === 'function' ? parcelleLabel(parc) : (parc.ref||'Parcelle')) : '—',
+      dossier: c.dossier || '', tel: c.contact || c.tel || '', email: c.email || '',
+      commercial: commCes || '—',
+      bien: bienCes,
       typeBien: 'Parcelle foncière',
       du: du, verse: verse, reste: reste,
       pctVerse: du > 0 ? Math.round(verse/du*100) : 0,
