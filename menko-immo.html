@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.44 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.45 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -87834,10 +87834,14 @@ function archiOuvrirDessin() {
        plan est déjà engagé dans un chiffrage, donc si le rouvrir et le modifier
        aura des conséquences en aval. */
     var nbDqe = (DATA.nomenclatures || []).filter(function(n){ return n._plan_id === p.id; }).length;
-    h += '<div class="card" style="padding:10px 12px;margin-bottom:8px;cursor:pointer;" onclick="archiChargerDessin(\'' + p.id + '\')">'
+    h += '<div class="card" style="padding:10px 12px;margin-bottom:8px;">'
       + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">'
-      +   '<strong>' + escHtml(p.ref || '(sans référence)') + '</strong>'
-      +   '<span style="font-size:11px;color:var(--blanc-dim);">v' + (p.version || 1) + ' · ' + escHtml(p.date || '') + '</span>'
+      +   '<strong style="cursor:pointer;" onclick="archiChargerDessin(\'' + p.id + '\')">' + escHtml(p.ref || '(sans référence)') + '</strong>'
+      +   '<span style="display:flex;align-items:center;gap:6px;flex-shrink:0;">'
+      +     '<span style="font-size:11px;color:var(--blanc-dim);">v' + (p.version || 1) + ' · ' + escHtml(p.date || '') + '</span>'
+      +     '<button class="btn btn-secondary btn-sm btn-icon" title="Ouvrir ce plan dans l\'éditeur" onclick="archiChargerDessin(\'' + p.id + '\')">📂</button>'
+      +     '<button class="btn btn-danger btn-sm btn-icon" title="Supprimer ce plan" onclick="archiSupprimerPlan(\'' + p.id + '\')">🗑</button>'
+      +   '</span>'
       + '</div>'
       + '<div style="font-size:11px;color:var(--blanc-dim);margin-top:3px;">'
       +   st.pieces + ' pièce(s) · ' + st.surface + ' m² · ' + st.niveaux + ' niveau(x)'
@@ -88507,6 +88511,101 @@ function pgmRendrePilotage() {
   host.innerHTML = h;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   SUPPRESSION DES DQE GÉNÉRÉS ET DES PLANS SOURCES
+   ──────────────────────────────────────────────────────────────────────────
+   Trois origines cohabitent dans le même store de nomenclature :
+
+     _genere_plan   → finitions calculées depuis le dessin
+     _genere_struct → fondations et structure (pré-dimensionnement)
+     _genere_cctp   → postes issus du CCTP
+     (aucun marqueur) → saisie manuelle
+
+   Une suppression qui ne distinguerait pas ces origines effacerait des heures
+   de saisie en même temps qu'un calcul régénérable en trois clics. Chaque
+   suppression annonce donc précisément ce qu'elle emporte et ce qu'elle
+   préserve, et le confirme avant d'agir.
+
+   Le cas du plan source demande une précaution supplémentaire : supprimer le
+   plan ne supprime pas les DQE qui en découlent — ils deviendraient
+   simplement orphelins, indiquant « plan source supprimé » sans qu'on puisse
+   plus vérifier sur quoi ils ont été calculés. On propose donc explicitement
+   les deux options plutôt que d'en imposer une.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+function _dqeOrigines(type) {
+  var L = (DATA.nomenclatures || []).filter(function(n){ return n.type_logement === type; });
+  return {
+    plan:   L.filter(function(n){ return n._genere_plan; }),
+    struct: L.filter(function(n){ return n._genere_struct; }),
+    cctp:   L.filter(function(n){ return n._genere_cctp; }),
+    manuel: L.filter(function(n){ return !n._genere_plan && !n._genere_struct && !n._genere_cctp; }),
+    tous:   L
+  };
+}
+
+async function dqeSupprimerGenere(type, origine) {
+  var O = _dqeOrigines(type);
+  var cible = origine === 'struct' ? O.struct : (origine === 'tout' ? O.plan.concat(O.struct) : O.plan);
+  if (!cible.length) { toast('Aucun poste à supprimer.', 'info'); return; }
+
+  var libelle = origine === 'struct' ? 'structure et fondations'
+              : (origine === 'tout' ? 'issus du plan (finitions + structure)' : 'de finitions issus du plan');
+  var conserve = [];
+  if (origine !== 'tout' && origine !== 'struct' && O.struct.length) conserve.push(O.struct.length + ' poste(s) structure');
+  if (origine === 'struct' && O.plan.length) conserve.push(O.plan.length + ' poste(s) de finitions');
+  if (O.cctp.length)   conserve.push(O.cctp.length + ' poste(s) CCTP');
+  if (O.manuel.length) conserve.push(O.manuel.length + ' poste(s) saisi(s) à la main');
+
+  var msg = 'Supprimer ' + cible.length + ' poste(s) ' + libelle + ' du type « ' + type + ' » ?\n\n'
+    + (conserve.length ? 'CONSERVÉS : ' + conserve.join(', ') + '.\n\n' : '')
+    + 'Ces postes sont régénérables depuis l\'éditeur de plan.';
+  if (!confirm(msg)) return;
+
+  for (var i = 0; i < cible.length; i++) {
+    await deleteRecord('nomenclatures', cible[i].id, { skipIntegrity: true });
+  }
+  if (typeof chargerNomenclature === 'function') chargerNomenclature();
+  if (document.getElementById('modal-dqe-plans') && document.getElementById('modal-dqe-plans').classList.contains('open')) dqeListePlans();
+  toast(cible.length + ' poste(s) supprimé(s)'
+    + (conserve.length ? ' — ' + conserve.join(', ') + ' conservé(s).' : '.'), 'success');
+}
+
+/* Suppression d'un plan enregistré. */
+async function archiSupprimerPlan(id) {
+  var p = (DATA.plans_arch || []).find(function(x){ return x.id === id; });
+  if (!p) return;
+  var lies = (DATA.nomenclatures || []).filter(function(n){ return n._plan_id === id; });
+  var types = [];
+  lies.forEach(function(n){ if (types.indexOf(n.type_logement) === -1) types.push(n.type_logement); });
+
+  var msg = 'Supprimer le plan « ' + (p.ref || id) + ' » (v' + (p.version || 1) + ') ?\n\n';
+  if (lies.length) {
+    msg += lies.length + ' poste(s) de DQE en découlent, sur le(s) type(s) : ' + types.join(', ') + '.\n\n'
+      + 'OK  = supprimer le plan ET ces postes de DQE\n'
+      + 'Annuler = ne rien supprimer\n\n'
+      + '(Pour conserver les DQE et n\'effacer que le dessin, supprimez d\'abord les postes depuis « DQE issus des plans ».)';
+  } else {
+    msg += 'Aucun DQE n\'en découle.';
+  }
+  if (!confirm(msg)) return;
+
+  if (lies.length) {
+    for (var i = 0; i < lies.length; i++) {
+      await deleteRecord('nomenclatures', lies[i].id, { skipIntegrity: true });
+    }
+  }
+  await deleteRecord('plans_arch', id);
+  /* Si le plan supprimé était celui ouvert dans l'éditeur, on rompt le lien —
+     sinon un enregistrement ultérieur recréerait un plan portant l'ancien
+     identifiant, avec une version repartie de zéro. */
+  if (window._archiPlanCourant && window._archiPlanCourant.id === id) window._archiPlanCourant = null;
+  if (typeof archiRedraw === 'function') archiRedraw();
+  if (typeof chargerNomenclature === 'function') chargerNomenclature();
+  toast('Plan supprimé' + (lies.length ? ' avec ' + lies.length + ' poste(s) de DQE.' : '.'), 'success');
+  archiOuvrirDessin();
+}
+
 function dqeCollecterPlans() {
   var parType = {};
   (DATA.nomenclatures || []).forEach(function(n){
@@ -88627,7 +88726,8 @@ function dqeListePlans() {
       + (d.manuel.length ? d.manuel.length + ' poste(s)<br><span style="font-size:10px;">' + fmtF(d.coutManuel) + ' F</span>' : '—') + '</td>'
       + '<td style="font-size:11px;">' + etat + '</td>'
       + '<td style="white-space:nowrap;">'
-      + '<button class="btn btn-secondary btn-sm btn-icon" title="Voir les postes dans le DQE" onclick="dqeVoirType(\'' + escHtml(d.type).replace(/'/g,"\\'") + '\')">🔎</button>'
+      + '<button class="btn btn-secondary btn-sm btn-icon" title="Voir les postes dans le DQE" onclick="dqeVoirType(\'' + escHtml(d.type).replace(/'/g,"\\'") + '\')">🔎</button> '
+      + '<button class="btn btn-danger btn-sm btn-icon" title="Supprimer les postes issus du plan — saisies manuelles et CCTP conservés" onclick="dqeSupprimerGenere(\'' + escHtml(d.type).replace(/'/g,"\\'") + '\',\'plan\')">🗑</button>'
       + '</td></tr>';
   });
   h += '</tbody></table></div>';
