@@ -19943,8 +19943,28 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <label>Type de partenariat</label>
           <select id="pld-type-partenariat" class="form-control" onchange="plMajTerminologieUnite()">
             <option value="lotissement">Lotissement — rémunération du partenaire en LOTS (unités de vente finale)</option>
+            <option value="ilots">Îlots — rémunération du partenaire en ÎLOTS nommément désignés</option>
             <option value="amenagement">Aménagement — rémunération du partenaire en PARCELLES (blocs de terrain)</option>
           </select>
+        </div>
+        <!-- Désignation nominative : une part exprimée en îlots ou en parcelles se
+             constate par leur nom, pas par un compte. Deux conventions portant
+             chacune « 3 îlots » ne portent pas sur les mêmes îlots. -->
+        <div class="form-group span-2" id="pld-bloc-designation" style="display:none;">
+          <label id="pld-label-designation">Îlots attribués au partenaire</label>
+          <input type="text" id="pld-designation-partenaire" class="form-control"
+                 placeholder="Ex. A, C, F  ou  ILOT-2, ILOT-5" oninput="plMajRepartitionLots()">
+          <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">
+            Séparez par des virgules. Ces désignations font foi lors des cessions : tout élément listé ici est retiré de la part cessible du promoteur.
+          </div>
+        </div>
+        <div class="form-group span-2" id="pld-bloc-designation-prom" style="display:none;">
+          <label id="pld-label-designation-prom">Îlots revenant au promoteur (optionnel)</label>
+          <input type="text" id="pld-designation-promoteur" class="form-control"
+                 placeholder="Laisser vide = tout le reste" oninput="plMajRepartitionLots()">
+          <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">
+            À renseigner si la convention désigne explicitement la part du promoteur ; sinon tout ce qui n'est pas au partenaire lui revient.
+          </div>
         </div>
         <div class="form-group">
           <label id="pld-label-nb-lots">Nombre de lots prévus</label>
@@ -23057,6 +23077,179 @@ async function analyserDivergence(){
    Les deux causes exigent des gestes opposés, et rien à l'écran ne permettait
    de les distinguer.
    ══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════════
+   DIAGNOSTIC CIBLÉ D'UNE TABLE — « je ne vois pas ce qu'un collègue a saisi »
+   ──────────────────────────────────────────────────────────────────────────
+   Le comparateur global dit COMBIEN de lignes manquent. Il ne dit pas
+   POURQUOI. Or il existe au moins six causes distinctes, chacune appelant un
+   geste différent, et rien à l'écran ne permet de les distinguer :
+
+     1. La table n'existe pas côté Supabase        → créer la table
+     2. RLS refuse la lecture (401/403)            → corriger la policy
+     3. La table est vide côté cloud               → le collègue n'a pas poussé
+     4. Le curseur du poste a sauté la fenêtre     → resynchro complète
+     5. Un TOMBSTONE local bloque la ligne         → lever le tombstone
+     6. La ligne descend mais _remoteWins la rejette → conflit d'horodatage
+
+   Le cas 5 est le plus pernicieux : le tombstone vit en localStorage, donc il
+   est PROPRE À CE POSTE. Le pull ignore la ligne ET la supprime du cloud —
+   ce qui la fait disparaître pour tout le monde. Un poste peut ainsi effacer
+   silencieusement le travail des autres, et aucun message ne le signale.
+   ══════════════════════════════════════════════════════════════════════════ */
+async function diagnostiquerTable(table, hostId) {
+  /* Le conteneur est paramétrable : le même diagnostic sert dans les
+     paramètres de synchronisation et directement dans le module concerné, sans
+     duplication de code ni bricolage sur les identifiants du DOM. */
+  var host = document.getElementById(hostId || '')
+          || document.getElementById('sync-extra-panel')
+          || document.getElementById('sync-status-panel');
+  if (!host) return;
+  getSBConfig();
+  if (!SB.url || !SB.key) { host.innerHTML = '<div style="color:var(--rouge);">⚠️ Supabase non configuré.</div>'; return; }
+
+  var store = (SUPA_STORE_MAP.find(function(x){ return x[0] === table; }) || [])[1] || table.replace('pi_','');
+  host.innerHTML = '<div style="font-size:12px;color:var(--blanc-dim)">🔬 Analyse de ' + escHtml(table) + '…</div>';
+
+  var H = ['<div style="font-size:13px;font-weight:700;margin-bottom:10px;">🔬 Diagnostic — ' + escHtml(table) + '</div>'];
+  var verdicts = [];
+  function ligne(label, valeur, etat) {
+    var col = etat === 'ko' ? 'var(--rouge)' : (etat === 'warn' ? '#EF9F27' : 'var(--vert)');
+    var ico = etat === 'ko' ? '❌' : (etat === 'warn' ? '⚠️' : '✅');
+    H.push('<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--bord2);font-size:12px;">'
+      + '<span>' + ico + ' ' + label + '</span><span style="color:' + col + ';font-weight:600;text-align:right;">' + valeur + '</span></div>');
+  }
+
+  /* ── 1 & 2. Accès à la table ── */
+  var rows = null, erreur = null;
+  try { rows = await sbFetch(table + '?select=*', 'GET'); }
+  catch(e) { erreur = e && e.message ? e.message : String(e); }
+
+  if (rows === null || rows === undefined) {
+    ligne('Accès à la table', erreur ? escHtml(String(erreur).slice(0,60)) : 'aucune réponse', 'ko');
+    verdicts.push('La table est <strong>inaccessible</strong> : soit elle n\'existe pas dans Supabase, soit une politique RLS en refuse la lecture. '
+      + 'Lancez « 🩺 Diagnostic cloud » pour trancher, puis créez la table ou corrigez la policy. '
+      + 'Tant que ce point n\'est pas réglé, aucune donnée de ce module ne circulera entre les postes.');
+    H.push('<div style="background:rgba(224,82,82,.10);border-left:3px solid var(--rouge);border-radius:6px;padding:10px 12px;font-size:12px;margin-top:10px;">' + verdicts.join('<br><br>') + '</div>');
+    host.innerHTML = H.join('');
+    return;
+  }
+  ligne('Accès à la table', 'OK (lecture autorisée)', 'ok');
+
+  /* ── 3. Contenu cloud ── */
+  var dernier = '';
+  rows.forEach(function(r){ if (r.updated_at && r.updated_at > dernier) dernier = r.updated_at; });
+  ligne('Lignes présentes dans le cloud', rows.length, rows.length ? 'ok' : 'warn');
+  if (dernier) ligne('Dernière écriture cloud', escHtml(dernier.slice(0,16).replace('T',' ')), 'ok');
+  if (!rows.length) {
+    verdicts.push('Le cloud est <strong>vide</strong> pour cette table. La saisie de votre collègue n\'a jamais été envoyée depuis SON poste. '
+      + 'Faites-lui ouvrir Paramètres → Synchronisation et cliquer « ⬆️ Tout envoyer », puis vérifier sa file d\'attente hors ligne.');
+  }
+
+  /* ── 4. Curseur ── */
+  var curseur = (_pullCurseurs() || {})[table] || '';
+  var curseurEnAvance = !!(curseur && dernier && curseur > dernier);
+  ligne('Curseur de ce poste', curseur ? escHtml(curseur.slice(0,16).replace('T',' ')) : 'aucun (pull intégral)',
+        curseurEnAvance ? 'ko' : 'ok');
+  if (curseurEnAvance) {
+    verdicts.push('Le curseur de ce poste est <strong>postérieur</strong> à la dernière écriture du cloud : la fenêtre de synchronisation a été sautée. '
+      + 'Cliquez « 🔄 Resynchro complète » — les lignes descendront immédiatement.');
+  }
+
+  /* ── 5. Tombstones ── */
+  var tombs = (typeof tombList === 'function' ? (tombList()[store] || []) : []);
+  var idsCloud = rows.map(function(r){ return String(r.id); });
+  var bloquees = tombs.filter(function(id){ return idsCloud.indexOf(String(id)) !== -1; });
+  ligne('Suppressions enregistrées sur ce poste', tombs.length + (bloquees.length ? ' — dont ' + bloquees.length + ' bloquant des lignes du cloud' : ''),
+        bloquees.length ? 'ko' : 'ok');
+  if (bloquees.length) {
+    verdicts.push('<strong>' + bloquees.length + ' ligne(s) du cloud sont marquées comme supprimées sur CE poste.</strong> '
+      + 'Le pull les ignore et les efface du cloud : la saisie de votre collègue disparaît pour tout le monde. '
+      + 'Ce registre est local — il vient d\'une suppression faite ici, ou d\'un import annulé. '
+      + 'Utilisez le bouton ci-dessous pour lever ces marques, puis relancez la synchronisation.');
+    H.push('<div style="font-size:10px;color:var(--blanc-dim);padding:6px 0;">ids bloqués : '
+      + escHtml(bloquees.slice(0,10).join(', ')) + (bloquees.length > 10 ? ' … (+' + (bloquees.length-10) + ')' : '') + '</div>');
+  }
+
+  /* ── 6. Comparaison avec le local + arbitrage _remoteWins ── */
+  var locaux = {};
+  (DATA[store] || []).forEach(function(x){ if (x && x.id !== undefined) locaux[String(x.id)] = x; });
+  var absentes = [], rejetees = [];
+  rows.forEach(function(r){
+    var d = _supaUnwrap(table, r);
+    if (!d || d.id === undefined) return;
+    var ex = locaux[String(d.id)];
+    if (!ex) { if (bloquees.indexOf(String(d.id)) === -1) absentes.push(String(d.id)); }
+    else if (!_remoteWins(d, ex)) {
+      /* _remoteWins conserve le local à horodatage ÉGAL — situation normale
+         après une synchronisation réussie, où les deux versions sont
+         identiques. Ne signaler que les divergences réelles : le distant est
+         strictement plus ancien, donc une modification faite ailleurs risque
+         d'être ignorée. */
+      var tR = r.updated_at || d.updated_at || '';
+      var tL = ex.updated_at || '';
+      if (tR && tL && tR < tL) rejetees.push(String(d.id));
+    }
+  });
+  ligne('Lignes présentes localement', (DATA[store] || []).length, 'ok');
+  ligne('Lignes du cloud absentes ici', absentes.length || '—', absentes.length ? 'ko' : 'ok');
+  if (rejetees.length) {
+    ligne('Lignes conservées en version locale', rejetees.length, 'warn');
+    verdicts.push(rejetees.length + ' ligne(s) existent des deux côtés, et la version LOCALE est retenue faute d\'horodatage plus récent côté cloud. '
+      + 'Si la version du collègue est la bonne, faites-la ré-enregistrer depuis son poste pour lui donner un horodatage frais.');
+  }
+  if (absentes.length && !curseurEnAvance && !bloquees.length) {
+    verdicts.push('Des lignes existent dans le cloud sans être descendues, alors que ni le curseur ni les suppressions ne l\'expliquent. '
+      + 'Lancez « 🔄 Resynchro complète » ; si elles ne descendent toujours pas, le store <code>' + escHtml(store) + '</code> '
+      + 'n\'est probablement pas rechargé au démarrage.');
+  }
+
+  /* ── 7. Le store est-il rechargé au démarrage ? ── */
+  var dansAllStores = (typeof ALL_STORES !== 'undefined') && ALL_STORES.indexOf(store) !== -1;
+  ligne('Store déclaré dans le schéma local', dansAllStores ? 'oui' : 'NON', dansAllStores ? 'ok' : 'ko');
+  if (!dansAllStores) {
+    verdicts.push('Le store <code>' + escHtml(store) + '</code> n\'est pas déclaré : les données sont écrites mais jamais relues au démarrage.');
+  }
+
+  if (!verdicts.length) {
+    verdicts.push('✅ Aucun blocage détecté sur cette table. Les lignes du cloud sont toutes présentes localement.');
+  }
+
+  H.push('<div style="background:rgba(184,115,51,.10);border-left:3px solid var(--or);border-radius:6px;padding:11px 13px;font-size:12px;line-height:1.8;margin-top:12px;">'
+    + '<strong>Interprétation</strong><br>' + verdicts.join('<br><br>') + '</div>');
+
+  H.push('<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">');
+  if (bloquees.length) {
+    H.push('<button class="btn btn-primary btn-sm" onclick="leverSuppressionsBloquantes(\'' + escHtml(store) + '\')">♻️ Lever les ' + bloquees.length + ' suppression(s) bloquante(s)</button>');
+  }
+  H.push('<button class="btn btn-secondary btn-sm" onclick="pullReinitialiserCurseurs()">🔄 Resynchro complète</button>');
+  H.push('<button class="btn btn-secondary btn-sm" onclick="diagnostiquerTable(\'' + escHtml(table) + '\',\'' + escHtml(host.id || '') + '\')">↻ Relancer</button>');
+  H.push('</div>');
+
+  host.innerHTML = H.join('');
+}
+
+/* Lève les marques de suppression qui bloquent des lignes réellement présentes
+   dans le cloud. On ne purge PAS tout le registre : les autres tombstones
+   correspondent à de vraies suppressions qu'il faut continuer de propager. */
+async function leverSuppressionsBloquantes(store) {
+  var table = (SUPA_STORE_MAP.find(function(x){ return x[1] === store; }) || [])[0];
+  if (!table) return;
+  var rows = await sbFetch(table + '?select=id', 'GET').catch(function(){ return null; });
+  if (!rows) { toast('Lecture du cloud impossible.', 'error'); return; }
+  var idsCloud = rows.map(function(r){ return String(r.id); });
+  var tombs = (typeof tombList === 'function' ? (tombList()[store] || []) : []);
+  var aLever = tombs.filter(function(id){ return idsCloud.indexOf(String(id)) !== -1; });
+  if (!aLever.length) { toast('Aucune suppression bloquante.', 'info'); return; }
+  if (!confirm('Lever ' + aLever.length + ' marque(s) de suppression sur « ' + store + ' » ?\n\n'
+    + 'Ces lignes existent dans le cloud et redescendront sur ce poste.\n'
+    + 'Ne le faites que si elles ont été supprimées par erreur.')) return;
+  for (var i = 0; i < aLever.length; i++) {
+    try { _untomb(store, aLever[i]); } catch(e) {}
+  }
+  toast(aLever.length + ' suppression(s) levée(s) — lancement de la resynchronisation…', 'success');
+  await pullReinitialiserCurseurs();
+}
+
 async function comparerCloudLocal() {
   var host = document.getElementById('sync-extra-panel') || document.getElementById('sync-status-panel');
   if (!host) return;
@@ -98336,6 +98529,29 @@ function _plPartenaireAvancement(partenaireId) {
    absente ou sans droits. N'affiche rien si tout est OK ou si Supabase
    n'est pas configuré (mode 100% local). */
 var PL_TABLES = ['pi_partenaires_lot', 'pi_dossiers_lot', 'pi_rapports_lot'];
+/* Enchaîne le diagnostic sur les trois tables du module et affiche le résultat
+   dans la page même — inutile d'aller le chercher dans les paramètres quand on
+   constate le problème ici. */
+async function plDiagnostiquerSync() {
+  var host = document.getElementById('pl-cloud-status');
+  if (!host) return;
+  host.innerHTML = '<div style="font-size:12px;color:var(--blanc-dim);">🔬 Analyse des trois tables du module…</div>';
+  /* Un conteneur temporaire par table : chaque diagnostic écrit dans le sien,
+     puis on concatène. Le résultat reste dans la page du module, là où le
+     problème se constate. */
+  var res = [];
+  for (var i = 0; i < PL_TABLES.length; i++) {
+    var tmp = document.createElement('div');
+    tmp.id = '_pl_diag_' + i;
+    tmp.style.marginBottom = '14px';
+    document.body.appendChild(tmp);
+    try { await diagnostiquerTable(PL_TABLES[i], tmp.id); } catch(e) {}
+    res.push(tmp.innerHTML);
+    tmp.remove();
+  }
+  host.innerHTML = res.map(function(x){ return '<div style="margin-bottom:14px;">' + x + '</div>'; }).join('');
+}
+
 async function plVerifierTablesCloud() {
   var host = document.getElementById('pl-cloud-alert');
   if (!host) return;
@@ -98379,6 +98595,7 @@ async function plVerifierTablesCloud() {
     + '<div style="margin-top:6px;display:flex;gap:8px;">'
     + '<button class="btn btn-primary btn-sm" onclick="(function(){var t=document.getElementById(\'pl-cloud-sql\');t.select();document.execCommand(\'copy\');toast(\'SQL copié — collez-le dans Supabase SQL Editor.\',\'success\');})()">📋 Copier le SQL</button>'
     + '<button class="btn btn-secondary btn-sm" onclick="plVerifierTablesCloud()">🔄 Re-tester</button>'
+    + ' <button class="btn btn-primary btn-sm" onclick="plDiagnostiquerSync()" title="Analyse ligne à ligne : pourquoi les données d\'un autre poste n\'apparaissent pas ici">🔬 Pourquoi je ne vois pas les données ?</button>'
     + '</div></div>';
   host.innerHTML = html;
 }
@@ -98707,32 +98924,104 @@ function plOpenDossierModal(id) {
   /* Par défaut (dossiers créés avant l'ajout de ce champ) : lotissement, pour ne pas changer
      le comportement des dossiers existants qui alimentaient déjà le catalogue de lots. */
   if (!document.getElementById('pld-type-partenariat').value) document.getElementById('pld-type-partenariat').value = 'lotissement';
+  /* Désignations : stockées en tableau, rendues en texte séparé par virgules. */
+  var _dp = document.getElementById('pld-designation-partenaire');
+  if (_dp) _dp.value = (d && Array.isArray(d.designation_partenaire)) ? d.designation_partenaire.join(', ') : '';
+  var _dq = document.getElementById('pld-designation-promoteur');
+  if (_dq) _dq.value = (d && Array.isArray(d.designation_promoteur)) ? d.designation_promoteur.join(', ') : '';
   openModal('modal-dossier-lot');
   plMajTerminologieUnite();
 }
 /* Adapte le vocabulaire du formulaire (lots vs parcelles) selon la nature du partenariat */
+/* Unité de rémunération. Trois modes, parce que la convention peut porter sur
+   des unités de vente (lots), sur des blocs désignés (îlots), ou sur des
+   parcelles entières — et que ces trois cas ne se contrôlent pas de la même
+   façon au moment de céder. */
+var PL_UNITES = {
+  lotissement: { unite:'lot',      pluriel:'lots',      Maj:'Lots',      accord:'',  nominatif:false },
+  ilots:       { unite:'îlot',     pluriel:'îlots',     Maj:'Îlots',     accord:'',  nominatif:true  },
+  amenagement: { unite:'parcelle', pluriel:'parcelles', Maj:'Parcelles', accord:'e', nominatif:true  }
+};
+function plUnite(type) { return PL_UNITES[type] || PL_UNITES.lotissement; }
+
+/* Normalise une liste de désignations saisie en texte libre. « A, c , ILOT-2 »
+   et « a,C,ilot 2 » désignent les mêmes éléments : sans normalisation, une
+   simple différence de casse ferait passer pour libre un îlot déjà attribué. */
+function plParseDesignations(txt) {
+  return String(txt || '')
+    .split(/[,;\n]+/)
+    .map(function(s){ return s.trim().toUpperCase().replace(/\s+/g,' ').replace(/^(ILOT|ÎLOT|LOT|PARCELLE)[\s-]*/,''); })
+    .filter(Boolean)
+    .filter(function(v,i,a){ return a.indexOf(v)===i; });
+}
+
 function plMajTerminologieUnite() {
-  var estAmenagement = document.getElementById('pld-type-partenariat').value === 'amenagement';
-  var unite = estAmenagement ? 'parcelle' : 'lot';
-  var uniteMaj = estAmenagement ? 'Parcelles' : 'Lots';
-  document.getElementById('pld-label-nb-lots').textContent = 'Nombre de ' + unite + 's prévu' + (estAmenagement?'e':'') + 's';
-  document.getElementById('pld-label-nb-lots-partenaire').textContent = uniteMaj + ' réservé' + (estAmenagement?'e':'') + 's au partenaire';
-  document.getElementById('pld-label-nb-lots-promoteur').textContent = 'Part promoteur (' + unite + 's, calculée)';
+  var type = document.getElementById('pld-type-partenariat').value;
+  var U = plUnite(type);
+  document.getElementById('pld-label-nb-lots').textContent = 'Nombre de ' + U.pluriel + ' prévu' + U.accord + 's';
+  document.getElementById('pld-label-nb-lots-partenaire').textContent = U.Maj + ' réservé' + U.accord + 's au partenaire';
+  document.getElementById('pld-label-nb-lots-promoteur').textContent = 'Part promoteur (' + U.pluriel + ', calculée)';
+  var bloc  = document.getElementById('pld-bloc-designation');
+  var blocP = document.getElementById('pld-bloc-designation-prom');
+  if (bloc)  bloc.style.display  = U.nominatif ? '' : 'none';
+  if (blocP) blocP.style.display = U.nominatif ? '' : 'none';
+  var lbl  = document.getElementById('pld-label-designation');
+  var lblP = document.getElementById('pld-label-designation-prom');
+  if (lbl)  lbl.textContent  = U.Maj + ' attribué' + U.accord + 's au partenaire';
+  if (lblP) lblP.textContent = U.Maj + ' revenant au promoteur (optionnel)';
+  var inp = document.getElementById('pld-designation-partenaire');
+  if (inp) inp.placeholder = (type === 'amenagement') ? 'Ex. PARC-01, PARC-04' : 'Ex. A, C, F  ou  ILOT-2, ILOT-5';
   plMajRepartitionLots();
 }
-/* Calcule en direct la part promoteur = unités prévues - unités réservées au partenaire
-   (unité = lot ou parcelle selon le type de partenariat) */
+
 function plMajRepartitionLots() {
-  var estAmenagement = (document.getElementById('pld-type-partenariat')||{}).value === 'amenagement';
-  var unite = estAmenagement ? 'parcelle' : 'lot';
+  var type = (document.getElementById('pld-type-partenariat')||{}).value;
+  var U = plUnite(type);
   var total = parseInt(document.getElementById('pld-nb-lots').value) || 0;
-  var part = parseInt(document.getElementById('pld-nb-lots-partenaire').value) || 0;
-  var promoteur = Math.max(0, total - part);
+  var part  = parseInt(document.getElementById('pld-nb-lots-partenaire').value) || 0;
   var el = document.getElementById('pld-nb-lots-promoteur');
-  if (el) el.value = promoteur + ' ' + unite + (promoteur>1?'s':'') + (part > total ? ' — ⚠️ dépasse le total prévu' : '');
+  if (!el) return;
+  var desP    = plParseDesignations((document.getElementById('pld-designation-partenaire')||{}).value);
+  var desProm = plParseDesignations((document.getElementById('pld-designation-promoteur')||{}).value);
+  var msg = '';
+  if (U.nominatif && desP.length) {
+    /* Quand les désignations sont saisies, ce sont ELLES qui font foi : le
+       compte n'est plus qu'un contrôle de cohérence. Un écart signale une
+       convention mal retranscrite, qu'il vaut mieux voir ici qu'au moment de
+       la rétrocession. */
+    var promoteurNb = desProm.length ? desProm.length : Math.max(0, total - desP.length);
+    msg = promoteurNb + ' ' + (promoteurNb>1?U.pluriel:U.unite);
+    if (desProm.length) msg += ' : ' + desProm.join(', ');
+    if (part && part !== desP.length) {
+      msg += ' — ⚠️ ' + desP.length + ' ' + U.pluriel + ' désigné' + U.accord + 's mais ' + part + ' annoncé' + U.accord + 's';
+    }
+    if (total && desP.length > total) msg += ' — ⚠️ dépasse le total prévu';
+    var communs = desP.filter(function(x){ return desProm.indexOf(x) !== -1; });
+    if (communs.length) msg += ' — ⛔ ' + communs.join(', ') + ' attribué' + U.accord + 's aux DEUX parties';
+  } else {
+    var promoteur = Math.max(0, total - part);
+    msg = promoteur + ' ' + (promoteur>1?U.pluriel:U.unite) + (part > total ? ' — ⚠️ dépasse le total prévu' : '');
+  }
+  el.value = msg;
 }
 async function plSaveDossier() {
   var nom = document.getElementById('pld-nom').value.trim();
+  var _U = plUnite((document.getElementById('pld-type-partenariat')||{}).value);
+  var _desP    = plParseDesignations((document.getElementById('pld-designation-partenaire')||{}).value);
+  var _desProm = plParseDesignations((document.getElementById('pld-designation-promoteur')||{}).value);
+  var _tot     = parseInt((document.getElementById('pld-nb-lots')||{}).value) || 0;
+  /* Un même élément attribué aux deux parties est une contradiction : la
+     convention ne peut être exécutée en l'état, et laisser passer revient à
+     décider en silence lequel des deux l'emporte. */
+  var _communs = _desP.filter(function(x){ return _desProm.indexOf(x) !== -1; });
+  if (_communs.length) {
+    toast(_U.Maj + ' ' + _communs.join(', ') + ' attribué' + _U.accord + 's à la fois au partenaire et au promoteur : corrigez la convention.', 'error');
+    return;
+  }
+  if (_tot > 0 && _desP.length > _tot) {
+    toast(_desP.length + ' ' + _U.pluriel + ' désigné' + _U.accord + 's au partenaire pour un total de ' + _tot + ' : corrigez.', 'error');
+    return;
+  }
   if (!nom) { toast('Nom du terrain obligatoire.', 'error'); return; }
 
   /* [FIX] La répartition n'était que signalée à l'écran, jamais bloquée : on
@@ -98764,6 +99053,10 @@ async function plSaveDossier() {
     pct_retrocession: parseFloat(document.getElementById('pld-pct-retrocession').value)||0,
     nb_lots_prevus: parseInt(document.getElementById('pld-nb-lots').value)||0,
     nb_lots_partenaire: parseInt(document.getElementById('pld-nb-lots-partenaire').value)||0,
+    /* Désignations nominatives : elles font foi sur le compte quand elles sont
+       renseignées (voir plMajRepartitionLots et cesVerifierIndivision). */
+    designation_partenaire: plParseDesignations((document.getElementById('pld-designation-partenaire')||{}).value),
+    designation_promoteur:  plParseDesignations((document.getElementById('pld-designation-promoteur')||{}).value),
     date_confiage: document.getElementById('pld-date-confiage').value,
     date_fin_prev: document.getElementById('pld-date-fin-prev').value,
     etapes: existing ? existing.etapes : PL_ETAPES_TPL.map(function(e){ return { cle:e.cle, statut:'a_faire', avancement:0 }; }),
