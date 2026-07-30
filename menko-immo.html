@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.39 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.40 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -12216,6 +12216,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <option value="">Tous programmes</option>
           </select>
           <button class="btn btn-secondary btn-sm" onclick="printPreviewDQE()" title="Aperçu avant impression du DQE">👁 Aperçu DQE</button>
+          <button class="btn btn-secondary btn-sm" onclick="dqeListePlans()" title="Tous les DQE générés depuis l'éditeur de plan">📐 DQE issus des plans</button>
           <button class="btn btn-secondary btn-sm" onclick="exportDQE()">⬇ Export CSV</button>
           <button class="btn btn-primary btn-sm" onclick="genererDQEPourProgramme()">⚡ Générer DQE</button>
         </div>
@@ -87724,6 +87725,170 @@ function dqeMatch(name) {
       || (DATA.prix_unitaire || []).find(function(x) { return (x.libelle || '').trim().toLowerCase() === key; })
       || null;
 }
+/* ══════════════════════════════════════════════════════════════════════════
+   LISTE DES DQE ISSUS DE L'ÉDITEUR DE PLAN
+   ──────────────────────────────────────────────────────────────────────────
+   Les lignes générées depuis un plan portent le marqueur _genere_plan. Elles
+   cohabitent dans le même store que les lignes saisies à la main, ce qui rend
+   impossible de savoir, en regardant un DQE, ce qui vient du dessin et ce qui
+   a été ajouté ensuite.
+
+   Cette vue les regroupe par type de logement et affiche, pour chacun :
+   la date de génération, la surface et le nombre de pièces au moment du calcul,
+   le nombre de postes, le montant, et la part saisie manuellement.
+
+   Le point utile n'est pas la liste elle-même mais la COMPARAISON : si le plan
+   a été modifié après génération, le DQE est périmé et personne ne le sait.
+   On le signale en confrontant la surface figée à la génération avec celle du
+   plan actuellement ouvert dans l'éditeur.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+function dqeCollecterPlans() {
+  var parType = {};
+  (DATA.nomenclatures || []).forEach(function(n){
+    var t = n.type_logement || '(sans type)';
+    parType[t] = parType[t] || { type:t, plan:[], manuel:[], le:'', surface:0, pieces:0, niveaux:0 };
+    if (n._genere_plan) {
+      parType[t].plan.push(n);
+      /* On retient la génération la plus récente : régénérer remplace les
+         lignes du même type, donc toutes portent normalement la même date —
+         mais un import ou une reprise partielle peut en laisser d'anciennes. */
+      if (n._genere_le && n._genere_le > parType[t].le) {
+        parType[t].le      = n._genere_le;
+        parType[t].surface = parseFloat(n._genere_surface) || 0;
+        parType[t].pieces  = parseInt(n._genere_pieces) || 0;
+        parType[t].niveaux = parseInt(n._genere_niveaux) || 0;
+      }
+    } else if (n._genere_cctp) {
+      parType[t].manuel.push(n);   /* généré par le CCTP : ni plan, ni saisie */
+    } else {
+      parType[t].manuel.push(n);
+    }
+  });
+
+  return Object.keys(parType)
+    .map(function(t){
+      var d = parType[t];
+      var cout = function(list){
+        return list.reduce(function(s,n){
+          return s + ((parseFloat(n.quantite)||0) * (typeof dqeLignePU==='function' ? dqeLignePU(n) : 0)) + (parseFloat(n.prix_forfait)||0);
+        }, 0);
+      };
+      d.coutPlan   = Math.round(cout(d.plan));
+      d.coutManuel = Math.round(cout(d.manuel));
+      d.coutTotal  = d.coutPlan + d.coutManuel;
+      return d;
+    })
+    .filter(function(d){ return d.plan.length; })
+    .sort(function(a,b){ return (b.le || '').localeCompare(a.le || ''); });
+}
+
+function dqeListePlans() {
+  var host = document.getElementById('dqe-plans-contenu');
+  if (!host) return;
+  var liste = dqeCollecterPlans();
+
+  if (!liste.length) {
+    host.innerHTML = '<div style="text-align:center;padding:26px;color:var(--blanc-dim);font-size:13px;line-height:1.9;">'
+      + '<div style="font-size:32px;margin-bottom:8px;">📐</div>'
+      + 'Aucun DQE n\'a encore été généré depuis un plan.<br>'
+      + 'Ouvrez <strong>Plans &amp; Conception → éditeur</strong>, dessinez les pièces,<br>'
+      + 'puis utilisez « Générer la nomenclature DQE ».</div>';
+    openModal('modal-dqe-plans');
+    return;
+  }
+
+  /* Surface du plan actuellement ouvert : sert à repérer un DQE devenu obsolète. */
+  var surfCourante = 0, typeCourant = '';
+  try {
+    if (typeof ED !== 'undefined' && ED.elements) {
+      ED.elements.filter(function(e){ return e.type === 'piece'; }).forEach(function(p){
+        surfCourante += (parseFloat(p.l)||0) * (parseFloat(p.w)||0);
+      });
+      typeCourant = (document.getElementById('gen-nomen-type') || {}).value || '';
+    }
+  } catch(e) {}
+
+  var totalPlan = liste.reduce(function(s,d){ return s + d.coutPlan; }, 0);
+  var h = '';
+  h += '<div class="kpi-grid" style="margin-bottom:14px;">'
+    + '<div class="kpi-card" data-icon="📐"><div class="kpi-label">Types couverts</div><div class="kpi-value or" style="font-size:18px;">' + liste.length + '</div><div class="kpi-delta">générés depuis un plan</div></div>'
+    + '<div class="kpi-card" data-icon="🧱"><div class="kpi-label">Postes issus des plans</div><div class="kpi-value or" style="font-size:18px;">' + liste.reduce(function(s,d){ return s + d.plan.length; }, 0) + '</div><div class="kpi-delta">lignes de nomenclature</div></div>'
+    + '<div class="kpi-card" data-icon="💰"><div class="kpi-label">Montant cumulé</div><div class="kpi-value or" style="font-size:18px;">' + fmtF(totalPlan) + ' F</div><div class="kpi-delta">par unité, hors saisies manuelles</div></div>'
+    + '</div>';
+
+  h += '<div class="table-wrap"><table style="width:100%;font-size:12px;"><thead><tr>'
+    + '<th>Type de logement</th><th>Généré le</th><th style="text-align:right;">Plan</th>'
+    + '<th style="text-align:right;">Postes</th><th style="text-align:right;">Montant plan</th>'
+    + '<th style="text-align:right;">Ajouts manuels</th><th>État</th><th></th></tr></thead><tbody>';
+
+  liste.forEach(function(d){
+    /* Un DQE est signalé périmé si le plan ouvert porte le même type mais une
+       surface qui a changé de plus de 1 % — en deçà, c'est un arrondi. */
+    var perime = false;
+    if (typeCourant && d.type === typeCourant && surfCourante > 0 && d.surface > 0) {
+      perime = Math.abs(surfCourante - d.surface) / d.surface > 0.01;
+    }
+    var etat = perime
+      ? '<span style="color:var(--rouge);">⚠️ plan modifié depuis</span>'
+      : (d.le ? '<span style="color:var(--vert);">✅ à jour</span>' : '<span style="color:var(--blanc-dim);">— date inconnue</span>');
+
+    h += '<tr>'
+      + '<td><strong>' + escHtml(d.type) + '</strong>'
+      + (d.niveaux > 1 ? '<br><span style="font-size:10px;color:var(--dim);">' + d.niveaux + ' niveaux</span>' : '') + '</td>'
+      + '<td>' + (d.le ? escHtml(d.le.slice(0,16).replace('T',' ')) : '—') + '</td>'
+      + '<td style="text-align:right;">' + (d.surface ? d.surface.toFixed(1) + ' m²' : '—')
+      + (d.pieces ? '<br><span style="font-size:10px;color:var(--dim);">' + d.pieces + ' pièce(s)</span>' : '') + '</td>'
+      + '<td style="text-align:right;">' + d.plan.length + '</td>'
+      + '<td style="text-align:right;font-weight:600;">' + fmtF(d.coutPlan) + '</td>'
+      + '<td style="text-align:right;color:' + (d.manuel.length ? 'var(--or)' : 'var(--blanc-dim)') + ';">'
+      + (d.manuel.length ? d.manuel.length + ' poste(s)<br><span style="font-size:10px;">' + fmtF(d.coutManuel) + ' F</span>' : '—') + '</td>'
+      + '<td style="font-size:11px;">' + etat + '</td>'
+      + '<td style="white-space:nowrap;">'
+      + '<button class="btn btn-secondary btn-sm btn-icon" title="Voir les postes dans le DQE" onclick="dqeVoirType(\'' + escHtml(d.type).replace(/'/g,"\\'") + '\')">🔎</button>'
+      + '</td></tr>';
+  });
+  h += '</tbody></table></div>';
+
+  h += '<div style="font-size:11px;color:var(--blanc-dim);margin-top:10px;line-height:1.8;">'
+    + '<strong>Montant plan</strong> : postes calculés depuis le dessin. <strong>Ajouts manuels</strong> : postes saisis ou issus du CCTP, conservés lors d\'une régénération.<br>'
+    + 'Régénérer un DQE depuis l\'éditeur remplace uniquement les postes du plan — vos ajouts sont préservés.'
+    + '</div>';
+
+  host.innerHTML = h;
+  openModal('modal-dqe-plans');
+}
+
+/* Ouvre le DQE filtré sur ce type : la liste sert de point d'entrée, pas de
+   fin en soi. */
+function dqeVoirType(type) {
+  closeModal('modal-dqe-plans');
+  var sel = document.getElementById('dqe-type-logement') || document.getElementById('nomen-type');
+  if (sel) {
+    sel.value = type;
+    if (typeof chargerNomenclature === 'function') chargerNomenclature();
+  }
+  if (typeof goTo === 'function') goTo('dqe');
+  toast('DQE filtré sur « ' + type + ' ».', 'info');
+}
+
+function dqeExporterListePlans() {
+  var liste = dqeCollecterPlans();
+  if (!liste.length) { toast('Aucun DQE issu d\'un plan.', 'info'); return; }
+  var e = function(s){ return '"' + String(s==null?'':s).replace(/"/g,'""') + '"'; };
+  var csv = '\uFEFFtype_logement;genere_le;surface_m2;nb_pieces;niveaux;postes_plan;montant_plan;postes_manuels;montant_manuel;montant_total\n';
+  liste.forEach(function(d){
+    csv += [e(d.type), e(d.le ? d.le.slice(0,16).replace('T',' ') : ''), d.surface, d.pieces, d.niveaux,
+            d.plan.length, d.coutPlan, d.manuel.length, d.coutManuel, d.coutTotal].join(';') + '\n';
+  });
+  var b = new Blob([csv], { type:'text/csv;charset=utf-8;' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(b);
+  a.download = 'dqe_issus_plans_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+  toast('Export réalisé : ' + liste.length + ' type(s).', 'success');
+}
+
 function dqePU(name) {
   var m = dqeMatch(name);
   if (!m) return 0;
@@ -93571,9 +93736,28 @@ function qrSvgTag(text){
       });
     }
 
+    /* Traçabilité de la génération. Sans ces champs, un DQE issu d'un plan est
+       indiscernable d'une saisie manuelle une fois enregistré : impossible de
+       savoir quand il a été produit, sur quelle surface, ni s'il correspond
+       encore au plan actuel après modification de celui-ci. */
+    var _genLe   = new Date().toISOString();
+    var _genSurf = 0, _genPieces = 0;
+    try {
+      var _src = _dqeScope();
+      _src.filter(function(e){ return e.type === 'piece'; }).forEach(function(p){
+        _genPieces++;
+        _genSurf += (parseFloat(p.l) || 0) * (parseFloat(p.w) || 0);
+      });
+    } catch(e) {}
+    var _genNiveaux = (ED.niveaux && ED.niveaux.length) ? ED.niveaux.length : 1;
+
     for (var j = 0; j < lignes.length; j++) {
       var entry = Object.assign({
-        id: uid(), type_logement: type, prix_forfait: 0, ouvrage_id: '', _genere_plan: true
+        id: uid(), type_logement: type, prix_forfait: 0, ouvrage_id: '', _genere_plan: true,
+        _genere_le: _genLe,
+        _genere_surface: Math.round(_genSurf * 100) / 100,
+        _genere_pieces: _genPieces,
+        _genere_niveaux: _genNiveaux
       }, lignes[j]);
       DATA.nomenclatures.push(entry);
       await dbPut('nomenclatures', entry);
@@ -101638,6 +101822,24 @@ goTo = function(page) {
 </div>
 
 <!-- Modal : rapport stratégique du portefeuille foncier -->
+<!-- Modal : DQE générés depuis l'éditeur de plan -->
+<div class="modal-overlay" id="modal-dqe-plans">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div>
+        <h3>📐 DQE issus de l'éditeur de plan</h3>
+        <div style="font-size:11px;color:var(--dim);">Nomenclatures produites automatiquement depuis un plan, par type de logement.</div>
+      </div>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-dqe-plans')">✕</button>
+    </div>
+    <div class="modal-body"><div id="dqe-plans-contenu"></div></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-dqe-plans')">Fermer</button>
+      <button class="btn btn-secondary" onclick="dqeExporterListePlans()">⬇ Export CSV</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-rapport-foncier">
   <div class="modal modal-lg">
     <div class="modal-header">
