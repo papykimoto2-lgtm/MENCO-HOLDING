@@ -22094,7 +22094,16 @@ function _supaRow(table, obj) {
   /* params = enregistrement unique (singleton) : id stable 'main' pour éviter
      les nulls (contrainte NOT NULL) et garantir un merge sur une seule ligne. */
   if (table === 'pi_params') return { id: (obj && obj.id) || 'main', data: obj };
-  return { id: obj.id, data: obj };
+  /* [FIX] updated_at explicite. La colonne est créée avec DEFAULT now(), mais
+     un DEFAULT ne s'applique qu'à l'INSERT : sur un upsert qui retombe en
+     UPDATE (resolution=merge-duplicates), updated_at gardait la valeur de la
+     création. Une ligne MODIFIÉE conservait donc un horodatage ancien et
+     restait invisible au pull incrémental des autres postes — la modification
+     n'arrivait jamais chez les collègues.
+     On horodate côté client : l'alternative propre serait un trigger
+     BEFORE UPDATE côté Postgres, mais il faudrait le déployer sur chacune des
+     tables et rien ne garantit qu'il l'ait été partout. */
+  return { id: obj.id, data: obj, updated_at: new Date().toISOString() };
 }
 function _supaUnwrap(table, row) { return (table === 'pi_users') ? row : (row && row.data ? row.data : row); }
 
@@ -22754,6 +22763,7 @@ async function renderSyncStatus() {
     +   '<button class="btn btn-secondary btn-sm" onclick="analyserDivergence()" '+(online?'':'disabled')+'>🔬 Analyse fine (contenu)</button>'
     +   '<button class="btn btn-secondary btn-sm" onclick="renderSyncQueue()">📋 File d\'attente ('+(outbox+dirty)+')</button>'
     +   '<button class="btn btn-secondary btn-sm" onclick="diagnostiquerCloud()" '+(online?'':'disabled')+'>🩺 Diagnostic cloud</button>'
+    +   '<button class="btn btn-secondary btn-sm" onclick="comparerCloudLocal()" '+(online?'':'disabled')+' title="Compare ligne à ligne ce qui est dans le cloud et ce qui est sur ce poste">🔍 Écart cloud ↔ local</button>'
     +   '<button class="btn btn-primary btn-sm" onclick="exporterPortailPublic()" '+(SB.url&&SB.key?'':'disabled title="Renseignez et enregistrez d\'abord votre config Cloud ci-dessus"')+'>📤 Générer le portail public</button>'
     +   '<button class="btn '+(quar?'btn-danger':'btn-secondary')+' btn-sm" onclick="renderSyncQuarantine()">🚧 Quarantaine ('+quar+')</button>'
     + '</div>';
@@ -23034,6 +23044,102 @@ async function analyserDivergence(){
 /* ── Diagnostic cloud : teste l'accès réel à CHAQUE table pi_* et classe la
    cause exacte (table absente / droits manquants / OK). Aurait détecté en
    10 secondes le GRANT anon manquant du module Caisse. ────────────────── */
+/* ══════════════════════════════════════════════════════════════════════════
+   ÉCART CLOUD ↔ LOCAL — « le collaborateur a saisi, je ne vois rien »
+   Compare, table par table, le nombre de lignes présentes côté Supabase et
+   côté poste, et liste les identifiants qui manquent LOCALEMENT. Répond à la
+   seule question qui compte dans ce cas : la donnée existe-t-elle en base et
+   n'est-elle pas descendue, ou n'a-t-elle jamais été poussée par l'autre poste ?
+   Les deux causes exigent des gestes opposés, et rien à l'écran ne permettait
+   de les distinguer.
+   ══════════════════════════════════════════════════════════════════════════ */
+async function comparerCloudLocal() {
+  var host = document.getElementById('sync-extra-panel') || document.getElementById('sync-status-panel');
+  if (!host) return;
+  getSBConfig();
+  if (!SB.url || !SB.key) { host.innerHTML = '<div style="color:var(--rouge);font-size:13px;">⚠️ Supabase non configuré.</div>'; return; }
+  host.innerHTML = '<div style="font-size:12px;color:var(--blanc-dim)">🔍 Comparaison cloud ↔ local en cours…</div>';
+
+  var lignes = [], totalManquants = 0;
+  for (var i = 0; i < SUPA_STORE_MAP.length; i++) {
+    var table = SUPA_STORE_MAP[i][0], store = SUPA_STORE_MAP[i][1];
+    var rows;
+    try { rows = await sbFetch(table + '?select=id,updated_at', 'GET'); }
+    catch(e) { rows = null; }
+    if (rows === null || rows === undefined) continue;   /* table absente/refusée : traitée par le diagnostic */
+
+    var locaux = {};
+    (DATA[store] || []).forEach(function(x){ if (x && x.id !== undefined) locaux[String(x.id)] = true; });
+
+    var manquants = [], dernierCloud = '';
+    rows.forEach(function(r){
+      var id = String(r.id);
+      if (r.updated_at && r.updated_at > dernierCloud) dernierCloud = r.updated_at;
+      if (!locaux[id]) manquants.push(id);
+    });
+
+    var nbLocal = (DATA[store] || []).length;
+    if (!rows.length && !nbLocal) continue;   /* table vide des deux côtés : bruit */
+
+    totalManquants += manquants.length;
+    var curseur = _pullCurseurs()[table] || '';
+    /* Signal décisif : un curseur postérieur à la ligne cloud la plus récente
+       signifie que le poste a « sauté » la fenêtre — la donnée ne descendra
+       jamais sans réinitialisation. */
+    var curseurEnAvance = !!(curseur && dernierCloud && curseur > dernierCloud && manquants.length);
+
+    lignes.push({ table:table, store:store, cloud:rows.length, local:nbLocal,
+                  manquants:manquants, curseur:curseur, dernierCloud:dernierCloud,
+                  suspect:curseurEnAvance });
+  }
+
+  lignes.sort(function(a,b){ return b.manquants.length - a.manquants.length; });
+
+  var h = '<div style="font-size:13px;font-weight:700;margin-bottom:8px;">🔍 Écart cloud ↔ local</div>';
+  if (!totalManquants) {
+    h += '<div style="background:rgba(39,174,96,.10);border-left:3px solid var(--vert);border-radius:6px;padding:10px 12px;font-size:12px;">'
+      + '✅ Aucune ligne présente dans le cloud ne manque sur ce poste. Si un collègue ne retrouve pas sa saisie, '
+      + 'c\'est qu\'elle n\'a jamais été envoyée depuis SON poste : lui faire ouvrir Paramètres → Synchronisation → «&nbsp;⬆️ Tout envoyer&nbsp;», '
+      + 'et vérifier sa file d\'attente.'
+      + '</div>';
+  } else {
+    h += '<div style="background:rgba(224,82,82,.10);border-left:3px solid var(--rouge);border-radius:6px;padding:10px 12px;font-size:12px;margin-bottom:10px;">'
+      + '⚠️ <strong>' + totalManquants + ' ligne(s) présente(s) dans le cloud et absente(s) de ce poste.</strong> '
+      + 'La donnée existe : elle n\'est pas descendue. Cliquez «&nbsp;🔄 Resynchro complète&nbsp;» pour la rapatrier.'
+      + '</div>';
+  }
+
+  h += '<div class="table-wrap"><table style="width:100%;font-size:11px;"><thead><tr>'
+    + '<th>Table</th><th style="text-align:right;">Cloud</th><th style="text-align:right;">Local</th>'
+    + '<th style="text-align:right;">Manquants</th><th>Curseur</th></tr></thead><tbody>';
+  lignes.forEach(function(l){
+    var col = l.manquants.length ? 'var(--rouge)' : 'var(--blanc-dim)';
+    h += '<tr' + (l.suspect ? ' style="background:rgba(224,82,82,.07);"' : '') + '>'
+      + '<td>' + escHtml(l.table) + (l.suspect ? ' <span title="Le curseur de ce poste est postérieur à la ligne cloud la plus récente : la fenêtre a été sautée.">🕳️</span>' : '') + '</td>'
+      + '<td style="text-align:right;">' + l.cloud + '</td>'
+      + '<td style="text-align:right;">' + l.local + '</td>'
+      + '<td style="text-align:right;font-weight:700;color:' + col + ';">' + (l.manquants.length || '—') + '</td>'
+      + '<td style="font-size:10px;color:var(--blanc-dim);">' + (l.curseur ? escHtml(l.curseur.slice(0,16).replace('T',' ')) : 'aucun (intégral)') + '</td>'
+      + '</tr>';
+    if (l.manquants.length) {
+      h += '<tr><td colspan="5" style="font-size:10px;color:var(--blanc-dim);padding-left:14px;">'
+        + 'ids absents : ' + escHtml(l.manquants.slice(0,8).join(', ')) + (l.manquants.length > 8 ? ' … (+' + (l.manquants.length-8) + ')' : '')
+        + '</td></tr>';
+    }
+  });
+  h += '</tbody></table></div>';
+  h += '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">'
+    + '<button class="btn btn-primary btn-sm" onclick="pullReinitialiserCurseurs()">🔄 Resynchro complète</button>'
+    + '<button class="btn btn-secondary btn-sm" onclick="comparerCloudLocal()">↻ Recomparer</button>'
+    + '</div>';
+  h += '<div style="font-size:10px;color:var(--blanc-dim);margin-top:8px;line-height:1.7;">'
+    + '🕳️ signale un curseur postérieur à la dernière ligne du cloud : ce poste a sauté une fenêtre de synchronisation. '
+    + 'Le compte « Local » peut légitimement dépasser « Cloud » si des saisies récentes attendent encore leur envoi.'
+    + '</div>';
+
+  host.innerHTML = h;
+}
+
 async function diagnostiquerCloud() {
   var host = document.getElementById('sync-extra-panel') || document.getElementById('sync-status-panel');
   if (!host) return;
@@ -23554,10 +23660,26 @@ function _pullCurseurSet(table, iso) {
     localStorage.setItem(PULL_CURSEURS_KEY, JSON.stringify(c));
   } catch(e){}
 }
-function pullReinitialiserCurseurs() {
+async function pullReinitialiserCurseurs() {
   try { localStorage.removeItem(PULL_CURSEURS_KEY); } catch(e){}
   PULL_INCR_INAPTES = {};
-  if (typeof toast === 'function') toast('Curseurs de synchronisation réinitialisés — le prochain cycle sera complet.', 'info');
+  /* [FIX] On enchaîne immédiatement sur un cycle complet. Se contenter de
+     réinitialiser laissait l'utilisateur devant le même écran vide en attendant
+     un cycle dont il ne connaît pas la période : celui qui clique « Resynchro
+     complète » cherche des données manquantes maintenant, pas au prochain
+     réveil du minuteur. */
+  if (typeof toast === 'function') toast('Curseurs réinitialisés — récupération complète en cours…', 'info');
+  try {
+    if (typeof pullFromCloudSilent === 'function') await pullFromCloudSilent();
+    else if (typeof syncFromSupabase === 'function') await syncFromSupabase();
+    if (typeof toast === 'function') toast('Récupération complète terminée.', 'success');
+    /* Rafraîchir l'écran courant : les données arrivées doivent apparaître sans
+       que l'utilisateur ait à naviguer ailleurs et revenir. */
+    if (typeof APP !== 'undefined' && APP.currentPage && typeof goTo === 'function') goTo(APP.currentPage);
+    if (typeof renderSyncStatus === 'function') renderSyncStatus();
+  } catch(e) {
+    if (typeof toast === 'function') toast('Récupération interrompue : ' + (e && e.message ? e.message : 'erreur réseau'), 'error');
+  }
 }
 /* Récupère les lignes d'une table, en incrémental quand c'est possible. */
 async function _pullTable(table) {
@@ -23614,9 +23736,18 @@ async function pullFromCloudSilent() {
         var rows = _res.rows;
         var _tsMax = _pullCurseurs()[table] || '';
         if (!rows || !rows.length) {
-          /* Rien de neuf : on avance quand même le curseur pour ne pas
-             redemander la même fenêtre au cycle suivant. */
-          if (_res.incremental) _pullCurseurSet(table, new Date().toISOString());
+          /* [FIX] On n'avance PLUS le curseur sur l'horloge locale.
+             L'ancien code posait le curseur à new Date() du POSTE : dès que
+             cette horloge devançait celle du serveur — décalage de quelques
+             minutes, fuseau mal réglé, simple latence — toutes les lignes
+             créées par un autre poste dans cet intervalle passaient
+             définitivement sous le curseur et n'étaient JAMAIS tirées. Symptôme
+             exact : « un collaborateur a enregistré, je ne vois rien même après
+             synchronisation », sans aucun message d'erreur.
+             Le curseur n'avance désormais que sur un updated_at réellement
+             reçu du serveur (voir plus bas) : c'est la seule horloge commune.
+             Ne pas avancer coûte une requête vide au cycle suivant — sans
+             comparaison avec la perte silencieuse de données. */
           continue;
         }
         if (!DATA[store]) DATA[store] = [];
