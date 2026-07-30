@@ -2731,7 +2731,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         </div>
 
         <!-- ══ TAB : COCKPIT — le tableau de bord qui travaille ═══════════ -->
-        <div id="dpane-cockpit" style="display:none;">
+        <div id="dpane-cockpit">
           <div id="ck-briefing" style="margin-bottom:16px;"></div>
           <div style="display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:16px;align-items:start;" class="ck-grid">
             <div>
@@ -34213,6 +34213,20 @@ function dashProduits(filterFn) {
 
 var CK_SNOOZE_KEY = 'ck_snooze_v1';
 
+/* rarCollecter() parcourt tous les clients, tous les versements et toutes les
+   cessions. Les trois moteurs du cockpit en ont besoin : sans mutualisation, un
+   seul rendu déclenchait trois parcours complets — inutile sur un portefeuille
+   de plusieurs milliers de lignes. Le cache ne vit que le temps d'un rendu
+   (invalidé en tête de buildDashTabCockpit), pour qu'une action traitée se
+   reflète immédiatement au rendu suivant. */
+var _ckCache = null;
+function _ckLignes() {
+  if (_ckCache) return _ckCache;
+  try { _ckCache = (typeof rarCollecter === 'function') ? rarCollecter() : []; }
+  catch(e) { _ckCache = []; }
+  return _ckCache;
+}
+
 function _ckSnoozes() {
   try { return JSON.parse(localStorage.getItem(CK_SNOOZE_KEY) || '{}'); }
   catch(e) { return {}; }
@@ -34254,7 +34268,7 @@ function ckActions() {
      l'appel, pas la contemplation du montant. Top 6 par exigible décroissant :
      au-delà, ce n'est plus une file d'actions, c'est une liste de lecture. */
   try {
-    var lignes = (typeof rarCollecter === 'function') ? rarCollecter() : [];
+    var lignes = _ckLignes();
     lignes.filter(function(l){ return l.duAJour > 0; })
       .sort(function(a,b){ return b.duAJour - a.duAJour; })
       .slice(0, 6)
@@ -34314,7 +34328,11 @@ function ckActions() {
      client — dans les deux cas, ça débloque de la valeur. */
   (DATA.clients||[]).forEach(function(c){
     if (!c.date_debut || !(parseFloat(c.montant_total)>0)) return;
-    var verse = (DATA.versements||[]).filter(function(v){ return v.client_id===c.id; })
+    /* Même définition que partout ailleurs : « versé » signifie versé SUR LE
+       PRIX. Un client qui n'a réglé que ses frais de souscription (produit
+       7088, non imputable au prix) est bien à 0 F sur son engagement — sans ce
+       filtre, il échappait à la règle alors qu'il est précisément le cas visé. */
+    var verse = (DATA.versements||[]).filter(function(v){ return v.client_id===c.id && _versementSurPrix(v); })
       .reduce(function(s,v){ return s+(parseFloat(v.montant)||0); }, 0);
     if (verse > 0) return;
     var jours = Math.floor((now - new Date(c.date_debut)) / 86400000);
@@ -34356,7 +34374,6 @@ function ckActions() {
      recouvrement, et le classement des commerciaux ment par omission. */
   var sansComm = (DATA.clients||[]).filter(function(c){
     if (c.commercial || c.commercial_id) return false;
-    var verse = (DATA.versements||[]).filter(function(v){ return v.client_id===c.id; }).length;
     return (parseFloat(c.montant_total)>0);
   });
   if (sansComm.length >= 1) push({
@@ -34385,7 +34402,12 @@ function ckActions() {
 
   /* R9 — Données de test mêlées aux vraies : tout KPI est faux tant que ça
      traîne en base. */
-  var tests = (DATA.clients||[]).filter(function(c){ return /test|neant|néant/i.test((c.nom||'')+' '+(c.prenoms||'')); });
+  /* Mots entiers uniquement : sans les limites, un patronyme légitime
+     contenant ces lettres serait signalé comme donnée de test — accusation
+     gênante sur une fiche client réelle. */
+  var tests = (DATA.clients||[]).filter(function(c){
+    return /\b(test|tests|essai|neant|néant|demo|démo|xxx|azerty)\b/i.test((c.nom||'')+' '+(c.prenoms||''));
+  });
   if (tests.length) push({
     aid: 'testdata_'+tests.length, prio: 30, icone: '🧪',
     titre: tests.length + ' dossier(s) de test dans les données réelles',
@@ -34463,7 +34485,7 @@ function ckBriefing(actions) {
   var core = dashFinanceCore(null);
   var exig = 0, nbExig = 0;
   try {
-    (typeof rarCollecter==='function' ? rarCollecter() : []).forEach(function(l){
+    _ckLignes().forEach(function(l){
       if (l.duAJour>0) { exig += l.duAJour; nbExig++; }
     });
   } catch(e){}
@@ -34538,7 +34560,7 @@ function ckSante() {
 
   /* Recouvrement : part de l'encours qui n'est PAS exigible. */
   try {
-    var L = (typeof rarCollecter==='function') ? rarCollecter() : [];
+    var L = _ckLignes();
     var reste=0, exig=0; L.forEach(function(l){ reste+=l.reste; exig+=l.duAJour; });
     var sc = reste>0 ? 100 - Math.round(exig/reste*100) : 100;
     dom('Recouvrement','💰', sc, exig>0 ? fmtF(exig)+' F exigibles sur '+fmtF(reste)+' F d\'encours' : 'Aucun exigible en souffrance', 'relances');
@@ -34567,9 +34589,16 @@ function ckSante() {
   /* Commercial : leads sans mouvement depuis 14 jours. */
   var leads = (DATA.leads||[]).filter(function(l){ return l.stade!=='reservation' && l.stade!=='perdu'; });
   if (leads.length) {
+    /* Les leads ne portent pas d'updated_at : les champs réellement alimentés
+       sont date_contact et date_relance. On retient la date la plus récente des
+       deux — c'est elle qui atteste d'un contact effectif. Un lead sans aucune
+       date n'est pas compté comme froid : ce serait sanctionner une saisie
+       incomplète plutôt qu'un défaut de suivi. */
     var froids = leads.filter(function(l){
-      var ref = l.updated_at || l.date || l.created_at; if(!ref) return true;
-      return (new Date() - new Date(ref)) > 14*86400000;
+      var refs = [l.date_relance, l.date_contact, l.updated_at, l.date, l.created_at]
+        .filter(Boolean).sort();
+      if (!refs.length) return false;
+      return (new Date() - new Date(refs[refs.length-1])) > 14*86400000;
     }).length;
     dom('Pipeline','🎯', 100 - Math.round(froids/leads.length*100),
         froids ? froids+' lead(s) sans contact depuis 14 j sur '+leads.length : 'Pipeline animé', 'leads');
@@ -34592,6 +34621,7 @@ function ckSante() {
 
 /* ── Rendu de la file d'actions ──────────────────────────────────────────── */
 function buildDashTabCockpit() {
+  _ckCache = null;   /* données fraîches à chaque rendu */
   var hostA = document.getElementById('ck-actions');
   var hostB = document.getElementById('ck-briefing');
   var hostP = document.getElementById('ck-pouls');
