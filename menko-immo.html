@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v21.0 · 2026-06-11';
+window.IMMOSUITE_VERSION = 'v13.33 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -22294,7 +22294,21 @@ async function deleteRecord(store, id, opts) {
     }
   }
   try { if (typeof tombAdd === 'function') tombAdd(store, id); } catch(e){}
-  /* Tombstone PARTAGÉ : répliqué à tous les postes via pi_suppressions.
+  /* Alerte unique par session : répéter le message à chaque suppression rendrait
+   l'application inutilisable, mais le taire complètement laisse la
+   synchronisation se dégrader sans témoin. */
+var _tombKOSignale = false;
+function _signalerTombstoneKO() {
+  if (_tombKOSignale) return;
+  _tombKOSignale = true;
+  if (typeof toast === 'function') {
+    toast('⚠️ Les suppressions ne se propagent pas aux autres postes (table pi_suppressions refusée). '
+        + 'Les enregistrements effacés ici réapparaîtront. Corrigez les droits Supabase.', 'error');
+  }
+  try { console.warn('[Sync] pi_suppressions inaccessible en écriture : tombstones non répliqués.'); } catch(e){}
+}
+
+/* Tombstone PARTAGÉ : répliqué à tous les postes via pi_suppressions.
      Sans lui, un autre poste (ou ce navigateur après vidage du cache)
      re-poussait sa copie → l'enregistrement supprimé réapparaissait
      partout. Poussé par la tuyauterie standard (dirty + outbox). */
@@ -22309,7 +22323,21 @@ async function deleteRecord(store, id, opts) {
            30s : une suppression non propagée avant fermeture de l'onglet
            réinjecte l'enregistrement au prochain pull. Échec silencieux →
            l'outbox/dirty prend le relais normalement. */
-        if (typeof syncToSupabase === 'function') { try { syncToSupabase('pi_suppressions', _tsObj); } catch(e2){} }
+        /* [FIX] L'échec était totalement avalé. Or si pi_suppressions refuse
+           l'écriture (RLS mal configurée → 42501), AUCUNE suppression ne se
+           propage : les enregistrements effacés ici réapparaissent au prochain
+           pull, et l'utilisateur ne voit qu'un comportement erratique sans
+           jamais savoir pourquoi. On compte les échecs et on alerte une fois,
+           plutôt que de noyer l'écran à chaque suppression. */
+        if (typeof syncToSupabase === 'function') {
+          try {
+            var _pr = syncToSupabase('pi_suppressions', _tsObj);
+            if (_pr && typeof _pr.then === 'function') {
+              _pr.then(function(ok){ if (ok === false) _signalerTombstoneKO(); })
+                 .catch(function(){ _signalerTombstoneKO(); });
+            }
+          } catch(e2) { _signalerTombstoneKO(); }
+        }
       }
     }
   } catch(e){}
@@ -98533,7 +98561,7 @@ var PL_TABLES = ['pi_partenaires_lot', 'pi_dossiers_lot', 'pi_rapports_lot'];
    dans la page même — inutile d'aller le chercher dans les paramètres quand on
    constate le problème ici. */
 async function plDiagnostiquerSync() {
-  var host = document.getElementById('pl-cloud-status');
+  var host = document.getElementById('pl-cloud-alert');   /* [FIX] l'id réel de la page est pl-cloud-alert */
   if (!host) return;
   host.innerHTML = '<div style="font-size:12px;color:var(--blanc-dim);">🔬 Analyse des trois tables du module…</div>';
   /* Un conteneur temporaire par table : chaque diagnostic écrit dans le sien,
@@ -98569,7 +98597,19 @@ async function plVerifierTablesCloud() {
     else if (/42501|permission denied|HTTP 401|HTTP 403/i.test(e)) sansDroits.push(table);
   }
 
-  if (!manquantes.length && !sansDroits.length) { host.innerHTML = ''; return; }
+  /* [FIX] Le conteneur était entièrement vidé quand les tables existaient — et
+     avec lui le bouton de diagnostic, invisible précisément dans le cas où on
+     en a besoin : les tables sont là, mais les données d'un autre poste
+     n'arrivent pas. On laisse donc toujours une barre d'outils discrète. */
+  if (!manquantes.length && !sansDroits.length) {
+    host.innerHTML = '<div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">'
+      + '<span style="font-size:11px;color:var(--blanc-dim);">☁️ Tables cloud OK</span>'
+      + '<button class="btn btn-secondary btn-sm" onclick="plDiagnostiquerSync()" title="Analyse ligne à ligne : pourquoi une saisie faite sur un autre poste n\'apparaît pas ici">🔬 Données manquantes ?</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="pullReinitialiserCurseurs()" title="Force une récupération complète depuis le cloud">🔄 Resynchro</button>'
+      + '</div>';
+    return;
+  }
+
 
   var toutes = manquantes.concat(sansDroits);
   var sql = '';
