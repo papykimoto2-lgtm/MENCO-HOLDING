@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.41 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.44 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -3294,6 +3294,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           </div>
           <div class="spacer"></div>
           <button class="btn btn-secondary btn-sm" onclick="openFlux('montage')">📊 Schéma des flux</button>
+          <button class="btn btn-primary btn-sm" onclick="pgmRemplirSelect();pgmOuvrirPilotage()" title="Cycle de vie de l'opération et prochaine étape">🧭 Pilotage</button>
           <button class="btn btn-secondary btn-sm" onclick="exportProgrammesCSV()">⬇ Export</button>
           <button class="btn btn-primary" onclick="openProgrammeModal()">+ Nouveau Programme</button>
         </div>
@@ -12217,6 +12218,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           </select>
           <button class="btn btn-secondary btn-sm" onclick="printPreviewDQE()" title="Aperçu avant impression du DQE">👁 Aperçu DQE</button>
           <button class="btn btn-secondary btn-sm" onclick="dqeListePlans()" title="Tous les DQE générés depuis l'éditeur de plan">📐 DQE issus des plans</button>
+          <button class="btn btn-secondary btn-sm" onclick="structOuvrir()" title="Fondations et structure : le DQE du plan ne couvre que les finitions">🏗️ Structure &amp; fondations</button>
           <button class="btn btn-secondary btn-sm" onclick="exportDQE()">⬇ Export CSV</button>
           <button class="btn btn-primary btn-sm" onclick="genererDQEPourProgramme()">⚡ Générer DQE</button>
         </div>
@@ -87867,6 +87869,644 @@ async function archiChargerDessin(id) {
   toast('Plan « ' + (p.ref || '') + ' » chargé.', 'success');
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   PRÉ-DIMENSIONNEMENT STRUCTURE → DQE → DÉBOURSÉ SEC
+   ──────────────────────────────────────────────────────────────────────────
+   Le DQE issu de l'éditeur de plan ne chiffre que les FINITIONS : sol, murs,
+   plafond, menuiserie, faïence. Il manque les fondations et la structure, qui
+   pèsent typiquement 30 à 45 % du gros œuvre d'une villa et davantage sur un
+   immeuble. Un déboursé sec construit sur les seules finitions est donc faux
+   d'un tiers au moins, et faux à la baisse — ce qui se découvre au moment de
+   couler.
+
+   Deux entrées conditionnent ces quantités, et c'est là qu'interviennent les
+   documents que l'on est tenté de repousser :
+
+   · L'ÉTUDE GÉOTECHNIQUE donne la contrainte admissible du sol (σ). C'est elle
+     qui décide du TYPE de fondation. Entre des semelles isolées sur bon sol et
+     un radier général sur sol médiocre, le coût de fondation varie d'un facteur
+     3 à 5 ; avec des pieux, davantage encore. Chiffrer sans elle revient à
+     parier sur la variable la plus coûteuse du projet. À Abidjan, la question
+     n'est pas théorique : les sols sableux lagunaires et les nappes hautes
+     imposent régulièrement des solutions profondes là où le terrain voisin
+     s'accommode de semelles.
+
+   · LA NOTE DE CALCUL fixe les sections de béton et les ratios de ferraillage.
+     Le ratio acier (kg/m³ de béton) varie de 40 kg/m³ en semelle à 140 kg/m³ en
+     poutre fortement sollicitée. Sur une villa, l'écart entre un ratio estimé
+     et un ratio calculé représente couramment 2 à 4 tonnes d'acier.
+
+   CE MODULE NE REMPLACE NI L'UN NI L'AUTRE. Il produit un PRÉ-DIMENSIONNEMENT
+   destiné au chiffrage d'avant-projet, à partir d'hypothèses affichées et
+   modifiables. Les quantités définitives se prennent sur la note de calcul de
+   l'ingénieur structure. Le module l'écrit explicitement sur chaque sortie,
+   parce qu'un chiffre présenté sans réserve finit toujours par être pris pour
+   une donnée d'exécution.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Hypothèses de descente de charge, en kN/m² de plancher et par niveau.
+   Valeurs courantes en bâtiment d'habitation (G permanent + Q exploitation
+   pondérés ELS). Modifiables : une structure poteaux-poutres avec cloisons
+   lourdes sort de cette fourchette. */
+var STRUCT_HYP = {
+  charge_niveau: 11,        /* kN/m² · niveau — dalle BA 15 + cloisons + revêtements + Q 1,5 */
+  charge_toiture: 6,        /* kN/m² — toiture tuiles/tôle + charpente */
+  h_etage: 3.0,             /* m — hauteur sous plafond + retombée */
+  h_semelle: 0.45,          /* m — épaisseur courante semelle isolée */
+  h_radier: 0.35,           /* m — épaisseur radier général */
+  ep_dalle: 0.15,           /* m */
+  sect_poteau: 0.20 * 0.20, /* m² — 20×20 courant en villa */
+  sect_poutre: 0.20 * 0.40, /* m² — 20×40 */
+  sect_longrine: 0.20 * 0.30,
+  /* Ratios de ferraillage kg/m³ — issus de la pratique, à remplacer par la
+     note de calcul dès qu'elle existe. */
+  ratio_semelle: 50,
+  ratio_radier: 90,
+  ratio_poteau: 110,
+  ratio_poutre: 120,
+  ratio_dalle: 80,
+  ratio_longrine: 110,
+  /* Seuil de bascule vers le radier : au-delà, la somme des semelles couvre
+     une telle part de l'emprise qu'un radier coûte moins cher à couler et à
+     ferrailler qu'une multitude de semelles rapprochées. */
+  seuil_radier: 0.45,
+  /* En deçà de cette contrainte, les fondations superficielles ne sont plus
+     économiquement raisonnables : sol compressible, nappe, remblais. */
+  qadm_mini_superficiel: 80   /* kPa */
+};
+
+function structHypotheses() {
+  var h = {};
+  Object.keys(STRUCT_HYP).forEach(function(k){ h[k] = STRUCT_HYP[k]; });
+  /* Surcharge éventuelle par les paramètres enregistrés (note de calcul saisie). */
+  var p = (DATA.params && DATA.params.struct_hyp) || {};
+  Object.keys(p).forEach(function(k){ if (isFinite(parseFloat(p[k]))) h[k] = parseFloat(p[k]); });
+  return h;
+}
+
+/* Géométrie extraite du plan ouvert dans l'éditeur, ou saisie à la main. */
+function structGeometriePlan() {
+  var g = { emprise:0, pieces:0, niveaux:1, lineaire_murs:0, source:'saisie' };
+  try {
+    if (typeof ED !== 'undefined' && ED.elements && ED.elements.length) {
+      var pieces = ED.elements.filter(function(e){ return e.type === 'piece'; });
+      /* Emprise au sol : les pièces du niveau 0 seulement. Additionner tous les
+         niveaux donnerait une surface de plancher, pas une emprise — et
+         multiplierait les fondations par le nombre d'étages. */
+      var niv0 = pieces.filter(function(p){ return (p.niv | 0) === 0; });
+      var base = niv0.length ? niv0 : pieces;
+      g.emprise = base.reduce(function(s,p){ return s + (parseFloat(p.l)||0) * (parseFloat(p.w)||0); }, 0);
+      g.pieces = pieces.length;
+      g.niveaux = (ED.niveaux && ED.niveaux.length) ? ED.niveaux.length : 1;
+      ED.elements.filter(function(e){ return e.type === 'mur' || e.type === 'cloison'; })
+        .forEach(function(m){ g.lineaire_murs += parseFloat(m.longueur || m.l) || 0; });
+      g.source = 'plan';
+    }
+  } catch(e) {}
+  return g;
+}
+
+/* Cœur du pré-dimensionnement. */
+function structCalculer(geo, qadm, hyp) {
+  hyp = hyp || structHypotheses();
+  var R = { hyp:hyp, geo:geo, qadm:qadm, lignes:[], warn:[], type_fondation:'', charge_totale:0 };
+  var S = parseFloat(geo.emprise) || 0;
+  var N = parseInt(geo.niveaux) || 1;
+  if (S <= 0) { R.warn.push('Emprise au sol inconnue : dessinez le plan ou saisissez la surface.'); return R; }
+
+  /* ── 1. Descente de charge ────────────────────────────────────────────── */
+  var chargeUtile = (N * hyp.charge_niveau) + hyp.charge_toiture;   /* kN/m² */
+  var Ntot = S * chargeUtile;                                        /* kN */
+  R.charge_totale = Math.round(Ntot);
+  R.charge_m2 = Math.round(chargeUtile * 10) / 10;
+
+  /* ── 2. Choix du type de fondation ────────────────────────────────────── */
+  var q = parseFloat(qadm) || 0;   /* kPa */
+  if (!q) {
+    R.warn.push('Contrainte admissible du sol non renseignée : hypothèse de 150 kPa retenue (sol moyen). '
+      + 'Cette valeur DOIT être confirmée par l\'étude géotechnique — elle détermine à elle seule le type de fondation.');
+    q = 150;
+    R.qadm_estime = true;
+  }
+  R.qadm = q;
+
+  var surfSemelles = Ntot / q;                 /* m² de semelle nécessaires */
+  var tauxOccupation = S > 0 ? surfSemelles / S : 0;
+  R.taux_semelles = Math.round(tauxOccupation * 100);
+
+  if (q < hyp.qadm_mini_superficiel) {
+    R.type_fondation = 'profonde';
+    R.warn.push('Contrainte admissible de ' + Math.round(q) + ' kPa : les fondations superficielles ne conviennent pas. '
+      + 'Une solution profonde (pieux, puits) est nécessaire — son chiffrage relève de l\'ingénieur structure et n\'est pas pré-dimensionné ici.');
+  } else if (tauxOccupation > hyp.seuil_radier) {
+    R.type_fondation = 'radier';
+  } else {
+    R.type_fondation = 'semelles';
+  }
+
+  /* ── 3. Quantités ─────────────────────────────────────────────────────── */
+  var L = function(poste, materiau, unite, qte, ratio) {
+    if (!(qte > 0)) return;
+    R.lignes.push({ poste:poste, materiau:materiau, unite:unite,
+                    quantite:Math.round(qte*100)/100, _ratio:ratio || 0 });
+  };
+  var acier = function(volBeton, ratio){ return volBeton * ratio; };
+
+  var volBetonTotal = 0, poidsAcierTotal = 0;
+
+  if (R.type_fondation === 'radier') {
+    var volRadier = S * hyp.ep_radier || S * hyp.h_radier;
+    L('Fondations', 'Béton radier général ép. ' + (hyp.h_radier*100) + ' cm', 'm³', volRadier);
+    L('Fondations', 'Coffrage rive de radier', 'm²', Math.sqrt(S) * 4 * hyp.h_radier);
+    var aRad = acier(volRadier, hyp.ratio_radier);
+    L('Ferraillage', 'Acier HA radier (' + hyp.ratio_radier + ' kg/m³)', 'kg', aRad);
+    volBetonTotal += volRadier; poidsAcierTotal += aRad;
+
+  } else if (R.type_fondation === 'semelles') {
+    /* Nombre de poteaux estimé par trame de 4 m — trame courante en villa.
+       Une trame réelle se lit sur le plan de coffrage, pas sur l'architecture. */
+    var trame = 4;
+    var nbPoteaux = Math.max(4, Math.ceil(S / (trame * trame)) + 4);
+    R.nb_poteaux = nbPoteaux;
+    var surfUnit = surfSemelles / nbPoteaux;
+    var cote = Math.max(0.8, Math.sqrt(surfUnit));   /* 80 cm minimum constructif */
+    R.cote_semelle = Math.round(cote * 100) / 100;
+    var volSem = nbPoteaux * cote * cote * hyp.h_semelle;
+    L('Fondations', 'Béton semelles isolées ' + R.cote_semelle + '×' + R.cote_semelle + ' m', 'm³', volSem);
+    L('Fondations', 'Coffrage semelles', 'm²', nbPoteaux * 4 * cote * hyp.h_semelle);
+    var aSem = acier(volSem, hyp.ratio_semelle);
+    L('Ferraillage', 'Acier HA semelles (' + hyp.ratio_semelle + ' kg/m³)', 'kg', aSem);
+    volBetonTotal += volSem; poidsAcierTotal += aSem;
+
+    /* Longrines de redressement : elles solidarisent les semelles. Les oublier
+       est l'omission la plus fréquente du chiffrage d'avant-projet. */
+    var lgLongrines = geo.lineaire_murs > 0 ? geo.lineaire_murs : (Math.sqrt(S) * 4 * 1.6);
+    var volLong = lgLongrines * hyp.sect_longrine;
+    L('Fondations', 'Béton longrines', 'm³', volLong);
+    L('Fondations', 'Coffrage longrines', 'm²', lgLongrines * 2 * 0.30);
+    var aLong = acier(volLong, hyp.ratio_longrine);
+    L('Ferraillage', 'Acier HA longrines (' + hyp.ratio_longrine + ' kg/m³)', 'kg', aLong);
+    volBetonTotal += volLong; poidsAcierTotal += aLong;
+  }
+
+  /* ── 4. Superstructure : poteaux, poutres, dalles ─────────────────────── */
+  if (R.type_fondation !== 'profonde') {
+    var nbP = R.nb_poteaux || Math.max(4, Math.ceil(S / 16) + 4);
+    var hTot = N * hyp.h_etage;
+    var volPot = nbP * hyp.sect_poteau * hTot;
+    L('Structure', 'Béton poteaux', 'm³', volPot);
+    L('Structure', 'Coffrage poteaux', 'm²', nbP * 4 * 0.20 * hTot);
+    var aPot = acier(volPot, hyp.ratio_poteau);
+    L('Ferraillage', 'Acier HA poteaux (' + hyp.ratio_poteau + ' kg/m³)', 'kg', aPot);
+    volBetonTotal += volPot; poidsAcierTotal += aPot;
+
+    var lgPoutres = (geo.lineaire_murs > 0 ? geo.lineaire_murs : Math.sqrt(S) * 4 * 1.6) * N;
+    var volPou = lgPoutres * hyp.sect_poutre;
+    L('Structure', 'Béton poutres / chaînages', 'm³', volPou);
+    L('Structure', 'Coffrage poutres', 'm²', lgPoutres * (2 * 0.40 + 0.20));
+    var aPou = acier(volPou, hyp.ratio_poutre);
+    L('Ferraillage', 'Acier HA poutres (' + hyp.ratio_poutre + ' kg/m³)', 'kg', aPou);
+    volBetonTotal += volPou; poidsAcierTotal += aPou;
+
+    /* Planchers : N-1 dalles intermédiaires + dallage sur terre-plein. */
+    if (N > 1) {
+      var volDalle = S * (N - 1) * hyp.ep_dalle;
+      L('Structure', 'Béton dalle pleine ép. ' + (hyp.ep_dalle*100) + ' cm', 'm³', volDalle);
+      L('Structure', 'Coffrage dalle (étaiement compris)', 'm²', S * (N - 1));
+      var aDal = acier(volDalle, hyp.ratio_dalle);
+      L('Ferraillage', 'Acier HA dalles (' + hyp.ratio_dalle + ' kg/m³)', 'kg', aDal);
+      volBetonTotal += volDalle; poidsAcierTotal += aDal;
+    }
+    L('Structure', 'Dallage sur terre-plein ép. 12 cm + treillis', 'm²', S);
+  }
+
+  R.volume_beton = Math.round(volBetonTotal * 100) / 100;
+  R.poids_acier = Math.round(poidsAcierTotal);
+  R.ratio_moyen = volBetonTotal > 0 ? Math.round(poidsAcierTotal / volBetonTotal) : 0;
+  return R;
+}
+
+/* Interface : hypothèses affichées, quantités recalculées en direct, injection
+   dans le DQE avec le même marquage que les autres générateurs. */
+/* Édition des hypothèses. Les valeurs par défaut sont des ordres de grandeur
+   de la pratique ; dès que la note de calcul existe, ses ratios réels se
+   substituent ici et le chiffrage cesse d'être une estimation. */
+async function structOuvrirHypotheses() {
+  var h = structHypotheses();
+  var txt = 'Ratios de ferraillage (kg de HA par m³ de béton) et hypothèses.\n'
+    + 'Remplacez-les par les valeurs de votre note de calcul.\n\n'
+    + 'Format : cle=valeur, une par ligne.\n\n'
+    + Object.keys(h).map(function(k){ return k + '=' + h[k]; }).join('\n');
+  var saisie = prompt(txt, Object.keys(h).map(function(k){ return k + '=' + h[k]; }).join('\n'));
+  if (saisie === null) return;
+  var maj = {};
+  String(saisie).split('\n').forEach(function(l){
+    var p = l.split('=');
+    if (p.length === 2 && isFinite(parseFloat(p[1]))) maj[p[0].trim()] = parseFloat(p[1]);
+  });
+  DATA.params = DATA.params || {};
+  DATA.params.struct_hyp = maj;
+  await dbPut('params', DATA.params);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_params', DATA.params);
+  structRecalculer();
+  toast('Hypothèses enregistrées.', 'success');
+}
+
+function structOuvrir() {
+  var geo = structGeometriePlan();
+  var el = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
+  el('str-emprise', geo.emprise ? geo.emprise.toFixed(1) : '');
+  el('str-niveaux', geo.niveaux || 1);
+  el('str-murs', geo.lineaire_murs ? geo.lineaire_murs.toFixed(1) : '');
+  /* Contrainte admissible : reprise de l'étude géotechnique si elle a été
+     menée dans l'application, pour éviter une double saisie et surtout un
+     écart entre les deux documents. */
+  var qadm = '';
+  try {
+    if (typeof GEO_COUCHES !== 'undefined' && GEO_COUCHES.length && typeof geoCalcul === 'function') {
+      var Rg = geoCalcul(parseFloat((document.getElementById('geo-nappe')||{}).value) || 0);
+      if (Rg && Rg.qadm) qadm = Math.round(Rg.qadm);
+    }
+  } catch(e) {}
+  el('str-qadm', qadm);
+  var src = document.getElementById('str-source');
+  if (src) src.textContent = geo.source === 'plan'
+    ? '📐 Géométrie reprise du plan ouvert dans l\'éditeur'
+    : '✏️ Aucun plan ouvert — saisissez les valeurs';
+  var srcQ = document.getElementById('str-source-qadm');
+  if (srcQ) srcQ.textContent = qadm
+    ? '🪨 σ repris de l\'étude géotechnique'
+    : '⚠️ Aucune étude géotechnique renseignée dans l\'application';
+  structRecalculer();
+  openModal('modal-structure');
+}
+
+function structRecalculer() {
+  var g = {
+    emprise: parseFloat((document.getElementById('str-emprise')||{}).value) || 0,
+    niveaux: parseInt((document.getElementById('str-niveaux')||{}).value) || 1,
+    lineaire_murs: parseFloat((document.getElementById('str-murs')||{}).value) || 0,
+    source: 'saisie'
+  };
+  var q = parseFloat((document.getElementById('str-qadm')||{}).value) || 0;
+  var R = structCalculer(g, q);
+  window._structDernier = R;
+
+  var box = document.getElementById('str-resultat');
+  if (!box) return;
+  if (R.warn.length && !R.lignes.length) {
+    box.innerHTML = R.warn.map(function(w){
+      return '<div style="padding:10px 12px;background:rgba(224,82,82,.10);border-left:3px solid var(--rouge);border-radius:6px;font-size:12px;line-height:1.7;margin-bottom:8px;">⚠️ ' + escHtml(w) + '</div>';
+    }).join('');
+    return;
+  }
+
+  var libFond = { semelles:'Semelles isolées + longrines', radier:'Radier général', profonde:'Fondations profondes (pieux)' }[R.type_fondation] || R.type_fondation;
+  var h = '';
+  h += '<div class="kpi-grid" style="margin-bottom:12px;">'
+    + '<div class="kpi-card" data-icon="🪨"><div class="kpi-label">Type de fondation</div><div class="kpi-value or" style="font-size:15px;">' + libFond + '</div><div class="kpi-delta">σ = ' + Math.round(R.qadm) + ' kPa' + (R.qadm_estime ? ' (estimé)' : '') + '</div></div>'
+    + '<div class="kpi-card" data-icon="⬇️"><div class="kpi-label">Charge descendante</div><div class="kpi-value or" style="font-size:15px;">' + fmtF(R.charge_totale) + ' kN</div><div class="kpi-delta">' + R.charge_m2 + ' kN/m² · ' + R.geo.niveaux + ' niveau(x)</div></div>'
+    + '<div class="kpi-card" data-icon="🧱"><div class="kpi-label">Béton</div><div class="kpi-value or" style="font-size:15px;">' + R.volume_beton + ' m³</div><div class="kpi-delta">structure + fondations</div></div>'
+    + '<div class="kpi-card" data-icon="🔩"><div class="kpi-label">Acier</div><div class="kpi-value or" style="font-size:15px;">' + fmtF(R.poids_acier) + ' kg</div><div class="kpi-delta">ratio moyen ' + R.ratio_moyen + ' kg/m³</div></div>'
+    + '</div>';
+
+  if (R.warn.length) {
+    h += R.warn.map(function(w){
+      return '<div style="padding:9px 11px;background:rgba(239,159,39,.13);border-left:3px solid #EF9F27;border-radius:6px;font-size:11.5px;line-height:1.7;margin-bottom:8px;">⚠️ ' + escHtml(w) + '</div>';
+    }).join('');
+  }
+
+  if (R.type_fondation === 'semelles') {
+    h += '<div style="font-size:11.5px;color:var(--blanc-dim);margin-bottom:8px;line-height:1.7;">'
+      + 'Pré-dimensionnement : ' + R.nb_poteaux + ' points porteurs, semelles de <strong>' + R.cote_semelle + ' × ' + R.cote_semelle + ' m</strong>. '
+      + 'Les semelles occupent ' + R.taux_semelles + ' % de l\'emprise — au-delà de ' + Math.round(R.hyp.seuil_radier*100) + ' %, un radier devient plus économique.'
+      + '</div>';
+  }
+
+  h += '<div class="table-wrap"><table style="width:100%;font-size:12px;"><thead><tr>'
+    + '<th>Poste</th><th>Ouvrage</th><th>Unité</th><th style="text-align:right;">Quantité</th></tr></thead><tbody>';
+  R.lignes.forEach(function(l){
+    h += '<tr><td>' + escHtml(l.poste) + '</td><td>' + escHtml(l.materiau) + '</td><td>' + escHtml(l.unite) + '</td>'
+      + '<td style="text-align:right;font-weight:600;">' + fmtF(l.quantite) + '</td></tr>';
+  });
+  h += '</tbody></table></div>';
+
+  h += '<div style="margin-top:10px;padding:10px 12px;background:rgba(224,82,82,.09);border-left:3px solid var(--rouge);border-radius:6px;font-size:11.5px;line-height:1.8;">'
+    + '<strong>Ces quantités sont un pré-dimensionnement d\'avant-projet.</strong> Elles reposent sur des hypothèses de charge, '
+    + 'de trame et de ratios de ferraillage affichées ci-dessus et modifiables. Elles ne remplacent pas la note de calcul de '
+    + 'l\'ingénieur structure, qui seule fixe les sections et les aciers d\'exécution. '
+    + (R.qadm_estime ? 'La contrainte du sol étant estimée, le type de fondation retenu est lui-même une hypothèse.' : '')
+    + '</div>';
+
+  box.innerHTML = h;
+}
+
+async function structInjecterDQE() {
+  var R = window._structDernier;
+  if (!R || !R.lignes.length) { toast('Aucune quantité à injecter.', 'error'); return; }
+  var type = (document.getElementById('str-type-logement')||{}).value || '';
+  if (!type) { toast('Indiquez le type de logement de destination.', 'error'); return; }
+
+  /* Remplace uniquement les lignes structure déjà générées pour ce type :
+     les finitions issues du plan et les saisies manuelles sont préservées. */
+  var anciennes = (DATA.nomenclatures||[]).filter(function(n){ return n.type_logement === type && n._genere_struct; });
+  for (var i = 0; i < anciennes.length; i++) {
+    await deleteRecord('nomenclatures', anciennes[i].id, { skipIntegrity:true });
+  }
+
+  var le = new Date().toISOString();
+  for (var j = 0; j < R.lignes.length; j++) {
+    var l = R.lignes[j];
+    var entry = {
+      id: uid(), type_logement: type, poste: l.poste, materiau: l.materiau,
+      unite: l.unite, quantite: l.quantite, prix_forfait: 0, ouvrage_id: '',
+      _genere_struct: true, _genere_le: le,
+      _struct_fondation: R.type_fondation,
+      _struct_qadm: R.qadm,
+      _struct_qadm_estime: !!R.qadm_estime,
+      _struct_emprise: R.geo.emprise,
+      _struct_niveaux: R.geo.niveaux,
+      _plan_id: (window._archiPlanCourant ? window._archiPlanCourant.id : ''),
+      _plan_ref: (window._archiPlanCourant ? (window._archiPlanCourant.ref || '') : '')
+    };
+    DATA.nomenclatures.push(entry);
+    await dbPut('nomenclatures', entry);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', entry);
+  }
+  closeModal('modal-structure');
+  if (typeof chargerNomenclature === 'function') chargerNomenclature();
+  toast(R.lignes.length + ' poste(s) structure injecté(s) dans le DQE « ' + type + ' » — '
+    + R.volume_beton + ' m³ de béton, ' + fmtF(R.poids_acier) + ' kg d\'acier.', 'success');
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PILOTAGE D'UN PROGRAMME — parcours guidé
+   ──────────────────────────────────────────────────────────────────────────
+   La navigation de l'application est organisée par MÉTIER : foncier, montage,
+   études, commercial, recouvrement. C'est la bonne organisation pour un
+   utilisateur qui sait ce qu'il cherche — elle ne dit rien à celui qui vient
+   de créer un programme et se demande ce qu'il doit faire ensuite.
+
+   Cette vue rétablit l'autre lecture : le CYCLE DE VIE d'une opération, de la
+   sécurisation du foncier jusqu'à la livraison. Chaque étape est détectée
+   automatiquement dans les données — aucune saisie de suivi à tenir, donc
+   aucun risque que l'état affiché diverge de la réalité — et pointe vers le
+   module qui la traite.
+
+   Le parti pris : ne jamais bloquer. Les étapes sont ordonnées mais un
+   promoteur peut légitimement commercialiser avant d'avoir attribué ses
+   marchés. On signale ce qui manque, on ne l'interdit pas ; on se contente
+   d'alerter quand l'ordre inversé fait courir un risque réel.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+function pgmEtapes(progId) {
+  var P = (DATA.programmes || []).find(function(x){ return x.id === progId; });
+  if (!P) return null;
+
+  var parcelles   = (DATA.parcelles || []).filter(function(x){ return x.programme_id === progId; });
+  var conceptions = (DATA.conceptions || []).filter(function(x){ return x.programme_id === progId; });
+  var lots        = (DATA.lots || []).filter(function(x){ return x.programme_id === progId; });
+  var lotIds      = {}; lots.forEach(function(l){ lotIds[l.id] = true; });
+  var clients     = (DATA.clients || []).filter(function(c){ return c.lot_id && lotIds[c.lot_id]; });
+  var conventions = (DATA.conventions || []).filter(function(c){ return c.programme_id === progId; });
+  var agrements   = (DATA.agrement_programme || []).filter(function(a){ return a.programme_id === progId; });
+  var receptions  = (DATA.receptions || []).filter(function(r){ return r.programme_id === progId
+                        || (r.lot_id && lotIds[r.lot_id]); });
+
+  var E = [];
+  var add = function(o){ E.push(o); };
+
+  /* ── PHASE 1 — MONTAGE ────────────────────────────────────────────────── */
+  var titrees = parcelles.filter(function(p){
+    var s = String(p.statut||'').toLowerCase();
+    return ['acd','tf_provisoire','tf_definitif','affecte'].indexOf(s) !== -1 || p.num_titre;
+  });
+  add({ phase:'Montage', cle:'foncier', titre:'Sécuriser le foncier', page:'foncier', icone:'🗺️',
+    fait: parcelles.length > 0 && titrees.length === parcelles.length,
+    encours: parcelles.length > 0 && titrees.length < parcelles.length,
+    detail: !parcelles.length
+      ? 'Aucune parcelle rattachée à ce programme.'
+      : (titrees.length + '/' + parcelles.length + ' parcelle(s) titrée(s) — '
+         + (parcelles.reduce(function(s,p){ return s + (parseFloat(p.superficie)||0); },0)/10000).toFixed(2) + ' ha'),
+    quoi: !parcelles.length
+      ? 'Rattachez la ou les parcelles au programme depuis le Portefeuille Foncier.'
+      : (titrees.length < parcelles.length
+         ? 'Engagez l\'immatriculation des parcelles non titrées : sans titre, ni cession ferme ni garantie bancaire.'
+         : 'Foncier sécurisé.') });
+
+  var concAv = conceptions.length
+    ? Math.round(conceptions.reduce(function(s,c){ return s + (parseInt(c.avancement)||0); },0) / conceptions.length) : 0;
+  add({ phase:'Montage', cle:'conception', titre:'Concevoir les plans', page:'conception', icone:'📐',
+    fait: conceptions.length > 0 && concAv >= 100,
+    encours: conceptions.length > 0 && concAv < 100,
+    detail: conceptions.length ? conceptions.length + ' étude(s) · avancement ' + concAv + ' %' : 'Aucune conception rattachée.',
+    quoi: !conceptions.length
+      ? 'Créez la fiche de conception : elle porte les types de logement, l\'architecte et les phases APS/APD/EXE.'
+      : (concAv < 100 ? 'Poursuivez les phases d\'étude jusqu\'au dossier d\'exécution.' : 'Conception achevée.') });
+
+  /* Chiffrage : un DQE existe-t-il pour les types déclarés en conception ? */
+  var typesConc = [];
+  conceptions.forEach(function(c){
+    String(c.type_logements||'').split(/[\/,;+]/).map(function(s){ return s.trim(); }).filter(Boolean)
+      .forEach(function(t){ if (typesConc.indexOf(t) === -1) typesConc.push(t); });
+  });
+  var typesChiffres = typesConc.filter(function(t){
+    return (DATA.nomenclatures||[]).some(function(n){
+      return String(n.type_logement||'').toUpperCase().indexOf(String(t).toUpperCase()) !== -1
+          || String(t).toUpperCase().indexOf(String(n.type_logement||'').toUpperCase()) !== -1;
+    });
+  });
+  /* La structure est-elle chiffrée, ou seulement les finitions ? C'est la
+     question qui décide si le coût de revient est exploitable. */
+  var avecStructure = typesChiffres.filter(function(t){
+    return (DATA.nomenclatures||[]).some(function(n){
+      return n._genere_struct && String(n.type_logement||'').toUpperCase().indexOf(String(t).toUpperCase()) !== -1;
+    });
+  });
+  add({ phase:'Montage', cle:'chiffrage', titre:'Chiffrer le coût de revient', page:'dqe', icone:'🧱',
+    fait: typesConc.length > 0 && typesChiffres.length === typesConc.length && avecStructure.length > 0,
+    encours: typesChiffres.length > 0,
+    detail: !typesConc.length ? 'Aucun type de logement déclaré en conception.'
+      : (typesChiffres.length + '/' + typesConc.length + ' type(s) chiffré(s)'
+         + (typesChiffres.length && !avecStructure.length ? ' — finitions seules, structure non chiffrée' : '')),
+    quoi: !typesConc.length ? 'Renseignez les types de logement dans la fiche de conception.'
+      : (typesChiffres.length < typesConc.length
+         ? 'Générez le DQE des types manquants depuis l\'éditeur de plan.'
+         : (!avecStructure.length
+            ? 'Le DQE ne couvre que les finitions. Ajoutez fondations et structure — c\'est 30 à 45 % du gros œuvre.'
+            : 'Coût de revient disponible.')) });
+
+  var agrOk = agrements.some(function(a){ return String(a.statut||'').toLowerCase().indexOf('obtenu') !== -1
+                    || String(a.statut||'').toLowerCase().indexOf('valid') !== -1; });
+  add({ phase:'Montage', cle:'autorisations', titre:'Obtenir les autorisations', page:'validations', icone:'🏛️',
+    fait: agrOk, encours: agrements.length > 0 && !agrOk,
+    detail: agrements.length ? agrements.length + ' dossier(s) d\'agrément' : 'Aucun dossier d\'agrément programme.',
+    quoi: agrOk ? 'Autorisations obtenues.'
+      : 'Constituez le dossier d\'agrément programme et le permis de construire. Commercialiser sans agrément expose à la nullité des contrats.' });
+
+  /* ── PHASE 2 — PRODUCTION ─────────────────────────────────────────────── */
+  var nbPrevu = parseInt(P.nb_lots) || 0;
+  add({ phase:'Production', cle:'lots', titre:'Créer et valoriser les lots', page:'lots', icone:'🏠',
+    fait: lots.length > 0 && lots.every(function(l){ return parseFloat(l.prix) > 0; }),
+    encours: lots.length > 0,
+    detail: !lots.length ? 'Aucun lot créé.'
+      : lots.length + (nbPrevu ? '/' + nbPrevu : '') + ' lot(s) · '
+        + lots.filter(function(l){ return parseFloat(l.prix) > 0; }).length + ' valorisé(s)',
+    quoi: !lots.length ? 'Créez les lots, ou importez-les depuis le plan de morcellement.'
+      : (lots.some(function(l){ return !(parseFloat(l.prix) > 0); })
+         ? 'Fixez le prix des lots restants : sans prix, ils ne peuvent pas être réservés ni figurer au prévisionnel.'
+         : 'Lots créés et valorisés.') });
+
+  var convSignees = conventions.filter(function(c){ return String(c.statut||'').toLowerCase().indexOf('sign') !== -1; });
+  add({ phase:'Production', cle:'marches', titre:'Attribuer les marchés de travaux', page:'conventions', icone:'📋',
+    fait: convSignees.length > 0, encours: conventions.length > 0 && !convSignees.length,
+    detail: conventions.length ? conventions.length + ' convention(s), ' + convSignees.length + ' signée(s)' : 'Aucune convention de travaux.',
+    quoi: !conventions.length
+      ? 'Consultez les constructeurs et établissez les conventions. Le DQE sert de base au dossier de consultation.'
+      : (convSignees.length ? 'Marchés attribués.' : 'Finalisez la signature des conventions.') });
+
+  var avConv = conventions.length
+    ? Math.round(conventions.reduce(function(s,c){ return s + (parseInt(c.avancement)||0); },0) / conventions.length) : 0;
+  add({ phase:'Production', cle:'chantier', titre:'Suivre le chantier', page:'avancement', icone:'📈',
+    fait: avConv >= 100, encours: avConv > 0 && avConv < 100,
+    detail: conventions.length ? 'Avancement travaux ' + avConv + ' %' : 'Chantier non démarré.',
+    quoi: avConv >= 100 ? 'Travaux achevés.'
+      : (avConv > 0 ? 'Poursuivez le suivi : rapports de chantier et situations de travaux.'
+         : 'Lancez le chantier une fois les marchés signés.') });
+
+  /* ── PHASE 3 — COMMERCIALISATION ──────────────────────────────────────── */
+  var dispo   = lots.filter(function(l){ return l.statut === 'disponible'; }).length;
+  var reserves= lots.filter(function(l){ return l.statut === 'reserve'; }).length;
+  var vendus  = lots.filter(function(l){ return l.statut === 'vendu'; }).length;
+  add({ phase:'Commercialisation', cle:'vente', titre:'Commercialiser', page:'lots', icone:'🎯',
+    fait: lots.length > 0 && dispo === 0,
+    encours: reserves + vendus > 0,
+    detail: lots.length ? vendus + ' vendu(s) · ' + reserves + ' réservé(s) · ' + dispo + ' disponible(s)' : 'Aucun lot à commercialiser.',
+    quoi: !lots.length ? 'Créez d\'abord les lots.'
+      : (dispo ? dispo + ' lot(s) restent à placer. Alimentez le pipeline commercial et publiez sur le portail.'
+         : 'Programme entièrement placé.') });
+
+  var du = clients.reduce(function(s,c){ return s + (parseFloat(c.montant_total)||0); }, 0);
+  var verse = 0;
+  clients.forEach(function(c){
+    verse += (DATA.versements||[]).filter(function(v){
+      return v.client_id === c.id && (typeof _versementSurPrix !== 'function' || _versementSurPrix(v));
+    }).reduce(function(s,v){ return s + (parseFloat(v.montant)||0); }, 0);
+  });
+  var taux = du > 0 ? Math.round(verse/du*100) : 0;
+  add({ phase:'Commercialisation', cle:'encaissement', titre:'Encaisser', page:'paiements', icone:'💰',
+    fait: du > 0 && taux >= 100, encours: verse > 0,
+    detail: clients.length ? clients.length + ' souscripteur(s) · ' + fmtF(verse) + ' / ' + fmtF(du) + ' F (' + taux + ' %)' : 'Aucun souscripteur.',
+    quoi: !clients.length ? 'Les réservations génèrent les échéanciers de paiement.'
+      : (taux < 100 ? 'Reste à recouvrer ' + fmtF(du - verse) + ' F. Suivez les échéances et relancez les retards.'
+         : 'Programme intégralement encaissé.') });
+
+  /* ── PHASE 4 — LIVRAISON ──────────────────────────────────────────────── */
+  add({ phase:'Livraison', cle:'reception', titre:'Réceptionner et livrer', page:'recliv', icone:'📦',
+    fait: receptions.length > 0 && vendus > 0 && receptions.length >= vendus,
+    encours: receptions.length > 0,
+    detail: receptions.length ? receptions.length + ' réception(s) enregistrée(s)' : 'Aucune réception.',
+    quoi: !receptions.length
+      ? 'Procédez à la réception des travaux, puis à la livraison aux acquéreurs avec procès-verbal.'
+      : 'Poursuivez les livraisons et le suivi des réserves.' });
+
+  return { programme:P, etapes:E,
+           compteurs:{ parcelles:parcelles.length, lots:lots.length, clients:clients.length,
+                       du:du, verse:verse, taux:taux } };
+}
+
+/* Rendu du parcours. Les phases sont des repères de lecture, pas des verrous :
+   on affiche l'ordre naturel tout en laissant ouvert l'accès à chaque module. */
+function pgmOuvrirPilotage(progId) {
+  var sel = document.getElementById('pgm-pilote-select');
+  if (progId && sel) sel.value = progId;
+  pgmRendrePilotage();
+  openModal('modal-pgm-pilote');
+}
+
+function pgmRemplirSelect() {
+  var sel = document.getElementById('pgm-pilote-select');
+  if (!sel) return;
+  var actuel = sel.value;
+  sel.innerHTML = (DATA.programmes || [])
+    .slice().sort(function(a,b){ return String(b.date_lancement||'').localeCompare(String(a.date_lancement||'')); })
+    .map(function(p){ return '<option value="' + p.id + '">' + escHtml(p.nom || p.id) + '</option>'; }).join('');
+  if (actuel) sel.value = actuel;
+}
+
+function pgmRendrePilotage() {
+  var host = document.getElementById('pgm-pilote-contenu');
+  if (!host) return;
+  var progId = (document.getElementById('pgm-pilote-select') || {}).value;
+  var R = pgmEtapes(progId);
+  if (!R) {
+    host.innerHTML = '<div style="text-align:center;padding:26px;color:var(--blanc-dim);">Sélectionnez un programme.</div>';
+    return;
+  }
+
+  var faits = R.etapes.filter(function(e){ return e.fait; }).length;
+  var pct = Math.round(faits / R.etapes.length * 100);
+  /* Prochaine action = première étape non faite dans l'ordre du cycle. C'est
+     la seule information dont a besoin quelqu'un qui vient de créer son
+     programme et ne sait pas par où commencer. */
+  var suivante = R.etapes.find(function(e){ return !e.fait; });
+
+  var h = '';
+  h += '<div class="card" style="border-left:4px solid #B87333;padding:14px 16px;margin-bottom:14px;">'
+    + '<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;">'
+    +   '<div><div style="font-size:16px;font-weight:700;">' + escHtml(R.programme.nom || '') + '</div>'
+    +   '<div style="font-size:11.5px;color:var(--blanc-dim);">' + escHtml(R.programme.localisation || '') 
+    +   ' · ' + R.compteurs.lots + ' lot(s) · ' + R.compteurs.clients + ' souscripteur(s)</div></div>'
+    +   '<div style="text-align:right;"><div style="font-size:22px;font-weight:800;color:var(--or);">' + pct + ' %</div>'
+    +   '<div style="font-size:10.5px;color:var(--blanc-dim);">' + faits + '/' + R.etapes.length + ' étapes</div></div>'
+    + '</div>'
+    + '<div class="phase-bar-track" style="margin-top:10px;"><div class="phase-bar-fill" style="width:' + pct + '%;background:var(--or);"></div></div>';
+  if (suivante) {
+    h += '<div style="margin-top:11px;padding:10px 12px;background:rgba(184,115,51,.13);border-radius:6px;font-size:12.5px;line-height:1.7;">'
+      + '<strong>▶ Prochaine étape : ' + suivante.icone + ' ' + escHtml(suivante.titre) + '</strong><br>'
+      + '<span style="color:var(--blanc-dim);">' + escHtml(suivante.quoi) + '</span><br>'
+      + '<button class="btn btn-primary btn-sm" style="margin-top:7px;" onclick="closeModal(\'modal-pgm-pilote\');goTo(\'' + suivante.page + '\')">Y aller →</button>'
+      + '</div>';
+  } else {
+    h += '<div style="margin-top:11px;padding:10px 12px;background:rgba(39,174,96,.13);border-radius:6px;font-size:12.5px;">'
+      + '🏁 <strong>Toutes les étapes sont franchies.</strong> Le programme est mené à son terme.</div>';
+  }
+  h += '</div>';
+
+  /* Étapes groupées par phase */
+  var phases = [];
+  R.etapes.forEach(function(e){ if (phases.indexOf(e.phase) === -1) phases.push(e.phase); });
+  phases.forEach(function(ph){
+    var lot = R.etapes.filter(function(e){ return e.phase === ph; });
+    var okPh = lot.filter(function(e){ return e.fait; }).length;
+    h += '<div style="margin-bottom:6px;margin-top:12px;display:flex;justify-content:space-between;align-items:baseline;">'
+      + '<span style="font-size:10.5px;font-weight:800;letter-spacing:1.6px;text-transform:uppercase;color:#8B5520;">' + escHtml(ph) + '</span>'
+      + '<span style="font-size:10.5px;color:var(--blanc-dim);">' + okPh + '/' + lot.length + '</span></div>';
+    lot.forEach(function(e){
+      var col = e.fait ? 'var(--vert)' : (e.encours ? '#EF9F27' : 'var(--bord)');
+      var pic = e.fait ? '✅' : (e.encours ? '🔄' : '⚪');
+      var estSuivante = suivante && suivante.cle === e.cle;
+      h += '<div class="card" style="padding:10px 12px;margin-bottom:7px;border-left:3px solid ' + col + ';'
+        + (estSuivante ? 'box-shadow:0 0 0 1px rgba(184,115,51,.45);' : '') + '">'
+        + '<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap;">'
+        +   '<div style="min-width:0;flex:1;">'
+        +     '<div style="font-size:12.5px;font-weight:700;">' + pic + ' ' + e.icone + ' ' + escHtml(e.titre) + '</div>'
+        +     '<div style="font-size:11px;color:var(--blanc-dim);margin-top:2px;">' + escHtml(e.detail) + '</div>'
+        +     (e.fait ? '' : '<div style="font-size:11px;margin-top:4px;line-height:1.6;">' + escHtml(e.quoi) + '</div>')
+        +   '</div>'
+        +   '<button class="btn btn-secondary btn-sm" style="flex-shrink:0;" onclick="closeModal(\'modal-pgm-pilote\');goTo(\'' + e.page + '\')">Ouvrir</button>'
+        + '</div></div>';
+    });
+  });
+
+  h += '<div style="font-size:10.5px;color:var(--blanc-dim);margin-top:12px;line-height:1.7;">'
+    + 'Les étapes sont détectées dans vos données — aucun suivi à tenir à jour. L\'ordre est indicatif : '
+    + 'rien n\'empêche de commercialiser avant d\'attribuer les marchés, mais l\'écran le signale.'
+    + '</div>';
+
+  host.innerHTML = h;
+}
+
 function dqeCollecterPlans() {
   var parType = {};
   (DATA.nomenclatures || []).forEach(function(n){
@@ -92410,6 +93050,7 @@ function qrSvgTag(text){
      DESSIN CANVAS
   ════════════════════════════════ */
   window.archiRedraw = function() {
+
     _archiCalcScale();
     if (!ED.ctx || !ED.canvas) return;
     var ctx = ED.ctx;
@@ -95564,6 +96205,17 @@ function qrSvgTag(text){
   };
 
   function _r2(v) { return Math.round(v * 100) / 100; }
+
+  /* [FIX] ED, _archiCalcScale et _dqeRecap vivent dans cette IIFE : les
+     fonctions d'enregistrement du plan, déclarées en portée globale, ne les
+     voyaient pas. `typeof ED === 'undefined'` était donc vrai et
+     l'enregistrement répondait « le plan est vide » alors que le dessin
+     comportait des pièces. On expose les références en fin d'IIFE, une fois
+     tout défini. L'objet ED étant partagé, une mutation externe (chargement
+     d'un plan enregistré) est bien vue par l'éditeur. */
+  window.ED = ED;
+  window._archiCalcScale = _archiCalcScale;
+  window._dqeRecap = _dqeRecap;
 
 })(); /* fin IIFE éditeur architectural */
 
@@ -101983,6 +102635,75 @@ goTo = function(page) {
 <!-- Modal : rapport stratégique du portefeuille foncier -->
 <!-- Modal : DQE générés depuis l'éditeur de plan -->
 <!-- Modal : ouvrir un plan enregistré depuis l'éditeur -->
+<!-- Modal : pré-dimensionnement structure & fondations -->
+<!-- Modal : pilotage du cycle de vie d'un programme -->
+<div class="modal-overlay" id="modal-pgm-pilote">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div>
+        <h3>🧭 Pilotage du programme</h3>
+        <div style="font-size:11px;color:var(--dim);">Où en est l'opération, et quelle est la prochaine étape.</div>
+      </div>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-pgm-pilote')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group" style="margin-bottom:12px;">
+        <label>Programme</label>
+        <select class="form-control" id="pgm-pilote-select" onchange="pgmRendrePilotage()"></select>
+      </div>
+      <div id="pgm-pilote-contenu"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-pgm-pilote')">Fermer</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-structure">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div>
+        <h3>🏗️ Structure &amp; fondations — pré-dimensionnement</h3>
+        <div style="font-size:11px;color:var(--dim);">Complète le DQE des finitions par le gros œuvre. Chiffrage d'avant-projet, à confirmer par la note de calcul.</div>
+      </div>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-structure')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid" style="margin-bottom:14px;">
+        <div class="form-group">
+          <label>Emprise au sol (m²) *</label>
+          <input type="number" step="0.1" class="form-control" id="str-emprise" oninput="structRecalculer()">
+          <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;" id="str-source"></div>
+        </div>
+        <div class="form-group">
+          <label>Nombre de niveaux</label>
+          <input type="number" min="1" class="form-control" id="str-niveaux" value="1" oninput="structRecalculer()">
+        </div>
+        <div class="form-group">
+          <label>Linéaire de murs porteurs (m)</label>
+          <input type="number" step="0.1" class="form-control" id="str-murs" oninput="structRecalculer()">
+          <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;">Laisser vide pour une estimation par le périmètre.</div>
+        </div>
+        <div class="form-group">
+          <label>σ admissible du sol (kPa) *</label>
+          <input type="number" step="1" class="form-control" id="str-qadm" oninput="structRecalculer()" placeholder="Ex. 150">
+          <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;" id="str-source-qadm"></div>
+        </div>
+        <div class="form-group span-2">
+          <label>Type de logement de destination (DQE)</label>
+          <input type="text" class="form-control" id="str-type-logement" placeholder="Ex. Villa F4 — doit correspondre au type utilisé dans le DQE">
+        </div>
+      </div>
+      <div id="str-resultat"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-structure')">Fermer</button>
+      <button class="btn btn-secondary" onclick="structOuvrirHypotheses()">⚙️ Hypothèses &amp; ratios</button>
+      <button class="btn btn-primary" onclick="structInjecterDQE()">↧ Injecter dans le DQE</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-archi-ouvrir">
   <div class="modal">
     <div class="modal-header">
