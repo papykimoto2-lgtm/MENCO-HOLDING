@@ -24929,12 +24929,12 @@ function buildDashTabFinance() {  var cessions      = DATA.cessions_foncieres ||
     {l:'Solde net (Enc. − Déc.)',  v:fmtF(soldeNet)+' FCFA',   i:'📊', c:soldeNet>=0?'kpi-green':'kpi-red', d:soldeNet>=0?'Trésorerie positive':'Attention : tension trésorerie'},
     (function(){ var s=(typeof caisseSoldeGlobalTempsReel==='function')?caisseSoldeGlobalTempsReel():0; return {l:'Espèces en caisse', v:fmtF(s)+' FCFA', i:'💵', c:'kpi-copper', d:'Sessions ouvertes · temps réel'}; })(),
     (function(){ var st=(typeof caisseAVentilerStats==='function')?caisseAVentilerStats():{nb:0,montant:0}; return {l:'Caisse — à ventiler', v:st.nb+' mvt', i:'🧾', c:st.nb?'kpi-red':'kpi-green', d:fmtF(st.montant)+' FCFA en attente'}; })(),
-    {l:'Reste à recouvrer', v:fmtF(encours)+' FCFA',   i:'⏳', c:encours>100000000?'kpi-red':'', d:DATA.clients.length+' souscripteurs + '+cessions.length+' cession(s)'},
+    {l:'Reste à recouvrer', v:fmtF(encours)+' FCFA',   i:'⏳', c:encours>100000000?'kpi-red':'', d:DATA.clients.length+' souscripteurs + '+cessions.length+' cession(s)', click:'rarOuvrir()'},
     {l:'Taux de recouvrement',      v:tauxRecouv+'%',           i:'📈', c:tauxRecouv>=50?'kpi-green':'kpi-red', d:fmtF(totalVerse)+' / '+fmtF(totalDu)},
     {l:'Clients en retard',         v:retard,                   i:'⚠️', c:retard>0?'kpi-red':'kpi-green', d:retard+' dossiers à relancer'},
     {l:'Lots vendus',              v:DATA.lots.filter(function(l){return l.statut==='vendu';}).length+' / '+DATA.lots.length, i:'🏠', c:'', d:DATA.lots.filter(function(l){return l.statut==='disponible';}).length+' disponibles'},
   ].map(function(k){
-    return '<div class="kpi-card '+k.c+'" data-icon="'+k.i+'"><div class="kpi-label">'+k.l+'</div>'
+    return '<div class="kpi-card '+k.c+'" data-icon="'+k.i+'"'+(k.click?' style="cursor:pointer;" title="Cliquer pour le détail" onclick="'+k.click+'"':'')+'><div class="kpi-label">'+k.l+'</div>'
       +'<div class="kpi-value or" style="font-size:17px;">'+k.v+'</div>'
       +'<div class="kpi-delta '+(k.c==='kpi-red'?'negative':k.c==='kpi-green'?'positive':'')+'">'+k.d+'</div></div>';
   }).join('');
@@ -25880,7 +25880,7 @@ function refreshDashboard() {
     {l:'CA Encaissé total', v:fmtF(totalVerse)+' FCFA', i:'💰', c:'kpi-green',
      d:(deltaCA>=0?'▲ +':'▼ ')+Math.abs(deltaCA)+'% vs mois préc.'},
     {l:'Reste à recouvrer', v:fmtF(encours)+' FCFA', i:'⏳', c:encours>100000000?'kpi-red':'',
-     d:DATA.clients.length+' souscripteurs + '+_cesAll.length+' cession(s)'},
+     d:DATA.clients.length+' souscripteurs + '+_cesAll.length+' cession(s)', click:'rarOuvrir()'},
     {l:'Lots vendus', v:lotsVendus+' / '+DATA.lots.length, i:'🏠', c:'kpi-copper',
      d:lotsDispo+' lots encore disponibles'},
     {l:'Taux de recouvrement', v:tauxRecouv+'%', i:'📈', c:tauxRecouv>=50?'kpi-green':tauxRecouv>=30?'':'kpi-red',
@@ -25896,7 +25896,7 @@ function refreshDashboard() {
       l:'Espèces en caisse', v:fmtF(s)+' FCFA', i:'💵', c:'kpi-copper',
       d:(st.nb? st.nb+' mvt à ventiler':'Sessions ouvertes · temps réel')}; })(),
   ].map(function(k){
-    return '<div class="kpi-card '+k.c+'" data-icon="'+k.i+'">'
+    return '<div class="kpi-card '+k.c+'" data-icon="'+k.i+'"'+(k.click?' style="cursor:pointer;" title="Cliquer pour le détail" onclick="'+k.click+'"':'')+'>'
       +'<div class="kpi-label">'+k.l+'</div>'
       +'<div class="kpi-value or" style="font-size:17px;">'+k.v+'</div>'
       +'<div class="kpi-delta '+(k.c==='kpi-red'?'negative':k.c==='kpi-green'?'positive':'')+'">'+k.d+'</div>'
@@ -34093,6 +34093,260 @@ function dashProduits(filterFn) {
 }
 
 /* Bloc trésorerie/recouvrement cohérent, réutilisé par tous les onglets. */
+/* ══ ANALYSE DU RESTE À RECOUVRER ══════════════════════════════════════════
+   Le KPI donnait un montant global sans dire de qui il s'agissait : impossible
+   d'agir dessus. Cette analyse décompose l'encours par dossier, par commercial
+   et par ancienneté de retard, pour que la relance cible d'abord ce qui pèse
+   le plus lourd et ce qui dérive depuis le plus longtemps.
+
+   Deux natures de créance cohabitent et ne se relancent pas de la même façon :
+   les souscripteurs (échéancier mensuel, retard mesurable en mois) et les
+   cessions foncières (échéance unique). On les traite donc séparément tout en
+   les additionnant dans le total, qui doit rester égal au KPI. */
+
+function _rarMensualite(c) {
+  var duree = parseInt(c.duree, 10) || 0;
+  if (duree <= 0) return 0;
+  return Math.ceil(((parseFloat(c.montant_total) || 0) - (parseFloat(c.apport) || 0)) / duree);
+}
+
+function rarCollecter() {
+  var lignes = [];
+  var now = new Date();
+
+  (DATA.clients || []).forEach(function(c) {
+    var du = parseFloat(c.montant_total) || 0;
+    if (du <= 0) return;
+    var verse = (DATA.versements || []).filter(function(v){
+      return v.client_id === c.id && _versementSurPrix(v);
+    }).reduce(function(a,v){ return a + (parseFloat(v.montant) || 0); }, 0);
+    var reste = du - verse;
+    if (reste <= 0) return;   /* soldé : hors encours */
+
+    /* Retard : écart entre ce qui aurait dû être versé à ce jour et ce qui
+       l'a été. Un dossier peut avoir un reste élevé sans être en retard (il
+       vient d'être signé) — ne pas confondre les deux, sinon la relance
+       harcèle des clients à jour. */
+    var mensualite = _rarMensualite(c);
+    var moisRetard = 0, duAJour = 0;
+    if (c.date_debut && mensualite > 0) {
+      var debut = new Date(c.date_debut);
+      var moisEcoules = Math.max(0, (now.getFullYear()-debut.getFullYear())*12 + (now.getMonth()-debut.getMonth()));
+      var attendu = Math.min((parseFloat(c.apport)||0) + moisEcoules*mensualite, du);
+      if (verse < attendu) { duAJour = attendu - verse; moisRetard = Math.round(duAJour / mensualite); }
+    }
+
+    var lot = c.lot_id ? (DATA.lots || []).find(function(l){ return l.id === c.lot_id; }) : null;
+    var bien = lot
+      ? ('Lot ' + (lot.numero || '?') + (lot.ilot ? ' — îlot ' + lot.ilot : '') + (lot.superficie ? ' · ' + Math.round(lot.superficie) + ' m²' : ''))
+      : '—';
+    var typeBien = lot ? (lot.usage || lot.type || 'Lot') : '—';
+
+    lignes.push({
+      nature: 'souscripteur', id: c.id,
+      nom: ((c.nom||'') + ' ' + (c.prenoms||'')).trim() || '—',
+      dossier: c.dossier || '', tel: c.tel || '', email: c.email || '',
+      commercial: c.commercial || '—',
+      bien: bien, typeBien: typeBien,
+      du: du, verse: verse, reste: reste,
+      pctVerse: du > 0 ? Math.round(verse/du*100) : 0,
+      duAJour: duAJour, moisRetard: moisRetard,
+      mensualite: mensualite, dateDebut: c.date_debut || ''
+    });
+  });
+
+  (DATA.cessions_foncieres || []).forEach(function(c) {
+    var du = parseFloat(c.prix_cession) || 0;
+    if (du <= 0) return;
+    var verse = parseFloat(c.montant_encaisse) || 0;
+    var reste = du - verse;
+    if (reste <= 0) return;
+
+    /* Cession foncière : échéance unique. Le retard se compte en jours depuis
+       la date d'échéance, pas en mensualités impayées. */
+    var jrsRetard = 0, ech = c.date_echeance || c.echeance || '';
+    if (ech) {
+      var d = new Date(ech);
+      if (!isNaN(d.getTime()) && d < now) jrsRetard = Math.floor((now - d) / 86400000);
+    }
+    var parc = c.parcelle_id ? (DATA.parcelles || []).find(function(p){ return p.id === c.parcelle_id; }) : null;
+
+    lignes.push({
+      nature: 'cession', id: c.id,
+      nom: c.acquereur || c.acquereur_nom || '—',
+      dossier: c.dossier || '', tel: c.tel || '', email: c.email || '',
+      commercial: c.commercial || '—',
+      bien: parc ? (typeof parcelleLabel === 'function' ? parcelleLabel(parc) : (parc.ref||'Parcelle')) : '—',
+      typeBien: 'Parcelle foncière',
+      du: du, verse: verse, reste: reste,
+      pctVerse: du > 0 ? Math.round(verse/du*100) : 0,
+      duAJour: jrsRetard > 0 ? reste : 0,   /* échéance dépassée : tout est dû */
+      moisRetard: jrsRetard > 0 ? Math.max(1, Math.round(jrsRetard/30)) : 0,
+      mensualite: 0, dateDebut: c.date || '', echeance: ech, joursRetard: jrsRetard
+    });
+  });
+
+  return lignes.sort(function(a,b){ return b.reste - a.reste; });
+}
+
+/* Classes d'ancienneté : la relance n'a pas le même contenu selon qu'un
+   dossier glisse depuis un mois ou depuis un an. */
+function _rarClasse(l) {
+  if (l.moisRetard <= 0) return { cle:'ajour',  lib:'À jour',            col:'var(--vert)' };
+  if (l.moisRetard <= 2) return { cle:'leger',  lib:'Retard 1-2 mois',   col:'var(--or,#B87333)' };
+  if (l.moisRetard <= 6) return { cle:'moyen',  lib:'Retard 3-6 mois',   col:'#EF9F27' };
+  return                        { cle:'lourd',  lib:'Retard > 6 mois',   col:'var(--rouge)' };
+}
+
+function rarOuvrir() {
+  var el = document.getElementById('rar-contenu');
+  if (!el) return;
+  var f = (document.getElementById('rar-filtre-classe')||{}).value || '';
+  var fc = (document.getElementById('rar-filtre-comm')||{}).value || '';
+  var q = ((document.getElementById('rar-recherche')||{}).value||'').toLowerCase().trim();
+  var lignes = rarCollecter();
+
+  /* Synthèses calculées sur l'ensemble : les filtres ne doivent pas changer la
+     lecture globale de l'encours. */
+  var total = lignes.reduce(function(s,l){ return s + l.reste; }, 0);
+  var totalExigible = lignes.reduce(function(s,l){ return s + l.duAJour; }, 0);
+  var parClasse = {};
+  lignes.forEach(function(l){
+    var c = _rarClasse(l);
+    parClasse[c.cle] = parClasse[c.cle] || { lib:c.lib, col:c.col, nb:0, montant:0, exigible:0 };
+    parClasse[c.cle].nb++; parClasse[c.cle].montant += l.reste; parClasse[c.cle].exigible += l.duAJour;
+  });
+  var parComm = {};
+  lignes.forEach(function(l){
+    var k = l.commercial || '—';
+    parComm[k] = parComm[k] || { nb:0, montant:0, exigible:0, retard:0 };
+    parComm[k].nb++; parComm[k].montant += l.reste; parComm[k].exigible += l.duAJour;
+    if (l.moisRetard > 0) parComm[k].retard++;
+  });
+  var parType = {};
+  lignes.forEach(function(l){
+    var k = l.typeBien || '—';
+    parType[k] = parType[k] || { nb:0, montant:0 };
+    parType[k].nb++; parType[k].montant += l.reste;
+  });
+
+  /* Sélecteur commercial peuplé une fois, en conservant le choix courant. */
+  var selC = document.getElementById('rar-filtre-comm');
+  if (selC && selC.options.length <= 1) {
+    Object.keys(parComm).sort().forEach(function(k){
+      var o = document.createElement('option'); o.value = k; o.textContent = k; selC.appendChild(o);
+    });
+    if (fc) selC.value = fc;
+  }
+
+  var vue = lignes.filter(function(l){
+    if (f && _rarClasse(l).cle !== f) return false;
+    if (fc && (l.commercial||'—') !== fc) return false;
+    if (!q) return true;
+    return ((l.nom||'') + ' ' + (l.dossier||'') + ' ' + (l.bien||'') + ' ' + (l.commercial||'')).toLowerCase().indexOf(q) !== -1;
+  });
+
+  /* Concentration : sur ce type de portefeuille, une poignée de dossiers porte
+     souvent l'essentiel de l'encours. Le savoir change la stratégie de relance. */
+  var top5 = lignes.slice(0,5).reduce(function(s,l){ return s + l.reste; }, 0);
+  var pctTop5 = total > 0 ? Math.round(top5/total*100) : 0;
+
+  var h = '';
+  h += '<div class="kpi-grid" style="margin-bottom:14px;">'
+    + '<div class="kpi-card" data-icon="⏳"><div class="kpi-label">Reste à recouvrer</div><div class="kpi-value or" style="font-size:17px;">' + fmtF(total) + ' F</div><div class="kpi-delta">' + lignes.length + ' dossier(s) non soldé(s)</div></div>'
+    + '<div class="kpi-card ' + (totalExigible>0?'kpi-red':'kpi-green') + '" data-icon="🔥"><div class="kpi-label">Exigible immédiatement</div><div class="kpi-value or" style="font-size:17px;">' + fmtF(totalExigible) + ' F</div><div class="kpi-delta ' + (totalExigible>0?'negative':'positive') + '">échéances déjà dépassées</div></div>'
+    + '<div class="kpi-card" data-icon="🎯"><div class="kpi-label">Concentration top 5</div><div class="kpi-value or" style="font-size:17px;">' + pctTop5 + ' %</div><div class="kpi-delta">' + fmtF(top5) + ' F sur 5 dossiers</div></div>'
+    + '</div>';
+
+  /* Répartition par ancienneté */
+  h += '<div class="card" style="margin-bottom:14px;"><div class="card-title">📊 Par ancienneté du retard</div><div style="margin-top:10px;">';
+  ['ajour','leger','moyen','lourd'].forEach(function(cle){
+    var d = parClasse[cle]; if (!d) return;
+    var pct = total > 0 ? Math.round(d.montant/total*100) : 0;
+    h += '<div style="margin-bottom:9px;">'
+      + '<div style="display:flex;justify-content:space-between;font-size:12px;"><span style="color:' + d.col + ';font-weight:600;">' + d.lib + ' · ' + d.nb + ' dossier(s)</span>'
+      + '<span>' + fmtF(d.montant) + ' F' + (d.exigible ? ' <span style="color:var(--rouge);">(dont ' + fmtF(d.exigible) + ' F exigible)</span>' : '') + '</span></div>'
+      + '<div style="height:7px;background:var(--bord2);border-radius:4px;overflow:hidden;margin-top:3px;"><div style="height:100%;width:' + pct + '%;background:' + d.col + ';"></div></div>'
+      + '</div>';
+  });
+  h += '</div></div>';
+
+  /* Par commercial et par type de bien, côte à côte */
+  h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-bottom:14px;">';
+  h += '<div class="card"><div class="card-title">👤 Par commercial</div><table class="data-table" style="margin-top:8px;font-size:11px;">'
+    + '<thead><tr><th>Commercial</th><th style="text-align:right;">Dossiers</th><th style="text-align:right;">Encours</th><th style="text-align:right;">Exigible</th></tr></thead><tbody>'
+    + Object.keys(parComm).sort(function(a,b){ return parComm[b].montant - parComm[a].montant; }).map(function(k){
+        var d = parComm[k];
+        return '<tr><td>' + escHtml(k) + '</td>'
+          + '<td style="text-align:right;">' + d.nb + (d.retard ? ' <span style="color:var(--rouge);">(' + d.retard + ' en retard)</span>' : '') + '</td>'
+          + '<td style="text-align:right;">' + fmtF(d.montant) + '</td>'
+          + '<td style="text-align:right;color:' + (d.exigible?'var(--rouge)':'var(--blanc-dim)') + ';">' + (d.exigible?fmtF(d.exigible):'—') + '</td></tr>';
+      }).join('')
+    + '</tbody></table></div>';
+  h += '<div class="card"><div class="card-title">🏘️ Par type de bien</div><table class="data-table" style="margin-top:8px;font-size:11px;">'
+    + '<thead><tr><th>Type</th><th style="text-align:right;">Dossiers</th><th style="text-align:right;">Encours</th></tr></thead><tbody>'
+    + Object.keys(parType).sort(function(a,b){ return parType[b].montant - parType[a].montant; }).map(function(k){
+        return '<tr><td>' + escHtml(k) + '</td><td style="text-align:right;">' + parType[k].nb + '</td><td style="text-align:right;">' + fmtF(parType[k].montant) + '</td></tr>';
+      }).join('')
+    + '</tbody></table></div>';
+  h += '</div>';
+
+  /* Détail dossier par dossier */
+  h += '<div class="card" style="padding:0;overflow-x:auto;">'
+    + '<table class="data-table" style="margin:0;font-size:11px;"><thead><tr>'
+    + '<th>Client</th><th>Bien</th><th>Commercial</th><th style="text-align:right;">Dû</th><th style="text-align:right;">Versé</th>'
+    + '<th style="text-align:right;">Reste</th><th style="text-align:right;">Exigible</th><th>Retard</th><th></th>'
+    + '</tr></thead><tbody>';
+  if (!vue.length) {
+    h += '<tr><td colspan="9" style="text-align:center;padding:18px;color:var(--dim);">Aucun dossier ne correspond aux filtres.</td></tr>';
+  } else {
+    vue.forEach(function(l){
+      var cl = _rarClasse(l);
+      h += '<tr>'
+        + '<td><strong>' + escHtml(l.nom) + '</strong>'
+        + (l.dossier ? '<br><span style="font-size:10px;color:var(--dim);">' + escHtml(l.dossier) + '</span>' : '')
+        + (l.tel ? '<br><span style="font-size:10px;color:var(--dim);">' + escHtml(l.tel) + '</span>' : '') + '</td>'
+        + '<td>' + escHtml(l.bien) + '<br><span style="font-size:10px;color:var(--dim);">' + escHtml(l.nature === 'cession' ? 'Cession foncière' : 'Souscription') + '</span></td>'
+        + '<td>' + escHtml(l.commercial) + '</td>'
+        + '<td style="text-align:right;">' + fmtF(l.du) + '</td>'
+        + '<td style="text-align:right;">' + fmtF(l.verse) + '<br><span style="font-size:10px;color:var(--dim);">' + l.pctVerse + ' %</span></td>'
+        + '<td style="text-align:right;font-weight:600;">' + fmtF(l.reste) + '</td>'
+        + '<td style="text-align:right;color:' + (l.duAJour?'var(--rouge)':'var(--blanc-dim)') + ';">' + (l.duAJour?fmtF(l.duAJour):'—') + '</td>'
+        + '<td><span style="color:' + cl.col + ';font-size:10px;">' + escHtml(cl.lib) + '</span></td>'
+        + '<td style="white-space:nowrap;">'
+        + (l.tel ? '<a class="btn btn-secondary btn-sm btn-icon" title="Appeler" href="tel:' + escHtml(l.tel) + '">📞</a> '
+                 + '<a class="btn btn-secondary btn-sm btn-icon" title="WhatsApp" target="_blank" rel="noopener" href="https://wa.me/' + escHtml(String(l.tel).replace(/\D/g,'')) + '">💬</a>' : '')
+        + '</td>'
+        + '</tr>';
+    });
+  }
+  h += '</tbody></table></div>';
+  h += '<div style="font-size:11px;color:var(--dim);margin-top:10px;line-height:1.7;">'
+    + '<strong>Reste</strong> = total dû non encore versé. <strong>Exigible</strong> = part dont l\'échéance est déjà passée : c\'est ce montant qui se relance, pas le reste.'
+    + ' Un dossier récent peut afficher un reste élevé tout en étant parfaitement à jour.'
+    + '</div>';
+
+  el.innerHTML = h;
+  openModal('modal-reste-recouvrer');
+}
+
+function rarExporterCSV() {
+  var lignes = rarCollecter();
+  var e = function(s){ return '"' + String(s==null?'':s).replace(/"/g,'""') + '"'; };
+  var csv = '# Reste à recouvrer — ' + new Date().toISOString().slice(0,16).replace('T',' ') + '\n';
+  csv += 'nature;client;dossier;telephone;bien;type_bien;commercial;du;verse;pct_verse;reste;exigible;mois_retard;classe\n';
+  lignes.forEach(function(l){
+    csv += [e(l.nature), e(l.nom), e(l.dossier), e(l.tel), e(l.bien), e(l.typeBien), e(l.commercial),
+            l.du, l.verse, l.pctVerse, l.reste, l.duAJour, l.moisRetard, e(_rarClasse(l).lib)].join(';') + '\n';
+  });
+  var b = new Blob(['\uFEFF'+csv], {type:'text/csv;charset=utf-8;'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(b);
+  a.download = 'reste_a_recouvrer_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+  toast('⬇ Export réalisé : ' + lignes.length + ' dossier(s).', 'success');
+}
+
 function dashFinanceCore(pmin) {
   var fPeriode = function(x){ return !pmin || (x.date||'') >= pmin; };
   var encLots = dashEncaisseLots(fPeriode);
@@ -98413,6 +98667,37 @@ goTo = function(page) {
 
 <!-- Modal : Audit & suppression des doublons de mouvements de caisse -->
 <!-- Modal : Contrôle d'intégrité de la caisse -->
+<!-- Modal : Analyse du reste à recouvrer -->
+<div class="modal-overlay" id="modal-reste-recouvrer">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3>⏳ Reste à recouvrer — analyse détaillée</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-reste-recouvrer')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="filters-bar" style="margin-bottom:12px;">
+        <input type="text" class="search-input" id="rar-recherche" placeholder="🔍 Client, dossier, bien..." oninput="rarOuvrir()" style="flex:1;min-width:150px;">
+        <select class="filter-select" id="rar-filtre-classe" onchange="rarOuvrir()">
+          <option value="">Toutes anciennetés</option>
+          <option value="ajour">À jour</option>
+          <option value="leger">Retard 1-2 mois</option>
+          <option value="moyen">Retard 3-6 mois</option>
+          <option value="lourd">Retard &gt; 6 mois</option>
+        </select>
+        <select class="filter-select" id="rar-filtre-comm" onchange="rarOuvrir()">
+          <option value="">Tous commerciaux</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="rarExporterCSV()">⬇ Export CSV</button>
+      </div>
+      <div id="rar-contenu"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-reste-recouvrer')">Fermer</button>
+      <button class="btn btn-primary" onclick="closeModal('modal-reste-recouvrer');goTo('recouvrement')">🎯 Aller au recouvrement</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-caisse-integrite">
   <div class="modal modal-lg">
     <div class="modal-header">
