@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.40 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.41 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -87743,11 +87743,135 @@ function dqeMatch(name) {
    plan actuellement ouvert dans l'éditeur.
    ══════════════════════════════════════════════════════════════════════════ */
 
+/* ══════════════════════════════════════════════════════════════════════════
+   ENREGISTREMENT DU DESSIN DE L'ÉDITEUR
+   ──────────────────────────────────────────────────────────────────────────
+   L'éditeur travaillait entièrement en mémoire : le tracé disparaissait à la
+   fermeture de l'onglet. On pouvait exporter un PDF ou générer un DQE, mais
+   jamais reprendre le dessin — ni savoir, en relisant un DQE, de quel plan il
+   provenait.
+
+   Le dessin est stocké dans le store `plans_arch` existant, sous un champ
+   `dessin`. Un enregistrement de plan peut ainsi porter à la fois des
+   documents importés (vues, docs) et un tracé vectoriel, sans créer un second
+   référentiel de plans que personne ne saurait rapprocher du premier.
+
+   Ce qui est conservé : les éléments, les niveaux, les dimensions de
+   référence. Les fonds de plan (images calées) ne le sont pas — ce sont des
+   fichiers volumineux, souvent des scans de plusieurs mégaoctets, et les
+   embarquer ferait exploser la taille des enregistrements synchronisés.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+window._archiPlanCourant = null;
+
+function _archiSerialiserDessin() {
+  return {
+    version: 1,
+    mode: (typeof ED !== 'undefined') ? ED.mode : 'logement',
+    elements: (typeof ED !== 'undefined' && ED.elements) ? ED.elements : [],
+    niveaux: (typeof ED !== 'undefined' && ED.niveaux) ? ED.niveaux : [],
+    lgt: (typeof ED !== 'undefined') ? ED.lgt : null,
+    terrain: (typeof ED !== 'undefined') ? ED.terrain : null,
+    enregistre_le: new Date().toISOString()
+  };
+}
+
+function _archiStatsDessin(d) {
+  var els = (d && d.elements) || [];
+  var pieces = els.filter(function(e){ return e.type === 'piece'; });
+  var surf = pieces.reduce(function(s,p){ return s + (parseFloat(p.l)||0) * (parseFloat(p.w)||0); }, 0);
+  return { pieces:pieces.length, surface:Math.round(surf*100)/100, elements:els.length,
+           niveaux:(d && d.niveaux && d.niveaux.length) || 1 };
+}
+
+async function archiEnregistrerDessin() {
+  if (typeof ED === 'undefined' || !ED.elements || !ED.elements.length) {
+    toast('Rien à enregistrer : le plan est vide.', 'error'); return;
+  }
+  var courant = window._archiPlanCourant;
+  var ref = prompt('Référence du plan :', courant ? courant.ref : ('PLAN-' + new Date().toISOString().slice(0,10)));
+  if (ref === null) return;
+  ref = String(ref).trim();
+  if (!ref) { toast('Référence obligatoire.', 'error'); return; }
+
+  var dessin = _archiSerialiserDessin();
+  var st = _archiStatsDessin(dessin);
+
+  DATA.plans_arch = DATA.plans_arch || [];
+  var p = courant ? DATA.plans_arch.find(function(x){ return x.id === courant.id; }) : null;
+  var creation = !p;
+  if (!p) {
+    p = { id: uid(), created_at: today(), vues: [], docs: [], statut: 'en_cours', type: 'plan_editeur' };
+    DATA.plans_arch.push(p);
+  }
+  p.ref = ref;
+  p.dessin = dessin;
+  p.surface = st.surface;
+  p.niveau = st.niveaux;
+  p.date = today();
+  p.version = (parseInt(p.version) || 0) + 1;
+
+  await dbPut('plans_arch', p);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_plans_arch', p);
+  window._archiPlanCourant = p;
+  if (typeof archiRedraw === 'function') archiRedraw();
+  if (typeof _dqeRecap === 'function') _dqeRecap();
+  toast((creation ? 'Plan enregistré' : 'Plan mis à jour (v' + p.version + ')') + ' — '
+    + st.pieces + ' pièce(s), ' + st.surface + ' m².', 'success');
+}
+
+function archiOuvrirDessin() {
+  var liste = (DATA.plans_arch || []).filter(function(p){ return p.dessin && p.dessin.elements && p.dessin.elements.length; })
+    .sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); });
+  if (!liste.length) { toast('Aucun plan enregistré depuis l\'éditeur.', 'info'); return; }
+
+  var h = '<div style="max-height:60vh;overflow:auto;">';
+  liste.forEach(function(p){
+    var st = _archiStatsDessin(p.dessin);
+    /* Nombre de DQE produits depuis ce plan : indique d'un coup d'œil si le
+       plan est déjà engagé dans un chiffrage, donc si le rouvrir et le modifier
+       aura des conséquences en aval. */
+    var nbDqe = (DATA.nomenclatures || []).filter(function(n){ return n._plan_id === p.id; }).length;
+    h += '<div class="card" style="padding:10px 12px;margin-bottom:8px;cursor:pointer;" onclick="archiChargerDessin(\'' + p.id + '\')">'
+      + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">'
+      +   '<strong>' + escHtml(p.ref || '(sans référence)') + '</strong>'
+      +   '<span style="font-size:11px;color:var(--blanc-dim);">v' + (p.version || 1) + ' · ' + escHtml(p.date || '') + '</span>'
+      + '</div>'
+      + '<div style="font-size:11px;color:var(--blanc-dim);margin-top:3px;">'
+      +   st.pieces + ' pièce(s) · ' + st.surface + ' m² · ' + st.niveaux + ' niveau(x)'
+      +   (nbDqe ? ' · <span style="color:var(--or);">' + nbDqe + ' poste(s) DQE rattaché(s)</span>' : '')
+      + '</div></div>';
+  });
+  h += '</div>';
+  var box = document.getElementById('archi-ouvrir-liste');
+  if (box) { box.innerHTML = h; openModal('modal-archi-ouvrir'); }
+}
+
+async function archiChargerDessin(id) {
+  var p = (DATA.plans_arch || []).find(function(x){ return x.id === id; });
+  if (!p || !p.dessin) return;
+  if (ED.elements && ED.elements.length && !confirm('Le dessin en cours sera remplacé. Continuer ?')) return;
+  var d = p.dessin;
+  ED.elements = JSON.parse(JSON.stringify(d.elements || []));
+  ED.niveaux  = JSON.parse(JSON.stringify(d.niveaux || []));
+  if (d.lgt) ED.lgt = d.lgt;
+  if (d.terrain) ED.terrain = d.terrain;
+  if (d.mode) ED.mode = d.mode;
+  ED.nivActif = 0;
+  ED.selected = null;
+  window._archiPlanCourant = p;
+  closeModal('modal-archi-ouvrir');
+  if (typeof _archiCalcScale === 'function') _archiCalcScale();
+  if (typeof archiRedraw === 'function') archiRedraw();
+  if (typeof _dqeRecap === 'function') _dqeRecap();
+  toast('Plan « ' + (p.ref || '') + ' » chargé.', 'success');
+}
+
 function dqeCollecterPlans() {
   var parType = {};
   (DATA.nomenclatures || []).forEach(function(n){
     var t = n.type_logement || '(sans type)';
-    parType[t] = parType[t] || { type:t, plan:[], manuel:[], le:'', surface:0, pieces:0, niveaux:0 };
+    parType[t] = parType[t] || { type:t, plan:[], manuel:[], le:'', surface:0, pieces:0, niveaux:0, planId:'', planRef:'', planVer:0 };
     if (n._genere_plan) {
       parType[t].plan.push(n);
       /* On retient la génération la plus récente : régénérer remplace les
@@ -87758,6 +87882,9 @@ function dqeCollecterPlans() {
         parType[t].surface = parseFloat(n._genere_surface) || 0;
         parType[t].pieces  = parseInt(n._genere_pieces) || 0;
         parType[t].niveaux = parseInt(n._genere_niveaux) || 0;
+        parType[t].planId  = n._plan_id || '';
+        parType[t].planRef = n._plan_ref || '';
+        parType[t].planVer = parseInt(n._plan_version) || 0;
       }
     } else if (n._genere_cctp) {
       parType[t].manuel.push(n);   /* généré par le CCTP : ni plan, ni saisie */
@@ -87818,24 +87945,39 @@ function dqeListePlans() {
     + '</div>';
 
   h += '<div class="table-wrap"><table style="width:100%;font-size:12px;"><thead><tr>'
-    + '<th>Type de logement</th><th>Généré le</th><th style="text-align:right;">Plan</th>'
+    + '<th>Type de logement</th><th>Plan source</th><th>Généré le</th><th style="text-align:right;">Métré</th>'
     + '<th style="text-align:right;">Postes</th><th style="text-align:right;">Montant plan</th>'
     + '<th style="text-align:right;">Ajouts manuels</th><th>État</th><th></th></tr></thead><tbody>';
 
   liste.forEach(function(d){
     /* Un DQE est signalé périmé si le plan ouvert porte le même type mais une
        surface qui a changé de plus de 1 % — en deçà, c'est un arrondi. */
-    var perime = false;
-    if (typeCourant && d.type === typeCourant && surfCourante > 0 && d.surface > 0) {
-      perime = Math.abs(surfCourante - d.surface) / d.surface > 0.01;
+    /* Trois niveaux de contrôle, du plus fiable au plus approximatif :
+       1. Version du plan enregistré — comparaison exacte, sans ambiguïté ;
+       2. Surface du plan ouvert dans l'éditeur, si le type correspond ;
+       3. Aucun repère : DQE produit sur un dessin jamais enregistré. */
+    var etat;
+    var planActuel = d.planId ? (DATA.plans_arch || []).find(function(x){ return x.id === d.planId; }) : null;
+    if (planActuel) {
+      var vAct = parseInt(planActuel.version) || 1;
+      etat = (d.planVer && vAct > d.planVer)
+        ? '<span style="color:var(--rouge);">⚠️ plan modifié (v' + d.planVer + ' → v' + vAct + ')</span>'
+        : '<span style="color:var(--vert);">✅ à jour (v' + vAct + ')</span>';
+    } else if (d.planId) {
+      etat = '<span style="color:#EF9F27;">⚠️ plan source supprimé</span>';
+    } else if (typeCourant && d.type === typeCourant && surfCourante > 0 && d.surface > 0
+               && Math.abs(surfCourante - d.surface) / d.surface > 0.01) {
+      etat = '<span style="color:var(--rouge);">⚠️ surface du plan ouvert diffère</span>';
+    } else {
+      etat = '<span style="color:var(--blanc-dim);">dessin non enregistré</span>';
     }
-    var etat = perime
-      ? '<span style="color:var(--rouge);">⚠️ plan modifié depuis</span>'
-      : (d.le ? '<span style="color:var(--vert);">✅ à jour</span>' : '<span style="color:var(--blanc-dim);">— date inconnue</span>');
 
     h += '<tr>'
       + '<td><strong>' + escHtml(d.type) + '</strong>'
       + (d.niveaux > 1 ? '<br><span style="font-size:10px;color:var(--dim);">' + d.niveaux + ' niveaux</span>' : '') + '</td>'
+      + '<td>' + (d.planRef
+            ? '<strong>' + escHtml(d.planRef) + '</strong>' + (d.planVer ? '<br><span style="font-size:10px;color:var(--dim);">v' + d.planVer + '</span>' : '')
+            : '<span style="color:var(--blanc-dim);font-size:11px;">non enregistré</span>') + '</td>'
       + '<td>' + (d.le ? escHtml(d.le.slice(0,16).replace('T',' ')) : '—') + '</td>'
       + '<td style="text-align:right;">' + (d.surface ? d.surface.toFixed(1) + ' m²' : '—')
       + (d.pieces ? '<br><span style="font-size:10px;color:var(--dim);">' + d.pieces + ' pièce(s)</span>' : '') + '</td>'
@@ -87876,9 +88018,10 @@ function dqeExporterListePlans() {
   var liste = dqeCollecterPlans();
   if (!liste.length) { toast('Aucun DQE issu d\'un plan.', 'info'); return; }
   var e = function(s){ return '"' + String(s==null?'':s).replace(/"/g,'""') + '"'; };
-  var csv = '\uFEFFtype_logement;genere_le;surface_m2;nb_pieces;niveaux;postes_plan;montant_plan;postes_manuels;montant_manuel;montant_total\n';
+  var csv = '\uFEFFtype_logement;plan_source;version_plan;genere_le;surface_m2;nb_pieces;niveaux;postes_plan;montant_plan;postes_manuels;montant_manuel;montant_total\n';
   liste.forEach(function(d){
-    csv += [e(d.type), e(d.le ? d.le.slice(0,16).replace('T',' ') : ''), d.surface, d.pieces, d.niveaux,
+    csv += [e(d.type), e(d.planRef || ''), d.planVer || '',
+            e(d.le ? d.le.slice(0,16).replace('T',' ') : ''), d.surface, d.pieces, d.niveaux,
             d.plan.length, d.coutPlan, d.manuel.length, d.coutManuel, d.coutTotal].join(';') + '\n';
   });
   var b = new Blob([csv], { type:'text/csv;charset=utf-8;' });
@@ -93550,6 +93693,16 @@ function qrSvgTag(text){
       + (recapNiv ? '<div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--bord);"><div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-bottom:4px;">Récap par niveau</div>' + recapNiv + '</div>' : '')
       + (total ? '<div style="font-weight:700;font-size:13px;color:var(--or);margin-top:8px;padding-top:6px;border-top:1px solid var(--bord);">Total habitable' + (multi ? ' (SHON, ' + ED.niveaux.length + ' niveaux)' : '') + ' : ' + total + ' m²</div>' : '')
       + (pieces.length || mursPorteurs.length || cloisons.length || portes.length || fenetres.length || escaliers.length ? '<button class="btn btn-primary btn-sm" style="width:100%;margin-top:10px;" onclick="archiOuvrirGenNomenclature()">📋 Générer nomenclature DQE depuis ce plan</button>' : '')
+      /* Enregistrement du dessin. Sans lui, le tracé disparaît à la fermeture
+         de l'onglet : on ne peut ni le reprendre, ni savoir quel plan a produit
+         quel DQE. */
+      + '<div style="display:flex;gap:6px;margin-top:8px;">'
+      +   '<button class="btn btn-secondary btn-sm" style="flex:1;" onclick="archiEnregistrerDessin()" title="Enregistrer ce dessin pour le rouvrir et le rattacher aux DQE">💾 Enregistrer le plan</button>'
+      +   '<button class="btn btn-secondary btn-sm" style="flex:1;" onclick="archiOuvrirDessin()" title="Rouvrir un plan enregistré">📂 Ouvrir</button>'
+      + '</div>'
+      + (window._archiPlanCourant
+          ? '<div style="font-size:10px;color:var(--vert);margin-top:5px;text-align:center;">📄 Plan courant : <strong>' + escHtml(window._archiPlanCourant.ref || '') + '</strong></div>'
+          : '<div style="font-size:10px;color:var(--blanc-dim);margin-top:5px;text-align:center;">Dessin non enregistré</div>')
       + '</div>'
       + blocCout
       + blocGrosOeuvre
@@ -93757,7 +93910,13 @@ function qrSvgTag(text){
         _genere_le: _genLe,
         _genere_surface: Math.round(_genSurf * 100) / 100,
         _genere_pieces: _genPieces,
-        _genere_niveaux: _genNiveaux
+        _genere_niveaux: _genNiveaux,
+        /* Rattachement au plan enregistré, s'il y en a un. Un dessin non
+           enregistré produit quand même un DQE — on ne bloque pas — mais sans
+           plan source identifiable, d'où la mention explicite côté liste. */
+        _plan_id: (window._archiPlanCourant ? window._archiPlanCourant.id : ''),
+        _plan_ref: (window._archiPlanCourant ? (window._archiPlanCourant.ref || '') : ''),
+        _plan_version: (window._archiPlanCourant ? (window._archiPlanCourant.version || 1) : 0)
       }, lignes[j]);
       DATA.nomenclatures.push(entry);
       await dbPut('nomenclatures', entry);
@@ -101823,6 +101982,20 @@ goTo = function(page) {
 
 <!-- Modal : rapport stratégique du portefeuille foncier -->
 <!-- Modal : DQE générés depuis l'éditeur de plan -->
+<!-- Modal : ouvrir un plan enregistré depuis l'éditeur -->
+<div class="modal-overlay" id="modal-archi-ouvrir">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>📂 Ouvrir un plan enregistré</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-archi-ouvrir')">✕</button>
+    </div>
+    <div class="modal-body"><div id="archi-ouvrir-liste"></div></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-archi-ouvrir')">Fermer</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-dqe-plans">
   <div class="modal modal-lg">
     <div class="modal-header">
