@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.37 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.38 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -17966,13 +17966,22 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
   <div class="modal modal-lg" style="max-width:1100px;">
     <div class="modal-header">
       <div>
-        <h3 style="margin-bottom:3px;">📍 Géoréférencer un plan</h3>
-        <div style="font-size:11px;color:var(--dim);">Amers de grille (≥3) → tracé des bornes → coordonnées terrain calculées. Repérage uniquement — précision non légale.</div>
+        <h3 style="margin-bottom:3px;">📍 Géoréférencer une parcelle</h3>
+        <div style="font-size:11px;color:var(--dim);" id="gref-soustitre">Amers de grille (≥3) → tracé des bornes → coordonnées terrain calculées. Repérage uniquement — précision non légale.</div>
       </div>
       <button class="btn btn-secondary btn-icon" onclick="grefClose()">✕</button>
     </div>
     <div style="padding:12px 16px;">
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+      <!-- Deux sources possibles. Le plan du géomètre reste la référence quand il
+           existe ; la carte sert quand il n'y en a pas, ou pour un repérage
+           rapide sur le terrain. Sur fond satellite, aucun amer n'est
+           nécessaire : la carte est déjà géoréférencée, le clic donne
+           directement des coordonnées. -->
+      <div style="display:inline-flex;border:1px solid var(--bord);border-radius:8px;overflow:hidden;margin-bottom:10px;">
+        <button id="gref-src-plan"  class="btn btn-sm" style="border:none;border-radius:0;" onclick="grefSetSource('plan')">📄 Depuis un plan</button>
+        <button id="gref-src-carte" class="btn btn-sm" style="border:none;border-radius:0;" onclick="grefSetSource('carte')">🛰️ Directement sur carte</button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;" id="gref-barre-plan">
         <label class="btn btn-primary btn-sm" style="cursor:pointer;">📂 Charger plan (image/PDF)<input type="file" id="gref-file" accept="image/*,.pdf" style="display:none;" onchange="grefLoad(this)"></label>
         <div style="width:1px;background:var(--bord);align-self:stretch;"></div>
         <button class="btn btn-secondary btn-sm" id="gref-mode-amer" onclick="grefSetMode('amer')">➕ Amer (point grille)</button>
@@ -17984,8 +17993,25 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         <button class="btn btn-secondary btn-sm" onclick="grefFit()">⤢ Ajuster</button>
         <span id="gref-hint" style="font-size:11px;color:var(--blanc-dim);"></span>
       </div>
+
+      <div style="display:none;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;" id="gref-barre-carte">
+        <input type="text" id="gref-recherche" class="form-control" placeholder="🔍 Localité (ex. Songon, Dabou, Bingerville)" style="max-width:260px;" onkeydown="if(event.key==='Enter'){event.preventDefault();grefChercherLieu();}">
+        <button class="btn btn-secondary btn-sm" onclick="grefChercherLieu()">Situer</button>
+        <div style="width:1px;background:var(--bord);align-self:stretch;"></div>
+        <button class="btn btn-secondary btn-sm" onclick="grefCarteFond('sat')" id="gref-fond-sat">🛰️ Satellite</button>
+        <button class="btn btn-secondary btn-sm" onclick="grefCarteFond('osm')" id="gref-fond-osm">🗺️ Plan</button>
+        <div style="width:1px;background:var(--bord);align-self:stretch;"></div>
+        <button class="btn btn-secondary btn-sm" onclick="grefCarteUndo()">↩︎ Annuler dernier</button>
+        <button class="btn btn-secondary btn-sm" onclick="grefCarteEffacer()">🧹 Effacer</button>
+        <button class="btn btn-secondary btn-sm" onclick="grefCartePosition()" title="Centrer sur ma position (utile sur le terrain)">🎯 Ma position</button>
+        <span style="font-size:11px;color:var(--blanc-dim);">Cliquez chaque sommet dans l'ordre du périmètre.</span>
+      </div>
+
       <div style="display:flex;gap:12px;flex-wrap:wrap;">
         <div style="flex:1 1 560px;min-width:320px;">
+          <div id="gref-carte-wrap" style="display:none;position:relative;border:1px solid var(--bord);border-radius:8px;overflow:hidden;height:520px;">
+            <div id="gref-carte" style="width:100%;height:100%;"></div>
+          </div>
           <div id="gref-canvas-wrap" style="position:relative;border:1px solid var(--bord);border-radius:8px;overflow:hidden;background:#0d0d14;height:520px;touch-action:none;">
             <canvas id="gref-canvas" style="display:block;width:100%;height:100%;cursor:crosshair;"></canvas>
             <div id="gref-empty" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--blanc-dim);font-size:13px;text-align:center;padding:20px;">Chargez un plan (image ou PDF). Les plans KAGEO Print-to-PDF sont rastérisés automatiquement.</div>
@@ -18007,7 +18033,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="grefClose()">Annuler</button>
-      <button class="btn btn-primary" onclick="grefApply()">✔ Injecter les bornes</button>
+      <button class="btn btn-primary" onclick="grefAppliquer()">✔ Injecter les bornes</button>
     </div>
   </div>
 </div>
@@ -34652,6 +34678,35 @@ function ckResetIgnores() {
       (« 4 parcelles en litige ») n'est pas actionnable sans savoir lesquelles.
    ══════════════════════════════════════════════════════════════════════════ */
 
+/* [FIX REVUE] Deux vocabulaires de statut coexistent dans l'application :
+   le formulaire de parcelle enregistre prospection / negociation / acd /
+   tf_provisoire / tf_definitif / affecte / contentieux, tandis que le SIG
+   colorie sur prospection / disponible / acquis / litige / vendu / amenage.
+
+   La première version de ce rapport filtrait sur le second vocabulaire : les
+   règles « sans titre », « dormante », « hors programme » et « litige par
+   statut » ne se déclenchaient JAMAIS sur des données réelles. Le rapport
+   paraissait sain alors qu'il était aveugle sur quatre de ses neuf règles.
+
+   On normalise donc vers des notions métier, indépendantes du libellé stocké.
+   Ces fonctions restent tolérantes : un statut inconnu n'est jamais traité
+   comme une anomalie, seulement comme une information absente. */
+function _pfStatutNorm(p) {
+  var s = String((p && p.statut) || '').toLowerCase();
+  return {
+    /* Détenu : le promoteur a un droit sur le terrain (titre ou affectation). */
+    detenu:   ['acd','tf_provisoire','tf_definitif','affecte','acquis','amenage','disponible','vendu'].indexOf(s) !== -1,
+    /* Titré : un acte opposable existe. L'ACD vaut titre en Côte d'Ivoire. */
+    titre:    ['acd','tf_provisoire','tf_definitif'].indexOf(s) !== -1,
+    /* Provisoire : titre à consolider — étape à ne pas laisser dormir. */
+    provisoire: s === 'tf_provisoire',
+    contentieux: (s === 'contentieux' || s === 'litige'),
+    prospect: (s === 'prospection' || s === 'negociation'),
+    negociation: s === 'negociation',
+    cede:     s === 'vendu',
+    brut:     s
+  };
+}
 function _pfLabel(p) { return (typeof parcelleLabel === 'function') ? parcelleLabel(p) : (p.ref || p.id); }
 function _pfVal(p) { return (typeof parcelleValeurPatrimoniale === 'function') ? parcelleValeurPatrimoniale(p) : (parseFloat(p.cout_total)||0); }
 
@@ -34660,7 +34715,8 @@ function _pfCollecter() {
   var now = new Date();
   var r = { total:P.length, superficie:0, valeurBrute:0, valeurPatrimoine:0, parStatut:{},
             sansGeo:[], sansTitre:[], enLitige:[], risqueEleve:[], indivision:[],
-            sansCout:[], sansProgramme:[], dormantes:[], titreAncien:[], parcelles:P };
+            sansCout:[], sansProgramme:[], dormantes:[], titreAncien:[],
+            titreProvisoire:[], negoLongues:[], parcelles:P };
 
   P.forEach(function(p){
     r.superficie += parseFloat(p.superficie) || 0;
@@ -34673,31 +34729,45 @@ function _pfCollecter() {
     r.parStatut[st].superficie += parseFloat(p.superficie) || 0;
     r.parStatut[st].valeur += _pfVal(p);
 
+    var S = _pfStatutNorm(p);
     var aGeo = (p.geo_polygon && p.geo_polygon.length >= 3) || (p.bornes && p.bornes.length >= 3);
     if (!aGeo) r.sansGeo.push(p);
 
-    /* « Sans titre » au sens du risque juridique : ni TF ni ACD. Une parcelle en
-       prospection n'est pas concernée — on ne titre pas un terrain non acquis. */
-    var titre = String(p.type_titre || '').toLowerCase();
-    var titreSolide = /titre|tf|acd|arret|arrêt/.test(titre) && p.num_titre;
-    var actif = ['acquis','amenage','disponible'].indexOf(p.statut) !== -1;
-    if (!titreSolide && actif) r.sansTitre.push(p);
+    /* Sans titre : le promoteur détient le terrain mais aucun acte opposable ne
+       le constate. Une parcelle en prospection n'est pas concernée — on ne
+       titre pas un terrain qu'on n'a pas acquis. Le statut fait foi, complété
+       par les champs type_titre/num_titre quand ils sont renseignés. */
+    var champTitre = String(p.type_titre || '').toLowerCase();
+    var titreParChamp = /titre|tf|acd|arret|arrêt/.test(champTitre) && p.num_titre;
+    if (S.detenu && !S.titre && !titreParChamp) r.sansTitre.push(p);
 
-    if (p.statut === 'litige' || (p.litiges && p.litiges.length)) r.enLitige.push(p);
+    /* Titre provisoire : étape intermédiaire qui doit être consolidée. Un TF
+       provisoire laissé en l'état expose à la contestation et bloque le
+       nantissement bancaire. */
+    if (S.provisoire) r.titreProvisoire.push(p);
+
+    if (S.contentieux || (p.litiges && p.litiges.length)) r.enLitige.push(p);
     if (p.risque === 'eleve') r.risqueEleve.push(p);
     if (typeof parcelleEnIndivision === 'function' && parcelleEnIndivision(p)) r.indivision.push(p);
-    if (!(parseFloat(p.cout_total) > 0)) r.sansCout.push(p);
-    if (!p.programme_id && actif) r.sansProgramme.push(p);
+    if (!(parseFloat(p.cout_total) > 0) && !S.prospect) r.sansCout.push(p);
+    if (!p.programme_id && S.detenu && !S.cede) r.sansProgramme.push(p);
 
-    /* Dormante : acquise depuis plus de 18 mois, sans programme. Du foncier
+    /* Négociation qui s'éternise : des frais engagés sans acquisition. */
+    var refNego = p.date_debut_nego || p.created_at;
+    if (S.negociation && refNego) {
+      var mNego = (now - new Date(refNego)) / (30.44 * 86400000);
+      if (mNego > 12) { p._moisNego = Math.round(mNego); r.negoLongues.push(p); }
+    }
+
+    /* Dormante : détenue depuis plus de 18 mois sans programme. Du foncier
        immobilisé sans affectation est un capital qui ne travaille pas — c'est
        le constat qu'attend une direction. */
     var ref = p.date_acquisition || p.date_titre || p.created_at;
-    if (ref && p.statut === 'acquis' && !p.programme_id) {
+    if (ref && S.detenu && !S.cede && !p.programme_id) {
       var mois = (now - new Date(ref)) / (30.44 * 86400000);
       if (mois > 18) { p._moisDormance = Math.round(mois); r.dormantes.push(p); }
     }
-    if (p.date_titre && !p.programme_id) {
+    if (p.date_titre && !p.programme_id && S.titre) {
       var ans = (now - new Date(p.date_titre)) / (365.25 * 86400000);
       if (ans > 3) { p._ansTitre = Math.round(ans); r.titreAncien.push(p); }
     }
@@ -34738,6 +34808,15 @@ function _pfActions(r) {
     detail:r.indivision.length + ' parcelle(s) en indivision. Part promoteur ' + fmtF(val(r.indivision)) + ' F sur '
       + fmtF(r.indivision.reduce(function(s,p){ return s + (parseFloat(p.cout_total)||0); },0)) + ' F engagés : ' + noms(r.indivision),
     action:'Vérifier que les lots réservés aux partenaires sont exclus de la commercialisation et que les échéances de rétrocession sont tenues. Un lot vendu deux fois se solde par une résolution judiciaire.' });
+
+  if (r.titreProvisoire.length) A.push({ p:80, titre:'Consolider les titres provisoires',
+    detail:r.titreProvisoire.length + ' parcelle(s) en TF provisoire pour ' + fmtF(val(r.titreProvisoire)) + ' F : ' + noms(r.titreProvisoire),
+    action:'Engager la conversion en titre définitif. Un TF provisoire reste contestable et n\'est pas accepté en nantissement bancaire : le capital immobilisé ne peut pas être mobilisé.' });
+
+  if (r.negoLongues.length) A.push({ p:60, titre:'Trancher les négociations qui s\'éternisent',
+    detail:r.negoLongues.length + ' parcelle(s) en négociation depuis plus de 12 mois : '
+      + r.negoLongues.slice(0,4).map(function(p){ return _pfLabel(p) + ' (' + (p._moisNego||'?') + ' mois)'; }).join(', '),
+    action:'Conclure ou abandonner. Une négociation prolongée consomme des frais de prospection et mobilise du temps commercial sans contrepartie.' });
 
   if (r.sansGeo.length) A.push({ p:55, titre:'Géoréférencer les parcelles sans contour',
     detail:r.sansGeo.length + ' parcelle(s) sur ' + r.total + ' sans polygone : ' + noms(r.sansGeo),
@@ -81121,10 +81200,21 @@ function _dxfApplyBornes(bornes, srcLabel){
    ══════════════════════════════════════════════ */
 var _gref = { img:null, amers:[], bornes:[], mode:'amer', view:{s:1,ox:0,oy:0}, T:null };
 
+/* Aiguillage unique : le bouton d'injection ne doit pas connaître le mode
+   actif, sinon toute évolution des sources oblige à retoucher le HTML. */
+function grefAppliquer(){
+  if (_grefC && _grefC.src === 'carte') grefCarteApply();
+  else grefApply();
+}
 function grefOpen(){
   document.getElementById('modal-georef').classList.add('open');
   grefSetMode('amer');
   grefRedraw(); grefRenderLists();
+  /* Ouverture directement en mode carte : c'est la voie qui ne demande aucun
+     prérequis. L'utilisateur qui dispose d'un plan bascule en un clic, alors
+     que l'inverse — ouvrir sur un écran noir attendant un fichier — laissait
+     sans issue celui qui n'en a pas. */
+  grefSetSource('carte');
 }
 function grefClose(){ document.getElementById('modal-georef').classList.remove('open'); }
 function grefSetMode(m){
@@ -81304,6 +81394,237 @@ function grefRenderLists(){
     else if(!_gref.T){ bl.innerHTML='<span style="color:#e11d48;">Calibration incomplète.</span>'; }
     else bl.innerHTML=_gref.bornes.map(function(b){ var t=_grefTx(b.px,b.py); return '<div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid var(--bord);"><span style="color:#1A6B3A;font-weight:700;">'+b.nom+'</span><span>'+t.X.toFixed(2)+' · '+t.Y.toFixed(2)+'</span></div>'; }).join('');
   }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   GÉORÉFÉRENCEMENT DIRECT SUR CARTE
+   ──────────────────────────────────────────────────────────────────────────
+   Le mode « plan » exige un document du géomètre et trois amers de calibration.
+   C'est la voie précise, mais elle suppose que le plan existe et qu'il porte
+   une grille de coordonnées lisible — ce qui n'est pas toujours le cas :
+   terrain coutumier non encore levé, repérage préalable à une négociation,
+   vérification sur place depuis un téléphone.
+
+   Sur fond satellite, aucun amer n'est nécessaire : la carte EST déjà
+   géoréférencée. Un clic donne directement une latitude et une longitude, que
+   l'on convertit en UTM pour alimenter le même tableau de bornes.
+
+   PRÉCISION : le fond satellite a une erreur de calage de quelques mètres, et
+   le clic humain ajoute la sienne. C'est suffisant pour situer, négocier ou
+   préparer un dossier ; ce ne l'est pas pour borner. Le module l'affiche
+   explicitement plutôt que de laisser croire à une mesure de géomètre.
+   ══════════════════════════════════════════════════════════════════════════ */
+var _grefC = { src:'plan', map:null, layer:null, pts:[], fonds:{}, fond:'sat' };
+
+function grefSetSource(src) {
+  _grefC.src = src;
+  var bp = document.getElementById('gref-barre-plan');
+  var bc = document.getElementById('gref-barre-carte');
+  var wp = document.getElementById('gref-canvas-wrap');
+  var wc = document.getElementById('gref-carte-wrap');
+  var st = document.getElementById('gref-soustitre');
+  var estCarte = (src === 'carte');
+  if (bp) bp.style.display = estCarte ? 'none' : 'flex';
+  if (bc) bc.style.display = estCarte ? 'flex' : 'none';
+  if (wp) wp.style.display = estCarte ? 'none' : '';
+  if (wc) wc.style.display = estCarte ? '' : 'none';
+  if (st) st.textContent = estCarte
+    ? "Cliquez les sommets sur le fond satellite. Aucun amer requis : la carte est déjà géoréférencée. Précision de repérage (quelques mètres) — ne remplace pas un bornage."
+    : "Amers de grille (≥3) → tracé des bornes → coordonnées terrain calculées. Repérage uniquement — précision non légale.";
+  ['plan','carte'].forEach(function(k){
+    var b = document.getElementById('gref-src-' + k);
+    if (!b) return;
+    var actif = (k === src);
+    b.style.background = actif ? 'var(--or,#B87333)' : 'transparent';
+    b.style.color = actif ? '#fff' : 'var(--blanc-dim)';
+    b.style.fontWeight = actif ? '700' : '400';
+  });
+  if (estCarte) setTimeout(grefCarteInit, 120);
+}
+
+async function grefCarteInit() {
+  var host = document.getElementById('gref-carte');
+  if (!host) return;
+  /* Chargement de Leaflet à la demande, sur le même CDN que le SIG pour
+     réutiliser le cache navigateur. On attend explicitement l'événement de
+     chargement : lancer la construction de la carte avant que L existe
+     produisait un écran vide sans message. */
+  if (typeof L === 'undefined') {
+    var chargé = await new Promise(function(resolve){
+      if (!document.getElementById('leaflet-css')) {
+        var c = document.createElement('link'); c.id = 'leaflet-css'; c.rel = 'stylesheet';
+        c.href = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css';
+        document.head.appendChild(c);
+      }
+      var s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js';
+      s.onload = function(){ resolve(true); };
+      s.onerror = function(){ resolve(false); };
+      document.head.appendChild(s);
+    });
+    if (!chargé || typeof L === 'undefined') {
+      host.innerHTML = '<div style="padding:24px;text-align:center;color:var(--blanc-dim);font-size:13px;line-height:1.8;">'
+        + '🌐 Fond de carte inaccessible.<br>Une connexion internet est nécessaire pour le mode carte.<br>'
+        + 'Utilisez « 📄 Depuis un plan » si vous travaillez hors ligne.</div>';
+      return;
+    }
+  }
+
+  if (_grefC.map) { _grefC.map.invalidateSize(); grefCarteRedraw(); return; }
+
+  /* Centre par défaut : le barycentre des parcelles déjà positionnées, à
+     défaut Abidjan. Repartir systématiquement d'une vue mondiale ferait perdre
+     du temps à chaque usage. */
+  var centre = [5.3599, -4.0083], zoom = 9;
+  var refs = (DATA.parcelles || []).filter(function(p){ return p.lat && p.lng; });
+  if (refs.length) {
+    centre = [ refs.reduce(function(s,p){ return s + parseFloat(p.lat); }, 0) / refs.length,
+               refs.reduce(function(s,p){ return s + parseFloat(p.lng); }, 0) / refs.length ];
+    zoom = 12;
+  }
+
+  _grefC.map = L.map('gref-carte').setView(centre, zoom);
+  _grefC.fonds.osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { maxZoom:19, attribution:'© OpenStreetMap' });
+  /* Imagerie Esri : la seule couche satellite libre couvrant correctement la
+     Côte d'Ivoire à haute résolution. */
+  _grefC.fonds.sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom:19, attribution:'Esri, Maxar, Earthstar Geographics' });
+  _grefC.fonds[_grefC.fond].addTo(_grefC.map);
+  _grefC.layer = L.layerGroup().addTo(_grefC.map);
+
+  /* Repères : les parcelles déjà connues restent visibles pour éviter de
+     tracer un contour qui chevaucherait une parcelle existante. */
+  (DATA.parcelles || []).forEach(function(p){
+    if (p.geo_polygon && p.geo_polygon.length >= 3) {
+      L.polygon(p.geo_polygon, { color:'#94a3b8', weight:1, fillOpacity:0.06, dashArray:'3,4', interactive:false })
+        .addTo(_grefC.map).bindTooltip(String(p.ref || ''), { permanent:false });
+    }
+  });
+
+  _grefC.map.on('click', function(e){
+    _grefC.pts.push([e.latlng.lat, e.latlng.lng]);
+    grefCarteRedraw();
+  });
+  setTimeout(function(){ _grefC.map.invalidateSize(); }, 150);
+  grefCarteFond(_grefC.fond);
+}
+
+function grefCarteFond(v) {
+  _grefC.fond = (v === 'osm') ? 'osm' : 'sat';
+  if (_grefC.map) {
+    ['osm','sat'].forEach(function(k){
+      if (_grefC.fonds[k] && _grefC.map.hasLayer(_grefC.fonds[k])) _grefC.map.removeLayer(_grefC.fonds[k]);
+    });
+    _grefC.fonds[_grefC.fond].addTo(_grefC.map);
+    if (_grefC.layer) _grefC.layer.bringToFront();
+  }
+  ['sat','osm'].forEach(function(k){
+    var b = document.getElementById('gref-fond-' + k);
+    if (b) { b.style.background = (k === _grefC.fond) ? 'var(--or,#B87333)' : ''; b.style.color = (k === _grefC.fond) ? '#fff' : ''; }
+  });
+}
+
+function grefCarteRedraw() {
+  if (!_grefC.layer) return;
+  _grefC.layer.clearLayers();
+  _grefC.pts.forEach(function(p, i){
+    L.circleMarker(p, { radius:6, color:'#fff', weight:2, fillColor:'#B87333', fillOpacity:1 })
+      .bindTooltip('B' + (i+1), { permanent:true, direction:'top', className:'gref-lbl' })
+      .addTo(_grefC.layer);
+  });
+  if (_grefC.pts.length >= 3) {
+    L.polygon(_grefC.pts, { color:'#22c55e', weight:2, fillColor:'#22c55e', fillOpacity:0.18 }).addTo(_grefC.layer);
+  } else if (_grefC.pts.length === 2) {
+    L.polyline(_grefC.pts, { color:'#B87333', weight:2, dashArray:'5,4' }).addTo(_grefC.layer);
+  }
+  grefCarteMajInfo();
+}
+
+function grefCarteMajInfo() {
+  var box = document.getElementById('gref-amers-list');
+  var box2 = document.getElementById('gref-bornes-list');
+  var n = _grefC.pts.length;
+  if (box) {
+    box.innerHTML = '<div style="font-size:12px;line-height:1.8;">'
+      + '<strong>Mode carte</strong> — aucun amer nécessaire.<br>'
+      + '<span style="color:var(--blanc-dim);">Le fond satellite est déjà géoréférencé : chaque clic donne directement des coordonnées.</span>'
+      + '</div>';
+  }
+  if (box2) {
+    if (!n) {
+      box2.innerHTML = '<div style="font-size:12px;color:var(--blanc-dim);">Aucun sommet. Cliquez sur la carte pour tracer le périmètre.</div>';
+      return;
+    }
+    var surf = (n >= 3 && typeof _sigAreaM2 === 'function') ? _sigAreaM2(_grefC.pts) : 0;
+    var per = 0;
+    if (n >= 3 && typeof _sigHaversine === 'function') {
+      for (var i = 0; i < n; i++) per += _sigHaversine(_grefC.pts[i], _grefC.pts[(i+1) % n]);
+    }
+    var zone = (typeof latLngToUtm === 'function') ? latLngToUtm(_grefC.pts[0][0], _grefC.pts[0][1]).zone : 30;
+    box2.innerHTML = '<div style="font-size:12px;line-height:1.9;">'
+      + '<strong>' + n + ' sommet(s)</strong>'
+      + (n < 3 ? ' <span style="color:var(--rouge);">— il en faut au moins 3</span>' : '')
+      + (surf ? '<br>Superficie : <strong>' + (surf/10000).toFixed(4) + ' ha</strong> (' + fmtF(Math.round(surf)) + ' m²)' : '')
+      + (per ? '<br>Périmètre : ' + fmtF(Math.round(per)) + ' m' : '')
+      + '<br><span style="color:var(--blanc-dim);">Projection UTM ' + zone + 'N · WGS84</span>'
+      + '</div>'
+      + '<div style="max-height:150px;overflow:auto;margin-top:8px;font-size:11px;font-family:monospace;line-height:1.7;">'
+      + _grefC.pts.map(function(p,i){ return 'B' + (i+1) + '  ' + p[0].toFixed(6) + ', ' + p[1].toFixed(6); }).join('<br>')
+      + '</div>';
+  }
+}
+
+function grefCarteUndo() { _grefC.pts.pop(); grefCarteRedraw(); }
+function grefCarteEffacer() { _grefC.pts = []; grefCarteRedraw(); }
+
+function grefCartePosition() {
+  if (!navigator.geolocation) { toast('Géolocalisation indisponible sur cet appareil.', 'error'); return; }
+  toast('Recherche de votre position…', 'info');
+  navigator.geolocation.getCurrentPosition(function(pos){
+    if (_grefC.map) _grefC.map.setView([pos.coords.latitude, pos.coords.longitude], 18);
+    toast('Position trouvée (précision ' + Math.round(pos.coords.accuracy) + ' m).', 'success');
+  }, function(){
+    toast('Position refusée ou indisponible.', 'error');
+  }, { enableHighAccuracy:true, timeout:10000 });
+}
+
+/* Recherche de localité via Nominatim, restreinte à la Côte d'Ivoire pour
+   éviter les homonymes (il existe un Dabou ailleurs dans le monde). */
+async function grefChercherLieu() {
+  var q = (document.getElementById('gref-recherche') || {}).value || '';
+  q = q.trim();
+  if (!q) return;
+  try {
+    var r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ci&q=' + encodeURIComponent(q));
+    var j = await r.json();
+    if (!j || !j.length) { toast('Localité introuvable en Côte d\'Ivoire.', 'error'); return; }
+    if (_grefC.map) _grefC.map.setView([parseFloat(j[0].lat), parseFloat(j[0].lon)], 15);
+  } catch(e) {
+    toast('Recherche indisponible (connexion requise).', 'error');
+  }
+}
+
+/* Applique les sommets au tableau de bornes — même sortie que le mode plan,
+   pour que la suite du circuit (superficie, enregistrement, SIG) ne fasse
+   aucune différence entre les deux origines. */
+function grefCarteApply() {
+  if (_grefC.pts.length < 3) { toast('Tracez au moins 3 sommets.', 'error'); return; }
+  var zone = latLngToUtm(_grefC.pts[0][0], _grefC.pts[0][1]).zone;
+  var pts = _grefC.pts.map(function(p, i){
+    var u = latLngToUtm(p[0], p[1], zone);
+    return { nom:'B' + (i+1), x:+u.E.toFixed(2), y:+u.N.toFixed(2), z:0, angle:0, distance:0 };
+  });
+  var mode = (_brnList && _brnList.length)
+    ? confirm('Le tableau contient déjà ' + _brnList.length + ' borne(s).\n\nOK = Remplacer · Annuler = Ajouter à la suite.')
+    : true;
+  _brnList = mode ? pts : (_brnList || []).concat(pts);
+  if (typeof brnRender === 'function') brnRender();
+  var a = (typeof brnArea === 'function') ? brnArea() : 0;
+  grefClose();
+  toast(pts.length + ' sommet(s) relevé(s) sur carte'
+    + (a > 0 ? ' · ' + (a/10000).toFixed(4) + ' ha' : '')
+    + ' — précision de repérage, à confirmer par un bornage.', 'success');
 }
 
 function grefApply(){
