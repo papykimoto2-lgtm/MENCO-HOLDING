@@ -10925,6 +10925,8 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="spacer"></div>
           <button class="btn btn-secondary btn-sm" id="btn-caisse-nouvelle" onclick="caisseConfigModal(null)" style="display:none;">➕ Nouvelle caisse</button>
           <button class="btn btn-secondary btn-sm" onclick="caisseAuditDoublonsModal()">🔍 Audit doublons</button>
+          <button class="btn btn-secondary btn-sm" onclick="caisseControleIntegrite()">🩺 Contrôle d'intégrité</button>
+          <button class="btn btn-secondary btn-sm" onclick="caisseSnapshotsModal()">♻️ Points de restauration</button>
         </div>
 
         <div id="caisse-sync-banner"></div>
@@ -25627,7 +25629,7 @@ function buildDashTabFoncier() {
   if (ctEl) {
     ctEl.innerHTML = contentieux.length ? contentieux.slice(0,8).map(function(p){
       return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--bord,#E0E0EA);font-size:12.5px;">'
-        +'<span>'+(p.designation||p.reference||'Parcelle')+'</span><span style="color:var(--rouge,#E05252);font-weight:700;">'+fmtF(Math.round(p.superficie||0))+' m²</span></div>';
+        +'<span>'+escHtml(parcelleLabel(p))+'</span><span style="color:var(--rouge,#E05252);font-weight:700;">'+fmtF(Math.round(p.superficie||0))+' m²</span></div>';
     }).join('') : '<div style="color:var(--blanc-dim);font-size:12px;">Aucun contentieux en cours.</div>';
   }
 
@@ -42657,6 +42659,24 @@ function tfwBuild(p){
     return { cle:e.cle, label:e.label, statut:(i<=seed?'obtenu':'a_faire'), date:'', ref:'', frais:0, echeance:'' };
   });
 }
+/* Libellé lisible d'une parcelle. Le champ canonique du modèle « parcelles »
+   est `ref` (obligatoire dans saveParcelle) — plusieurs vues cherchaient
+   `designation`/`reference`, qui n'existent pas sur ce store : elles
+   retombaient donc sur l'id technique (« parc_mr3k5t0v93vd0 »), illisible
+   dans les listes déroulantes. On complète avec la localisation et la
+   superficie pour distinguer deux parcelles de même référence. */
+function parcelleLabel(p, avecDetail) {
+  if (!p) return '';
+  var base = p.ref || p.designation || p.reference || p.numero || p.num_titre || '';
+  if (!base) base = 'Parcelle ' + String(p.id || '').slice(-6);
+  if (!avecDetail) return base;
+  var det = [];
+  var lieu = p.localisation || p.commune || '';
+  if (lieu) det.push(lieu);
+  if (p.superficie) det.push(Math.round(p.superficie).toLocaleString('fr-FR') + ' m²');
+  return base + (det.length ? ' — ' + det.join(' · ') : '');
+}
+
 function tfwGet(p){ return (p && Array.isArray(p.titre_workflow) && p.titre_workflow.length) ? p.titre_workflow : tfwBuild(p||{}); }
 function tfwCurParc(){ var id=(document.getElementById('tfw-parc')||{}).value||''; return (DATA.parcelles||[]).find(function(p){return p.id===id;}); }
 
@@ -42664,7 +42684,7 @@ function tfwInit(){
   var sel=document.getElementById('tfw-parc'); if(!sel) return;
   var cur=sel.value;
   sel.innerHTML='<option value="">— Choisir une parcelle —</option>'+(DATA.parcelles||[]).map(function(p){
-    return '<option value="'+p.id+'">'+escHtml(p.designation||p.reference||p.id)+'</option>';}).join('');
+    return '<option value="'+p.id+'">'+escHtml(parcelleLabel(p, true))+'</option>';}).join('');
   if(cur) sel.value=cur; else if((DATA.parcelles||[]).length===1) sel.value=DATA.parcelles[0].id;
   tfwSelect(); tfwRenderPortfolio();
 }
@@ -42721,7 +42741,7 @@ function tfwRenderPortfolio(){
       var lib=suivante?('→ '+suivante.label):(courante?courante.label:'—');
       var ech=suivante&&suivante.echeance?suivante.echeance:'';
       var late=ech&&new Date(ech)<new Date();
-      return '<tr><td>'+escHtml(p.designation||p.reference||p.id)+'</td>'
+      return '<tr><td>'+escHtml(parcelleLabel(p))+'</td>'
         +'<td style="font-size:11px;">'+escHtml(lib)+'</td>'
         +'<td style="text-align:center;color:'+(et.retard?'var(--or)':'var(--vert)')+';font-weight:700;">'+et.pct+'%</td>'
         +'<td style="'+(late?'color:var(--rouge);font-weight:700;':'')+'">'+(ech?(new Date(ech).toLocaleDateString('fr-FR')+(late?' ⚠':'')):'—')+'</td>'
@@ -44923,7 +44943,7 @@ function fiscSaveRates(){
 function _fn(id){ var e=document.getElementById(id); return e?(parseFloat(e.value)||0):0; }
 function fiscPopulate(){
   var sp=document.getElementById('fisc-acq-parc');
-  if(sp) sp.innerHTML='<option value="">— saisie manuelle —</option>'+(DATA.parcelles||[]).map(function(p){return '<option value="'+p.id+'">'+escHtml(p.designation||p.reference||p.id)+'</option>';}).join('');
+  if(sp) sp.innerHTML='<option value="">— saisie manuelle —</option>'+(DATA.parcelles||[]).map(function(p){return '<option value="'+p.id+'">'+escHtml(parcelleLabel(p, true))+'</option>';}).join('');
   var sl=document.getElementById('fisc-vte-lot');
   if(sl) sl.innerHTML='<option value="">— saisie manuelle —</option>'+(DATA.lots||[]).map(function(l){var pr=(DATA.programmes||[]).find(function(x){return x.id===l.programme_id;}); return '<option value="'+l.id+'">'+escHtml('Lot '+(l.numero||l.id)+(pr?(' · '+pr.nom):'')+' — '+fmtF(l.prix||0)+' F')+'</option>';}).join('');
 }
@@ -94209,6 +94229,7 @@ async function caisseImportCSVConfirmer() {
   var valides = _cimRows.filter(function(r){ return r.valide; });
   if (!valides.length) return;
   var user = (APP.currentUser && APP.currentUser.nom) || '—';
+  await caisseSnapshotAvantMasse('import CSV caisse');
 
   /* [Anti-réimport] Empreinte de tous les mouvements déjà existants pour cette
      caisse : réimporter le même CSV (même date+type+montant+n° de pièce) ne
@@ -94323,6 +94344,7 @@ async function caisseAuditDoublonsSupprimer() {
   var cases = document.querySelectorAll('#cad-table input[type="checkbox"][data-mvt-id]:checked');
   if (!cases.length) return;
   if (!confirm('Supprimer définitivement ' + cases.length + ' mouvement(s) en double ? Les écritures comptables déjà générées pour ces bons seront supprimées avec eux.')) return;
+  await caisseSnapshotAvantMasse('suppression doublons caisse');
   var nSupprimes = 0, nBloques = 0;
   for (var i=0; i<cases.length; i++) {
     var id = cases[i].getAttribute('data-mvt-id');
@@ -95274,7 +95296,210 @@ async function caisseGenererReglesHistoriqueAppliquer() {
   caisseRenderVentilation();
 }
 
-async function genererEcritureCaisseMouvement(mvt, compteContrepartie) {
+/* ── Annulation en masse des ventilations automatiques d'UNE règle ──────
+   Si une règle mot-clé a été mal configurée, elle a pu poser des dizaines
+   d'écritures sur le mauvais compte. On reverse ici : suppression de
+   l'écriture liée + retour du mouvement en « à ventiler ». Ne touche JAMAIS
+   une ventilation manuelle (ventile_auto absent/false) — un choix humain
+   n'est pas annulé par un nettoyage de règle. */
+/* ── Contrôle d'intégrité de la caisse ──────────────────────────────────
+   Vérifie les invariants qui, s'ils cassent silencieusement (bug futur, sync
+   partielle, suppression manuelle côté base), produisent des états faux sans
+   aucune alerte. Lecture seule : ne corrige rien, signale tout. */
+function caisseSnapshotsModal() {
+  var snaps = caisseListerSnapshots();
+  var box = document.getElementById('csn-liste');
+  if (!snaps.length) {
+    box.innerHTML = '<div style="padding:16px;text-align:center;color:var(--blanc-dim);font-size:12px;">Aucun point de restauration pour le moment.<br>Ils sont créés automatiquement avant les opérations de masse.</div>';
+  } else {
+    box.innerHTML = '<table class="data-table"><thead><tr><th>Date</th><th>Opération</th><th>Par</th><th style="text-align:right;">Mvts</th><th></th></tr></thead><tbody>'
+      + snaps.map(function(s) {
+          return '<tr>'
+            + '<td style="font-size:11px;">' + escHtml((s.horodatage||'').slice(0,16).replace('T',' ')) + '</td>'
+            + '<td style="font-size:11px;">' + escHtml(s.libelle||'') + '</td>'
+            + '<td style="font-size:11px;">' + escHtml(s.par||'—') + '</td>'
+            + '<td style="text-align:right;">' + (s.nb||0) + '</td>'
+            + '<td><button class="btn btn-secondary btn-sm" onclick="caisseRestaurerSnapshot(\'' + s.cle + '\')">♻️ Restaurer</button></td>'
+            + '</tr>';
+        }).join('')
+      + '</tbody></table>';
+  }
+  openModal('modal-caisse-snapshots');
+}
+
+function caisseControleIntegrite() {
+  var pb = [], ok = [];
+  var mvts = DATA.caisse_mouvements || [];
+  var sessions = DATA.caisse_sessions || [];
+  var ecritures = DATA.ecritures || [];
+  var idxEcr = {}; ecritures.forEach(function(e){ idxEcr[e.id] = e; });
+  var idxSess = {}; sessions.forEach(function(s){ idxSess[s.id] = s; });
+  var idxCaisse = {}; (DATA.caisses||[]).forEach(function(c){ idxCaisse[c.id] = c; });
+
+  /* 1. Mouvements ventilés dont l'écriture a disparu → trou comptable */
+  var orphelins = mvts.filter(function(m){ return m.statut==='ventile' && m.ecriture_id && !idxEcr[m.ecriture_id]; });
+  if (orphelins.length) pb.push('❌ ' + orphelins.length + ' mouvement(s) marqué(s) « ventilé » sans écriture comptable existante :\n   ' + orphelins.slice(0,10).map(function(m){ return (m.numero||m.id) + ' (' + fmtF(m.montant) + ' F)'; }).join('\n   ') + (orphelins.length>10 ? '\n   … et ' + (orphelins.length-10) + ' autre(s)' : ''));
+  else ok.push('✅ Toute ventilation a son écriture comptable.');
+
+  /* 2. Mouvements ventilés SANS ecriture_id du tout */
+  var sansRef = mvts.filter(function(m){ return m.statut==='ventile' && !m.ecriture_id; });
+  if (sansRef.length) pb.push('❌ ' + sansRef.length + ' mouvement(s) « ventilé » sans référence d\'écriture.');
+
+  /* 3. Écritures de caisse orphelines (mouvement supprimé) */
+  var idsMvt = {}; mvts.forEach(function(m){ idsMvt['ecr_cse_' + m.id] = true; });
+  var ecrOrph = ecritures.filter(function(e){ return String(e.id||'').indexOf('ecr_cse_')===0 && !idsMvt[e.id]; });
+  if (ecrOrph.length) pb.push('❌ ' + ecrOrph.length + ' écriture(s) de caisse sans mouvement correspondant (mouvement supprimé sans son écriture) :\n   ' + ecrOrph.slice(0,10).map(function(e){ return (e.ref||e.id) + ' (' + fmtF(e.montant) + ' F)'; }).join('\n   '));
+  else ok.push('✅ Aucune écriture de caisse orpheline.');
+
+  /* 4. Cohérence montant mouvement ↔ écriture */
+  var ecarts = [];
+  mvts.forEach(function(m){
+    var e = m.ecriture_id ? idxEcr[m.ecriture_id] : null;
+    if (e && Math.round(parseFloat(e.montant)||0) !== Math.round(parseFloat(m.montant)||0)) ecarts.push(m);
+  });
+  if (ecarts.length) pb.push('❌ ' + ecarts.length + ' écart(s) de montant entre mouvement et écriture :\n   ' + ecarts.slice(0,10).map(function(m){ return (m.numero||m.id) + ' : bon ' + fmtF(m.montant) + ' F ≠ écriture ' + fmtF(idxEcr[m.ecriture_id].montant) + ' F'; }).join('\n   '));
+  else ok.push('✅ Montants mouvements ↔ écritures concordants.');
+
+  /* 5. Mouvements rattachés à une session inexistante */
+  var sessFantome = mvts.filter(function(m){ return m.session_id && !idxSess[m.session_id]; });
+  if (sessFantome.length) pb.push('❌ ' + sessFantome.length + ' mouvement(s) rattaché(s) à une session de caisse inexistante.');
+
+  /* 6. Mouvements rattachés à une caisse supprimée */
+  var caisseFantome = mvts.filter(function(m){ return m.caisse_id && !idxCaisse[m.caisse_id]; });
+  if (caisseFantome.length) pb.push('❌ ' + caisseFantome.length + ' mouvement(s) rattaché(s) à une caisse supprimée.');
+
+  /* 7. Cohérence solde de clôture ↔ somme des mouvements, par session clôturée */
+  var ecartsSolde = [];
+  sessions.filter(function(s){ return s.statut==='cloturee'; }).forEach(function(s){
+    var mvtsS = mvts.filter(function(m){ return m.session_id === s.id; });
+    var entrees = mvtsS.filter(function(m){ return m.type==='entree'; }).reduce(function(a,m){ return a + (parseFloat(m.montant)||0); }, 0);
+    var sorties = mvtsS.filter(function(m){ return m.type==='sortie' && !(m.requiert_validation && !m.valide); }).reduce(function(a,m){ return a + (parseFloat(m.montant)||0); }, 0);
+    var theorique = (parseFloat(s.fond_ouverture)||0) + entrees - sorties;
+    var enregistre = (s.fond_cloture_theorique != null) ? (parseFloat(s.fond_cloture_theorique)||0) : null;
+    if (enregistre !== null && Math.abs(theorique - enregistre) > 1) {
+      ecartsSolde.push({ s:s, theorique:theorique, enregistre:enregistre });
+    }
+  });
+  if (ecartsSolde.length) pb.push('❌ ' + ecartsSolde.length + ' session(s) clôturée(s) dont le solde enregistré ne correspond plus au recalcul :\n   ' + ecartsSolde.slice(0,10).map(function(x){ var cn = idxCaisse[x.s.caisse_id]; return (cn?cn.nom:'?') + ' du ' + (x.s.date||'').slice(0,10) + ' : enregistré ' + fmtF(x.enregistre) + ' F ≠ recalculé ' + fmtF(x.theorique) + ' F'; }).join('\n   '));
+  else ok.push('✅ Soldes des sessions clôturées cohérents avec leurs mouvements.');
+
+  /* 8. Doublons résiduels */
+  var emp = {}, nbDoublons = 0;
+  mvts.forEach(function(m){
+    var fp = _caisseFingerprint(m.caisse_id, m.date, m.type, m.montant, m.piece_ref, m.motif);
+    if (emp[fp]) nbDoublons++; else emp[fp] = true;
+  });
+  if (nbDoublons) pb.push('⚠️ ' + nbDoublons + ' doublon(s) potentiel(s) restant(s) — utiliser « 🔍 Audit doublons ».');
+  else ok.push('✅ Aucun doublon détecté.');
+
+  /* 9. Décaissements en attente depuis trop longtemps */
+  var enAttente = mvts.filter(function(m){ return m.type==='sortie' && m.requiert_validation && !m.valide && !m.rejete; });
+  var vieux = enAttente.filter(function(m){ return (Date.now() - new Date(m.demande_le || m.created_at || Date.now()).getTime()) > 7*24*3600*1000; });
+  if (vieux.length) pb.push('⚠️ ' + vieux.length + ' décaissement(s) en attente de validation depuis plus de 7 jours (bloquent leur ventilation).');
+
+  /* 10. Ventilations automatiques — volume, pour audit */
+  var nbAuto = mvts.filter(function(m){ return m.ventile_auto && m.statut==='ventile'; }).length;
+  ok.push('ℹ️ ' + nbAuto + ' mouvement(s) ventilé(s) automatiquement par règle · ' + mvts.filter(function(m){ return m.statut==='ventile' && !m.ventile_auto; }).length + ' manuellement.');
+
+  /* 11. Mouvements non ventilés sur sessions clôturées (en attente de traitement) */
+  var aTraiter = mvts.filter(function(m){ var s = idxSess[m.session_id]; return m.statut!=='ventile' && s && s.statut==='cloturee' && !(m.type==='sortie' && m.requiert_validation && !m.valide); });
+  if (aTraiter.length) ok.push('ℹ️ ' + aTraiter.length + ' mouvement(s) prêt(s) à ventiler (session clôturée, validation OK).');
+
+  var stats = document.getElementById('cci-stats');
+  var rapport = document.getElementById('cci-rapport');
+  if (stats) {
+    stats.innerHTML = pb.length
+      ? '<span style="color:var(--rouge);">⚠️ ' + pb.length + ' anomalie(s) détectée(s)</span> · ' + mvts.length + ' mouvement(s) · ' + sessions.length + ' session(s) analysée(s)'
+      : '<span style="color:var(--vert);">✅ Aucune anomalie — ' + mvts.length + ' mouvement(s) · ' + sessions.length + ' session(s) analysée(s)</span>';
+  }
+  if (rapport) rapport.textContent = (pb.length ? 'ANOMALIES\n\n' + pb.join('\n\n') + '\n\n\n' : '') + 'CONTRÔLES PASSÉS\n\n' + ok.join('\n');
+  openModal('modal-caisse-integrite');
+}
+
+async function caisseAnnulerVentilationsAutoParRegle(motCle) {
+  if (!caisseRoleAdminLike()) { toast('Accès réservé au comptable / manager / admin.', 'error'); return; }
+  var cible = String(motCle || '').trim().toLowerCase();
+  if (!cible) return;
+  var touches = (DATA.caisse_mouvements || []).filter(function(m) {
+    return m.ventile_auto && m.statut === 'ventile' && _caisseSuggestKeyword(m.motif) === cible;
+  });
+  if (!touches.length) { toast('Aucune écriture automatique trouvée pour ce mot-clé.', 'info'); return; }
+  if (!confirm('Annuler ' + touches.length + ' écriture(s) posée(s) automatiquement pour « ' + motCle + ' » ?\nLes mouvements repasseront « à ventiler ». Les ventilations manuelles ne sont pas touchées.')) return;
+  await caisseSnapshotAvantMasse('annulation ventilations auto : ' + cible);
+  var n = 0, bloques = 0;
+  for (var i = 0; i < touches.length; i++) {
+    var m = touches[i];
+    if (m.ecriture_id) {
+      var okDel = await deleteRecord('ecritures', m.ecriture_id);
+      if (okDel === false) { bloques++; continue; }   /* exercice clos : on n'orpheline pas */
+    }
+    m.statut = 'a_ventiler'; m.compte_ventile = null; m.ecriture_id = null;
+    m.ventile_par = null; m.ventile_le = null; m.ventile_auto = false;
+    await dbPut('caisse_mouvements', m);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', m);
+    n++;
+  }
+  if (typeof buildBalance === 'function') buildBalance();
+  if (typeof buildGrandLivre === 'function') buildGrandLivre();
+  toast('↩️ ' + n + ' mouvement(s) repassé(s) « à ventiler ».' + (bloques ? ' · 🔒 ' + bloques + ' bloqué(s) (exercice clôturé).' : ''), 'success');
+  caisseRenderVentilation();
+  if (typeof caisseRenderVentilationConfigList === 'function') caisseRenderVentilationConfigList();
+}
+
+/* ── Snapshot de sécurité avant toute opération de masse ────────────────
+   Import CSV, ventilation automatique, suppression de doublons et annulation
+   de règle touchent des centaines d'enregistrements d'un coup. On dépose un
+   point de restauration (JSON, localStorage, 3 derniers conservés) AVANT
+   d'écrire — sans blocage : si le stockage échoue, l'opération continue,
+   l'absence de filet ne doit pas empêcher le travail. */
+async function caisseSnapshotAvantMasse(libelle) {
+  try {
+    var snap = {
+      libelle: libelle || 'opération de masse',
+      horodatage: new Date().toISOString(),
+      par: (APP.currentUser && APP.currentUser.nom) || '—',
+      caisse_mouvements: JSON.parse(JSON.stringify(DATA.caisse_mouvements || [])),
+      caisse_sessions: JSON.parse(JSON.stringify(DATA.caisse_sessions || [])),
+      ecritures_caisse: (DATA.ecritures || []).filter(function(e){ return String(e.id||'').indexOf('ecr_cse_') === 0; })
+    };
+    var index = JSON.parse(localStorage.getItem('caisse_snapshots') || '[]');
+    index.unshift({ cle: 'caisse_snap_' + Date.now(), libelle: snap.libelle, horodatage: snap.horodatage, par: snap.par, nb: snap.caisse_mouvements.length });
+    while (index.length > 3) {                       /* purge : quota localStorage limité */
+      var vieux = index.pop();
+      try { localStorage.removeItem(vieux.cle); } catch(e){}
+    }
+    localStorage.setItem(index[0].cle, JSON.stringify(snap));
+    localStorage.setItem('caisse_snapshots', JSON.stringify(index));
+    return true;
+  } catch (e) { return false; }   /* quota dépassé / mode privé : on n'interrompt pas */
+}
+function caisseListerSnapshots() {
+  try { return JSON.parse(localStorage.getItem('caisse_snapshots') || '[]'); } catch(e) { return []; }
+}
+async function caisseRestaurerSnapshot(cle) {
+  if (!caisseRoleAdminLike()) { toast('Accès réservé au comptable / manager / admin.', 'error'); return; }
+  var raw = null;
+  try { raw = JSON.parse(localStorage.getItem(cle) || 'null'); } catch(e){}
+  if (!raw) { toast('Point de restauration introuvable ou illisible.', 'error'); return; }
+  if (!confirm('Restaurer l\'état des mouvements de caisse au ' + (raw.horodatage||'').slice(0,16).replace('T',' ') + ' ?\n\n' + (raw.caisse_mouvements||[]).length + ' mouvement(s) seront réécrits. Les mouvements créés APRÈS ce point seront supprimés.')) return;
+  var avant = (DATA.caisse_mouvements || []).map(function(m){ return m.id; });
+  var idsSnap = {};
+  (raw.caisse_mouvements || []).forEach(function(m){ idsSnap[m.id] = true; });
+  /* Supprimer ce qui n'existait pas dans le snapshot */
+  for (var i = 0; i < avant.length; i++) {
+    if (!idsSnap[avant[i]]) { try { await deleteRecord('caisse_mouvements', avant[i]); } catch(e){} }
+  }
+  /* Réécrire l'état snapshoté */
+  DATA.caisse_mouvements = raw.caisse_mouvements || [];
+  for (var j = 0; j < DATA.caisse_mouvements.length; j++) {
+    await dbPut('caisse_mouvements', DATA.caisse_mouvements[j]);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', DATA.caisse_mouvements[j]);
+  }
+  toast('♻️ État de la caisse restauré (' + DATA.caisse_mouvements.length + ' mouvement(s)).', 'success');
+  if (typeof caisseEnter === 'function') caisseEnter();
+}
+
+async function genererEcritureCaisseMouvement(mvt, compteContrepartie, viaAuto) {
   /* Un décaissement encore en attente de validation (montant au-delà du
      plafond de son auteur) ne peut pas être ventilé/comptabilisé : tant
      qu'aucun responsable habilité ne l'a approuvé, l'argent n'est pas réputé
@@ -95303,7 +95528,11 @@ async function genererEcritureCaisseMouvement(mvt, compteContrepartie) {
     compte_credit: mvt.type === 'entree' ? compteContrepartie : compteCaisse,
     compte: compteCaisse, montant: parseFloat(mvt.montant) || 0, type: _type, mode: 'especes',
     division: (caisse && caisse.division_id) || '',
-    notes: 'Ventilé par ' + ((APP.currentUser && APP.currentUser.nom) || '—'), created_at: today()
+    /* [Traçabilité] Distingue une écriture posée par une règle automatique
+       d'une écriture posée manuellement : indispensable pour retrouver et
+       annuler en masse les conséquences d'une règle mal configurée. */
+    ventile_auto: !!viaAuto,
+    notes: (viaAuto ? 'Ventilé automatiquement (règle) — ' : 'Ventilé par ') + ((APP.currentUser && APP.currentUser.nom) || '—'), created_at: today()
   };
   /* [FIX] Le retour de dbPut n'était pas vérifié. Si l'écriture est rejetée
      (exercice clos — dbPut la retire alors aussi de DATA.ecritures), le
@@ -95326,6 +95555,7 @@ async function genererEcritureCaisseMouvement(mvt, compteContrepartie) {
 
   mvt.statut = 'ventile'; mvt.compte_ventile = compteContrepartie; mvt.ecriture_id = ecr.id;
   mvt.ventile_par = (APP.currentUser && APP.currentUser.nom) || '—'; mvt.ventile_le = new Date().toISOString();
+  mvt.ventile_auto = !!viaAuto;
   await dbPut('caisse_mouvements', mvt);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', mvt);
   return ecr;
@@ -95511,13 +95741,19 @@ function caisseRenderVentilationConfigList() {
     box.innerHTML = '<div style="padding:12px;text-align:center;color:var(--blanc-dim);font-size:12px;">Aucune règle définie pour le moment.</div>';
     return;
   }
-  var html = '<table class="data-table"><thead><tr><th>Mot-clé (dans le motif)</th><th>Compte de contrepartie</th><th></th></tr></thead><tbody>';
+  var html = '<table class="data-table"><thead><tr><th>Mot-clé (dans le motif)</th><th>Compte de contrepartie</th><th style="text-align:right;">Écritures auto</th><th></th></tr></thead><tbody>';
   cles.forEach(function(k) {
     var cpt = (APP.planComptable || []).find(function(c){ return c.code === map[k]; });
+    /* Impact de cette règle : nombre d'écritures qu'elle a posées automatiquement,
+       pour pouvoir mesurer puis reverser en masse si elle s'avère erronée. */
+    var nAuto = (DATA.caisse_mouvements||[]).filter(function(m){ return m.ventile_auto && m.statut==='ventile' && _caisseSuggestKeyword(m.motif)===k; }).length;
+    var kEsc = k.replace(/'/g, "\\'");
     html += '<tr>'
       + '<td>' + escHtml(k) + '</td>'
       + '<td>' + escHtml(map[k]) + (cpt ? ' — ' + escHtml(cpt.label) : '') + '</td>'
-      + '<td><button class="btn btn-secondary btn-sm btn-icon" title="Supprimer" onclick="caisseDeleteVentilationRule(\'' + k.replace(/'/g,"\\'") + '\')">🗑️</button></td>'
+      + '<td style="text-align:right;">' + (nAuto || '—') + '</td>'
+      + '<td>' + (nAuto ? '<button class="btn btn-secondary btn-sm" title="Annuler ces ventilations automatiques" onclick="caisseAnnulerVentilationsAutoParRegle(\'' + kEsc + '\')">↩️</button> ' : '')
+      + '<button class="btn btn-secondary btn-sm btn-icon" title="Supprimer" onclick="caisseDeleteVentilationRule(\'' + kEsc + '\')">🗑️</button></td>'
       + '</tr>';
   });
   html += '</tbody></table>';
@@ -95572,11 +95808,14 @@ async function caisseVentilationAuto() {
     return s && s.statut === 'cloturee';
   });
 
+  if (!enAttente.length) { toast('Aucun mouvement à ventiler.', 'info'); return; }
+  await caisseSnapshotAvantMasse('ventilation automatique caisse');
+
   var appliques = 0;
   for (var i = 0; i < enAttente.length; i++) {
     var m = enAttente[i];
     var compteTrouve = _caisseRuleMatch(m.motif);
-    if (compteTrouve) { if (await genererEcritureCaisseMouvement(m, compteTrouve)) appliques++; }
+    if (compteTrouve) { if (await genererEcritureCaisseMouvement(m, compteTrouve, true)) appliques++; }
   }
   toast(appliques ? ('⚡ ' + appliques + ' mouvement(s) ventilé(s) automatiquement. ' + (enAttente.length - appliques) + ' restent à ventiler manuellement.') : 'Aucune correspondance trouvée — ventilation manuelle requise.', appliques ? 'success' : 'info');
   caisseRenderVentilation();
@@ -97756,6 +97995,42 @@ goTo = function(page) {
 </div>
 
 <!-- Modal : Audit & suppression des doublons de mouvements de caisse -->
+<!-- Modal : Contrôle d'intégrité de la caisse -->
+<div class="modal-overlay" id="modal-caisse-integrite">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3>🩺 Contrôle d'intégrité — Caisse</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-caisse-integrite')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:11px;color:var(--blanc-dim);margin-bottom:10px;">Vérification en lecture seule des invariants de la caisse : cohérence mouvements ↔ écritures comptables, soldes des sessions clôturées, références orphelines, doublons résiduels. Aucune correction automatique.</div>
+      <div id="cci-stats" style="font-size:13px;font-weight:600;margin-bottom:10px;"></div>
+      <pre id="cci-rapport" style="white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:11px;background:var(--bord2);padding:12px;border-radius:8px;max-height:420px;overflow-y:auto;margin:0;"></pre>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-caisse-integrite')">Fermer</button>
+      <button class="btn btn-primary" onclick="caisseControleIntegrite()">🔄 Relancer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Points de restauration caisse -->
+<div class="modal-overlay" id="modal-caisse-snapshots">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>♻️ Points de restauration — Caisse</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-caisse-snapshots')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:11px;color:var(--blanc-dim);margin-bottom:10px;">Créés automatiquement avant chaque opération de masse (import CSV, ventilation automatique, suppression de doublons). Les 3 plus récents sont conservés. Stockage local à ce navigateur — ce n'est pas une sauvegarde de remplacement.</div>
+      <div id="csn-liste"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-caisse-snapshots')">Fermer</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-caisse-audit-doublons">
   <div class="modal modal-lg">
     <div class="modal-header">
