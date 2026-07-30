@@ -2739,6 +2739,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                 <div style="font-size:10px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:#8B5520;">⚡ File d'actions — à traiter maintenant</div>
                 <div style="display:flex;gap:6px;align-items:center;">
                   <span id="ck-compteur" style="font-size:11px;color:var(--blanc-dim);"></span>
+                  <button class="btn btn-secondary btn-sm" onclick="ckEnvoyerFileActionsMessagerie()" title="Envoie la file d'actions dans la messagerie interne à l'admin et au DG">📨 Envoyer</button>
                   <button class="btn btn-secondary btn-sm" onclick="ckResetIgnores()" title="Réafficher les actions reportées ou ignorées">↺</button>
                 </div>
               </div>
@@ -34388,6 +34389,62 @@ function ckResetIgnores() {
   localStorage.removeItem(CK_SNOOZE_KEY);
   toast('Actions reportées ou ignorées réaffichées.', 'info');
   buildDashTabCockpit();
+}
+
+/* ── Envoi de la file d'actions du Cockpit → Messagerie interne (admin + DG) ──
+   Réutilise le même groupe « Direction » que la synthèse quotidienne
+   (_synthGetConversation / _synthDestinataires) : mêmes destinataires par
+   défaut, pas de duplication de la logique de résolution des rôles. La liste
+   envoyée est celle réellement affichée à l'écran (mêmes priorités, mêmes
+   masquages/reports), pour que l'admin et le DG voient exactement ce que
+   l'opérateur du cockpit a sous les yeux. ───────────────────────────────── */
+function _ckTexteFileActions(actions) {
+  var jour = new Date().toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
+  var L = [];
+  L.push('⚡ FILE D\'ACTIONS — À TRAITER MAINTENANT');
+  L.push(jour.charAt(0).toUpperCase() + jour.slice(1));
+  L.push('');
+  if (!actions.length) {
+    L.push('🏁 File vide — tout est traité.');
+  } else {
+    L.push(actions.length + ' action(s) en attente de traitement :');
+    L.push('');
+    actions.slice(0, 20).forEach(function(a, i) {
+      L.push((i+1) + '. ' + (a.urgent ? '🔴 ' : '') + a.icone + ' ' + a.titre
+        + (a.montant ? ' — ' + fmtF(a.montant) + ' F' : ''));
+      if (a.detail) L.push('   ' + a.detail.replace(/<[^>]*>/g, ''));
+    });
+    if (actions.length > 20) L.push('\n… et ' + (actions.length - 20) + ' action(s) supplémentaire(s) de moindre priorité.');
+  }
+  L.push('');
+  L.push('_Message généré automatiquement depuis le Cockpit — ImmoSuite ERP._');
+  return L.join('\n');
+}
+
+async function ckEnvoyerFileActionsMessagerie() {
+  if (typeof _synthGetConversation !== 'function') { toast('Messagerie interne indisponible.', 'error'); return; }
+  var actions = ckActions();
+  var conv = await _synthGetConversation();
+  if (!conv) { toast('Aucun administrateur/DG identifié pour recevoir la file d\'actions.', 'error'); return; }
+
+  var msg = {
+    id: uid(), conversation_id: conv.id,
+    expediteur_id: (APP.currentUser && APP.currentUser.id) || 'system',
+    contenu: _ckTexteFileActions(actions), date: new Date().toISOString(), lu: false, fichiers: [],
+    type_message: 'cockpit_file_actions'
+  };
+  DATA.messages.push(msg);
+  await dbPut('messages', msg);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_messages', msg);
+  if (typeof renderConversations === 'function') renderConversations();
+
+  if (typeof notifierTitre === 'function') {
+    notifierTitre('⚡ File d\'actions — Cockpit', {
+      body: actions.length + ' action(s) à traiter transmise(s) dans la messagerie interne.',
+      tag: 'ck-file-actions-' + today()
+    });
+  }
+  toast('📨 File d\'actions envoyée dans la messagerie interne (admin & DG).', 'success');
 }
 
 /* ── Moteur de règles ────────────────────────────────────────────────────── */
