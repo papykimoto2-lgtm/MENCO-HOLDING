@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.54 · 2026-07-31';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.55 · 2026-07-31';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -9269,6 +9269,18 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                   <span id="archi-zoom-pct" style="min-width:38px;text-align:center;">100%</span>
                   <button class="btn btn-secondary btn-sm btn-icon" style="padding:2px 7px;" title="Zoom avant" onclick="archiZoomBouton(1.2)">+</button>
                   <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px;" title="Ajuster à la fenêtre" onclick="archiZoomAjuster()">⤢ Ajuster</button>
+                </span>
+                <span style="display:flex;gap:4px;align-items:center;">
+                  <label style="font-size:10px;">Grille</label>
+                  <select id="archi-graduation" class="form-control" style="font-size:10px;padding:2px 4px;width:64px;" title="Espacement des lignes de grille, des graduations de règle, et de l'accrochage souris" onchange="archiSetGraduation(this.value)">
+                    <option value="0.1">0,1 m</option>
+                    <option value="0.25">0,25 m</option>
+                    <option value="0.5" selected>0,5 m</option>
+                    <option value="1">1 m</option>
+                    <option value="2">2 m</option>
+                    <option value="5">5 m</option>
+                    <option value="10">10 m</option>
+                  </select>
                 </span>
                 <span style="margin-left:auto;" id="archi-info-xy">x: — · y: —</span>
                 <span id="archi-info-nb">Éléments : 0</span>
@@ -94178,7 +94190,7 @@ function qrSvgTag(text){
     selected:   null,      // élément sélectionné
     drawing:    false,
     drawStart:  null,
-    snapGrid:   0.5,       // grille d'accrochage en mètres
+    snapGrid:   0.5,       // grille d'accrochage en mètres — pilotée par le même paramètre que la graduation affichée (cf. archiSetGraduation)
     canvas:     null,
     ctx:        null,
     scale:      5,         // px par mètre (recalculé à l'init)
@@ -94341,6 +94353,7 @@ function qrSvgTag(text){
     _archiBindEvents();
     _archiPopulateEquipSelect();
     _archiChargerParams();
+    _archiChargerGraduation();
     archiPopulerConceptions();
     archiSetMode('masse');
     archiRenderCouches();
@@ -94734,6 +94747,20 @@ function qrSvgTag(text){
   }
 
   /* Zoom centré sur un point écran (px) — garde le point sous le curseur fixe. */
+  window.archiSetGraduation = function(v) {
+    var g = parseFloat(v) || 0.5;
+    ED.snapGrid = g;
+    try { localStorage.setItem('archi_graduation', String(g)); } catch(e) {}
+    archiRedraw();
+  };
+  function _archiChargerGraduation() {
+    var g = 0.5;
+    try { var s = parseFloat(localStorage.getItem('archi_graduation')); if (!isNaN(s) && s > 0) g = s; } catch(e) {}
+    ED.snapGrid = g;
+    var sel = document.getElementById('archi-graduation');
+    if (sel) sel.value = String(g);
+  }
+
   function _archiZoomAt(factor, px, py) {
     var wx = (px - ED.offsetX) / ED.scale;
     var wy = (py - ED.offsetY) / ED.scale;
@@ -94817,7 +94844,11 @@ function qrSvgTag(text){
   };
 
   function _drawGrid(ctx, W, H) {
-    var step = ED.scale; // 1 mètre
+    var step = ED.scale * (ED.snapGrid || 1); // espacement paramétrable (Grille)
+    /* Sécurité : au-delà d'un certain dézoom, un pas trop fin produirait des
+       milliers de lignes sub-pixel (lag, grille illisible). On affiche alors
+       un multiple du pas réel — l'accrochage souris, lui, reste inchangé. */
+    while (step < 4 && step > 0) step *= 5;
     ctx.save();
     ctx.strokeStyle = 'rgba(0,0,0,0.06)';
     ctx.lineWidth = 0.5;
@@ -95396,21 +95427,24 @@ function qrSvgTag(text){
     ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(ED.offsetX - 2, 0); ctx.lineTo(ED.offsetX - 2, H); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(0, ED.offsetY - 2); ctx.lineTo(W, ED.offsetY - 2); ctx.stroke();
-    /* Graduations */
-    var step = ED.scale;
+    /* Graduations — espacement paramétrable (Grille), labels en mètres réels */
+    var gradPas = ED.snapGrid || 1;
+    var step = ED.scale * gradPas;
+    var multLabel = 1;
+    while (step < 4 && step > 0) { step *= 5; multLabel *= 5; } // même garde-fou que la grille
     ctx.fillStyle = '#6B7280';
     ctx.font = '9px sans-serif';
     ctx.textAlign = 'center';
     for (var xi = 0; xi * step + ED.offsetX < W; xi++) {
       var xp = xi * step + ED.offsetX;
       ctx.beginPath(); ctx.moveTo(xp, ED.offsetY - 8); ctx.lineTo(xp, ED.offsetY - 2); ctx.stroke();
-      if (xi % 5 === 0) ctx.fillText(xi, xp, ED.offsetY - 10);
+      if (xi % 5 === 0) ctx.fillText((Math.round(xi * gradPas * multLabel * 100) / 100), xp, ED.offsetY - 10);
     }
     ctx.textAlign = 'right';
     for (var yi = 0; yi * step + ED.offsetY < H; yi++) {
       var yp = yi * step + ED.offsetY;
       ctx.beginPath(); ctx.moveTo(ED.offsetX - 8, yp); ctx.lineTo(ED.offsetX - 2, yp); ctx.stroke();
-      if (yi % 5 === 0) ctx.fillText(yi, ED.offsetX - 10, yp + 3);
+      if (yi % 5 === 0) ctx.fillText((Math.round(yi * gradPas * multLabel * 100) / 100), ED.offsetX - 10, yp + 3);
     }
     ctx.restore();
   }
