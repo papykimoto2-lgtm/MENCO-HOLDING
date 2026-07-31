@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.45 · 2026-07-30';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.52 · 2026-07-31';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -9163,6 +9163,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                   <button class="archi-tool-btn" data-tool="placard" onclick="archiSetTool('placard')">🚪 Placard / Rangement</button>
                   <button class="archi-tool-btn" data-tool="balcon" onclick="archiSetTool('balcon')">🏞️ Balcon / Terrasse</button>
                   <button class="archi-tool-btn" data-tool="colonne" onclick="archiSetTool('colonne')">▣ Poteau / Colonne (clic)</button>
+                  <button class="archi-tool-btn" data-tool="poutre" onclick="archiSetTool('poutre')">▭ Poutre / Chaînage (glisser)</button>
                 </div>
                 <hr style="border-color:var(--bord);margin:10px 0;">
                 <div style="font-size:10px;color:var(--dim);font-weight:700;margin-bottom:6px;">ÉQUIPEMENTS TECHNIQUES</div>
@@ -12219,6 +12220,8 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <button class="btn btn-secondary btn-sm" onclick="printPreviewDQE()" title="Aperçu avant impression du DQE">👁 Aperçu DQE</button>
           <button class="btn btn-secondary btn-sm" onclick="dqeListePlans()" title="Tous les DQE générés depuis l'éditeur de plan">📐 DQE issus des plans</button>
           <button class="btn btn-secondary btn-sm" onclick="structOuvrir()" title="Fondations et structure : le DQE du plan ne couvre que les finitions">🏗️ Structure &amp; fondations</button>
+          <button class="btn btn-secondary btn-sm" onclick="epOuvrir()" title="Électricité et plomberie, primaire et finitions, par niveau de standing">⚡🚿 Élec &amp; Plomberie</button>
+          <button class="btn btn-primary btn-sm" onclick="dqeOuvrirRevue()" title="Quels lots sont chiffrés, lesquels manquent, et ce qu'ils pèsent">🔍 Complétude</button>
           <button class="btn btn-secondary btn-sm" onclick="exportDQE()">⬇ Export CSV</button>
           <button class="btn btn-primary btn-sm" onclick="genererDQEPourProgramme()">⚡ Générer DQE</button>
         </div>
@@ -67837,15 +67840,34 @@ async function sauvegarderPosteNomenclature() {
     /* ── MODE MODIFICATION : mettre à jour l'entrée existante ── */
     var idx = DATA.nomenclatures.findIndex(function(n){ return n.id === editId; });
     if (idx === -1) { toast('Poste introuvable.','error'); return; }
-    var updated = Object.assign({}, DATA.nomenclatures[idx], {
+    var _avant = DATA.nomenclatures[idx];
+    var updated = Object.assign({}, _avant, {
       type_logement: type, poste: poste || 'Divers',
       materiau: materiau, unite: unite,
       quantite: quantite, prix_forfait: forfait, ouvrage_id: ouvrageId
     });
+    /* [FIX] Une ligne issue d'un plan ou du pré-dimensionnement conservait son
+       marqueur d'origine après modification. La régénération suivante la
+       supprimait donc avec les autres, effaçant l'ajustement sans le dire.
+       On marque désormais l'écart et on mémorise la valeur calculée : la
+       régénération préserve ces lignes et l'utilisateur peut comparer son
+       ajustement au métré d'origine. */
+    var _estGenere = _avant._genere_plan || _avant._genere_struct;
+    var _aChange = (parseFloat(_avant.quantite) || 0) !== (parseFloat(quantite) || 0)
+                || (parseFloat(_avant.prix_forfait) || 0) !== (parseFloat(forfait) || 0)
+                || String(_avant.materiau || '') !== String(materiau || '');
+    if (_estGenere && _aChange) {
+      updated._ajuste_manuel = true;
+      if (updated._quantite_calculee === undefined) updated._quantite_calculee = parseFloat(_avant.quantite) || 0;
+      updated._ajuste_le = new Date().toISOString();
+    }
+
     DATA.nomenclatures[idx] = updated;
     await dbPut('nomenclatures', updated);
     if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', updated);
-    toast('Poste modifié.','success');
+    toast('Poste modifié.' + (updated._ajuste_manuel
+      ? ' Ajustement conservé lors des prochaines régénérations (métré calculé : ' + fmtF(updated._quantite_calculee) + ').'
+      : ''), 'success');
   } else {
     /* ── MODE CRÉATION (ou copie d'un poste par défaut) ── */
     var entry = { id: uid(), type_logement: type, poste: poste || 'Divers',
@@ -87839,6 +87861,7 @@ function archiOuvrirDessin() {
       +   '<strong style="cursor:pointer;" onclick="archiChargerDessin(\'' + p.id + '\')">' + escHtml(p.ref || '(sans référence)') + '</strong>'
       +   '<span style="display:flex;align-items:center;gap:6px;flex-shrink:0;">'
       +     '<span style="font-size:11px;color:var(--blanc-dim);">v' + (p.version || 1) + ' · ' + escHtml(p.date || '') + '</span>'
+      +     '<button class="btn btn-secondary btn-sm btn-icon" title="Renommer / modifier les informations" onclick="archiRenommerPlan(\'' + p.id + '\')">✏️</button>'
       +     '<button class="btn btn-secondary btn-sm btn-icon" title="Ouvrir ce plan dans l\'éditeur" onclick="archiChargerDessin(\'' + p.id + '\')">📂</button>'
       +     '<button class="btn btn-danger btn-sm btn-icon" title="Supprimer ce plan" onclick="archiSupprimerPlan(\'' + p.id + '\')">🗑</button>'
       +   '</span>'
@@ -87918,7 +87941,17 @@ var STRUCT_HYP = {
   h_etage: 3.0,             /* m — hauteur sous plafond + retombée */
   h_semelle: 0.45,          /* m — épaisseur courante semelle isolée */
   h_radier: 0.35,           /* m — épaisseur radier général */
-  ep_dalle: 0.15,           /* m */
+  ep_dalle: 0.15,           /* m — dalle pleine d'étage */
+  /* Dallage sur terre-plein — décomposé en couches, chacune étant un poste
+     distinct au DQE et une tâche distincte au chantier. */
+  ep_dallage: 0.12,         /* m — dallage BA courant en habitation */
+  ep_remblai: 0.25,         /* m — tout-venant/latérite compactée */
+  ep_herisson: 0.15,        /* m — blocage pierre 40/70 */
+  ep_decapage: 0.20,        /* m — terre végétale à évacuer */
+  treillis_kg_m2: 2.6,      /* ST25 — 3.6 pour ST35 en cas de charges roulantes */
+  /* Chapes de ravoirage et de pente, préalables à la pose du carrelage. */
+  ep_chape: 0.05,           /* m — chape de ravoirage en pièce sèche */
+  ep_chape_pente: 0.07,     /* m — épaisseur moyenne en pièce humide (pente 1 %) */
   sect_poteau: 0.20 * 0.20, /* m² — 20×20 courant en villa */
   sect_poutre: 0.20 * 0.40, /* m² — 20×40 */
   sect_longrine: 0.20 * 0.30,
@@ -87950,7 +87983,7 @@ function structHypotheses() {
 
 /* Géométrie extraite du plan ouvert dans l'éditeur, ou saisie à la main. */
 function structGeometriePlan() {
-  var g = { emprise:0, pieces:0, niveaux:1, lineaire_murs:0, source:'saisie' };
+  var g = { emprise:0, pieces:0, niveaux:1, lineaire_murs:0, poteaux:0, lineaire_poutres:0, surface_pieces:0, surface_humide:0, source:'saisie' };
   try {
     if (typeof ED !== 'undefined' && ED.elements && ED.elements.length) {
       var pieces = ED.elements.filter(function(e){ return e.type === 'piece'; });
@@ -87964,7 +87997,36 @@ function structGeometriePlan() {
       g.niveaux = (ED.niveaux && ED.niveaux.length) ? ED.niveaux.length : 1;
       ED.elements.filter(function(e){ return e.type === 'mur' || e.type === 'cloison'; })
         .forEach(function(m){ g.lineaire_murs += parseFloat(m.longueur || m.l) || 0; });
+      /* [FIX] Les poteaux dessinés (outil « ▣ Poteau / Colonne ») étaient
+         ignorés : le module estimait leur nombre par une trame de 4 m. Un plan
+         où l'on a placé 18 poteaux se voyait chiffré sur 12 ou 25, sans que
+         rien ne le signale. On compte ceux du niveau de base — ils se
+         répètent à l'identique aux étages. */
+      var colonnes = ED.elements.filter(function(e){ return e.type === 'colonne'; });
+      var colNiv0 = colonnes.filter(function(c){ return (c.niv | 0) === 0; });
+      g.poteaux = (colNiv0.length ? colNiv0 : colonnes).length;
       g.source = 'plan';
+      /* Poutres dessinées : leur linéaire réel remplace l'estimation par le
+         périmètre. Une poutre de franchissement de 6 m ne se devine pas depuis
+         la longueur des murs. */
+      var poutres = ED.elements.filter(function(e){ return e.type === 'poutre'; });
+      g.lineaire_poutres = poutres.reduce(function(s,p){
+        var L = parseFloat(p.l) || 0, W = parseFloat(p.w) || 0;
+        return s + Math.max(L, W);   /* la plus grande dimension = la portée */
+      }, 0);
+      /* Surfaces réelles des pièces, distinguées sec / humide : la chape d'une
+         pièce sèche se tire de niveau, celle d'une pièce humide se tire EN
+         PENTE vers le siphon et reçoit une étanchéité sous carrelage. Deux
+         ouvrages différents, deux prix différents. */
+      var pcs = ED.elements.filter(function(e){ return e.type === 'piece'; });
+      g.surface_pieces = 0; g.surface_humide = 0;
+      pcs.forEach(function(p){
+        var s = (parseFloat(p.l)||0) * (parseFloat(p.w)||0);
+        g.surface_pieces += s;
+        var n = String(p.nom || p.label || '').toLowerCase()
+          .replace(/[éèê]/g,'e').replace(/[^a-z0-9 ]/g,' ');
+        if (/sdb|salle de bain|bain|douche|sde|\bwc\b|toilette|cuisine|buanderie|lingerie/.test(n)) g.surface_humide += s;
+      });
     }
   } catch(e) {}
   return g;
@@ -88027,10 +88089,20 @@ function structCalculer(geo, qadm, hyp) {
     volBetonTotal += volRadier; poidsAcierTotal += aRad;
 
   } else if (R.type_fondation === 'semelles') {
-    /* Nombre de poteaux estimé par trame de 4 m — trame courante en villa.
-       Une trame réelle se lit sur le plan de coffrage, pas sur l'architecture. */
-    var trame = 4;
-    var nbPoteaux = Math.max(4, Math.ceil(S / (trame * trame)) + 4);
+    /* Poteaux : ceux réellement dessinés font foi. À défaut, estimation par
+       trame de 4 m — trame courante en villa, mais une trame réelle se lit sur
+       le plan de coffrage, pas sur l'architecture. */
+    var nbPoteaux, trame = 4;
+    if (geo.poteaux > 0) {
+      nbPoteaux = geo.poteaux;
+      R.poteaux_source = 'plan';
+    } else {
+      nbPoteaux = Math.max(4, Math.ceil(S / (trame * trame)) + 4);
+      R.poteaux_source = 'estime';
+      R.warn.push('Aucun poteau n\'est dessiné sur le plan : leur nombre (' + nbPoteaux
+        + ') est estimé par une trame de 4 m. Placez-les avec l\'outil « ▣ Poteau / Colonne » '
+        + 'pour un métré conforme au plan de coffrage.');
+    }
     R.nb_poteaux = nbPoteaux;
     var surfUnit = surfSemelles / nbPoteaux;
     var cote = Math.max(0.8, Math.sqrt(surfUnit));   /* 80 cm minimum constructif */
@@ -88055,16 +88127,27 @@ function structCalculer(geo, qadm, hyp) {
 
   /* ── 4. Superstructure : poteaux, poutres, dalles ─────────────────────── */
   if (R.type_fondation !== 'profonde') {
-    var nbP = R.nb_poteaux || Math.max(4, Math.ceil(S / 16) + 4);
+    var nbP = R.nb_poteaux || (geo.poteaux > 0 ? geo.poteaux : Math.max(4, Math.ceil(S / 16) + 4));
+    if (!R.nb_poteaux) { R.nb_poteaux = nbP; R.poteaux_source = geo.poteaux > 0 ? 'plan' : 'estime'; }
     var hTot = N * hyp.h_etage;
-    var volPot = nbP * hyp.sect_poteau * hTot;
-    L('Structure', 'Béton poteaux', 'm³', volPot);
-    L('Structure', 'Coffrage poteaux', 'm²', nbP * 4 * 0.20 * hTot);
+    /* Les poteaux tracés dans l'éditeur mesurent 0,30 × 0,30 m. Quand ils
+       viennent du plan, on retient cette section plutôt que l'hypothèse
+       générique — sinon le volume de béton contredirait le dessin. */
+    var sectPot = (R.poteaux_source === 'plan') ? 0.30 * 0.30 : hyp.sect_poteau;
+    R.section_poteau = sectPot;
+    var volPot = nbP * sectPot * hTot;
+    var cotePot = Math.sqrt(sectPot);
+    L('Structure', 'Béton poteaux ' + Math.round(cotePot*100) + '×' + Math.round(cotePot*100) + ' cm (' + nbP + ' u)', 'm³', volPot);
+    L('Structure', 'Coffrage poteaux', 'm²', nbP * 4 * cotePot * hTot);
     var aPot = acier(volPot, hyp.ratio_poteau);
     L('Ferraillage', 'Acier HA poteaux (' + hyp.ratio_poteau + ' kg/m³)', 'kg', aPot);
     volBetonTotal += volPot; poidsAcierTotal += aPot;
 
-    var lgPoutres = (geo.lineaire_murs > 0 ? geo.lineaire_murs : Math.sqrt(S) * 4 * 1.6) * N;
+    /* Poutres dessinées prioritaires sur l'estimation par le périmètre. */
+    var lgPoutres = geo.lineaire_poutres > 0
+      ? geo.lineaire_poutres * N
+      : (geo.lineaire_murs > 0 ? geo.lineaire_murs : Math.sqrt(S) * 4 * 1.6) * N;
+    R.poutres_source = geo.lineaire_poutres > 0 ? 'plan' : 'estime';
     var volPou = lgPoutres * hyp.sect_poutre;
     L('Structure', 'Béton poutres / chaînages', 'm³', volPou);
     L('Structure', 'Coffrage poutres', 'm²', lgPoutres * (2 * 0.40 + 0.20));
@@ -88081,7 +88164,67 @@ function structCalculer(geo, qadm, hyp) {
       L('Ferraillage', 'Acier HA dalles (' + hyp.ratio_dalle + ' kg/m³)', 'kg', aDal);
       volBetonTotal += volDalle; poidsAcierTotal += aDal;
     }
-    L('Structure', 'Dallage sur terre-plein ép. 12 cm + treillis', 'm²', S);
+    /* [FIX] Le dallage n'était qu'une ligne en m² : son béton n'entrait NI dans
+       le volume total NI dans le ratio d'acier. Sur une villa de 120 m², cela
+       représentait 14,4 m³ omis sur 34 — soit 42 % du béton du projet absent
+       du chiffrage, à la baisse.
+       On le décompose désormais en couches réelles, chacune étant un poste de
+       DQE et une tâche de chantier distincte. */
+    var volDallage  = S * hyp.ep_dallage;
+    var volRemblai  = S * hyp.ep_remblai;
+    var volHerisson = S * hyp.ep_herisson;
+    var volDecapage = S * hyp.ep_decapage;
+    var poidsTreillis = S * hyp.treillis_kg_m2;
+
+    L('Dallage', 'Décapage terre végétale ép. ' + (hyp.ep_decapage*100) + ' cm + évacuation', 'm³', volDecapage);
+    L('Dallage', 'Remblai d\'apport compacté (tout-venant / latérite) ép. ' + (hyp.ep_remblai*100) + ' cm', 'm³', volRemblai);
+    L('Dallage', 'Hérisson pierre 40/70 ép. ' + (hyp.ep_herisson*100) + ' cm', 'm³', volHerisson);
+    /* Le film polyane est le poste que l'on oublie et qui coûte le plus cher à
+       rattraper : sans barrière anti-capillarité, les remontées d'humidité
+       décollent carrelages et peintures en saison des pluies. Sur les sols
+       sableux de la zone lagunaire, ce n'est pas une précaution mais une
+       nécessité. */
+    L('Dallage', 'Film polyane 200 µ (barrière anti-capillarité)', 'm²', S * 1.1);
+    L('Dallage', 'Dallage béton armé ép. ' + (hyp.ep_dallage*100) + ' cm', 'm³', volDallage);
+    L('Ferraillage', 'Treillis soudé ST25 pour dallage (' + hyp.treillis_kg_m2 + ' kg/m²)', 'kg', poidsTreillis);
+    /* [FIX] La chape n'était générée qu'au rez-de-chaussée et sur l'emprise
+       brute. Deux conséquences :
+       · sur un R+1, tout l'étage recevait son carrelage sans chape — or une
+         dalle pleine brute de décoffrage n'est ni assez plane ni assez propre
+         pour recevoir directement des carreaux ;
+       · les pièces humides étaient traitées comme les autres, alors qu'elles
+         demandent une chape EN PENTE vers le siphon et une étanchéité sous
+         carrelage.
+       On distingue désormais les deux, sur tous les niveaux. */
+    var surfSec, surfHum;
+    if (geo.surface_pieces > 0) {
+      /* Surfaces réelles des pièces : plus juste que l'emprise, qui inclut
+         l'épaisseur des murs. */
+      surfHum = geo.surface_humide * N;
+      surfSec = (geo.surface_pieces * N) - surfHum;
+    } else {
+      /* Sans plan : les pièces occupent ~88 % de l'emprise (déduction des
+         murs), dont environ 15 % en pièces humides pour un logement courant. */
+      var utile = S * 0.88 * N;
+      surfHum = utile * 0.15;
+      surfSec = utile - surfHum;
+    }
+    R.surface_chape_sec = Math.round(surfSec * 10) / 10;
+    R.surface_chape_hum = Math.round(surfHum * 10) / 10;
+
+    L('Chapes & sols', 'Chape de ravoirage ép. ' + (hyp.ep_chape*100) + ' cm, pièces sèches (support carrelage)', 'm²', surfSec);
+    if (surfHum > 0) {
+      L('Chapes & sols', 'Chape avec forme de pente, pièces humides (SDB, WC, cuisine)', 'm²', surfHum);
+      /* L'étanchéité sous carrelage distingue une salle d'eau qui tient d'une
+         salle d'eau qui fuit chez le voisin du dessous. En étage, son absence
+         se solde par une reprise complète du plancher. */
+      L('Chapes & sols', 'Étanchéité sous carrelage (SPEC) + bande d\'angle', 'm²', surfHum * 1.15);
+    }
+    /* Mortier sorti en volume pour que l'approvisionnement soit chiffrable. */
+    var volChape = surfSec * hyp.ep_chape + surfHum * hyp.ep_chape_pente;
+    L('Chapes & sols', 'Mortier de chape (dosage 350 kg/m³)', 'm³', volChape);
+
+    volBetonTotal += volDallage; poidsAcierTotal += poidsTreillis;
   }
 
   R.volume_beton = Math.round(volBetonTotal * 100) / 100;
@@ -88182,7 +88325,11 @@ function structRecalculer() {
 
   if (R.type_fondation === 'semelles') {
     h += '<div style="font-size:11.5px;color:var(--blanc-dim);margin-bottom:8px;line-height:1.7;">'
-      + 'Pré-dimensionnement : ' + R.nb_poteaux + ' points porteurs, semelles de <strong>' + R.cote_semelle + ' × ' + R.cote_semelle + ' m</strong>. '
+      + 'Pré-dimensionnement : <strong>' + R.nb_poteaux + ' poteaux</strong> '
+      + (R.poteaux_source === 'plan'
+          ? '<span style="color:var(--vert);">(comptés sur le plan)</span>'
+          : '<span style="color:#EF9F27;">(estimés par trame de 4 m — dessinez-les pour un métré exact)</span>')
+      + ', semelles de <strong>' + R.cote_semelle + ' × ' + R.cote_semelle + ' m</strong>. '
       + 'Les semelles occupent ' + R.taux_semelles + ' % de l\'emprise — au-delà de ' + Math.round(R.hyp.seuil_radier*100) + ' %, un radier devient plus économique.'
       + '</div>';
   }
@@ -88213,7 +88360,10 @@ async function structInjecterDQE() {
 
   /* Remplace uniquement les lignes structure déjà générées pour ce type :
      les finitions issues du plan et les saisies manuelles sont préservées. */
-  var anciennes = (DATA.nomenclatures||[]).filter(function(n){ return n.type_logement === type && n._genere_struct; });
+  /* Mêmes règles que pour le plan : un poste corrigé à la main survit au
+     recalcul, et n'est pas recréé en double. */
+  var anciennes = (DATA.nomenclatures||[]).filter(function(n){ return n.type_logement === type && n._genere_struct && !n._ajuste_manuel; });
+  var _ajustesStruct = (DATA.nomenclatures||[]).filter(function(n){ return n.type_logement === type && n._genere_struct && n._ajuste_manuel; });
   for (var i = 0; i < anciennes.length; i++) {
     await deleteRecord('nomenclatures', anciennes[i].id, { skipIntegrity:true });
   }
@@ -88221,6 +88371,7 @@ async function structInjecterDQE() {
   var le = new Date().toISOString();
   for (var j = 0; j < R.lignes.length; j++) {
     var l = R.lignes[j];
+    if (_ajustesStruct.some(function(a){ return String(a.materiau||'') === String(l.materiau||''); })) continue;
     var entry = {
       id: uid(), type_logement: type, poste: l.poste, materiau: l.materiau,
       unite: l.unite, quantite: l.quantite, prix_forfait: 0, ouvrage_id: '',
@@ -88572,6 +88723,43 @@ async function dqeSupprimerGenere(type, origine) {
 }
 
 /* Suppression d'un plan enregistré. */
+/* Modification des informations du plan sans le rouvrir. La géométrie ne se
+   modifie que dans l'éditeur — la toucher ici sans redessiner produirait un
+   métré incohérent avec le tracé. */
+async function archiRenommerPlan(id) {
+  var p = (DATA.plans_arch || []).find(function(x){ return x.id === id; });
+  if (!p) return;
+  var ref = prompt('Référence du plan :', p.ref || '');
+  if (ref === null) return;
+  ref = String(ref).trim();
+  if (!ref) { toast('Référence obligatoire.', 'error'); return; }
+  var desc = prompt('Description (facultative) :', p.description || '');
+  if (desc === null) desc = p.description || '';
+
+  var ancienneRef = p.ref;
+  p.ref = ref;
+  p.description = String(desc).trim();
+  await dbPut('plans_arch', p);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_plans_arch', p);
+
+  /* Répercuter la référence sur les DQE qui en découlent : sans cela, la
+     liste des DQE continuerait d'afficher l'ancien nom et le rapprochement
+     deviendrait impossible. La version n'est PAS incrémentée — renommer n'est
+     pas modifier le dessin, et faire croire à une nouvelle version marquerait
+     à tort tous les DQE comme périmés. */
+  var lies = (DATA.nomenclatures || []).filter(function(n){ return n._plan_id === id; });
+  for (var i = 0; i < lies.length; i++) {
+    lies[i]._plan_ref = ref;
+    await dbPut('nomenclatures', lies[i]);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', lies[i]);
+  }
+  if (window._archiPlanCourant && window._archiPlanCourant.id === id) window._archiPlanCourant = p;
+  if (typeof archiRedraw === 'function') archiRedraw();
+  toast('Plan renommé' + (ancienneRef && ancienneRef !== ref ? ' (« ' + ancienneRef + ' » → « ' + ref + ' »)' : '')
+    + (lies.length ? ' — ' + lies.length + ' poste(s) de DQE mis à jour.' : '.'), 'success');
+  archiOuvrirDessin();
+}
+
 async function archiSupprimerPlan(id) {
   var p = (DATA.plans_arch || []).find(function(x){ return x.id === id; });
   if (!p) return;
@@ -88606,13 +88794,717 @@ async function archiSupprimerPlan(id) {
   archiOuvrirDessin();
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   ÉLECTRICITÉ & PLOMBERIE — DQE PAR LOT ET PAR STANDING
+   ──────────────────────────────────────────────────────────────────────────
+   Ces deux corps d'état se chiffrent en DEUX TEMPS, séparés de plusieurs mois
+   sur le chantier, et confondre les deux fausse autant la trésorerie que le
+   coût :
+
+   · PRIMAIRE (gros œuvre) — ce qui est noyé dans la structure et les cloisons
+     avant enduit : gaines, fourreaux, boîtes d'encastrement, boucle de terre,
+     évacuations PVC, attentes d'alimentation. Se paie au moment du gros œuvre.
+     Ne dépend PRESQUE PAS du standing : on encastre la même gaine pour une
+     prise à 3 000 F ou à 25 000 F. Ce qui varie, c'est le NOMBRE de points.
+
+   · SECONDAIRE (finitions) — ce qui se pose une fois les murs finis :
+     appareillage, luminaires, tableau équipé, appareils sanitaires,
+     robinetterie. Se paie en fin de chantier. C'est ICI que le standing joue,
+     et fortement : d'un rapport 1 à 4 entre l'économique et le haut standing
+     sur l'appareillage et le sanitaire.
+
+   Conséquence pratique souvent négligée : le primaire doit être posé AVANT
+   que le standing soit arrêté commercialement. Sous-doter le primaire pour
+   économiser interdit ensuite de monter en gamme sans casser les cloisons.
+   Le module prévoit donc un primaire dimensionné sur le standing visé le plus
+   élevé lorsqu'on hésite, et le signale.
+
+   Les quantités sont établies par ratios par type de pièce, conformes à la
+   pratique ivoirienne du logement. Elles restent des quantités d'avant-projet :
+   le plan d'exécution électrique et le schéma de plomberie de l'ingénieur
+   fluides font foi.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Dotation par type de pièce. PL = point lumineux, PC = prise de courant.
+   « spe » = prises spécialisées (cuisson, four, machine à laver, climatiseur). */
+var EP_DOTATION = {
+  sejour:     { pl:2, pc:6, spe:0, tv:1, rj:1, eau:0, evac:0, sanitaire:[] },
+  chambre:    { pl:1, pc:4, spe:1, tv:1, rj:1, eau:0, evac:0, sanitaire:[] },
+  cuisine:    { pl:2, pc:6, spe:2, tv:0, rj:0, eau:1, evac:1, sanitaire:['evier'] },
+  sdb:        { pl:2, pc:1, spe:1, tv:0, rj:0, eau:3, evac:3, sanitaire:['wc','lavabo','douche'] },
+  wc:         { pl:1, pc:0, spe:0, tv:0, rj:0, eau:1, evac:1, sanitaire:['wc'] },
+  degagement: { pl:1, pc:1, spe:0, tv:0, rj:0, eau:0, evac:0, sanitaire:[] },
+  terrasse:   { pl:1, pc:1, spe:0, tv:0, rj:0, eau:1, evac:1, sanitaire:[] },
+  garage:     { pl:1, pc:2, spe:0, tv:0, rj:0, eau:0, evac:0, sanitaire:[] },
+  buanderie:  { pl:1, pc:2, spe:1, tv:0, rj:0, eau:1, evac:1, sanitaire:[] },
+  autre:      { pl:1, pc:2, spe:0, tv:0, rj:0, eau:0, evac:0, sanitaire:[] }
+};
+
+/* Reconnaissance du type à partir du libellé dessiné sur le plan. */
+function epTypePiece(nom) {
+  var n = String(nom || '').toLowerCase()
+    .replace(/[éèê]/g,'e').replace(/à/g,'a').replace(/[^a-z0-9 ]/g,' ');
+  if (/sejour|salon|living|sam|salle a manger/.test(n)) return 'sejour';
+  if (/chambre|suite|master/.test(n))                   return 'chambre';
+  if (/cuisine|kitchen/.test(n))                        return 'cuisine';
+  if (/sdb|salle de bain|bain|douche|sde/.test(n))      return 'sdb';
+  if (/\bwc\b|toilette|latrine/.test(n))                return 'wc';
+  if (/degagement|couloir|hall|entree|palier/.test(n))  return 'degagement';
+  if (/terrasse|balcon|veranda|loggia/.test(n))         return 'terrasse';
+  if (/garage|carport|parking/.test(n))                 return 'garage';
+  if (/buanderie|lingerie|cellier/.test(n))             return 'buanderie';
+  return 'autre';
+}
+
+/* Prix unitaires indicatifs par standing, en FCFA. Ce sont des ordres de
+   grandeur du marché ivoirien : ils servent à produire un chiffrage tant que
+   les ouvrages du déboursé sec ne sont pas renseignés, et sont remplacés par
+   ceux du catalogue dès qu'un ouvrage correspondant existe. */
+var EP_PRIX = {
+  /* Primaire — c'est le MÊME matériau quel que soit le standing : on encastre
+     la même gaine Ø20 pour une prise à 4 500 F ou à 18 000 F. L'écart se limite
+     à la qualité de pose et à la marque, soit 15 à 25 %.
+     La fosse septique fait exception, mais pour une autre raison : elle est
+     dimensionnée par le nombre d'occupants, pas par le standing. Un F4
+     économique loge autant de personnes qu'un F4 haut standing. */
+  gaine_icta:       { eco:1200,  moyen:1350,  haut:1500  },   /* ml posé encastré */
+  boite_encast:     { eco:1500,  moyen:1650,  haut:1850  },
+  boucle_terre:     { eco:4500,  moyen:4800,  haut:5300  },   /* ml */
+  fourreau_alim:    { eco:3500,  moyen:3800,  haut:4200  },   /* ml */
+  evac_pvc100:      { eco:6500,  moyen:7000,  haut:7800  },   /* ml Ø100 encastré */
+  evac_pvc40:       { eco:3200,  moyen:3500,  haut:3900  },   /* ml Ø40/50 */
+  alim_per:         { eco:3800,  moyen:4200,  haut:4700  },   /* ml EF/EC */
+  regard:           { eco:45000, moyen:50000, haut:56000 },
+  fosse:            { eco:450000,moyen:490000,haut:540000},
+
+  /* Secondaire — c'est ici que le standing pèse */
+  point_lumineux:   { eco:9000,  moyen:16000, haut:32000 },   /* DCL + inter + luminaire */
+  prise_2pt:        { eco:4500,  moyen:8000,  haut:18000 },
+  prise_spe:        { eco:7500,  moyen:12000, haut:24000 },
+  prise_tv:         { eco:6000,  moyen:11000, haut:22000 },
+  prise_rj45:       { eco:8000,  moyen:14000, haut:26000 },
+  tableau:          { eco:85000, moyen:165000,haut:380000},
+  wc:               { eco:65000, moyen:145000,haut:420000},
+  lavabo:           { eco:55000, moyen:135000,haut:390000},
+  douche:           { eco:75000, moyen:180000,haut:550000},
+  evier:            { eco:60000, moyen:130000,haut:340000},
+  chauffe_eau:      { eco:0,     moyen:145000,haut:320000},   /* absent en éco */
+  robinet_ext:      { eco:12000, moyen:18000, haut:30000 }
+};
+
+var EP_STANDINGS = {
+  eco:   { label:'Économique',    cle:'eco'   },
+  moyen: { label:'Moyen standing', cle:'moyen' },
+  haut:  { label:'Haut standing',  cle:'haut'  }
+};
+
+function epPrix(article, standing) {
+  var p = EP_PRIX[article];
+  return p ? (p[standing] || p.eco || 0) : 0;
+}
+
+/* Recense les pièces, depuis le plan ouvert ou depuis une saisie. */
+function epCollecterPieces() {
+  var out = [];
+  try {
+    if (typeof ED !== 'undefined' && ED.elements) {
+      ED.elements.filter(function(e){ return e.type === 'piece'; }).forEach(function(p){
+        out.push({ nom: p.nom || p.label || 'Pièce',
+                   type: epTypePiece(p.nom || p.label),
+                   surface: (parseFloat(p.l)||0) * (parseFloat(p.w)||0),
+                   niv: p.niv | 0 });
+      });
+    }
+  } catch(e) {}
+  return out;
+}
+
+function epCalculer(pieces, standing, opts) {
+  opts = opts || {};
+  var S = standing || 'eco';
+  var R = { standing:S, pieces:pieces, lignes:[], totalGO:0, totalFin:0, dotation:{} };
+  if (!pieces.length) { R.warn = 'Aucune pièce identifiée.'; return R; }
+
+  /* Cumul de la dotation */
+  var D = { pl:0, pc:0, spe:0, tv:0, rj:0, eau:0, evac:0 };
+  var sanit = { wc:0, lavabo:0, douche:0, evier:0 };
+  var surfTot = 0;
+  pieces.forEach(function(p){
+    var d = EP_DOTATION[p.type] || EP_DOTATION.autre;
+    /* Les grandes pièces reçoivent un point lumineux supplémentaire par
+       tranche de 18 m² au-delà de la première — un séjour de 40 m² ne
+       s'éclaire pas avec deux points. */
+    var bonus = p.surface > 18 ? Math.floor((p.surface - 18) / 18) : 0;
+    D.pl += d.pl + bonus;
+    D.pc += d.pc; D.spe += d.spe; D.tv += d.tv; D.rj += d.rj;
+    D.eau += d.eau; D.evac += d.evac;
+    (d.sanitaire||[]).forEach(function(a){ sanit[a] = (sanit[a]||0) + 1; });
+    surfTot += p.surface;
+  });
+  R.dotation = { points:D, sanitaires:sanit, surface:Math.round(surfTot*10)/10 };
+
+  var L = function(lot, phase, materiau, unite, qte, pu) {
+    if (!(qte > 0)) return;
+    var mt = Math.round(qte * pu);
+    R.lignes.push({ lot:lot, phase:phase, poste:(lot === 'elec' ? 'Électricité' : 'Plomberie') + (phase === 'go' ? ' — primaire' : ' — finitions'),
+                    materiau:materiau, unite:unite, quantite:Math.round(qte*100)/100, pu:pu, montant:mt });
+    if (phase === 'go') R.totalGO += mt; else R.totalFin += mt;
+  };
+
+  /* ── ÉLECTRICITÉ — primaire ───────────────────────────────────────────── */
+  var nbPts = D.pl + D.pc + D.spe + D.tv + D.rj;
+  /* Longueur de gaine : ~8 m par point en moyenne (aller tableau + boucles). */
+  L('elec','go','Gaine ICTA Ø20 encastrée, y/c saignées','ml', nbPts * 8, epPrix('gaine_icta',S));
+  L('elec','go','Boîte d\'encastrement / dérivation','u', nbPts, epPrix('boite_encast',S));
+  L('elec','go','Boucle de terre fond de fouille + piquet','ml', Math.max(12, Math.sqrt(surfTot) * 4), epPrix('boucle_terre',S));
+  L('elec','go','Fourreau d\'alimentation depuis coffret CIE','ml', opts.distance_cie || 20, epPrix('fourreau_alim',S));
+
+  /* ── ÉLECTRICITÉ — finitions ──────────────────────────────────────────── */
+  L('elec','fin','Point lumineux (DCL + interrupteur + luminaire)','u', D.pl, epPrix('point_lumineux',S));
+  L('elec','fin','Prise de courant 2P+T 16 A','u', D.pc, epPrix('prise_2pt',S));
+  L('elec','fin','Prise spécialisée (cuisson / clim / machine)','u', D.spe, epPrix('prise_spe',S));
+  if (S !== 'eco') {
+    L('elec','fin','Prise TV / antenne','u', D.tv, epPrix('prise_tv',S));
+    L('elec','fin','Prise RJ45 (données)','u', D.rj, epPrix('prise_rj45',S));
+  }
+  L('elec','fin','Tableau divisionnaire équipé (disj. + différentiel)','ens', 1, epPrix('tableau',S));
+
+  /* ── PLOMBERIE — primaire ─────────────────────────────────────────────── */
+  /* Évacuations : ~6 m de Ø100 par appareil raccordé à une chute, ~4 m de Ø40
+     par appareil pour les eaux usées. */
+  var nbApp = sanit.wc + sanit.lavabo + sanit.douche + sanit.evier;
+  L('plomb','go','Évacuation PVC Ø100 encastrée + chute','ml', sanit.wc * 6 + 8, epPrix('evac_pvc100',S));
+  L('plomb','go','Évacuation PVC Ø40/50 encastrée','ml', (nbApp - sanit.wc) * 4 + 4, epPrix('evac_pvc40',S));
+  L('plomb','go','Alimentation EF/EC en PER encastré','ml', D.eau * 7 + 10, epPrix('alim_per',S));
+  L('plomb','go','Regard de visite maçonné 40×40','u', Math.max(1, Math.ceil(nbApp / 4)), epPrix('regard',S));
+  if (opts.fosse !== false) {
+    L('plomb','go','Fosse septique + puisard (ou raccordement réseau)','ens', 1, epPrix('fosse',S));
+  }
+
+  /* ── PLOMBERIE — finitions ────────────────────────────────────────────── */
+  L('plomb','fin','WC complet (cuvette + réservoir + abattant)','u', sanit.wc, epPrix('wc',S));
+  L('plomb','fin','Lavabo / vasque + robinetterie + siphon','u', sanit.lavabo, epPrix('lavabo',S));
+  L('plomb','fin','Douche (receveur + colonne + robinetterie)','u', sanit.douche, epPrix('douche',S));
+  L('plomb','fin','Évier de cuisine + mitigeur','u', sanit.evier, epPrix('evier',S));
+  if (S !== 'eco') L('plomb','fin','Chauffe-eau électrique','u', Math.max(1, sanit.douche), epPrix('chauffe_eau',S));
+  L('plomb','fin','Robinet de puisage extérieur','u', 2, epPrix('robinet_ext',S));
+
+  R.total = R.totalGO + R.totalFin;
+  return R;
+}
+
+/* Interface. La comparaison des trois standings est affichée simultanément :
+   c'est la décision commerciale que le promoteur doit prendre, et elle se
+   prend en voyant l'écart, pas en recalculant trois fois. */
+function epOuvrir() {
+  var pieces = epCollecterPieces();
+  var host = document.getElementById('ep-pieces');
+  if (host) {
+    host.innerHTML = pieces.length
+      ? '<div style="font-size:11.5px;line-height:1.8;">📐 <strong>' + pieces.length + ' pièce(s)</strong> reprises du plan ouvert :<br>'
+        + pieces.map(function(p){ return escHtml(p.nom) + ' <span style="color:var(--blanc-dim);">(' + (EP_STANDINGS[p.type] ? '' : '') + p.type + ', ' + p.surface.toFixed(1) + ' m²)</span>'; }).join(' · ')
+        + '</div>'
+      : '<div style="font-size:11.5px;color:#EF9F27;line-height:1.7;">⚠️ Aucun plan ouvert dans l\'éditeur. '
+        + 'Ouvrez ou dessinez un plan pour que les pièces soient reconnues automatiquement, ou saisissez la composition ci-dessous.</div>';
+  }
+  if (!pieces.length) {
+    var man = document.getElementById('ep-manuel-bloc');
+    if (man) man.style.display = '';
+  }
+  epRecalculer();
+  openModal('modal-elec-plomb');
+}
+
+/* Composition saisie à la main quand aucun plan n'est ouvert. */
+function epPiecesManuelles() {
+  var g = function(id){ return parseInt((document.getElementById(id)||{}).value) || 0; };
+  var out = [];
+  var add = function(type, n, surf, prefixe){
+    for (var i = 0; i < n; i++) out.push({ nom: prefixe + (n > 1 ? ' ' + (i+1) : ''), type:type, surface:surf, niv:0 });
+  };
+  add('sejour',     g('ep-n-sejour'),   28, 'Séjour');
+  add('chambre',    g('ep-n-chambre'),  12, 'Chambre');
+  add('cuisine',    g('ep-n-cuisine'),  10, 'Cuisine');
+  add('sdb',        g('ep-n-sdb'),       5, 'SDB');
+  add('wc',         g('ep-n-wc'),        2, 'WC');
+  add('degagement', g('ep-n-deg'),       8, 'Dégagement');
+  add('terrasse',   g('ep-n-terrasse'), 12, 'Terrasse');
+  return out;
+}
+
+function epRecalculer() {
+  var pieces = epCollecterPieces();
+  if (!pieces.length) pieces = epPiecesManuelles();
+  var host = document.getElementById('ep-resultat');
+  if (!host) return;
+  if (!pieces.length) {
+    host.innerHTML = '<div style="text-align:center;padding:22px;color:var(--blanc-dim);font-size:12.5px;">Indiquez la composition du logement pour obtenir le chiffrage.</div>';
+    return;
+  }
+
+  var res = {};
+  ['eco','moyen','haut'].forEach(function(s){ res[s] = epCalculer(pieces, s); });
+  window._epDernier = res;
+  var ref = res.eco;
+
+  var h = '';
+  /* Dotation : le nombre de points, commun aux trois standings. */
+  var D = ref.dotation.points, SA = ref.dotation.sanitaires;
+  h += '<div class="card" style="padding:11px 13px;margin-bottom:12px;font-size:12px;line-height:1.9;">'
+    + '<strong>Dotation retenue</strong> — ' + pieces.length + ' pièce(s), ' + ref.dotation.surface + ' m²<br>'
+    + '⚡ ' + D.pl + ' point(s) lumineux · ' + D.pc + ' prise(s) · ' + D.spe + ' spécialisée(s)'
+    + (D.tv ? ' · ' + D.tv + ' TV · ' + D.rj + ' RJ45' : '') + '<br>'
+    + '🚿 ' + SA.wc + ' WC · ' + SA.lavabo + ' lavabo(s) · ' + SA.douche + ' douche(s) · ' + SA.evier + ' évier(s)'
+    + '</div>';
+
+  /* Comparaison des trois standings */
+  h += '<div class="table-wrap" style="margin-bottom:12px;"><table style="width:100%;font-size:12px;"><thead><tr>'
+    + '<th>Standing</th><th style="text-align:right;">Primaire (gros œuvre)</th>'
+    + '<th style="text-align:right;">Finitions (2nd œuvre)</th><th style="text-align:right;">Total</th>'
+    + '<th style="text-align:right;">/ m²</th></tr></thead><tbody>';
+  ['eco','moyen','haut'].forEach(function(s){
+    var r = res[s];
+    var pctFin = r.total > 0 ? Math.round(r.totalFin / r.total * 100) : 0;
+    h += '<tr' + (s === 'eco' ? '' : ' style="border-top:1px solid var(--bord2);"') + '>'
+      + '<td><strong>' + EP_STANDINGS[s].label + '</strong></td>'
+      + '<td style="text-align:right;">' + fmtF(r.totalGO) + '</td>'
+      + '<td style="text-align:right;">' + fmtF(r.totalFin) + '<br><span style="font-size:10px;color:var(--dim);">' + pctFin + ' % du total</span></td>'
+      + '<td style="text-align:right;font-weight:700;color:var(--or);">' + fmtF(r.total) + '</td>'
+      + '<td style="text-align:right;">' + fmtF(Math.round(r.total / (ref.dotation.surface || 1))) + '</td>'
+      + '</tr>';
+  });
+  h += '</tbody></table></div>';
+
+  /* Le constat qui décide : le primaire bouge peu, les finitions décident. */
+  var ecartGO = res.haut.totalGO - res.eco.totalGO;
+  var ecartFin = res.haut.totalFin - res.eco.totalFin;
+  h += '<div style="padding:10px 12px;background:rgba(184,115,51,.12);border-left:3px solid var(--or);border-radius:6px;font-size:12px;line-height:1.8;margin-bottom:12px;">'
+    + '<strong>Ce que le standing change réellement</strong><br>'
+    + 'Du économique au haut standing, le <strong>primaire</strong> ne varie que de ' + fmtF(ecartGO) + ' F ('
+    + (res.eco.totalGO > 0 ? Math.round(ecartGO / res.eco.totalGO * 100) : 0) + ' %), '
+    + 'tandis que les <strong>finitions</strong> augmentent de ' + fmtF(ecartFin) + ' F ('
+    + (res.eco.totalFin > 0 ? Math.round(ecartFin / res.eco.totalFin * 100) : 0) + ' %).<br>'
+    + '<span style="color:var(--blanc-dim);">Le primaire se pose avant que le standing soit arrêté commercialement. '
+    + 'Le sous-doter pour économiser interdit de monter en gamme sans casser les cloisons — pour un gain de '
+    + fmtF(ecartGO) + ' F seulement.</span>'
+    + '</div>';
+
+  /* Détail du standing sélectionné */
+  var sel = (document.getElementById('ep-standing')||{}).value || 'eco';
+  var r = res[sel];
+  h += '<div style="font-size:10.5px;font-weight:800;letter-spacing:1.6px;text-transform:uppercase;color:#8B5520;margin-bottom:6px;">'
+    + 'Détail — ' + EP_STANDINGS[sel].label + '</div>';
+  h += '<div class="table-wrap"><table style="width:100%;font-size:11.5px;"><thead><tr>'
+    + '<th>Phase</th><th>Ouvrage</th><th>U</th><th style="text-align:right;">Qté</th>'
+    + '<th style="text-align:right;">PU</th><th style="text-align:right;">Montant</th></tr></thead><tbody>';
+  ['go','fin'].forEach(function(ph){
+    r.lignes.filter(function(l){ return l.phase === ph; }).forEach(function(l){
+      h += '<tr><td style="white-space:nowrap;font-size:10.5px;color:var(--blanc-dim);">'
+        + (ph === 'go' ? '🧱 primaire' : '✨ finition') + '</td>'
+        + '<td>' + escHtml(l.materiau) + '</td><td>' + escHtml(l.unite) + '</td>'
+        + '<td style="text-align:right;">' + fmtF(l.quantite) + '</td>'
+        + '<td style="text-align:right;">' + fmtF(l.pu) + '</td>'
+        + '<td style="text-align:right;font-weight:600;">' + fmtF(l.montant) + '</td></tr>';
+    });
+  });
+  h += '</tbody></table></div>';
+
+  h += '<div style="font-size:11px;color:var(--blanc-dim);margin-top:10px;line-height:1.8;">'
+    + 'Prix unitaires indicatifs du marché ivoirien, servant tant que les ouvrages correspondants ne sont pas '
+    + 'renseignés au déboursé sec. Quantités établies par ratios par type de pièce : le plan d\'exécution '
+    + 'électrique et le schéma de plomberie de l\'ingénieur fluides font foi.'
+    + '</div>';
+
+  host.innerHTML = h;
+}
+
+async function epInjecterDQE() {
+  var res = window._epDernier;
+  var sel = (document.getElementById('ep-standing')||{}).value || 'eco';
+  var type = (document.getElementById('ep-type-logement')||{}).value || '';
+  if (!res || !res[sel]) { toast('Aucun chiffrage à injecter.', 'error'); return; }
+  if (!type) { toast('Indiquez le type de logement de destination.', 'error'); return; }
+  var r = res[sel];
+
+  var anciennes = (DATA.nomenclatures||[]).filter(function(n){
+    return n.type_logement === type && n._genere_fluides && !n._ajuste_manuel; });
+  var ajustes = (DATA.nomenclatures||[]).filter(function(n){
+    return n.type_logement === type && n._genere_fluides && n._ajuste_manuel; });
+  for (var i = 0; i < anciennes.length; i++) {
+    await deleteRecord('nomenclatures', anciennes[i].id, { skipIntegrity:true });
+  }
+
+  var le = new Date().toISOString();
+  var n = 0;
+  for (var j = 0; j < r.lignes.length; j++) {
+    var l = r.lignes[j];
+    if (ajustes.some(function(a){ return String(a.materiau||'') === String(l.materiau||''); })) continue;
+    var entry = {
+      id: uid(), type_logement: type, poste: l.poste, materiau: l.materiau,
+      unite: l.unite, quantite: l.quantite, prix_forfait: l.montant, ouvrage_id: '',
+      _genere_fluides: true, _genere_le: le,
+      _fluide_lot: l.lot, _fluide_phase: l.phase, _fluide_standing: sel,
+      _plan_id: (window._archiPlanCourant ? window._archiPlanCourant.id : ''),
+      _plan_ref: (window._archiPlanCourant ? (window._archiPlanCourant.ref || '') : '')
+    };
+    DATA.nomenclatures.push(entry);
+    await dbPut('nomenclatures', entry);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', entry);
+    n++;
+  }
+  closeModal('modal-elec-plomb');
+  if (typeof chargerNomenclature === 'function') chargerNomenclature();
+  toast(n + ' poste(s) électricité/plomberie injecté(s) — ' + EP_STANDINGS[sel].label + ' · '
+    + fmtF(r.total) + ' F (dont ' + fmtF(r.totalGO) + ' F au gros œuvre).', 'success');
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   NOMENCLATURE DES LOTS — ORDRE DE MARCHE EN AVANT
+   ──────────────────────────────────────────────────────────────────────────
+   Les lots sont rangés dans l'ordre où le chantier les exécute, et non par
+   famille technique. Ce n'est pas une commodité de lecture : la marche en
+   avant conditionne trois choses que le classement par métier fait perdre.
+
+   · L'ORDONNANCEMENT. Certains lots ne peuvent pas être inversés sans casser
+     ce qui précède. Enduire avant d'avoir couvert, c'est enduire sous la
+     pluie ; couler la chape avant les gaines encastrées, c'est repiquer le
+     dallage. La revue signale ces inversions.
+
+   · LA TRÉSORERIE. Les lots se paient dans cet ordre. Un promoteur qui sait
+     que 47 % du budget part avant le jalon « hors d'eau » ne monte pas le
+     même plan de financement que celui qui l'ignore.
+
+   · LE JALON HORS D'EAU / HORS D'AIR. C'est l'événement structurant d'un
+     chantier ivoirien : tant qu'il n'est pas atteint, la saison des pluies
+     peut tout arrêter. Après lui, le chantier devient prévisible. On le
+     matérialise explicitement dans la nomenclature.
+
+   Les poids budgétaires totalisent 100 % et valent pour une villa courante.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+var DQE_PHASES = [
+  { cle:'preparation', nom:'Préparation & terrassement', icone:'⛏️',
+    note:'Le chantier s\'installe et le terrain est mis à niveau.' },
+  { cle:'infrastructure', nom:'Infrastructure', icone:'🪨',
+    note:'Tout ce qui est sous le niveau du sol fini. Une reprise ultérieure suppose de démolir.' },
+  { cle:'superstructure', nom:'Superstructure', icone:'🏗️',
+    note:'L\'ossature et les murs montent. Les réservations doivent être prévues ici.' },
+  { cle:'closcouvert', nom:'Clos & couvert', icone:'🏠',
+    note:'Le bâtiment devient étanche à l\'eau et à l\'air. Jalon décisif avant les finitions.' },
+  { cle:'technique', nom:'Second œuvre technique', icone:'⚡',
+    note:'Réseaux encastrés puis enduits. Passer les enduits avant les gaines oblige à repiquer.' },
+  { cle:'finitions', nom:'Finitions', icone:'✨',
+    note:'Du support au revêtement, puis l\'appareillage. C\'est ici que le standing se décide.' },
+  { cle:'exterieurs', nom:'Extérieurs & réception', icone:'🚧',
+    note:'Aménagements de parcelle et livraison.' }
+];
+
+var DQE_LOTS = [
+  /* ── PHASE 1 — PRÉPARATION & TERRASSEMENT ─────────────────────────────── */
+  { cle:'installation', nom:'Installation de chantier', pct:2, icone:'🚛', phase:'preparation', rang:1,
+    motifs:[/installation de chantier|base vie|cl[ôo]ture de chantier|panneau de chantier|branchement provisoire|implantation/i],
+    source:'Saisie manuelle', action:null,
+    note:'Base vie, clôture provisoire, branchements d\'eau et d\'électricité, implantation par le géomètre.' },
+
+  { cle:'terrassement', nom:'Terrassements généraux', pct:2, icone:'⛏️', phase:'preparation', rang:2,
+    motifs:[/terrassement|fouille|d[ée]capage|remblai|d[ée]blai|nivellement/i],
+    source:'🏗️ Structure & fondations', action:'structOuvrir',
+    note:'Décapage, fouilles en rigole ou en puits, évacuation des terres.' },
+
+  /* ── PHASE 2 — INFRASTRUCTURE ─────────────────────────────────────────── */
+  { cle:'fondations', nom:'Fondations', pct:10, icone:'🪨', phase:'infrastructure', rang:3,
+    motifs:[/semelle|radier|longrine|b[ée]ton de propret[ée]|pieu|soubassement/i],
+    source:'🏗️ Structure & fondations', action:'structOuvrir',
+    note:'Le type dépend de la contrainte du sol : une étude géotechnique change ce poste du simple au triple.' },
+
+  { cle:'dallage', nom:'Dallage sur terre-plein', pct:6, icone:'🧱', phase:'infrastructure', rang:4,
+    motifs:[/dallage|h[ée]risson|polyane|treillis soud[ée]/i],
+    source:'🏗️ Structure & fondations', action:'structOuvrir',
+    note:'Remblai, hérisson, polyane et dallage armé. Le film polyane conditionne la tenue des revêtements.' },
+
+  /* ── PHASE 3 — SUPERSTRUCTURE ─────────────────────────────────────────── */
+  { cle:'structure', nom:'Structure béton armé', pct:14, icone:'🏗️', phase:'superstructure', rang:5,
+    motifs:[/poteau|poutre|cha[îi]nage|dalle pleine|linteau|escalier b[ée]ton/i],
+    source:'🏗️ Structure & fondations', action:'structOuvrir',
+    note:'Poteaux, poutres, chaînages et planchers. Dessinez-les pour un métré conforme au plan de coffrage.' },
+
+  { cle:'maconnerie', nom:'Maçonnerie d\'élévation', pct:11, icone:'🧱', phase:'superstructure', rang:6,
+    motifs:[/agglo|parpaing|brique|ma[çc]onnerie|[ée]l[ée]vation|mur en|cloison de/i],
+    source:'🧱 Maçonnerie & enduits', action:'macOuvrir',
+    note:'Agglos 15 ou 20, mortier de pose, appuis de baies. Le poste le plus souvent oublié après la structure.' },
+
+  /* ── PHASE 4 — CLOS & COUVERT ─────────────────────────────────────────── */
+  { cle:'couverture', nom:'Charpente & couverture', pct:9, icone:'🏠', phase:'closcouvert', rang:7,
+    motifs:[/charpente|couverture|t[ôo]le|tuile|fa[îi]tage|goutti[èe]re|descente ep|rive/i],
+    source:'🏠 Charpente & couverture', action:'couvOuvrir',
+    note:'Charpente, couverture, faîtage, rives, gouttières et descentes d\'eaux pluviales.' },
+
+  { cle:'etancheite', nom:'Étanchéité toiture-terrasse', pct:2, icone:'💧', phase:'closcouvert', rang:8,
+    motifs:[/[ée]tanch[ée]it[ée] (?!sous)|relev[ée]|forme de pente|bitum|asphalte/i],
+    source:'🏠 Charpente & couverture', action:'couvOuvrir',
+    note:'Terrasses, relevés et formes de pente. Sans elle, les infiltrations apparaissent la première saison.' },
+
+  { cle:'menuis_ext', nom:'Menuiseries extérieures', pct:5, icone:'🪟', phase:'closcouvert', rang:9,
+    motifs:[/baie|fen[êe]tre|porte ext[ée]rieure|menuiserie alu|volet|porte d.entr[ée]e/i],
+    source:'📐 Éditeur de plan', action:null,
+    note:'Baies et fenêtres alu, porte d\'entrée. Leur pose achève le clos et permet de sécuriser le chantier.' },
+
+  /* ── PHASE 5 — SECOND ŒUVRE TECHNIQUE ─────────────────────────────────── */
+  { cle:'elec_prim', nom:'Électricité — primaire', pct:2, icone:'⚡', phase:'technique', rang:10,
+    motifs:[/gaine icta|bo[îi]te d.encastrement|boucle de terre|fourreau d.alimentation/i],
+    source:'⚡🚿 Élec & Plomberie', action:'epOuvrir',
+    note:'Gaines et boîtes encastrées avant enduit. À doter au niveau du standing le plus élevé envisagé.' },
+
+  { cle:'plomb_prim', nom:'Plomberie — primaire', pct:3, icone:'🚿', phase:'technique', rang:11,
+    motifs:[/[ée]vacuation pvc|alimentation ef|alimentation.*per|regard de visite|fosse septique|chute/i],
+    source:'⚡🚿 Élec & Plomberie', action:'epOuvrir',
+    note:'Évacuations et alimentations encastrées, fosse septique. Impossible à reprendre après enduits.' },
+
+  { cle:'enduits', nom:'Enduits', pct:6, icone:'🪣', phase:'technique', rang:12,
+    motifs:[/enduit|gobetis|cr[ée]pi|ragr[ée]age/i],
+    source:'🧱 Maçonnerie & enduits', action:'macOuvrir',
+    note:'Intérieur et extérieur, en trois passes. Les façades doublent la surface à traiter.' },
+
+  /* ── PHASE 6 — FINITIONS ──────────────────────────────────────────────── */
+  { cle:'chapes', nom:'Chapes & étanchéité sous carrelage', pct:3, icone:'🪵', phase:'finitions', rang:13,
+    motifs:[/chape|ravoirage|forme de pente|spec|[ée]tanch[ée]it[ée] sous/i],
+    source:'🏗️ Structure & fondations', action:'structOuvrir',
+    note:'Support de pose du carrelage, à tous les niveaux. En pièce humide : chape en pente + étanchéité.' },
+
+  { cle:'revetements', nom:'Revêtements sol & mur', pct:6, icone:'🔲', phase:'finitions', rang:14,
+    motifs:[/carrelage|rev[êe]tement de sol|fa[ïi]ence|plinthe|seuil|granito/i],
+    source:'📐 Éditeur de plan', action:null,
+    note:'Carrelage, faïence, plinthes et seuils. Générés depuis les pièces dessinées.' },
+
+  { cle:'plafonds', nom:'Faux plafonds', pct:3, icone:'⬜', phase:'finitions', rang:15,
+    motifs:[/faux.?plafond|staff|placo|lambris|dalle min[ée]rale/i],
+    source:'🧱 Maçonnerie & enduits', action:'macOuvrir',
+    note:'Staff ou placo hydrofuge dans les pièces principales, lambris PVC ailleurs selon le standing.' },
+
+  { cle:'menuis_int', nom:'Menuiseries intérieures & serrurerie', pct:3, icone:'🚪', phase:'finitions', rang:16,
+    motifs:[/porte int[ée]rieure|menuiserie bois|placard|serrurerie|garde.?corps|quincaillerie/i],
+    source:'📐 Éditeur de plan', action:null,
+    note:'Portes intérieures, placards, serrurerie et garde-corps.' },
+
+  { cle:'elec_fin', nom:'Électricité — finitions', pct:3, icone:'💡', phase:'finitions', rang:17,
+    motifs:[/point lumineux|prise de courant|prise sp[ée]cialis|tableau divisionnaire|prise tv|prise rj45|luminaire/i],
+    source:'⚡🚿 Élec & Plomberie', action:'epOuvrir',
+    note:'Appareillage, luminaires et tableau équipé. C\'est ici que le standing pèse.' },
+
+  { cle:'plomb_fin', nom:'Plomberie — finitions', pct:3, icone:'🛁', phase:'finitions', rang:18,
+    motifs:[/wc complet|lavabo|douche \(|[ée]vier de cuisine|chauffe.?eau|robinet de puisage|robinetterie/i],
+    source:'⚡🚿 Élec & Plomberie', action:'epOuvrir',
+    note:'Appareils sanitaires et robinetterie. Rapport de 1 à 4 entre l\'économique et le haut standing.' },
+
+  { cle:'peinture', nom:'Peinture', pct:4, icone:'🎨', phase:'finitions', rang:19,
+    motifs:[/peinture|impression|badigeon|vernis|laque/i],
+    source:'📐 Éditeur de plan', action:null,
+    note:'Impression et finition, intérieur et extérieur.' },
+
+  /* ── PHASE 7 — EXTÉRIEURS & RÉCEPTION ─────────────────────────────────── */
+  { cle:'vrd', nom:'VRD parcellaire', pct:2, icone:'🚧', phase:'exterieurs', rang:20,
+    motifs:[/cl[ôo]ture|portail|all[ée]e|assainissement de parcelle|cour|pav[ée]|espace vert|raccordement/i],
+    source:'📐 Plan de masse', action:null,
+    note:'Clôture, portail, allées, assainissement de parcelle et raccordements. Systématiquement sous-estimé.' },
+
+  { cle:'reception', nom:'Nettoyage & réception', pct:1, icone:'🧹', phase:'exterieurs', rang:21,
+    motifs:[/nettoyage|repli|r[ée]ception|remise en [ée]tat|dossier des ouvrages/i],
+    source:'Saisie manuelle', action:null,
+    note:'Nettoyage de livraison, repli d\'installation, dossier des ouvrages exécutés.' }
+];
+
+/* Jalon inséré après le clos & couvert : il ne porte aucun coût mais structure
+   le planning et le financement. */
+var DQE_JALON_HORSDEAU = { apresPhase:'closcouvert',
+  titre:'🌧️ HORS D\'EAU / HORS D\'AIR',
+  note:'À ce stade le bâtiment est protégé : les finitions peuvent démarrer sans risque d\'intempérie. '
+     + 'Tant que ce jalon n\'est pas atteint, une saison des pluies peut suspendre le chantier.' };
+
+
+/* Contrôle de cohérence : les poids doivent totaliser 100 %, faute de quoi le
+   pourcentage « couvert » et l'extrapolation du budget seraient tous deux
+   faux. Vérifié au premier appel plutôt qu'à la relecture du tableau. */
+(function(){
+  var s = DQE_LOTS.reduce(function(a,l){ return a + (l.pct||0); }, 0);
+  if (s !== 100) try { console.warn('[DQE] Somme des poids de lots = ' + s + ' % (attendu 100).'); } catch(e){}
+})();
+
+function dqeRevueCompletude(type) {
+  var L = (DATA.nomenclatures || []).filter(function(n){ return n.type_logement === type; });
+  var res = { type:type, total:L.length, lots:[], couverts:0, pctCouvert:0, pctManquant:0 };
+  if (!L.length) { res.vide = true; return res; }
+
+  DQE_LOTS.forEach(function(lot){
+    var lignes = L.filter(function(n){
+      var txt = String(n.poste || '') + ' ' + String(n.materiau || '');
+      return lot.motifs.some(function(re){ return re.test(txt); });
+    });
+    var montant = lignes.reduce(function(s,n){
+      var pu = (typeof dqeLignePU === 'function') ? dqeLignePU(n) : 0;
+      return s + (parseFloat(n.quantite)||0) * pu + (parseFloat(n.prix_forfait)||0);
+    }, 0);
+    res.lots.push(Object.assign({}, lot, { lignes:lignes.length, montant:Math.round(montant), couvert:lignes.length > 0 }));
+    if (lignes.length) { res.couverts++; res.pctCouvert += lot.pct; }
+    else res.pctManquant += lot.pct;
+  });
+
+  /* Lignes n'entrant dans aucun lot : signe d'un poste hors nomenclature
+     standard, ou d'un libellé qui ne permet pas de le rattacher. */
+  res.orphelines = L.filter(function(n){
+    var txt = String(n.poste || '') + ' ' + String(n.materiau || '');
+    return !DQE_LOTS.some(function(lot){ return lot.motifs.some(function(re){ return re.test(txt); }); });
+  });
+  return res;
+}
+
+function dqeOuvrirRevue() {
+  var sel = document.getElementById('rev-type');
+  if (sel) {
+    var types = [];
+    (DATA.nomenclatures || []).forEach(function(n){
+      if (n.type_logement && types.indexOf(n.type_logement) === -1) types.push(n.type_logement);
+    });
+    var actuel = sel.value;
+    sel.innerHTML = types.sort().map(function(t){ return '<option value="' + escHtml(t) + '">' + escHtml(t) + '</option>'; }).join('');
+    if (actuel && types.indexOf(actuel) !== -1) sel.value = actuel;
+  }
+  dqeRendreRevue();
+  openModal('modal-dqe-revue');
+}
+
+function dqeRendreRevue() {
+  var host = document.getElementById('rev-contenu');
+  if (!host) return;
+  var type = (document.getElementById('rev-type') || {}).value || '';
+  if (!type) {
+    host.innerHTML = '<div style="text-align:center;padding:26px;color:var(--blanc-dim);">Aucun type de logement chiffré. Générez d\'abord un DQE.</div>';
+    return;
+  }
+  var R = dqeRevueCompletude(type);
+  if (R.vide) {
+    host.innerHTML = '<div style="text-align:center;padding:26px;color:var(--blanc-dim);">Aucune ligne pour ce type.</div>';
+    return;
+  }
+
+  var totalChiffre = R.lots.reduce(function(s,l){ return s + l.montant; }, 0);
+  var estimTotal = R.pctCouvert > 0 ? Math.round(totalChiffre / (R.pctCouvert/100)) : 0;
+  var estimManque = Math.max(0, estimTotal - totalChiffre);
+
+  /* Inversions de la marche en avant : un lot chiffré alors qu'un lot qui doit
+     le PRÉCÉDER ne l'est pas. Ce n'est pas une faute de saisie, c'est un risque
+     d'exécution — enduire avant d'avoir couvert, carreler avant d'avoir passé
+     les gaines. On ne signale que les inversions qui ont une conséquence
+     physique, pas tous les trous de séquence. */
+  var INVERSIONS = [
+    { apres:'enduits',     avant:'couverture',  msg:'Enduits chiffrés sans charpente-couverture : enduire un bâtiment non couvert expose l\'ouvrage aux intempéries.' },
+    { apres:'enduits',     avant:'elec_prim',   msg:'Enduits chiffrés sans électricité primaire : les gaines doivent être encastrées AVANT enduit, sinon il faut repiquer.' },
+    { apres:'enduits',     avant:'plomb_prim',  msg:'Enduits chiffrés sans plomberie primaire : les évacuations encastrées ne se reprennent pas après enduit.' },
+    { apres:'chapes',      avant:'plomb_prim',  msg:'Chapes chiffrées sans plomberie primaire : les évacuations passent sous la chape.' },
+    { apres:'revetements', avant:'chapes',      msg:'Revêtements chiffrés sans chape : le carrelage ne se pose pas sur une dalle brute de décoffrage.' },
+    { apres:'peinture',    avant:'enduits',     msg:'Peinture chiffrée sans enduits : il n\'y a pas de support à peindre.' },
+    { apres:'structure',   avant:'fondations',  msg:'Structure chiffrée sans fondations : l\'ossature repose sur elles.' },
+    { apres:'maconnerie',  avant:'structure',   msg:'Maçonnerie chiffrée sans structure béton : les murs se remplissent entre poteaux et poutres.' }
+  ];
+  var estCouvert = {};
+  R.lots.forEach(function(l){ estCouvert[l.cle] = l.couvert; });
+  var alertes = INVERSIONS.filter(function(x){ return estCouvert[x.apres] && !estCouvert[x.avant]; });
+
+  var h = '';
+  h += '<div class="kpi-grid" style="margin-bottom:14px;">'
+    + '<div class="kpi-card" data-icon="📋"><div class="kpi-label">Lots couverts</div><div class="kpi-value or" style="font-size:17px;">' + R.couverts + ' / ' + R.lots.length + '</div><div class="kpi-delta">' + R.total + ' ligne(s)</div></div>'
+    + '<div class="kpi-card ' + (R.pctManquant > 25 ? 'kpi-red' : (R.pctManquant > 10 ? '' : 'kpi-green')) + '" data-icon="⚖️"><div class="kpi-label">Poids couvert</div><div class="kpi-value or" style="font-size:17px;">' + R.pctCouvert + ' %</div><div class="kpi-delta ' + (R.pctManquant > 10 ? 'negative' : 'positive') + '">' + R.pctManquant + ' % non chiffrés</div></div>'
+    + '<div class="kpi-card" data-icon="💰"><div class="kpi-label">Chiffré</div><div class="kpi-value or" style="font-size:17px;">' + fmtF(totalChiffre) + ' F</div><div class="kpi-delta">par unité</div></div>'
+    + (estimManque > 0
+        ? '<div class="kpi-card kpi-red" data-icon="❓"><div class="kpi-label">Manque estimé</div><div class="kpi-value or" style="font-size:17px;">' + fmtF(estimManque) + ' F</div><div class="kpi-delta negative">ordre de grandeur</div></div>'
+        : '<div class="kpi-card kpi-green" data-icon="✅"><div class="kpi-label">Complétude</div><div class="kpi-value or" style="font-size:17px;">Complet</div><div class="kpi-delta positive">tous lots couverts</div></div>')
+    + '</div>';
+
+  if (alertes.length) {
+    h += '<div style="padding:11px 13px;background:rgba(224,82,82,.10);border-left:3px solid var(--rouge);border-radius:6px;font-size:12px;line-height:1.8;margin-bottom:14px;">'
+      + '<strong>⚠️ ' + alertes.length + ' inversion(s) dans l\'ordre d\'exécution</strong><br>'
+      + alertes.map(function(a){ return '· ' + escHtml(a.msg); }).join('<br>')
+      + '</div>';
+  }
+  if (estimManque > 0) {
+    h += '<div style="padding:11px 13px;background:rgba(239,159,39,.12);border-left:3px solid #EF9F27;border-radius:6px;font-size:12px;line-height:1.8;margin-bottom:14px;">'
+      + '<strong>Le coût de revient est incomplet de ' + R.pctManquant + ' % environ.</strong> '
+      + 'Fixer un prix de vente sur ce chiffrage surévalue la marge d\'à peu près ' + fmtF(estimManque) + ' F par unité.'
+      + '</div>';
+  }
+
+  /* Rendu par phase, dans l'ordre de la marche en avant. */
+  var cumulPct = 0;
+  DQE_PHASES.forEach(function(ph){
+    var lot = R.lots.filter(function(l){ return l.phase === ph.cle; })
+                    .sort(function(a,b){ return (a.rang||0) - (b.rang||0); });
+    if (!lot.length) return;
+    var pctPh = lot.reduce(function(s,l){ return s + l.pct; }, 0);
+    var okPh = lot.filter(function(l){ return l.couvert; }).length;
+    cumulPct += pctPh;
+
+    h += '<div style="display:flex;justify-content:space-between;align-items:baseline;margin:14px 0 6px;">'
+      + '<span style="font-size:11px;font-weight:800;letter-spacing:1.6px;text-transform:uppercase;color:#8B5520;">'
+      +   ph.icone + ' ' + escHtml(ph.nom) + '</span>'
+      + '<span style="font-size:10.5px;color:var(--blanc-dim);">' + okPh + '/' + lot.length + ' lots · ' + pctPh + ' % du budget · cumul ' + cumulPct + ' %</span>'
+      + '</div>'
+      + '<div style="font-size:10.5px;color:var(--blanc-dim);margin-bottom:6px;line-height:1.6;">' + escHtml(ph.note) + '</div>';
+
+    h += '<div class="table-wrap"><table style="width:100%;font-size:12px;"><tbody>';
+    lot.forEach(function(l){
+      var col = l.couvert ? 'var(--vert)' : (l.pct >= 8 ? 'var(--rouge)' : '#EF9F27');
+      h += '<tr style="border-left:3px solid ' + col + ';">'
+        + '<td style="width:26px;">' + (l.couvert ? '✅' : '⚪') + '</td>'
+        + '<td style="width:30px;color:var(--blanc-dim);font-size:10.5px;">' + l.rang + '</td>'
+        + '<td><strong>' + l.icone + ' ' + escHtml(l.nom) + '</strong>'
+        + (l.couvert ? '' : '<br><span style="font-size:10.5px;color:var(--blanc-dim);line-height:1.5;">' + escHtml(l.note) + '</span>') + '</td>'
+        + '<td style="text-align:right;width:60px;color:' + (l.couvert ? 'var(--blanc-dim)' : col) + ';font-weight:' + (l.couvert ? '400' : '700') + ';">' + l.pct + ' %</td>'
+        + '<td style="text-align:right;width:80px;">' + (l.lignes || '—') + '</td>'
+        + '<td style="text-align:right;width:110px;">' + (l.montant ? fmtF(l.montant) : '—') + '</td>'
+        + '<td style="width:150px;font-size:11px;">'
+        + (l.couvert ? '<span style="color:var(--blanc-dim);">' + escHtml(l.source) + '</span>'
+           : (l.action
+              ? '<button class="btn btn-secondary btn-sm" onclick="closeModal(\'modal-dqe-revue\');' + l.action + '()">' + escHtml(l.source) + '</button>'
+              : '<span style="color:var(--blanc-dim);">' + escHtml(l.source) + '</span>'))
+        + '</td></tr>';
+    });
+    h += '</tbody></table></div>';
+
+    /* Jalon hors d'eau, inséré après sa phase. */
+    if (DQE_JALON_HORSDEAU.apresPhase === ph.cle) {
+      h += '<div style="margin:12px 0;padding:11px 13px;background:linear-gradient(90deg,rgba(14,165,233,.15),rgba(14,165,233,.04));'
+        + 'border-left:4px solid #0EA5E9;border-radius:6px;font-size:12px;line-height:1.8;">'
+        + '<strong>' + DQE_JALON_HORSDEAU.titre + '</strong> — ' + cumulPct + ' % du budget engagé à ce stade<br>'
+        + '<span style="color:var(--blanc-dim);">' + escHtml(DQE_JALON_HORSDEAU.note) + '</span></div>';
+    }
+  });
+
+  if (R.orphelines.length) {
+    h += '<div style="margin-top:12px;padding:10px 12px;background:rgba(239,159,39,.12);border-left:3px solid #EF9F27;border-radius:6px;font-size:11.5px;line-height:1.7;">'
+      + '⚠️ <strong>' + R.orphelines.length + ' ligne(s) hors nomenclature</strong> : '
+      + escHtml(R.orphelines.slice(0,5).map(function(n){ return n.materiau || n.poste || '?'; }).join(', '))
+      + (R.orphelines.length > 5 ? ' …' : '')
+      + '<br><span style="color:var(--blanc-dim);">Poste hors séquence standard, ou libellé trop imprécis pour être classé. '
+      + 'Sans rattachement, ces lignes échappent aux contrôles d\'ordonnancement.</span></div>';
+  }
+
+  h += '<div style="font-size:10.5px;color:var(--blanc-dim);margin-top:12px;line-height:1.7;">'
+    + 'Lots présentés dans l\'ordre d\'exécution du chantier. Les poids budgétaires valent pour une villa courante '
+    + 'et servent à prioriser les manques, pas à les chiffrer.'
+    + '</div>';
+
+  host.innerHTML = h;
+}
+
+
+
 function dqeCollecterPlans() {
   var parType = {};
   (DATA.nomenclatures || []).forEach(function(n){
     var t = n.type_logement || '(sans type)';
-    parType[t] = parType[t] || { type:t, plan:[], manuel:[], le:'', surface:0, pieces:0, niveaux:0, planId:'', planRef:'', planVer:0 };
+    parType[t] = parType[t] || { type:t, plan:[], manuel:[], ajustes:[], le:'', surface:0, pieces:0, niveaux:0, planId:'', planRef:'', planVer:0 };
     if (n._genere_plan) {
       parType[t].plan.push(n);
+      if (n._ajuste_manuel) parType[t].ajustes.push(n);
       /* On retient la génération la plus récente : régénérer remplace les
          lignes du même type, donc toutes portent normalement la même date —
          mais un import ou une reprise partielle peut en laisser d'anciennes. */
@@ -88720,7 +89612,9 @@ function dqeListePlans() {
       + '<td>' + (d.le ? escHtml(d.le.slice(0,16).replace('T',' ')) : '—') + '</td>'
       + '<td style="text-align:right;">' + (d.surface ? d.surface.toFixed(1) + ' m²' : '—')
       + (d.pieces ? '<br><span style="font-size:10px;color:var(--dim);">' + d.pieces + ' pièce(s)</span>' : '') + '</td>'
-      + '<td style="text-align:right;">' + d.plan.length + '</td>'
+      + '<td style="text-align:right;">' + d.plan.length
+      + (d.ajustes.length ? '<br><span style="font-size:10px;color:var(--or);" title="Postes corrigés à la main : préservés lors des régénérations">✏️ ' + d.ajustes.length + ' ajusté(s)</span>' : '')
+      + '</td>'
       + '<td style="text-align:right;font-weight:600;">' + fmtF(d.coutPlan) + '</td>'
       + '<td style="text-align:right;color:' + (d.manuel.length ? 'var(--or)' : 'var(--blanc-dim)') + ';">'
       + (d.manuel.length ? d.manuel.length + ' poste(s)<br><span style="font-size:10px;">' + fmtF(d.coutManuel) + ' F</span>' : '—') + '</td>'
@@ -92717,6 +93611,10 @@ function qrSvgTag(text){
     placard:     { fill: 'rgba(120,53,15,0.18)',   stroke: '#78350F', label: '🚪 Placard / Rangement' },
     balcon:      { fill: 'rgba(6,182,212,0.15)',   stroke: '#0891B2', label: '🏞️ Balcon / Terrasse' },
     colonne:     { fill: 'rgba(75,85,99,0.9)',     stroke: '#1C1C2E', label: '▣ Poteau / Colonne' },
+    /* La poutre se dessine en surimpression du plan : remplissage translucide
+       et trait interrompu, pour qu'elle se lise sans masquer les cloisons
+       qu'elle franchit. */
+    poutre:      { fill: 'rgba(120,53,15,0.22)',  stroke: '#92400E', label: '▭ Poutre / Chaînage' },
     equipement:  { fill: 'rgba(224,82,82,0.35)',   stroke: '#E05252', label: '🔧 Équipement technique' }
   };
 
@@ -94545,7 +95443,11 @@ function qrSvgTag(text){
     var genEquip   = !!(document.getElementById('gen-nomen-equip') || {}).checked;
 
     /* Retire les anciennes lignes générées depuis un plan pour ce type — ne touche jamais aux lignes saisies à la main */
-    var anciennes = (DATA.nomenclatures || []).filter(function(n) { return n.type_logement === type && n._genere_plan; });
+    /* Les lignes ajustées à la main sont conservées : elles portent une
+       décision (métré corrigé sur site, quantité négociée) que le recalcul
+       n'a aucun moyen de retrouver. */
+    var anciennes = (DATA.nomenclatures || []).filter(function(n) { return n.type_logement === type && n._genere_plan && !n._ajuste_manuel; });
+    var _ajustesConserves = (DATA.nomenclatures || []).filter(function(n) { return n.type_logement === type && n._genere_plan && n._ajuste_manuel; });
     for (var i = 0; i < anciennes.length; i++) { await deleteRecord('nomenclatures', anciennes[i].id, { skipIntegrity: true }); }
 
     var lignes = [];
@@ -94646,6 +95548,10 @@ function qrSvgTag(text){
     var _genNiveaux = (ED.niveaux && ED.niveaux.length) ? ED.niveaux.length : 1;
 
     for (var j = 0; j < lignes.length; j++) {
+      /* Un poste déjà ajusté n'est pas recréé : sinon il apparaîtrait en double,
+         une fois avec la valeur calculée et une fois avec la valeur corrigée. */
+      var _dejaAjuste = _ajustesConserves.some(function(a){ return String(a.materiau||'') === String(lignes[j].materiau||''); });
+      if (_dejaAjuste) continue;
       var entry = Object.assign({
         id: uid(), type_logement: type, prix_forfait: 0, ouvrage_id: '', _genere_plan: true,
         _genere_le: _genLe,
@@ -94822,7 +95728,7 @@ function qrSvgTag(text){
     if (!box) return;
     var types = ED.mode === 'masse'
       ? ['batiment','voirie','espace_vert','parking','piscine','loge','cloture','portail','arbre','chateau_eau','groupe_elec','regard','poteau','reseau']
-      : ['piece','mur','cloison','porte','fenetre','escalier','placard','balcon','colonne','equipement'];
+      : ['piece','mur','cloison','porte','fenetre','escalier','placard','balcon','colonne','poutre','equipement'];
     box.innerHTML = types.map(function(t) {
       var c = COULEURS[t];
       return '<div style="display:flex;align-items:center;gap:6px;">'
@@ -102634,6 +103540,76 @@ goTo = function(page) {
     </div>
     <div class="modal-body"><div id="cbv-list" style="font-size:13px;"></div></div>
     <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('modal-caisse-docs')">Fermer</button></div>
+  </div>
+</div>
+
+<!-- Modal : électricité & plomberie par standing -->
+<div class="modal-overlay" id="modal-elec-plomb">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div>
+        <h3>⚡🚿 Électricité &amp; Plomberie — par standing</h3>
+        <div style="font-size:11px;color:var(--dim);">Primaire (gros œuvre) et finitions séparés. Le standing ne joue que sur les finitions.</div>
+      </div>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-elec-plomb')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="ep-pieces" style="margin-bottom:12px;padding:10px 12px;background:var(--card2);border:1px solid var(--bord);border-radius:8px;"></div>
+      <div id="ep-manuel-bloc" style="display:none;margin-bottom:12px;">
+        <div style="font-size:10.5px;font-weight:800;letter-spacing:1.4px;text-transform:uppercase;color:#8B5520;margin-bottom:6px;">Composition du logement</div>
+        <div class="form-grid">
+          <div class="form-group"><label>Séjour</label><input type="number" min="0" class="form-control" id="ep-n-sejour" value="1" oninput="epRecalculer()"></div>
+          <div class="form-group"><label>Chambres</label><input type="number" min="0" class="form-control" id="ep-n-chambre" value="3" oninput="epRecalculer()"></div>
+          <div class="form-group"><label>Cuisine</label><input type="number" min="0" class="form-control" id="ep-n-cuisine" value="1" oninput="epRecalculer()"></div>
+          <div class="form-group"><label>Salles de bain</label><input type="number" min="0" class="form-control" id="ep-n-sdb" value="2" oninput="epRecalculer()"></div>
+          <div class="form-group"><label>WC séparés</label><input type="number" min="0" class="form-control" id="ep-n-wc" value="1" oninput="epRecalculer()"></div>
+          <div class="form-group"><label>Dégagements</label><input type="number" min="0" class="form-control" id="ep-n-deg" value="1" oninput="epRecalculer()"></div>
+          <div class="form-group"><label>Terrasses / balcons</label><input type="number" min="0" class="form-control" id="ep-n-terrasse" value="1" oninput="epRecalculer()"></div>
+        </div>
+      </div>
+      <div class="form-grid" style="margin-bottom:12px;">
+        <div class="form-group">
+          <label>Standing à injecter</label>
+          <select class="form-control" id="ep-standing" onchange="epRecalculer()">
+            <option value="eco">Économique</option>
+            <option value="moyen">Moyen standing</option>
+            <option value="haut">Haut standing</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Type de logement (DQE)</label>
+          <input type="text" class="form-control" id="ep-type-logement" placeholder="Ex. Villa F4">
+        </div>
+      </div>
+      <div id="ep-resultat"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-elec-plomb')">Fermer</button>
+      <button class="btn btn-primary" onclick="epInjecterDQE()">↧ Injecter dans le DQE</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : revue de complétude du DQE -->
+<div class="modal-overlay" id="modal-dqe-revue">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div>
+        <h3>🔍 Revue de complétude du DQE</h3>
+        <div style="font-size:11px;color:var(--dim);">Ce qui est chiffré, ce qui manque, et ce que pèse chaque lot absent.</div>
+      </div>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-dqe-revue')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group" style="margin-bottom:12px;">
+        <label>Type de logement</label>
+        <select class="form-control" id="rev-type" onchange="dqeRendreRevue()"></select>
+      </div>
+      <div id="rev-contenu"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-dqe-revue')">Fermer</button>
+    </div>
   </div>
 </div>
 
