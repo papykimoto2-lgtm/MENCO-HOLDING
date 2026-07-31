@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.53 · 2026-07-31';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.54 · 2026-07-31';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -9264,6 +9264,12 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <!-- Barre d'info -->
               <div style="display:flex;gap:10px;align-items:center;font-size:11px;color:var(--dim);background:var(--card);border:1px solid var(--bord);border-radius:8px;padding:6px 12px;">
                 <span id="archi-info-tool">Outil : Sélection</span>
+                <span style="display:flex;gap:4px;align-items:center;" id="archi-zoom-bar">
+                  <button class="btn btn-secondary btn-sm btn-icon" style="padding:2px 7px;" title="Zoom arrière" onclick="archiZoomBouton(0.83)">−</button>
+                  <span id="archi-zoom-pct" style="min-width:38px;text-align:center;">100%</span>
+                  <button class="btn btn-secondary btn-sm btn-icon" style="padding:2px 7px;" title="Zoom avant" onclick="archiZoomBouton(1.2)">+</button>
+                  <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px;" title="Ajuster à la fenêtre" onclick="archiZoomAjuster()">⤢ Ajuster</button>
+                </span>
                 <span style="margin-left:auto;" id="archi-info-xy">x: — · y: —</span>
                 <span id="archi-info-nb">Éléments : 0</span>
                 <span id="archi-info-surf"></span>
@@ -94716,7 +94722,43 @@ function qrSvgTag(text){
       var ech = echEl ? parseInt(echEl.value) : 100;
       ED.scale = Math.min(ED.scale, 2000 / ech);
     }
+    ED._scaleFit = ED.scale;
+    _archiUpdateZoomPct();
   }
+
+  function _archiUpdateZoomPct() {
+    var pctEl = document.getElementById('archi-zoom-pct');
+    if (!pctEl) return;
+    var pct = ED._scaleFit ? Math.round((ED.scale / ED._scaleFit) * 100) : 100;
+    pctEl.textContent = pct + '%';
+  }
+
+  /* Zoom centré sur un point écran (px) — garde le point sous le curseur fixe. */
+  function _archiZoomAt(factor, px, py) {
+    var wx = (px - ED.offsetX) / ED.scale;
+    var wy = (py - ED.offsetY) / ED.scale;
+    var nouvelleEchelle = ED.scale * factor;
+    var borneMin = (ED._scaleFit || ED.scale) * 0.2;
+    var borneMax = (ED._scaleFit || ED.scale) * 8;
+    ED.scale = Math.max(borneMin, Math.min(borneMax, nouvelleEchelle));
+    ED.offsetX = px - wx * ED.scale;
+    ED.offsetY = py - wy * ED.scale;
+    _archiUpdateZoomPct();
+    archiRedraw();
+  }
+
+  /* Boutons +/− : zoom centré sur le centre du canvas visible. */
+  window.archiZoomBouton = function(factor) {
+    if (!ED.canvas) return;
+    _archiZoomAt(factor, ED.canvas.width / 2, ED.canvas.height / 2);
+  };
+
+  /* Revient à l'échelle qui fait tenir tout le terrain/logement dans la fenêtre. */
+  window.archiZoomAjuster = function() {
+    ED.offsetX = 40; ED.offsetY = 40;
+    _archiCalcScale();
+    archiRedraw();
+  };
 
   /* ════════════════════════════════
      DESSIN CANVAS
@@ -95381,6 +95423,12 @@ function qrSvgTag(text){
     c.addEventListener('mousedown',  _onDown);
     c.addEventListener('mousemove',  _onMove);
     c.addEventListener('mouseup',    _onUp);
+    c.addEventListener('wheel', function(e) {
+      if (ED.view === '3d') return; /* la molette 3D est gérée séparément sur son propre canvas */
+      e.preventDefault();
+      var r = c.getBoundingClientRect();
+      _archiZoomAt(e.deltaY < 0 ? 1.15 : 0.87, e.clientX - r.left, e.clientY - r.top);
+    }, { passive: false });
     c.addEventListener('touchstart', function(e){ e.preventDefault(); _onDown(_touchToMouse(e)); }, { passive: false });
     c.addEventListener('touchmove',  function(e){ e.preventDefault(); _onMove(_touchToMouse(e)); }, { passive: false });
     c.addEventListener('touchend',   function(e){ e.preventDefault(); _onUp(_touchToMouse(e)); },   { passive: false });
