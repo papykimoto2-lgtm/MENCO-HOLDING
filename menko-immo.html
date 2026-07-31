@@ -9077,6 +9077,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               </div>
               <button class="btn btn-secondary btn-sm" onclick="archiNouveauPlan()">🗋 Nouveau</button>
               <button class="btn btn-secondary btn-sm" onclick="archiOuvrirImport()" title="Importer un plan DXF, PDF ou image comme fond de plan">📥 Importer</button>
+              <button class="btn btn-secondary btn-sm" onclick="archiOuvrirParams()" title="Épaisseurs, hauteurs et dimensions par défaut de chaque outil">⚙️ Paramètres outils</button>
               <button class="btn btn-secondary btn-sm" onclick="archiUndo()">↩ Annuler</button>
               <button class="btn btn-primary btn-sm" onclick="archiExportPDF()">⬇ Export PDF</button>
             </div>
@@ -9153,8 +9154,9 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                 <div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;font-weight:700;color:var(--dim);margin-bottom:10px;">Outils — Plan intérieur</div>
                 <div style="display:flex;flex-direction:column;gap:6px;" id="archi-btns-interieur">
                   <button class="archi-tool-btn active" data-tool="select" onclick="archiSetTool('select')">🖱️ Sélection</button>
-                  <button class="archi-tool-btn" data-tool="mur" onclick="archiSetTool('mur')">▪ Mur porteur</button>
-                  <button class="archi-tool-btn" data-tool="cloison" onclick="archiSetTool('cloison')">│ Cloison</button>
+                  <button class="archi-tool-btn" data-tool="mur" onclick="archiSetTool('mur')" title="Clic à chaque point (oblique libre), double-clic pour terminer">▪ Mur porteur</button>
+                  <button class="archi-tool-btn" data-tool="mur_courbe" onclick="archiSetTool('mur_courbe')" title="3 clics : début, un point sur la courbe, fin">◠ Mur courbe</button>
+                  <button class="archi-tool-btn" data-tool="cloison" onclick="archiSetTool('cloison')" title="Clic à chaque point (oblique libre), double-clic pour terminer">│ Cloison</button>
                   <button class="archi-tool-btn" data-tool="porte" onclick="archiSetTool('porte')">🚪 Porte</button>
                   <button class="archi-tool-btn" data-tool="fenetre" onclick="archiSetTool('fenetre')">🪟 Fenêtre</button>
                   <button class="archi-tool-btn" data-tool="piece" onclick="archiSetTool('piece')">⬜ Pièce (zone)</button>
@@ -88285,7 +88287,7 @@ function structGeometriePlan() {
       g.emprise = base.reduce(function(s,p){ return s + (parseFloat(p.l)||0) * (parseFloat(p.w)||0); }, 0);
       g.pieces = pieces.length;
       g.niveaux = (ED.niveaux && ED.niveaux.length) ? ED.niveaux.length : 1;
-      ED.elements.filter(function(e){ return e.type === 'mur' || e.type === 'cloison'; })
+      ED.elements.filter(function(e){ return e.type === 'mur' || e.type === 'cloison' || e.type === 'mur_courbe'; })
         .forEach(function(m){ g.lineaire_murs += parseFloat(m.longueur || m.l) || 0; });
       /* [FIX] Les poteaux dessinés (outil « ▣ Poteau / Colonne ») étaient
          ignorés : le module estimait leur nombre par une trame de 4 m. Un plan
@@ -94191,6 +94193,7 @@ function qrSvgTag(text){
     parking:     { fill: 'rgba(184,115,51,0.20)',  stroke: '#B87333', label: '🅿️ Parking' },
     piece:       { fill: 'rgba(74,148,224,0.12)',  stroke: '#4A94E0', label: '⬜ Pièce' },
     mur:         { fill: '#374151',                stroke: '#1F2937', label: '▪ Mur porteur' },
+    mur_courbe:  { fill: '#374151',                stroke: '#1F2937', label: '◠ Mur courbe' },
     cloison:     { fill: '#6B7280',                stroke: '#4B5563', label: '│ Cloison' },
     porte:       { fill: 'rgba(184,115,51,0.5)',   stroke: '#B87333', label: '🚪 Porte' },
     fenetre:     { fill: 'rgba(147,197,253,0.6)',  stroke: '#60A5FA', label: '🪟 Fenêtre' },
@@ -94234,7 +94237,7 @@ function qrSvgTag(text){
 
   /* ── Outils de tracé linéaire ouvert (polyligne multi-points, clic à
      chaque point + double-clic pour terminer) : canalisation VRD + clôture ── */
-  var TRACE_OUVERT_TOOLS = ['reseau', 'cloture'];
+  var TRACE_OUVERT_TOOLS = ['reseau', 'cloture', 'mur', 'cloison'];
 
   /* ── Types de réseaux enterrés (regards / poteaux / canalisations) ──
      Couleur conventionnelle proche des standards VRD (bleu=eau, marron=
@@ -94323,6 +94326,7 @@ function qrSvgTag(text){
     _archiResizeCanvas();
     _archiBindEvents();
     _archiPopulateEquipSelect();
+    _archiChargerParams();
     archiPopulerConceptions();
     archiSetMode('masse');
     archiRenderCouches();
@@ -94426,13 +94430,15 @@ function qrSvgTag(text){
     ED.tool = tool;
     ED.drawing = false; ED.drawStart = null;
     ED.polyPoints = []; ED.polyCursor = null;  /* reset polygone lot */
+    ED._arcPoints = [];  /* reset mur courbe (3 clics) */
     document.querySelectorAll('.archi-tool-btn').forEach(function(b) {
       b.classList.toggle('active', b.dataset.tool === tool);
     });
     var labels = { select:'Sélection', batiment:'Bâtiment (cliquer-glisser)',
       voirie:'Voirie (cliquer-glisser)', espace_vert:'Espace vert',
       parking:'Parking', piece:'Pièce (cliquer-glisser)',
-      mur:'Mur porteur (cliquer-glisser)', cloison:'Cloison',
+      mur:'Mur porteur (clic à chaque point, dblclic pour finir)', cloison:'Cloison (clic à chaque point, dblclic pour finir)',
+      mur_courbe:'Mur courbe (3 clics : début, courbe, fin)',
       porte:'Porte (cliquer-glisser)', fenetre:'Fenêtre',
       escalier:'Escalier', cote:'Cotation (2 clics)', texte:'Texte (clic)',
       regard:'Regard VRD (clic)', poteau:'Poteau VRD (clic)',
@@ -95058,8 +95064,53 @@ function qrSvgTag(text){
       ctx.restore(); return;
     }
 
+    /* ── Mur / cloison oblique (tracé multi-points, épaisseur réelle) ── */
+    if ((el.type === 'mur' || el.type === 'cloison') && el.points && el.points.length >= 2) {
+      var epPx = (el.epaisseur || (el.type === 'mur' ? ED._epMur : ED._epCloison) || 0.2) * ED.scale;
+      ctx.beginPath();
+      ctx.moveTo(ED.offsetX + el.points[0].x * ED.scale, ED.offsetY + el.points[0].y * ED.scale);
+      for (var mp = 1; mp < el.points.length; mp++) {
+        ctx.lineTo(ED.offsetX + el.points[mp].x * ED.scale, ED.offsetY + el.points[mp].y * ED.scale);
+      }
+      ctx.strokeStyle = c.fill;
+      ctx.lineWidth = Math.max(epPx, 1);
+      ctx.lineJoin = 'miter';
+      ctx.lineCap = 'square';
+      ctx.stroke();
+      ctx.strokeStyle = selected ? '#2563EB' : c.stroke;
+      ctx.lineWidth = selected ? 2 : 1;
+      ctx.stroke();
+      if (el.label) {
+        var lcx = el.points.reduce(function(s,p){ return s+p.x; },0) / el.points.length;
+        var lcy = el.points.reduce(function(s,p){ return s+p.y; },0) / el.points.length;
+        ctx.fillStyle = '#1C1C2E';
+        ctx.font = '600 9px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(el.label, ED.offsetX + lcx * ED.scale, ED.offsetY + lcy * ED.scale);
+      }
+      ctx.restore(); return;
+    }
+
+    /* ── Mur courbe (arc épais, 3 points) ── */
+    if (el.type === 'mur_courbe' && el.cx != null) {
+      var epPxC = (el.epaisseur || ED._epMur || 0.2) * ED.scale;
+      var ocx = ED.offsetX + el.cx * ED.scale, ocy = ED.offsetY + el.cy * ED.scale;
+      var orC = el.r * ED.scale;
+      ctx.beginPath();
+      ctx.arc(ocx, ocy, orC + epPxC/2, el.a0, el.a1, el.sensInverse);
+      ctx.arc(ocx, ocy, Math.max(orC - epPxC/2, 0.5), el.a1, el.a0, !el.sensInverse);
+      ctx.closePath();
+      ctx.fillStyle = c.fill;
+      ctx.fill();
+      ctx.strokeStyle = selected ? '#2563EB' : c.stroke;
+      ctx.lineWidth = selected ? 2.5 : 1;
+      ctx.stroke();
+      ctx.restore(); return;
+    }
+
     if (el.type === 'mur' || el.type === 'cloison') {
-      /* Mur / cloison = rectangle plein épais */
+      /* Mur / cloison = rectangle plein épais (ancien tracé rectangle — conservé pour compatibilité) */
       ctx.fillStyle = c.fill;
       ctx.fillRect(x, y, w, h);
       ctx.strokeStyle = c.stroke;
@@ -95203,10 +95254,27 @@ function qrSvgTag(text){
   }
 
   function _drawPreview(ctx) {
-    /* Preview polygone lot (fermé) OU tracé de canalisation / clôture (ouvert) en cours */
+    /* Mur courbe — points déjà cliqués (0 à 2), avant validation du 3e */
+    if (ED.tool === 'mur_courbe' && ED._arcPoints && ED._arcPoints.length > 0) {
+      ctx.save();
+      ED._arcPoints.forEach(function(pt, idx) {
+        ctx.beginPath();
+        ctx.arc(ED.offsetX + pt.x * ED.scale, ED.offsetY + pt.y * ED.scale, idx === 1 ? 6 : 4, 0, Math.PI * 2);
+        ctx.fillStyle = idx === 1 ? '#F59E0B' : '#374151';
+        ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+      });
+      ctx.fillStyle = '#374151';
+      ctx.font = '700 10px sans-serif';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      var msgArc = ED._arcPoints.length === 1 ? '1 pt — cliquez un point SUR la courbe' : '2 pts — cliquez le point de fin';
+      ctx.fillText(msgArc, ED.offsetX + 4, ED.offsetY + 4);
+      ctx.restore();
+    }
+    /* Preview polygone lot (fermé) OU tracé de canalisation / clôture / mur / cloison (ouvert) en cours */
     if ((ED.tool === 'lot' || TRACE_OUVERT_TOOLS.indexOf(ED.tool) !== -1) && ED.polyPoints.length > 0) {
       var isLotPrev = ED.tool === 'lot';
-      var prevCol = isLotPrev ? '#F59E0B' : (ED.tool === 'cloture' ? '#57534E' : '#78350F');
+      var prevCol = isLotPrev ? '#F59E0B' : (ED.tool === 'cloture' ? '#57534E' : (ED.tool === 'mur' ? '#374151' : (ED.tool === 'cloison' ? '#6B7280' : '#78350F')));
       var pts = ED.polyPoints;
       var cur = ED.polyCursor;
       ctx.save();
@@ -95319,6 +95387,29 @@ function qrSvgTag(text){
 
   function _snap(v) { return Math.round(v / ED.snapGrid) * ED.snapGrid; }
 
+  /* Cercle passant par 3 points — utilisé par l'outil Mur courbe. Retourne
+     aussi la direction de balayage (sensInverse) qui fait passer l'arc par
+     le 2e point cliqué (le "bulge"), et l'angle balayé (span, en radians)
+     pour le calcul du linéaire (longueur = r × span). */
+  function _archiCercleDe3Pts(p1, p2, p3) {
+    var ax=p1.x, ay=p1.y, bx=p2.x, by=p2.y, cx=p3.x, cy=p3.y;
+    var d = 2 * (ax*(by-cy) + bx*(cy-ay) + cx*(ay-by));
+    if (Math.abs(d) < 1e-9) return null; // points alignés
+    var ux = ((ax*ax+ay*ay)*(by-cy) + (bx*bx+by*by)*(cy-ay) + (cx*cx+cy*cy)*(ay-by)) / d;
+    var uy = ((ax*ax+ay*ay)*(cx-bx) + (bx*bx+by*by)*(ax-cx) + (cx*cx+cy*cy)*(bx-ax)) / d;
+    var r = Math.hypot(ax-ux, ay-uy);
+    var a1 = Math.atan2(ay-uy, ax-ux);
+    var a2 = Math.atan2(by-uy, bx-ux);
+    var a3 = Math.atan2(cy-uy, cx-ux);
+    function norm(a){ a = a % (2*Math.PI); if (a < 0) a += 2*Math.PI; return a; }
+    var spanFwd = norm(a3 - a1);
+    var posP2 = norm(a2 - a1);
+    var passeParAvant = posP2 <= spanFwd + 1e-9;
+    var sensInverse = !passeParAvant;
+    var span = passeParAvant ? spanFwd : (2*Math.PI - spanFwd);
+    return { cx:ux, cy:uy, r:r, a0:a1, a1:a3, sensInverse:sensInverse, span:span };
+  }
+
   function _onDown(e) {
     var p = _canvasPos(e);
     var mx = _snap(p.mx), my = _snap(p.my);
@@ -95344,12 +95435,17 @@ function qrSvgTag(text){
           if (_pointInPoly(p.mx, p.my, el.points)) { hit = el; break; }
         } else if (el.type === 'regard' || el.type === 'poteau' || POINT_ICONS[el.type]) {
           if (Math.hypot(p.mx - el.x, p.my - el.y) <= 1.2) { hit = el; break; }
-        } else if ((el.type === 'reseau' || el.type === 'cloture') && el.points && el.points.length >= 2) {
+        } else if ((el.type === 'reseau' || el.type === 'cloture' || el.type === 'mur' || el.type === 'cloison') && el.points && el.points.length >= 2) {
+          var tolSel = (el.epaisseur || 0.8) / 2 + 0.3;
           var nearSel = false;
           for (var sk = 0; sk < el.points.length - 1; sk++) {
-            if (_distPtSeg(p.mx, p.my, el.points[sk], el.points[sk + 1]) <= 0.8) { nearSel = true; break; }
+            if (_distPtSeg(p.mx, p.my, el.points[sk], el.points[sk + 1]) <= tolSel) { nearSel = true; break; }
           }
           if (nearSel) { hit = el; break; }
+        } else if (el.type === 'mur_courbe' && el.cx != null) {
+          var dCentre = Math.hypot(p.mx - el.cx, p.my - el.cy);
+          var tolArc = (el.epaisseur || 0.2) / 2 + 0.3;
+          if (Math.abs(dCentre - el.r) <= tolArc) { hit = el; break; }
         } else {
           if (p.mx >= el.x && p.mx <= el.x + el.w && p.my >= el.y && p.my <= el.y + el.h) { hit = el; break; }
         }
@@ -95383,6 +95479,37 @@ function qrSvgTag(text){
         _archipush();
         ED.elements.push({ id: _id(), type: 'cote', niv: ED.nivActif, x: ED.drawStart.x, y: ED.drawStart.y, x2: mx, y2: my, w: 0, h: 0, label: '' });
         ED.drawing = false; ED.drawStart = null; ED._drawCurrent = null;
+        archiRedraw();
+      }
+      return;
+    }
+
+    /* Mur courbe — 3 clics : point de départ, point sur la courbe (bulge), point de fin */
+    if (ED.tool === 'mur_courbe') {
+      ED._arcPoints = ED._arcPoints || [];
+      ED._arcPoints.push({ x: mx, y: my });
+      if (ED._arcPoints.length === 3) {
+        var arcC = _archiCercleDe3Pts(ED._arcPoints[0], ED._arcPoints[1], ED._arcPoints[2]);
+        if (!arcC) {
+          toast('Les 3 points sont alignés — impossible de tracer une courbe. Recommencez.', 'error');
+        } else {
+          _archipush();
+          var xsA = ED._arcPoints.map(function(p){return p.x;}), ysA = ED._arcPoints.map(function(p){return p.y;});
+          ED.elements.push({
+            id: _id(), type: 'mur_courbe', niv: ED.nivActif,
+            cx: arcC.cx, cy: arcC.cy, r: arcC.r, a0: arcC.a0, a1: arcC.a1, sensInverse: arcC.sensInverse,
+            x: Math.min.apply(null, xsA), y: Math.min.apply(null, ysA),
+            w: Math.max.apply(null, xsA) - Math.min.apply(null, xsA),
+            h: Math.max.apply(null, ysA) - Math.min.apply(null, ysA),
+            epaisseur: ED._epMur, hauteur: H3D.mur,
+            longueur: Math.round(arcC.r * arcC.span * 100) / 100,
+            label: ''
+          });
+          archiRedraw();
+          _archiUpdateSurfKpis();
+        }
+        ED._arcPoints = [];
+      } else {
         archiRedraw();
       }
       return;
@@ -95498,6 +95625,75 @@ function qrSvgTag(text){
     }
   }
 
+  /* ── Paramétrage généralisé de tous les outils ───────────────────────────
+     Deux familles de valeurs par défaut, éditables et persistées :
+     - épaisseurs (mur/cloison) : appliquées à la dimension perpendiculaire
+       au tracé, quel que soit le sens du glisser-déposer.
+     - hauteurs (H3D) : hauteur 3D de chaque type d'élément, jusqu'ici figées
+       en dur ; désormais chargées depuis localStorage et modifiables. */
+  var ARCHI_PARAMS_KEY = 'archi_params_outils';
+  var ARCHI_EP_DEFAUT = { mur:0.2, cloison:0.1 };
+  var ARCHI_H3D_DEFAUT = { mur:2.8, cloison:2.5, porte:2.1, fenAllege:1.0, fenHaut:2.2,
+                            etage:3.0, escalier:2.8, lot:0.12, cloture:1.8, loge:2.6,
+                            chateau_eau:5.5, groupe_elec:1.6, portail:1.6, arbre:3.0, colonne:2.8 };
+
+  function _archiChargerParams() {
+    var saved = null;
+    try { saved = JSON.parse(localStorage.getItem(ARCHI_PARAMS_KEY) || 'null'); } catch(e) {}
+    var ep = (saved && saved.ep) || ARCHI_EP_DEFAUT;
+    var h3d = Object.assign({}, ARCHI_H3D_DEFAUT, (saved && saved.h3d) || {});
+    ED._epMur = ep.mur; ED._epCloison = ep.cloison;
+    Object.keys(h3d).forEach(function(k){ H3D[k] = h3d[k]; });
+  }
+
+  window.archiOuvrirParams = function() {
+    var el = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
+    el('ap-ep-mur', ED._epMur); el('ap-ep-cloison', ED._epCloison);
+    el('ap-h-mur', H3D.mur); el('ap-h-cloison', H3D.cloison); el('ap-h-porte', H3D.porte);
+    el('ap-h-fenAllege', H3D.fenAllege); el('ap-h-fenHaut', H3D.fenHaut);
+    el('ap-h-escalier', H3D.escalier); el('ap-h-colonne', H3D.colonne);
+    el('ap-h-etage', H3D.etage); el('ap-h-lot', H3D.lot); el('ap-h-cloture', H3D.cloture);
+    el('ap-h-loge', H3D.loge); el('ap-h-chateau_eau', H3D.chateau_eau);
+    el('ap-h-groupe_elec', H3D.groupe_elec); el('ap-h-portail', H3D.portail); el('ap-h-arbre', H3D.arbre);
+    openModal('modal-archi-params');
+  };
+
+  window.archiAppliquerParams = function() {
+    var g = function(id, def){ var v = parseFloat((document.getElementById(id)||{}).value); return isNaN(v) ? def : v; };
+    ED._epMur = g('ap-ep-mur', ED._epMur);
+    ED._epCloison = g('ap-ep-cloison', ED._epCloison);
+    H3D.mur = g('ap-h-mur', H3D.mur);
+    H3D.cloison = g('ap-h-cloison', H3D.cloison);
+    H3D.porte = g('ap-h-porte', H3D.porte);
+    H3D.fenAllege = g('ap-h-fenAllege', H3D.fenAllege);
+    H3D.fenHaut = g('ap-h-fenHaut', H3D.fenHaut);
+    H3D.escalier = g('ap-h-escalier', H3D.escalier);
+    H3D.colonne = g('ap-h-colonne', H3D.colonne);
+    H3D.etage = g('ap-h-etage', H3D.etage);
+    H3D.lot = g('ap-h-lot', H3D.lot);
+    H3D.cloture = g('ap-h-cloture', H3D.cloture);
+    H3D.loge = g('ap-h-loge', H3D.loge);
+    H3D.chateau_eau = g('ap-h-chateau_eau', H3D.chateau_eau);
+    H3D.groupe_elec = g('ap-h-groupe_elec', H3D.groupe_elec);
+    H3D.portail = g('ap-h-portail', H3D.portail);
+    H3D.arbre = g('ap-h-arbre', H3D.arbre);
+    try {
+      localStorage.setItem(ARCHI_PARAMS_KEY, JSON.stringify({
+        ep: { mur: ED._epMur, cloison: ED._epCloison },
+        h3d: H3D
+      }));
+    } catch(e) {}
+    closeModal('modal-archi-params');
+    if (typeof archiRedraw === 'function') archiRedraw();
+    if (typeof toast === 'function') toast('Paramètres des outils enregistrés.', 'success');
+  };
+
+  window.archiRestaurerParamsDefaut = function() {
+    var el = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
+    el('ap-ep-mur', ARCHI_EP_DEFAUT.mur); el('ap-ep-cloison', ARCHI_EP_DEFAUT.cloison);
+    Object.keys(ARCHI_H3D_DEFAUT).forEach(function(k){ el('ap-h-'+k, ARCHI_H3D_DEFAUT[k]); });
+  };
+
   function _onUp(e) {
     if (ED.dragEl) {
       ED.dragEl = null;
@@ -95514,17 +95710,33 @@ function qrSvgTag(text){
     var h0 = Math.abs(my - ED.drawStart.y);
     if (w0 < 0.3 && h0 < 0.3) { ED.drawing = false; ED.drawStart = null; ED._drawCurrent = null; return; }
 
+    /* Épaisseur imposée pour mur/cloison : remplace la dimension la plus
+       courte (perpendiculaire au tracé) par la valeur paramétrée, quel que
+       soit le sens du glisser (horizontal ou vertical). */
+    var epParOutil = { mur: ED._epMur, cloison: ED._epCloison };
+    if (epParOutil[ED.tool] != null) {
+      var ep = epParOutil[ED.tool];
+      if (w0 >= h0) { h0 = ep; } else { w0 = ep; }
+    }
+
     var defaultLabels = { batiment:'Bâtiment', voirie:'Voirie', espace_vert:'Espace vert',
       parking:'Parking', piece:'Pièce', mur:'', cloison:'', porte:'', fenetre:'', escalier:'Escalier',
       piscine:'Piscine / Bassin', loge:'Loge gardien / Local technique',
       placard:'Placard', balcon:'Balcon / Terrasse' };
 
     _archipush();
-    ED.elements.push({
+    var _elNouveau = {
       id: _id(), type: ED.tool, niv: ED.nivActif,
       x: x0, y: y0, w: w0, h: h0,
       label: defaultLabels[ED.tool] !== undefined ? defaultLabels[ED.tool] : ED.tool
-    });
+    };
+    /* mur/cloison ont un réglage de hauteur individuel (panneau propriétés) :
+       on fige la valeur courante du paramètre à la création, pour que la
+       modifier ensuite dans « Paramètres des outils » n'altère pas les murs
+       déjà posés — seul le panneau propriétés de CET élément le peut. */
+    if (ED.tool === 'mur') _elNouveau.hauteur = H3D.mur;
+    else if (ED.tool === 'cloison') _elNouveau.hauteur = H3D.cloison;
+    ED.elements.push(_elNouveau);
     ED.drawing = false; ED.drawStart = null; ED._drawCurrent = null;
     archiRedraw();
     _archiUpdateSurfKpis();
@@ -95551,12 +95763,16 @@ function qrSvgTag(text){
         if (_pointInPoly(p.mx, p.my, el.points)) { hit = el; break; }
       } else if (el.type === 'regard' || el.type === 'poteau' || POINT_ICONS[el.type]) {
         if (Math.hypot(p.mx - el.x, p.my - el.y) <= 1.2) { hit = el; break; }
-      } else if ((el.type === 'reseau' || el.type === 'cloture') && el.points && el.points.length >= 2) {
+      } else if ((el.type === 'reseau' || el.type === 'cloture' || el.type === 'mur' || el.type === 'cloison') && el.points && el.points.length >= 2) {
+        var tolD = (el.epaisseur || 0.8) / 2 + 0.3;
         var nearD = false;
         for (var sj = 0; sj < el.points.length - 1; sj++) {
-          if (_distPtSeg(p.mx, p.my, el.points[sj], el.points[sj + 1]) <= 0.8) { nearD = true; break; }
+          if (_distPtSeg(p.mx, p.my, el.points[sj], el.points[sj + 1]) <= tolD) { nearD = true; break; }
         }
         if (nearD) { hit = el; break; }
+      } else if (el.type === 'mur_courbe' && el.cx != null) {
+        var tolArcD = (el.epaisseur || 0.2) / 2 + 0.3;
+        if (Math.abs(Math.hypot(p.mx - el.cx, p.my - el.cy) - el.r) <= tolArcD) { hit = el; break; }
       } else if (el.type !== 'cote' && p.mx >= el.x && p.mx <= el.x + (el.w||0) && p.my >= el.y && p.my <= el.y + (el.h||0)) {
         hit = el; break;
       }
@@ -95595,6 +95811,18 @@ function qrSvgTag(text){
         id: _id(), type: 'cloture', niv: ED.nivActif,
         points: pts, x: bx, y: by, w: bw, h: bh,
         label: 'Clôture', longueur: Math.round(longueur * 100) / 100
+      });
+    } else if (kind === 'mur' || kind === 'cloison') {
+      /* Mur/cloison oblique — chaîne de segments avec épaisseur constante,
+         mêmes réglages que le tracé rectangle (Paramètres des outils),
+         hauteur figée à la pose (cf. mur/cloison rectangle). */
+      var epTrace = kind === 'mur' ? ED._epMur : ED._epCloison;
+      var hTrace = kind === 'mur' ? H3D.mur : H3D.cloison;
+      ED.elements.push({
+        id: _id(), type: kind, niv: ED.nivActif,
+        points: pts, x: bx, y: by, w: bw, h: bh,
+        epaisseur: epTrace, hauteur: hTrace,
+        label: '', longueur: Math.round(longueur * 100) / 100
       });
     } else {
       var rtSel = document.getElementById('archi-vrd-reseau-type');
@@ -95641,7 +95869,7 @@ function qrSvgTag(text){
           _propInput('Y (m)', 'archi-prop-y', el.y, "archiPropChange('y',+this.value)")
         ].join('') : '')
       + (el.type === 'batiment' ? _propInput('Étages', 'archi-prop-et', el.etages || 1, "archiPropChange('etages',Math.max(1,Math.round(+this.value)))") : '')
-      + ((el.type === 'mur' || el.type === 'cloison') ? _propInput('H (m)', 'archi-prop-ht', el.hauteur || (el.type === 'mur' ? 2.8 : 2.5), "archiPropChange('hauteur',+this.value)") : '')
+      + ((el.type === 'mur' || el.type === 'cloison') ? _propInput('H (m)', 'archi-prop-ht', el.hauteur || (el.type === 'mur' ? H3D.mur : H3D.cloison), "archiPropChange('hauteur',+this.value)") : '')
       + (isPonctuelVRD || isReseau ? _propReseauType(el) : '')
       + (el.type === 'equipement' ? _propEquipType(el) : '')
       + (isLineaire ? '<div style="margin-top:4px;font-size:11px;color:var(--or);font-weight:700;">Longueur : ' + (el.longueur || 0) + ' ml</div>' : '')
@@ -96692,6 +96920,52 @@ function qrSvgTag(text){
         _box3(faces, Math.min(ca.x, cb.x) - Math.abs(cnx), Math.min(ca.y, cb.y) - Math.abs(cny),
               Math.abs(cdx) + Math.abs(cnx) * 2 || 0.16, Math.abs(cdy) + Math.abs(cny) * 2 || 0.16,
               zb, zb + H3D.cloture, COL3D.cloture, 1);
+      }
+      return;
+    }
+    /* ── Mur / cloison oblique (tracé multi-points) : un prisme par segment,
+       épaisseur réelle paramétrée (contrairement à la clôture ci-dessus qui
+       n'est qu'un muret décoratif à épaisseur fixe symbolique). ── */
+    if ((t === 'mur' || t === 'cloison') && el.points && el.points.length >= 2) {
+      var epM = el.epaisseur || (t === 'mur' ? 0.2 : 0.1);
+      var hM = el.hauteur || (t === 'mur' ? H3D.mur : H3D.cloison);
+      for (var mj = 0; mj < el.points.length - 1; mj++) {
+        var ma = el.points[mj], mb = el.points[mj + 1];
+        var mdx = mb.x - ma.x, mdy = mb.y - ma.y, mlen = Math.hypot(mdx, mdy) || 1;
+        var mnx = -mdy / mlen * epM / 2, mny = mdx / mlen * epM / 2;
+        _prism3(faces, [
+          { x:ma.x + mnx, y:ma.y + mny }, { x:mb.x + mnx, y:mb.y + mny },
+          { x:mb.x - mnx, y:mb.y - mny }, { x:ma.x - mnx, y:ma.y - mny }
+        ], zb, zb + hM, COL3D[t], 1);
+      }
+      if (el.label) {
+        var mcx = el.points.reduce(function(s,p){return s+p.x;},0) / el.points.length;
+        var mcy = el.points.reduce(function(s,p){return s+p.y;},0) / el.points.length;
+        labels.push({ x:mcx, y:mcy, z:zb + hM + 0.3, txt:el.label, col:'#1C1C2E' });
+      }
+      return;
+    }
+    /* ── Mur courbe (arc épais, 3 points) : approximé par une suite de
+       prismes courts le long de l'arc, même mécanisme que ci-dessus. ── */
+    if (t === 'mur_courbe' && el.cx != null) {
+      var epC = el.epaisseur || 0.2;
+      var hC = el.hauteur || H3D.mur;
+      var spanC = (typeof el.span === 'number') ? el.span : Math.abs(el.a1 - el.a0);
+      var nSeg = Math.max(6, Math.round(spanC / (Math.PI / 24)));
+      var deltaC = (el.sensInverse ? -1 : 1) * spanC;
+      var ptsArcC = [];
+      for (var siC = 0; siC <= nSeg; siC++) {
+        var angC = el.a0 + deltaC * (siC / nSeg);
+        ptsArcC.push({ x: el.cx + el.r * Math.cos(angC), y: el.cy + el.r * Math.sin(angC) });
+      }
+      for (var mjc = 0; mjc < ptsArcC.length - 1; mjc++) {
+        var mac = ptsArcC[mjc], mbc = ptsArcC[mjc + 1];
+        var mdxc = mbc.x - mac.x, mdyc = mbc.y - mac.y, mlenc = Math.hypot(mdxc, mdyc) || 1;
+        var mnxc = -mdyc / mlenc * epC / 2, mnyc = mdxc / mlenc * epC / 2;
+        _prism3(faces, [
+          { x:mac.x + mnxc, y:mac.y + mnyc }, { x:mbc.x + mnxc, y:mbc.y + mnyc },
+          { x:mbc.x - mnxc, y:mbc.y - mnyc }, { x:mac.x - mnxc, y:mac.y - mnyc }
+        ], zb, zb + hC, COL3D.mur, 1);
       }
       return;
     }
@@ -104495,6 +104769,52 @@ goTo = function(page) {
       <button class="btn btn-secondary" onclick="closeModal('modal-structure')">Fermer</button>
       <button class="btn btn-secondary" onclick="structOuvrirHypotheses()">⚙️ Hypothèses &amp; ratios</button>
       <button class="btn btn-primary" onclick="structInjecterDQE()">↧ Injecter dans le DQE</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : paramétrage de tous les outils (épaisseurs, hauteurs) -->
+<div class="modal-overlay" id="modal-archi-params">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div>
+        <h3>⚙️ Paramètres des outils</h3>
+        <div style="font-size:11px;color:var(--dim);">Mur/Cloison : hauteur figée à la pose (modifiable ensuite au cas par cas via le panneau propriétés). Tous les autres outils : hauteur commune, recalculée en direct sur les éléments déjà posés — pratique pour uniformiser après coup, à garder en tête sinon.</div>
+      </div>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-archi-params')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-section-title">🏠 Plan intérieur — épaisseur (m)</div>
+      <div class="form-grid" style="margin-bottom:14px;">
+        <div class="form-group"><label>▪ Mur porteur</label><input type="number" class="form-control" id="ap-ep-mur" min="0.05" step="0.01"></div>
+        <div class="form-group"><label>│ Cloison</label><input type="number" class="form-control" id="ap-ep-cloison" min="0.03" step="0.01"></div>
+      </div>
+      <div class="form-section-title">🏠 Plan intérieur — hauteur (m)</div>
+      <div class="form-grid" style="margin-bottom:14px;">
+        <div class="form-group"><label>▪ Mur porteur</label><input type="number" class="form-control" id="ap-h-mur" min="2" step="0.05"></div>
+        <div class="form-group"><label>│ Cloison</label><input type="number" class="form-control" id="ap-h-cloison" min="2" step="0.05"></div>
+        <div class="form-group"><label>🚪 Porte</label><input type="number" class="form-control" id="ap-h-porte" min="1.8" step="0.05"></div>
+        <div class="form-group"><label>🪟 Fenêtre — allège</label><input type="number" class="form-control" id="ap-h-fenAllege" min="0" step="0.05"></div>
+        <div class="form-group"><label>🪟 Fenêtre — haut</label><input type="number" class="form-control" id="ap-h-fenHaut" min="0" step="0.05"></div>
+        <div class="form-group"><label>🪜 Escalier (hauteur totale)</label><input type="number" class="form-control" id="ap-h-escalier" min="2" step="0.05"></div>
+        <div class="form-group"><label>▣ Poteau / Colonne</label><input type="number" class="form-control" id="ap-h-colonne" min="2" step="0.05"></div>
+      </div>
+      <div class="form-section-title">🗺️ Plan de masse &amp; aménagements — hauteur (m)</div>
+      <div class="form-grid" style="margin-bottom:14px;">
+        <div class="form-group"><label>Étage courant (bâtiment)</label><input type="number" class="form-control" id="ap-h-etage" min="2" step="0.05"></div>
+        <div class="form-group"><label>Lot (dalle de représentation)</label><input type="number" class="form-control" id="ap-h-lot" min="0" step="0.01"></div>
+        <div class="form-group"><label>🧱 Clôture</label><input type="number" class="form-control" id="ap-h-cloture" min="0" step="0.05"></div>
+        <div class="form-group"><label>🛖 Loge / Local technique</label><input type="number" class="form-control" id="ap-h-loge" min="0" step="0.05"></div>
+        <div class="form-group"><label>🗼 Château d'eau</label><input type="number" class="form-control" id="ap-h-chateau_eau" min="0" step="0.1"></div>
+        <div class="form-group"><label>🔌 Groupe élec. / Transfo</label><input type="number" class="form-control" id="ap-h-groupe_elec" min="0" step="0.05"></div>
+        <div class="form-group"><label>🚪 Portail</label><input type="number" class="form-control" id="ap-h-portail" min="0" step="0.05"></div>
+        <div class="form-group"><label>🌳 Arbre isolé</label><input type="number" class="form-control" id="ap-h-arbre" min="0" step="0.1"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="archiRestaurerParamsDefaut()">↺ Valeurs d'origine</button>
+      <button class="btn btn-secondary" onclick="closeModal('modal-archi-params')">Annuler</button>
+      <button class="btn btn-primary" onclick="archiAppliquerParams()">✅ Appliquer</button>
     </div>
   </div>
 </div>
