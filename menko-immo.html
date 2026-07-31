@@ -89654,7 +89654,15 @@ var DQE_JALON_HORSDEAU = { apresPhase:'closcouvert',
 })();
 
 function dqeRevueCompletude(type) {
-  var L = (DATA.nomenclatures || []).filter(function(n){ return n.type_logement === type; });
+  /* [FIX] Filtrait DATA.nomenclatures directement par type_logement, en
+     court-circuitant le rattachement programme_id posé sur les lignes
+     structure/fluides (dqeNomenclaturesPourType) : la revue de complétude
+     d'un programme pouvait afficher — et compter comme "couvert" — des
+     postes structure/fluides d'un AUTRE programme partageant le même
+     libellé de type. On repasse par le point centralisé, seule source de
+     vérité sur ce qui appartient réellement au programme en cours. */
+  var _r = dqeNomenclaturesPourType(type);
+  var L = _r.isDefault ? [] : _r.nomens;
   var res = { type:type, total:L.length, lots:[], couverts:0, pctCouvert:0, pctManquant:0 };
   if (!L.length) { res.vide = true; return res; }
 
@@ -94748,8 +94756,9 @@ function qrSvgTag(text){
     if (ED.drawing && ED.drawStart && ED._drawCurrent) {
       _drawPreview(ctx);
     }
-    /* Preview polygone lot */
-    if (ED.tool === 'lot' && ED.polyPoints.length > 0) {
+    /* Preview polygone lot / tracé ouvert (canalisation, clôture, mur, cloison) / mur courbe */
+    if (((ED.tool === 'lot' || TRACE_OUVERT_TOOLS.indexOf(ED.tool) !== -1) && ED.polyPoints.length > 0)
+        || (ED.tool === 'mur_courbe' && ED._arcPoints && ED._arcPoints.length > 0)) {
       _drawPreview(ctx);
     }
 
@@ -95291,7 +95300,15 @@ function qrSvgTag(text){
         ctx.fillStyle = 'rgba(245,158,11,0.10)';
         ctx.fill();
       }
-      /* Contour en cours */
+      /* Contour en cours — épaisseur réelle pour mur/cloison, trait fin sinon */
+      if (ED.tool === 'mur' || ED.tool === 'cloison') {
+        var epPrev = ((ED.tool === 'mur' ? ED._epMur : ED._epCloison) || 0.2) * ED.scale;
+        ctx.strokeStyle = prevCol;
+        ctx.lineWidth = Math.max(epPrev, 1);
+        ctx.globalAlpha = 0.55;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
       ctx.strokeStyle = prevCol;
       ctx.lineWidth = 1.5;
       ctx.setLineDash([5, 4]);
