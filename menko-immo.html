@@ -9047,6 +9047,13 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
 
         <!-- ══ ONGLET ÉDITEUR DE PLANS ARCHITECTURAUX ══ -->
         <div class="tab-pane" id="tab-conception-editeur">
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+            <div style="font-size:12px;font-weight:600;color:var(--blanc-dim);">📐 Projet de conception (villa / immeuble) :</div>
+            <select class="filter-select" id="archi-conception-liee" onchange="archiLierConception(this.value)" style="min-width:260px;font-size:12px;padding:6px 10px;">
+              <option value="">— Aucun (non rattaché) —</option>
+            </select>
+            <div style="font-size:10px;color:var(--blanc-dim);" id="archi-conception-hint"></div>
+          </div>
           <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
             <div>
               <div style="font-weight:700;font-size:14px;">✏️ Éditeur de plans semi-techniques</div>
@@ -12224,6 +12231,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <button class="btn btn-primary btn-sm" onclick="dqeOuvrirRevue()" title="Quels lots sont chiffrés, lesquels manquent, et ce qu'ils pèsent">🔍 Complétude</button>
           <button class="btn btn-secondary btn-sm" onclick="edsOuvrirLiaison()" title="Relier les lignes du DQE aux ouvrages du déboursé sec">🔗 Déboursé sec</button>
           <button class="btn btn-secondary btn-sm" onclick="exportDQE()">⬇ Export CSV</button>
+          <button class="btn btn-secondary btn-sm" onclick="dqeOuvrirListeProgramme()" title="Tous les DQE existants, par programme — accès direct et modification">🗂️ Liste des DQE</button>
           <button class="btn btn-primary btn-sm" onclick="genererDQEPourProgramme()">⚡ Générer DQE</button>
         </div>
 
@@ -67622,7 +67630,18 @@ async function chargerDQE() {
    référentiel de prix a été unifié (voir dqeLignePU). Centraliser ici évite
    qu'un futur changement ne recrée le même écart. */
 function dqeNomenclaturesPourType(type) {
-  var nomens = DATA.nomenclatures.filter(function(n) { return n.type_logement === type; });
+  /* Les lignes de structure/fondations (_genere_struct) dépendent du site
+     (σ sol, emprise) : rattachées à un programme_id, elles ne doivent
+     apparaître que dans le DQE de CE programme, même si un autre programme
+     réutilise le même libellé de type (ex. « Villa F4 » générique).
+     Les lignes sans programme_id (anciennes injections, avant ce correctif)
+     restent visibles partout — transition non destructive. */
+  var progActuel = (document.getElementById('dqe-filter-programme') || {}).value || '';
+  var nomens = DATA.nomenclatures.filter(function(n) {
+    if (n.type_logement !== type) return false;
+    if ((n._genere_struct || n._genere_fluides) && n.programme_id && progActuel && n.programme_id !== progActuel) return false;
+    return true;
+  });
   var isDefault = false;
   if (!nomens.length) {
     isDefault = true;
@@ -68203,25 +68222,179 @@ function _typeKey(type) {
 }
 
 /* ── Génération DQE pour le programme ────────────────── */
+/* Calcule le coût d'un type de logement TEL QU'IL EST DQE pour un programme
+   donné, en basculant temporairement le filtre programme (dont dépend
+   dqeNomenclaturesPourType pour scoper structure/fluides) puis en le
+   restaurant — évite de dupliquer le calcul déjà centralisé. */
+function _coutTypeDansProgramme(type, programmeId) {
+  var sel = document.getElementById('dqe-filter-programme');
+  var prev = sel ? sel.value : '';
+  if (sel) sel.value = programmeId || '';
+  var cout = calculerCoutParType(type);
+  if (sel) sel.value = prev;
+  return cout;
+}
+
+/* Regroupe les lots d'un programme par type de logement (nb, coût unitaire,
+   sous-total) — base commune à la revue avant validation et à l'aperçu PDF. */
+function _dqeRecapProgramme(programmeId) {
+  var lots = DATA.lots.filter(function(l){ return !programmeId || l.programme_id === programmeId; });
+  var groupes = {};
+  lots.forEach(function(l){
+    var t = _typeKey(l.type_logement || l.type);
+    if (!groupes[t]) groupes[t] = { type:t, nb:0 };
+    groupes[t].nb++;
+  });
+  var lignes = Object.keys(groupes).map(function(t){
+    var g = groupes[t];
+    var isDefault = !(DATA.nomenclatures||[]).some(function(n){ return n.type_logement === t; });
+    var cout = _coutTypeDansProgramme(t, programmeId);
+    return { type:t, nb:g.nb, coutUnitaire:cout, sousTotal:cout*g.nb, isDefault:isDefault };
+  }).sort(function(a,b){ return a.type.localeCompare(b.type); });
+  var total = lignes.reduce(function(s,l){ return s+l.sousTotal; }, 0);
+  return { lignes:lignes, total:total, nbLots:lots.length };
+}
+
 async function genererDQEPourProgramme() {
   var programmeId = (document.getElementById('dqe-filter-programme')||{}).value || '';
-  var lots = DATA.lots.filter(function(l){ return !programmeId || l.programme_id === programmeId; });
+  if (!programmeId) { toast('Sélectionnez un programme — le DQE est propre à chaque programme.', 'error'); return; }
+  var lots = DATA.lots.filter(function(l){ return l.programme_id === programmeId; });
   if (!lots.length) { toast('Aucun lot pour ce programme.','info'); return; }
+  var R = _dqeRecapProgramme(programmeId);
+  window._dqeRevueProgramme = { programmeId:programmeId, recap:R };
+
+  var prog = (DATA.programmes||[]).find(function(p){ return p.id === programmeId; });
+  var nomEl = document.getElementById('dqe-revue-prog-nom');
+  if (nomEl) nomEl.textContent = 'Programme : ' + (prog ? prog.nom : programmeId) + ' — ' + R.nbLots + ' lot(s)';
+
+  var tbody = document.getElementById('dqe-revue-prog-tbody');
+  if (tbody) {
+    tbody.innerHTML = R.lignes.map(function(l){
+      return '<tr>'
+        + '<td>' + escHtml(l.type) + '</td>'
+        + '<td style="text-align:right;">' + l.nb + '</td>'
+        + '<td style="text-align:right;">' + fmtF(l.coutUnitaire) + '</td>'
+        + '<td style="text-align:right;font-weight:600;">' + fmtF(l.sousTotal) + '</td>'
+        + '<td>' + (l.isDefault ? '<span style="color:var(--rouge);">⚠️ par défaut</span>' : '<span style="color:var(--vert);">✔ chiffré</span>') + '</td>'
+        + '</tr>';
+    }).join('');
+  }
+  var totEl = document.getElementById('dqe-revue-prog-total');
+  if (totEl) totEl.textContent = fmtF(R.total) + ' FCFA';
+
+  var alerteEl = document.getElementById('dqe-revue-prog-alerte');
+  var nbDefaut = R.lignes.filter(function(l){ return l.isDefault; }).length;
+  if (alerteEl) alerteEl.innerHTML = nbDefaut
+    ? '<div style="margin-top:10px;padding:10px 12px;background:rgba(224,82,82,.09);border-left:3px solid var(--rouge);border-radius:6px;font-size:12px;">⚠️ ' + nbDefaut + ' type(s) sans nomenclature chiffrée — coût estimé sur gabarit par défaut, à confirmer avant validation.</div>'
+    : '';
+
+  openModal('modal-dqe-revue-programme');
+}
+
+/* Applique réellement le coût de revient calculé aux lots — anciennement
+   fait sans confirmation ni récapitulatif ; désormais un geste distinct,
+   déclenché depuis la revue. */
+async function dqeValiderProgramme() {
+  var ctx = window._dqeRevueProgramme;
+  if (!ctx) return;
+  var lots = DATA.lots.filter(function(l){ return l.programme_id === ctx.programmeId; });
   var maj = 0;
   for (var i = 0; i < lots.length; i++) {
     var lot = lots[i];
     var typeKey = _typeKey(lot.type_logement || lot.type);
-    var coutDQE = calculerCoutParType(typeKey);
+    var coutDQE = _coutTypeDansProgramme(typeKey, ctx.programmeId);
     if (!lot.cout_revient && coutDQE > 0) {
       lot.cout_revient = coutDQE;
       var idx = DATA.lots.findIndex(function(l){ return l.id===lot.id; });
       if (idx >= 0) DATA.lots[idx].cout_revient = coutDQE;
       await dbPut('lots', lot);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_lots', lot);
       maj++;
     }
   }
-  toast('✅ DQE généré — ' + maj + ' lots mis à jour.','success');
+  closeModal('modal-dqe-revue-programme');
+  toast('✅ DQE validé — ' + maj + ' lot(s) mis à jour.','success');
   buildEcartDQE();
+}
+
+function dqeApercuPDFProgramme() {
+  var ctx = window._dqeRevueProgramme;
+  if (!ctx) return;
+  var prog = (DATA.programmes||[]).find(function(p){ return p.id === ctx.programmeId; });
+  var progLabel = prog ? prog.nom : ctx.programmeId;
+  var rows = ctx.recap.lignes.map(function(l){
+    return '<tr>'
+      + '<td>' + escHtml(l.type) + (l.isDefault ? ' <span style="color:#EF9F27;font-size:9pt;">(par défaut)</span>' : '') + '</td>'
+      + '<td style="text-align:right;">' + l.nb + '</td>'
+      + '<td style="text-align:right;">' + _ppFcfa(l.coutUnitaire) + '</td>'
+      + '<td style="text-align:right;font-weight:600;">' + _ppFcfa(l.sousTotal) + '</td>'
+      + '</tr>';
+  }).join('');
+  var html = _ppLogo()
+    + '<h1 style="color:#1A6B3A;border-bottom:2px solid #1A6B3A;padding-bottom:6px;margin-bottom:6px;">ÉTAT DU PROGRAMME — DQE</h1>'
+    + '<div style="font-size:13pt;font-weight:700;">' + _ppSoc() + '</div>'
+    + '<div style="font-size:10pt;color:#555;margin-top:3px;">Programme : ' + escHtml(progLabel) + ' &nbsp;·&nbsp; ' + ctx.recap.nbLots + ' lot(s) &nbsp;·&nbsp; Date : ' + _ppDate() + '</div>'
+    + '<table style="margin-top:14px;">'
+    +   '<thead><tr style="background:#1A6B3A;color:white;"><th style="text-align:left;">Type de logement</th><th style="text-align:right;">Nb lots</th><th style="text-align:right;">Coût unitaire (FCFA)</th><th style="text-align:right;">Sous-total (FCFA)</th></tr></thead>'
+    +   '<tbody>' + rows + '</tbody>'
+    +   '<tfoot><tr style="background:#1A6B3A;color:white;"><td colspan="3" style="text-align:right;font-weight:800;padding:7px 8px;">TOTAL GÉNÉRAL</td><td style="text-align:right;font-weight:800;font-size:12pt;padding:7px 8px;">' + _ppFcfa(ctx.recap.total) + '</td></tr></tfoot>'
+    + '</table>'
+    + '<div class="pp-footer">Document généré par <strong>ImmoSuite ERP</strong> · ' + _ppSoc() + ' · ' + _ppDate() + '</div>';
+  openPrintPreviewDQE('État du programme — ' + progLabel, html);
+}
+
+/* ── Liste des DQE existants, par programme ──────────── */
+function dqeOuvrirListeProgramme() {
+  var sel = document.getElementById('dqe-liste-filter-programme');
+  if (sel) {
+    var cur = sel.value;
+    sel.innerHTML = '<option value="">Tous programmes</option>'
+      + DATA.programmes.map(function(p){ return '<option value="' + p.id + '">' + escHtml(p.nom) + '</option>'; }).join('');
+    var progDQE = (document.getElementById('dqe-filter-programme') || {}).value || '';
+    sel.value = cur || progDQE || '';
+  }
+  dqeRenderListeProgramme();
+  openModal('modal-dqe-liste-programme');
+}
+
+function dqeRenderListeProgramme() {
+  var filtreProg = (document.getElementById('dqe-liste-filter-programme')||{}).value || '';
+  var programmes = filtreProg ? DATA.programmes.filter(function(p){ return p.id === filtreProg; }) : DATA.programmes;
+  var tbody = document.getElementById('dqe-liste-prog-tbody');
+  if (!tbody) return;
+  var html = '';
+  programmes.forEach(function(prog){
+    var R = _dqeRecapProgramme(prog.id);
+    if (!R.lignes.length) return;
+    R.lignes.forEach(function(l){
+      html += '<tr>'
+        + '<td>' + escHtml(prog.nom) + '</td>'
+        + '<td>' + escHtml(l.type) + '</td>'
+        + '<td style="text-align:right;">' + l.nb + '</td>'
+        + '<td style="text-align:right;">' + fmtF(l.coutUnitaire) + '</td>'
+        + '<td>' + (l.isDefault ? '<span style="color:var(--rouge);">⚠️ par défaut</span>' : '<span style="color:var(--vert);">✔ chiffré</span>') + '</td>'
+        + '<td><button class="btn btn-secondary btn-sm btn-icon" title="Ouvrir / modifier" onclick="dqeOuvrirDepuisListe(\'' + prog.id + '\',\'' + String(l.type).replace(/'/g,"\\'") + '\')">✏️</button></td>'
+        + '</tr>';
+    });
+  });
+  tbody.innerHTML = html || '<tr><td colspan="6" style="text-align:center;color:var(--dim);">Aucun DQE trouvé.</td></tr>';
+}
+
+/* Ouvre directement la nomenclature du couple (programme, type) choisi dans
+   la liste — synchronise les deux filtres de la page DQE puis y bascule. */
+function dqeOuvrirDepuisListe(programmeId, type) {
+  closeModal('modal-dqe-liste-programme');
+  var selProg = document.getElementById('dqe-filter-programme');
+  var selType = document.getElementById('dqe-type-logement');
+  if (selProg) selProg.value = programmeId;
+  if (selType) selType.value = type;
+  goTo('dqe');
+  setTimeout(function(){
+    switchTab('dqe', 'nomenclature');
+    if (selProg) selProg.value = programmeId;
+    if (selType) selType.value = type;
+    chargerNomenclature();
+  }, 100);
 }
 
 /* ── Export CSV nomenclature ──────────────────────────── */
@@ -87859,6 +88032,7 @@ async function archiEnregistrerDessin() {
   p.niveau = st.niveaux;
   p.date = today();
   p.version = (parseInt(p.version) || 0) + 1;
+  p.conception_id = (document.getElementById('archi-conception-liee') || {}).value || p.conception_id || '';
 
   await dbPut('plans_arch', p);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_plans_arch', p);
@@ -87918,6 +88092,7 @@ async function archiChargerDessin(id) {
   if (typeof _archiCalcScale === 'function') _archiCalcScale();
   if (typeof archiRedraw === 'function') archiRedraw();
   if (typeof _dqeRecap === 'function') _dqeRecap();
+  if (typeof archiPopulerConceptions === 'function') archiPopulerConceptions();
   toast('Plan « ' + (p.ref || '') + ' » chargé.', 'success');
 }
 
@@ -88309,6 +88484,24 @@ function structOuvrir() {
   if (srcQ) srcQ.textContent = qadm
     ? '🪨 σ repris de l\'étude géotechnique'
     : '⚠️ Aucune étude géotechnique renseignée dans l\'application';
+  /* Types de logement déjà présents dans le DQE (nomenclatures) — proposés en
+     suggestion pour garantir la correspondance exacte attendue par l'injection
+     (structInjecterDQE compare par égalité stricte de chaîne). */
+  var dl = document.getElementById('str-types-dqe');
+  if (dl) {
+    var typesExistants = {};
+    (DATA.nomenclatures || []).forEach(function(n){ if (n.type_logement) typesExistants[n.type_logement] = true; });
+    dl.innerHTML = Object.keys(typesExistants).sort().map(function(t){
+      return '<option value="' + escHtml(t) + '">';
+    }).join('');
+  }
+  var selProg = document.getElementById('str-programme');
+  if (selProg) {
+    var progDQE = (document.getElementById('dqe-filter-programme') || {}).value || '';
+    selProg.innerHTML = '<option value="">— Sélectionner —</option>'
+      + DATA.programmes.map(function(p){ return '<option value="' + p.id + '">' + escHtml(p.nom) + '</option>'; }).join('');
+    if (progDQE) selProg.value = progDQE;
+  }
   structRecalculer();
   openModal('modal-structure');
 }
@@ -88382,13 +88575,17 @@ async function structInjecterDQE() {
   if (!R || !R.lignes.length) { toast('Aucune quantité à injecter.', 'error'); return; }
   var type = (document.getElementById('str-type-logement')||{}).value || '';
   if (!type) { toast('Indiquez le type de logement de destination.', 'error'); return; }
+  var progId = (document.getElementById('str-programme')||{}).value || '';
+  if (!progId) { toast('Sélectionnez le programme : la fondation dépend du sol du site, elle ne peut pas être injectée « en aveugle » dans un type partagé.', 'error'); return; }
 
-  /* Remplace uniquement les lignes structure déjà générées pour ce type :
-     les finitions issues du plan et les saisies manuelles sont préservées. */
+  /* Remplace uniquement les lignes structure déjà générées pour CE type ET
+     CE programme : les finitions issues du plan et les saisies manuelles sont
+     préservées, et le DQE d'un autre programme utilisant le même libellé de
+     type n'est jamais touché. */
   /* Mêmes règles que pour le plan : un poste corrigé à la main survit au
      recalcul, et n'est pas recréé en double. */
-  var anciennes = (DATA.nomenclatures||[]).filter(function(n){ return n.type_logement === type && n._genere_struct && !n._ajuste_manuel; });
-  var _ajustesStruct = (DATA.nomenclatures||[]).filter(function(n){ return n.type_logement === type && n._genere_struct && n._ajuste_manuel; });
+  var anciennes = (DATA.nomenclatures||[]).filter(function(n){ return n.type_logement === type && n.programme_id === progId && n._genere_struct && !n._ajuste_manuel; });
+  var _ajustesStruct = (DATA.nomenclatures||[]).filter(function(n){ return n.type_logement === type && n.programme_id === progId && n._genere_struct && n._ajuste_manuel; });
   for (var i = 0; i < anciennes.length; i++) {
     await deleteRecord('nomenclatures', anciennes[i].id, { skipIntegrity:true });
   }
@@ -88398,7 +88595,7 @@ async function structInjecterDQE() {
     var l = R.lignes[j];
     if (_ajustesStruct.some(function(a){ return String(a.materiau||'') === String(l.materiau||''); })) continue;
     var entry = {
-      id: uid(), type_logement: type, poste: l.poste, materiau: l.materiau,
+      id: uid(), type_logement: type, programme_id: progId, poste: l.poste, materiau: l.materiau,
       unite: l.unite, quantite: l.quantite, prix_forfait: 0, ouvrage_id: '',
       _genere_struct: true, _genere_le: le,
       _struct_fondation: R.type_fondation,
@@ -88415,7 +88612,8 @@ async function structInjecterDQE() {
   }
   closeModal('modal-structure');
   if (typeof chargerNomenclature === 'function') chargerNomenclature();
-  toast(R.lignes.length + ' poste(s) structure injecté(s) dans le DQE « ' + type + ' » — '
+  var nomProg = ((DATA.programmes||[]).find(function(p){ return p.id === progId; }) || {}).nom || progId;
+  toast(R.lignes.length + ' poste(s) structure injecté(s) dans le DQE « ' + type + ' » du programme « ' + nomProg + ' » — '
     + R.volume_beton + ' m³ de béton, ' + fmtF(R.poids_acier) + ' kg d\'acier.', 'success');
 }
 
@@ -89023,6 +89221,13 @@ function epCalculer(pieces, standing, opts) {
    prend en voyant l'écart, pas en recalculant trois fois. */
 function epOuvrir() {
   var pieces = epCollecterPieces();
+  var selProg = document.getElementById('ep-programme');
+  if (selProg) {
+    var progDQE = (document.getElementById('dqe-filter-programme') || {}).value || '';
+    selProg.innerHTML = '<option value="">— Sélectionner —</option>'
+      + DATA.programmes.map(function(p){ return '<option value="' + p.id + '">' + escHtml(p.nom) + '</option>'; }).join('');
+    if (progDQE) selProg.value = progDQE;
+  }
   var host = document.getElementById('ep-pieces');
   if (host) {
     host.innerHTML = pieces.length
@@ -89149,12 +89354,14 @@ async function epInjecterDQE() {
   var type = (document.getElementById('ep-type-logement')||{}).value || '';
   if (!res || !res[sel]) { toast('Aucun chiffrage à injecter.', 'error'); return; }
   if (!type) { toast('Indiquez le type de logement de destination.', 'error'); return; }
+  var progId = (document.getElementById('ep-programme')||{}).value || '';
+  if (!progId) { toast('Sélectionnez le programme — ce chiffrage ne doit pas s\'appliquer aux autres programmes partageant le même type de logement.', 'error'); return; }
   var r = res[sel];
 
   var anciennes = (DATA.nomenclatures||[]).filter(function(n){
-    return n.type_logement === type && n._genere_fluides && !n._ajuste_manuel; });
+    return n.type_logement === type && n.programme_id === progId && n._genere_fluides && !n._ajuste_manuel; });
   var ajustes = (DATA.nomenclatures||[]).filter(function(n){
-    return n.type_logement === type && n._genere_fluides && n._ajuste_manuel; });
+    return n.type_logement === type && n.programme_id === progId && n._genere_fluides && n._ajuste_manuel; });
   for (var i = 0; i < anciennes.length; i++) {
     await deleteRecord('nomenclatures', anciennes[i].id, { skipIntegrity:true });
   }
@@ -89165,7 +89372,7 @@ async function epInjecterDQE() {
     var l = r.lignes[j];
     if (ajustes.some(function(a){ return String(a.materiau||'') === String(l.materiau||''); })) continue;
     var entry = {
-      id: uid(), type_logement: type, poste: l.poste, materiau: l.materiau,
+      id: uid(), type_logement: type, programme_id: progId, poste: l.poste, materiau: l.materiau,
       unite: l.unite, quantite: l.quantite, prix_forfait: l.montant, ouvrage_id: '',
       _genere_fluides: true, _genere_le: le,
       _fluide_lot: l.lot, _fluide_phase: l.phase, _fluide_standing: sel,
@@ -94026,11 +94233,64 @@ function qrSvgTag(text){
     _archiResizeCanvas();
     _archiBindEvents();
     _archiPopulateEquipSelect();
+    archiPopulerConceptions();
     archiSetMode('masse');
     archiRenderCouches();
     archiRedraw();
     _archiUpdateLegend();
     window.addEventListener('resize', _archiResizeCanvas);
+  };
+
+  /* ── Sélecteur « Projet de conception lié » ──────────────────────────
+     Rattache le plan en cours d'édition à une fiche de DATA.conceptions
+     (villa/immeuble précis, avec programme et type de logement), pour que
+     l'éditeur pointe sans ambiguïté vers le bon projet — au lieu de rester
+     une simple référence de plan sans lien avec le module Conception. */
+  window.archiPopulerConceptions = function() {
+    var sel = document.getElementById('archi-conception-liee');
+    if (!sel) return;
+    var html = '<option value="">— Aucun (non rattaché) —</option>';
+    (DATA.programmes||[]).forEach(function(prog){
+      var concs = (DATA.conceptions||[]).filter(function(c){ return c.programme_id === prog.id; });
+      if (!concs.length) return;
+      html += '<optgroup label="' + escHtml(prog.nom) + '">';
+      concs.forEach(function(c){
+        var tag = c.nature === 'immeuble' ? '🏢' : '🏠';
+        html += '<option value="' + c.id + '">' + tag + ' ' + escHtml(c.ref||'(sans réf.)') + ' — ' + escHtml(c.type_logements||'') + '</option>';
+      });
+      html += '</optgroup>';
+    });
+    var orphelines = (DATA.conceptions||[]).filter(function(c){ return !c.programme_id; });
+    if (orphelines.length) {
+      html += '<optgroup label="Sans programme">';
+      orphelines.forEach(function(c){
+        html += '<option value="' + c.id + '">' + escHtml(c.ref||'(sans réf.)') + ' — ' + escHtml(c.type_logements||'') + '</option>';
+      });
+      html += '</optgroup>';
+    }
+    sel.innerHTML = html;
+    /* Présélectionne le projet de conception du plan actuellement ouvert. */
+    var courant = window._archiPlanCourant;
+    sel.value = (courant && courant.conception_id) ? courant.conception_id : '';
+    archiMajHintConception();
+  };
+
+  function archiMajHintConception() {
+    var hint = document.getElementById('archi-conception-hint');
+    if (!hint) return;
+    var sel = document.getElementById('archi-conception-liee');
+    var id = sel ? sel.value : '';
+    if (!id) { hint.textContent = '⚠️ Ce plan n\'est rattaché à aucun projet de conception enregistré.'; return; }
+    var c = (DATA.conceptions||[]).find(function(x){ return x.id === id; });
+    hint.textContent = c ? ('Phase : ' + (c.phase||'—') + ' · Statut : ' + (c.statut||'—')) : '';
+  }
+
+  /* Change le rattachement du plan courant. Le lien est persisté au prochain
+     archiEnregistrerDessin() ; s'il n'y a pas encore de plan enregistré,
+     il ne sert que de pense-bête jusqu'au premier enregistrement. */
+  window.archiLierConception = function(conceptionId) {
+    if (window._archiPlanCourant) window._archiPlanCourant.conception_id = conceptionId || '';
+    archiMajHintConception();
   };
 
   /* ── Remplit le sélecteur d'équipements techniques (plomberie/électricité)
@@ -94258,6 +94518,10 @@ function qrSvgTag(text){
     ED.nivActif = 0;
     ED.selected = null;
     ED.calib = null;
+    window._archiPlanCourant = null;
+    var selConc = document.getElementById('archi-conception-liee');
+    if (selConc) selConc.value = '';
+    if (typeof archiMajHintConception === 'function') archiMajHintConception();
     archiRenderCouches();
     _archiFondSync();
     archiRedraw();
@@ -103884,7 +104148,11 @@ goTo = function(page) {
         </div>
         <div class="form-group">
           <label>Type de logement (DQE)</label>
-          <input type="text" class="form-control" id="ep-type-logement" placeholder="Ex. Villa F4">
+          <input type="text" class="form-control" id="ep-type-logement" list="str-types-dqe" placeholder="Ex. Villa F4">
+        </div>
+        <div class="form-group">
+          <label>Programme (site) *</label>
+          <select class="form-control" id="ep-programme"></select>
         </div>
       </div>
       <div id="ep-resultat"></div>
@@ -104095,8 +104363,14 @@ goTo = function(page) {
           <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;" id="str-source-qadm"></div>
         </div>
         <div class="form-group span-2">
+          <label>Programme (site — détermine le DQE cible) *</label>
+          <select class="form-control" id="str-programme"></select>
+          <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;">La fondation dépend du sol du site : injecter sans programme risquerait d'écraser le DQE d'un autre programme utilisant le même type de logement.</div>
+        </div>
+        <div class="form-group span-2">
           <label>Type de logement de destination (DQE)</label>
-          <input type="text" class="form-control" id="str-type-logement" placeholder="Ex. Villa F4 — doit correspondre au type utilisé dans le DQE">
+          <input type="text" class="form-control" id="str-type-logement" list="str-types-dqe" placeholder="Ex. Villa F4 — doit correspondre au type utilisé dans le DQE">
+          <datalist id="str-types-dqe"></datalist>
         </div>
       </div>
       <div id="str-resultat"></div>
@@ -104135,6 +104409,63 @@ goTo = function(page) {
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-dqe-plans')">Fermer</button>
       <button class="btn btn-secondary" onclick="dqeExporterListePlans()">⬇ Export CSV</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : état du programme avant validation (Générer DQE) -->
+<div class="modal-overlay" id="modal-dqe-revue-programme">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div>
+        <h3>📋 État du programme avant validation</h3>
+        <div style="font-size:11px;color:var(--dim);" id="dqe-revue-prog-nom"></div>
+      </div>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-dqe-revue-programme')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Type de logement</th><th style="text-align:right;">Nb lots</th><th style="text-align:right;">Coût DQE unitaire</th><th style="text-align:right;">Sous-total</th><th>Statut</th></tr></thead>
+          <tbody id="dqe-revue-prog-tbody"></tbody>
+          <tfoot><tr style="font-weight:700;"><td colspan="3" style="text-align:right;">TOTAL GÉNÉRAL</td><td style="text-align:right;" id="dqe-revue-prog-total"></td><td></td></tr></tfoot>
+        </table>
+      </div>
+      <div id="dqe-revue-prog-alerte"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-dqe-revue-programme')">Annuler</button>
+      <button class="btn btn-secondary" onclick="dqeApercuPDFProgramme()">👁 Aperçu PDF</button>
+      <button class="btn btn-primary" onclick="dqeValiderProgramme()">✅ Valider — appliquer aux lots</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : liste des DQE d'un programme (accès direct, modifiable) -->
+<div class="modal-overlay" id="modal-dqe-liste-programme">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div>
+        <h3>🗂️ Liste des DQE par programme</h3>
+        <div style="font-size:11px;color:var(--dim);">Un DQE = un couple Programme × Type de logement. Cliquez sur un type pour l'ouvrir.</div>
+      </div>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-dqe-liste-programme')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="filters-bar">
+        <select class="filter-select" id="dqe-liste-filter-programme" onchange="dqeRenderListeProgramme()">
+          <option value="">Tous programmes</option>
+        </select>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Programme</th><th>Type de logement</th><th style="text-align:right;">Nb lots</th><th style="text-align:right;">Coût DQE unitaire</th><th>Statut</th><th>Actions</th></tr></thead>
+          <tbody id="dqe-liste-prog-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-dqe-liste-programme')">Fermer</button>
     </div>
   </div>
 </div>
