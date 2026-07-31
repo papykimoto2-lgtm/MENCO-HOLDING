@@ -81505,15 +81505,123 @@ function _dxfToBornes(parsed){
   });
 }
 
-function _dwgToDxf(buf){
-  // [CORRECTIF] La conversion DWG→DXF via WASM n'est PAS possible avec la
-  // bibliothèque libre disponible (LibreDWG-web) : sa documentation officielle
-  // confirme que l'écriture DXF est désactivée dans le build distribué (lecture
-  // seule). Le code précédent appelait une API inexistante (dwg_write_dxf) sur
-  // un fichier UMD qui n'existe pas non plus sur le CDN — échec silencieux
-  // après une tentative réseau inutile. On échoue désormais immédiatement,
-  // sans fetch, pour laisser l'appelant afficher le message d'export DXF.
-  return Promise.reject(new Error('DWG→DXF non supporté hors ligne (écriture DXF désactivée dans LibreDWG-web).'));
+/* ══════════════════════════════════════════════════════════════════════════
+   IMPORT DWG NATIF (sans passer par DXF)
+   ──────────────────────────────────────────────────────────────────────────
+   [CORRECTIF] La bibliothèque libre disponible (LibreDWG-web, WASM) désactive
+   volontairement l'écriture DXF dans son build distribué (confirmé par sa
+   documentation officielle : "the following functionalities are not included
+   by default : write dwg file / read-write dxf file / import-export json").
+   Elle sait en revanche LIRE le DWG et le CONVERTIR en objet JS structuré
+   (DwgDatabase, via LibreDwg.create() → dwg_read_data() → convert()).
+   On mappe donc directement cet objet vers la géométrie interne de l'éditeur
+   (même format que _dxfParse : {g,lay,pts/c/r/p/txt...}), sans jamais
+   prétendre produire du DXF. Couverture : LINE, LWPOLYLINE/POLYLINE, CIRCLE,
+   ARC, TEXT/MTEXT — les blocs INSERT sont recensés (blocsBruts) mais pas
+   encore expansés (limitation connue, pas un échec silencieux).
+   ⚠️ Angles supposés en RADIANS (convention interne de libredwg, différente
+   du DXF qui utilise des degrés) — à vérifier visuellement sur un premier
+   import réel avant de faire confiance à l'orientation des arcs.
+   ══════════════════════════════════════════════════════════════════════════ */
+function _dwgParseNatif(buf) {
+  return import('https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@0.7.1/dist/libredwg-web.js')
+    .then(function(mod) {
+      return mod.LibreDwg.create().then(function(libredwg) {
+        var dwg = libredwg.dwg_read_data(new Uint8Array(buf), mod.Dwg_File_Type.DWG);
+        var db = libredwg.convert(dwg);
+        try { libredwg.dwg_free(dwg); } catch(e) {}
+        if (!db || !db.entities) throw new Error('DwgDatabase vide ou illisible');
+        return _dwgDatabaseToRes(db);
+      });
+    });
+}
+
+function _dwgDatabaseToRes(db) {
+  var layers = {}, ents = [], blocsBruts = [], erreursEntites = 0;
+  function emit(o) { ents.push(o); layers[o.lay] = (layers[o.lay] || 0) + 1; }
+
+  /* Expansion des blocs (mobilier, symboles) — EXPÉRIMENTAL.
+     La documentation publique de DwgDatabase ne confirme pas le nom exact du
+     champ contenant les entités d'un bloc dans tables.BLOCK_RECORD. On teste
+     plusieurs noms plausibles ; si aucun ne correspond, on abandonne
+     proprement (les INSERT restent recensés dans blocsBruts, rien ne casse). */
+  var blocsIndex = {}, blocsExpansionOk = false;
+  try {
+    var brEntries = (db.tables && db.tables.BLOCK_RECORD && db.tables.BLOCK_RECORD.entries) || [];
+    brEntries.forEach(function(br) {
+      var liste = br.entities || br.entries || br.block || br.geometries || null;
+      if (Array.isArray(liste) && liste.length) {
+        blocsIndex[br.name] = liste;
+        blocsExpansionOk = true;
+      }
+    });
+  } catch(eBlk) {}
+
+  function emitOne(e, lay, tr) {
+    function T(x, y) {
+      if (!tr) return { x:x, y:y };
+      var c = Math.cos(tr.rot), s = Math.sin(tr.rot);
+      var xs = x * tr.sx, ys = y * tr.sy;
+      return { x: tr.x + xs*c - ys*s, y: tr.y + xs*s + ys*c };
+    }
+    if (e.type === 'LINE') {
+      emit({ g:'line', lay:lay, pts:[T(e.startPoint.x,e.startPoint.y), T(e.endPoint.x,e.endPoint.y)] });
+    } else if (e.type === 'LWPOLYLINE' || e.type === 'POLYLINE') {
+      var pts = (e.vertices || []).map(function(v){ return T(v.x, v.y); });
+      if (pts.length >= 2) emit({ g:'poly', lay:lay, pts:pts, closed: !!((e.flag||0) & 1) });
+    } else if (e.type === 'CIRCLE') {
+      var cc = T(e.center.x, e.center.y);
+      emit({ g:'circle', lay:lay, c:cc, r: e.radius * Math.abs(tr ? tr.sx : 1) });
+    } else if (e.type === 'ARC') {
+      var ca = T(e.center.x, e.center.y);
+      emit({ g:'arc', lay:lay, c:ca, r: e.radius * Math.abs(tr ? tr.sx : 1), a0:e.startAngle, a1:e.endAngle });
+    } else if (e.type === 'TEXT' || e.type === 'MTEXT') {
+      var p = T((e.startPoint||e.insertionPoint||{x:0,y:0}).x, (e.startPoint||e.insertionPoint||{x:0,y:0}).y);
+      var txt = String(e.text || '').replace(/\\[A-Za-z][^;]*;/g, '').replace(/[{}]/g, '').trim();
+      if (txt) emit({ g:'text', lay:lay, p:p, h:e.textHeight || 0.2, txt:txt });
+    }
+  }
+
+  (db.entities || []).forEach(function(e) {
+    try {
+      var lay = e.layer || '0';
+      if (e.type === 'INSERT') {
+        var liste = blocsIndex[e.name];
+        if (liste && liste.length) {
+          var tr = { x:e.insertionPoint.x, y:e.insertionPoint.y,
+                     sx:(e.xScale!=null?e.xScale:1), sy:(e.yScale!=null?e.yScale:1),
+                     rot:(e.rotation||0) };
+          liste.forEach(function(be){ try { emitOne(be, be.layer || lay, tr); } catch(eIn){} });
+        } else {
+          blocsBruts.push({ nom: e.name || '', lay: lay, x: e.insertionPoint.x, y: e.insertionPoint.y });
+        }
+        return;
+      }
+      emitOne(e, lay, null);
+    } catch(errEnt) { erreursEntites++; }
+  });
+  var blocsCount = {};
+  blocsBruts.forEach(function(b){ blocsCount[b.nom] = (blocsCount[b.nom] || 0) + 1; });
+
+  var x1=Infinity,y1=Infinity,x2=-Infinity,y2=-Infinity;
+  function acc(p){ if(!p) return; if(p.x<x1)x1=p.x; if(p.x>x2)x2=p.x; if(p.y<y1)y1=p.y; if(p.y>y2)y2=p.y; }
+  ents.forEach(function(e){
+    if (e.pts) e.pts.forEach(acc);
+    if (e.p) acc(e.p);
+    if (e.c) { acc({x:e.c.x-e.r,y:e.c.y-e.r}); acc({x:e.c.x+e.r,y:e.c.y+e.r}); }
+  });
+  var bb = isFinite(x1) ? {x1:x1,y1:y1,x2:x2,y2:y2} : {x1:0,y1:0,x2:1,y2:1};
+  var span = Math.max(bb.x2 - bb.x1, bb.y2 - bb.y1);
+  /* Pas de lecture du header DWG (insunits) pour l'instant : même repli par
+     ordre de grandeur que le parseur DXF quand $INSUNITS est absent. */
+  var facteur = span > 2000 ? 0.001 : (span > 200 ? 0.01 : 1);
+  var noms = { 0.001:'millimètre (mm)', 0.01:'centimètre (cm)', 1:'mètre (m)' };
+  var uniteNom = (noms[facteur] || facteur + ' m') + ' — déduit de l\'échelle du dessin (DWG, non confirmé par $INSUNITS)';
+
+  return { ents:ents, layers:layers, facteur:facteur, uniteAuto:true, uniteNom:uniteNom,
+           bbox:bb, wM:(bb.x2-bb.x1)*facteur, hM:(bb.y2-bb.y1)*facteur,
+           blocsIgnores: blocsBruts.length, vuesIgnorees:0,
+           blocsBruts:blocsBruts, blocsCount:blocsCount, _erreursEntites:erreursEntites, _blocsExpansionOk:blocsExpansionOk };
 }
 
 function _dxfApplyBornes(bornes, srcLabel){
@@ -82029,11 +82137,11 @@ function brnImportDXF(input){
     var binDxf = sig.indexOf('AutoCAD Binary DXF')===0;
     try {
       if (binDwg){
-        toast('DWG binaire détecté — conversion DXF en cours…','info');
-        _dwgToDxf(ev.target.result).then(function(dxf){
-          _dxfApplyBornes(_dxfToBornes(_dxfParse(dxf)), name);
+        toast('DWG binaire détecté — lecture native en cours…','info');
+        _dwgParseNatif(ev.target.result).then(function(res){
+          _dxfApplyBornes(_dxfToBornes(res), name);
         }).catch(function(){
-          toast('DWG non convertible hors ligne (écriture DXF désactivée dans la bibliothèque libre disponible). Exportez le plan en DXF depuis AutoCAD/Covadis (Fichier → Enregistrer sous → DXF), puis réimportez.','error');
+          toast('DWG illisible (hors ligne au premier usage, ou entités non couvertes). Exportez le plan en DXF depuis AutoCAD/Covadis (Fichier → Enregistrer sous → DXF), puis réimportez.','error');
         });
       } else if (binDxf){
         toast('DXF binaire non pris en charge — ré-exportez en DXF ASCII (R12/2018 ASCII).','error');
@@ -96928,13 +97036,39 @@ function qrSvgTag(text){
     var ext = (file.name.split('.').pop() || '').toLowerCase();
 
     if (ext === 'dwg') {
-      _impMsg('<b>DWG non pris en charge nativement.</b><br>'
-        + 'Le DWG est un format binaire propriétaire Autodesk. La bibliothèque WASM libre disponible (LibreDWG) sait le <i>lire</i> mais pas le <i>réécrire en DXF</i> dans sa version distribuée — aucune conversion fiable n\'est possible hors ligne sans backend dédié.<br><br>'
-        + '<b>Solution — exportez en DXF (30 secondes, sans perte) :</b><br>'
-        + '• AutoCAD / AutoCAD LT : <i>Fichier → Enregistrer sous → AutoCAD DXF (*.dxf)</i><br>'
-        + '• BricsCAD, DraftSight, ZWCAD : même chemin<br>'
-        + '• Gratuit : <i>ODA File Converter</i> (Open Design Alliance) ou <i>LibreCAD</i><br><br>'
-        + 'Le DXF importé garde les calques, les cotes et les blocs — il est directement convertible en éléments chiffrables.', 'warn');
+      _impMsg('⏳ DWG détecté — lecture native en cours (WASM, accès réseau au premier usage)…', 'info');
+      var frDwg = new FileReader();
+      frDwg.onload = function() {
+        _dwgParseNatif(frDwg.result).then(function(res) {
+          IMP.pending = { kind: 'dxf', nom: file.name, data: res };
+          var uw = document.getElementById('imp-unite-wrap'); if (uw) uw.style.display = '';
+          var us = document.getElementById('imp-unite');
+          if (us) us.value = res.uniteAuto ? 'auto' : String(res.facteur);
+          var lay = Object.keys(res.layers);
+          _impMsg('✅ <b>DWG lu</b> — ' + res.ents.length + ' entité(s) sur <b>' + lay.length + ' calque(s)</b> '
+            + '(LINE/LWPOLYLINE/CIRCLE/ARC/TEXT).<br>'
+            + 'Unité : <b>' + res.uniteNom + '</b> · Emprise : <b>'
+            + (Math.round(res.wM * 10) / 10) + ' × ' + (Math.round(res.hM * 10) / 10) + ' m</b>'
+            + (res.blocsIgnores
+                ? ('<br>' + (res._blocsExpansionOk
+                    ? '⚠️ ' + res.blocsIgnores + ' bloc(s) référencé(s) mais introuvables dans la table des blocs (non expansés).'
+                    : '⚠️ ' + res.blocsIgnores + ' bloc(s) INSERT non expansés — mobilier/symboles absents (API de la table des blocs non confirmée).'))
+                : '')
+            + (res._erreursEntites ? '<br>⚠️ ' + res._erreursEntites + ' entité(s) ignorée(s) (type non couvert ou données incomplètes).' : '')
+            + '<br><span style="color:var(--dim);">Calques : ' + lay.slice(0, 12).join(', ') + (lay.length > 12 ? '…' : '') + '</span>'
+            + '<br><span style="color:#EF9F27;">⚠️ Vérifiez l\'orientation des arcs/cercles au premier import — conversion d\'angle non garantie sur tous les DWG.</span>', 'ok');
+          if (btn) btn.disabled = false;
+        }).catch(function() {
+          _impMsg('<b>DWG illisible</b> (hors ligne au premier usage, version DWG trop récente/ancienne, ou entités non couvertes par le lecteur embarqué).<br><br>'
+            + '<b>Solution — exportez en DXF (30 secondes, sans perte) :</b><br>'
+            + '• AutoCAD / AutoCAD LT : <i>Fichier → Enregistrer sous → AutoCAD DXF (*.dxf)</i><br>'
+            + '• BricsCAD, DraftSight, ZWCAD : même chemin<br>'
+            + '• Gratuit : <i>ODA File Converter</i> (Open Design Alliance) ou <i>LibreCAD</i><br><br>'
+            + 'Le DXF importé garde les calques, les cotes et les blocs — il est directement convertible en éléments chiffrables.', 'warn');
+        });
+      };
+      frDwg.onerror = function() { _impMsg('Lecture du fichier DWG impossible.', 'error'); };
+      frDwg.readAsArrayBuffer(file);
       return;
     }
 
