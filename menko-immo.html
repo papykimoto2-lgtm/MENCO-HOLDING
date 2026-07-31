@@ -96946,13 +96946,35 @@ function qrSvgTag(text){
     var ext = (file.name.split('.').pop() || '').toLowerCase();
 
     if (ext === 'dwg') {
-      _impMsg('<b>DWG non pris en charge nativement.</b><br>'
-        + 'Le DWG est un format binaire propriétaire Autodesk : aucun navigateur ne sait le lire sans licence, et le convertir côté serveur exposerait vos plans.<br><br>'
-        + '<b>Solution — exportez en DXF (30 secondes, sans perte) :</b><br>'
-        + '• AutoCAD / AutoCAD LT : <i>Fichier → Enregistrer sous → AutoCAD DXF (*.dxf)</i><br>'
-        + '• BricsCAD, DraftSight, ZWCAD : même chemin<br>'
-        + '• Gratuit : <i>ODA File Converter</i> (Open Design Alliance) ou <i>LibreCAD</i><br><br>'
-        + 'Le DXF importé garde les calques, les cotes et les blocs — il est directement convertible en éléments chiffrables.', 'warn');
+      _impMsg('⏳ DWG détecté — conversion en DXF en cours (WASM, éventuellement un accès réseau au premier usage)…', 'info');
+      var frDwg = new FileReader();
+      frDwg.onload = function() {
+        _dwgToDxf(frDwg.result).then(function(dxfTxt) {
+          var res;
+          try { res = _dxfParse(dxfTxt); }
+          catch (err) { _impMsg('<b>Conversion réussie mais DXF résultant illisible.</b><br>' + (err && err.message ? err.message : ''), 'error'); return; }
+          if (!res.ents.length) { _impMsg('<b>Conversion réussie mais aucune entité exploitable.</b><br>Vérifiez le contenu du DWG (section ENTITIES).', 'error'); return; }
+          IMP.pending = { kind: 'dxf', nom: file.name, data: res };
+          var uw = document.getElementById('imp-unite-wrap'); if (uw) uw.style.display = '';
+          var us = document.getElementById('imp-unite');
+          if (us) us.value = res.uniteAuto ? 'auto' : String(res.facteur);
+          var lay = Object.keys(res.layers);
+          _impMsg('✅ <b>DWG converti</b> — ' + res.ents.length + ' entité(s) sur <b>' + lay.length + ' calque(s)</b>.<br>'
+            + 'Unité détectée : <b>' + res.uniteNom + '</b> · Emprise : <b>'
+            + (Math.round(res.wM * 10) / 10) + ' × ' + (Math.round(res.hM * 10) / 10) + ' m</b>'
+            + '<br><span style="color:var(--dim);">Calques : ' + lay.slice(0, 12).join(', ') + (lay.length > 12 ? '…' : '') + '</span>', 'ok');
+          if (btn) btn.disabled = false;
+        }).catch(function() {
+          _impMsg('<b>Conversion DWG impossible</b> (hors ligne au premier usage, ou version DWG non prise en charge par le convertisseur embarqué).<br><br>'
+            + '<b>Solution — exportez en DXF (30 secondes, sans perte) :</b><br>'
+            + '• AutoCAD / AutoCAD LT : <i>Fichier → Enregistrer sous → AutoCAD DXF (*.dxf)</i><br>'
+            + '• BricsCAD, DraftSight, ZWCAD : même chemin<br>'
+            + '• Gratuit : <i>ODA File Converter</i> (Open Design Alliance) ou <i>LibreCAD</i><br><br>'
+            + 'Le DXF importé garde les calques, les cotes et les blocs — il est directement convertible en éléments chiffrables.', 'warn');
+        });
+      };
+      frDwg.onerror = function() { _impMsg('Lecture du fichier DWG impossible.', 'error'); };
+      frDwg.readAsArrayBuffer(file);
       return;
     }
 
