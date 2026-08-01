@@ -1,6 +1,19 @@
 import re, json
 
-with open("/home/claude/w/menko-immo-13-68.html", "r", encoding="utf-8", errors="replace") as f:
+import re, json, os, glob
+
+# Chemin relatif : cherche menko-immo-*.html à côté du dossier tests/,
+# ou utilise la variable d'env IMMOSUITE_HTML si définie (utile en CI).
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+html_path = os.environ.get("IMMOSUITE_HTML")
+if not html_path:
+    candidats = sorted(glob.glob(os.path.join(SCRIPT_DIR, "menko-immo-*.html"))) \
+        or sorted(glob.glob(os.path.join(SCRIPT_DIR, "..", "menko-immo-*.html")))
+    if not candidats:
+        raise FileNotFoundError("Aucun menko-immo-*.html trouvé (place le fichier dans tests/ ou à côté, ou définis IMMOSUITE_HTML)")
+    html_path = candidats[-1]
+
+with open(html_path, "r", encoding="utf-8", errors="replace") as f:
     html = f.read()
 
 def extract_function(name, src):
@@ -37,7 +50,8 @@ out = []
 for n in names:
     out.append(extract_function(n, html))
 
-with open("/home/claude/w/tests/extracted_functions.js", "w", encoding="utf-8") as f:
+out_path = os.path.join(SCRIPT_DIR, "extracted_functions.js")
+with open(out_path, "w", encoding="utf-8") as f:
     f.write("// Fonctions EXTRAITES TELLES QUELLES de menko-immo-13-68.html (aucune réécriture)\n")
     f.write("// Régénéré par extract_functions.py — ne pas éditer à la main.\n\n")
     f.write(champs_sensibles_src)
