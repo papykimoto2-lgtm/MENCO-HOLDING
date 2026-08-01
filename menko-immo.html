@@ -2505,6 +2505,9 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
       <div class="nav-group" id="navgrp-5" data-group="5">
         <div class="nav-section" onclick="toggleNavGroup(5)"><span class="nav-group-badge" id="grpbadge-5"></span><span class="nav-step">5</span><span>Ventes &amp; Contrats</span><span class="nav-toggle"></span></div>
         <div class="nav-group-body">
+          <div class="nav-item" onclick="goTo('commercialisation')" data-page="commercialisation">
+        <span class="nav-icon">📊</span><span>Commercialisation</span>
+      </div>
           <div class="nav-item" onclick="goTo('lots')" data-page="lots">
         <span class="nav-icon">🏠</span><span>Lots &amp; Réservations</span>
       </div>
@@ -3315,6 +3318,19 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
       </div>
 
       <!-- ── LOTS & FONCIER ─────────────────────────── -->
+      <div class="page" id="page-commercialisation">
+        <div class="page-header"><h2>📊 Commercialisation</h2></div>
+        <div class="kpi-grid" id="cmz-kpis"></div>
+        <div class="card" style="margin-top:16px;">
+          <div class="card-header"><h3>Taux de commercialisation par programme</h3></div>
+          <div class="card-body"><div id="cmz-table"></div></div>
+        </div>
+        <div class="card" style="margin-top:16px;" id="cmz-alerts-card">
+          <div class="card-header"><h3>⏰ Réservations à échéance (délai de validité dépassé)</h3></div>
+          <div class="card-body"><div id="cmz-alerts"></div></div>
+        </div>
+      </div>
+
       <div class="page" id="page-lots">
         <div class="page-header">
           <div>
@@ -18520,7 +18536,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <option value="visite">Visite planifiée</option>
             <option value="visite_faite">Visite effectuée</option>
             <option value="negociation">En négociation</option>
-            <option value="reservation">Réservé → Souscripteur</option>
+            <option value="reservation">Converti → Souscripteur</option>
           </select>
         </div>
         <div class="form-group"><label>Commercial assigné</label><select class="form-control" id="ld-commercial"><option value="">— Choisir —</option></select></div>
@@ -24822,6 +24838,53 @@ function collapseAllNav(expand){
 if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', _restoreNavGroups);
 else setTimeout(_restoreNavGroups,0);
 
+function renderCommercialisation() {
+  var lots = DATA.lots || [], progs = DATA.programmes || [];
+  var totD=0, totR=0, totV=0;
+  var rows = progs.map(function(p){
+    var lp = lots.filter(function(l){ return l.programme_id === p.id; });
+    var d = lp.filter(function(l){ return l.statut==='disponible' || !l.statut; }).length;
+    var r = lp.filter(function(l){ return l.statut==='reserve'; }).length;
+    var v = lp.filter(function(l){ return l.statut==='vendu'; }).length;
+    totD+=d; totR+=r; totV+=v;
+    var tot = lp.length || 1;
+    var pct = Math.round((v+r)/tot*100);
+    return { nom:p.nom||'—', d:d, r:r, v:v, tot:lp.length, pct:pct };
+  }).filter(function(r){ return r.tot>0; });
+
+  var totLots = totD+totR+totV;
+  var pctGlobal = totLots ? Math.round((totV+totR)/totLots*100) : 0;
+  document.getElementById('cmz-kpis').innerHTML =
+    '<div class="kpi-card" data-icon="🏠"><div class="kpi-label">Total lots</div><div class="kpi-value">'+totLots+'</div></div>'
+    + '<div class="kpi-card" data-icon="🟢"><div class="kpi-label">Disponibles</div><div class="kpi-value">'+totD+'</div></div>'
+    + '<div class="kpi-card" data-icon="🟠"><div class="kpi-label">Réservés</div><div class="kpi-value">'+totR+'</div></div>'
+    + '<div class="kpi-card" data-icon="🔵"><div class="kpi-label">Vendus</div><div class="kpi-value">'+totV+'</div></div>'
+    + '<div class="kpi-card" data-icon="📈"><div class="kpi-label">Taux commercialisation</div><div class="kpi-value">'+pctGlobal+'%</div></div>';
+
+  var tbl = '<table class="data-table"><thead><tr><th>Programme</th><th>Disponibles</th><th>Réservés</th><th>Vendus</th><th>Total</th><th>Taux</th></tr></thead><tbody>'
+    + rows.map(function(r){
+        return '<tr><td>'+escHtml(r.nom)+'</td><td>'+r.d+'</td><td>'+r.r+'</td><td>'+r.v+'</td><td>'+r.tot+'</td>'
+          + '<td><div style="display:flex;align-items:center;gap:8px;"><div style="flex:1;height:8px;background:rgba(148,163,184,.2);border-radius:4px;overflow:hidden;"><div style="width:'+r.pct+'%;height:100%;background:#10B981;"></div></div><span style="font-size:12px;font-weight:600;">'+r.pct+'%</span></div></td></tr>';
+      }).join('')
+    + '</tbody></table>';
+  document.getElementById('cmz-table').innerHTML = rows.length ? tbl : '<div style="padding:16px;color:#64748B;">Aucun programme.</div>';
+
+  /* Réservations au-delà du délai de validité (réutilise le seuil paramétrable, §4.2) */
+  var now = new Date();
+  var _delaiResa = parseInt((DATA.params||{}).delai_validite_reservation_j) || 30;
+  var _seuilDateResa = new Date(now.getFullYear(), now.getMonth(), now.getDate() - _delaiResa).toISOString().slice(0,10);
+  var expirees = lots.filter(function(l){ return l.statut==='reserve' && l.date_reservation && l.date_reservation < _seuilDateResa; });
+  document.getElementById('cmz-alerts').innerHTML = expirees.length
+    ? '<table class="data-table"><thead><tr><th>Lot</th><th>Programme</th><th>Réservé le</th><th>Souscripteur</th></tr></thead><tbody>'
+      + expirees.map(function(l){
+          var p = progs.find(function(x){ return x.id===l.programme_id; });
+          var c = (DATA.clients||[]).find(function(x){ return x.id===l.client_id; });
+          return '<tr><td>Lot '+escHtml(String(l.numero||''))+'</td><td>'+escHtml((p&&p.nom)||'—')+'</td><td>'+escHtml(l.date_reservation)+'</td><td>'+escHtml(c?((c.prenoms||'')+' '+(c.nom||'')).trim():'—')+'</td></tr>';
+        }).join('')
+      + '</tbody></table>'
+    : '<div style="color:#10B981;padding:12px 0;">✅ Aucune réservation en dépassement de délai.</div>';
+}
+
 function goTo(page) {
   document.querySelectorAll('.page').forEach(function(p) { p.classList.remove('active'); });
   document.querySelectorAll('.nav-item').forEach(function(n) { n.classList.remove('active'); });
@@ -24837,6 +24900,7 @@ function goTo(page) {
   if (page === 'paiements') { renderVersements(); populateClientSelects(); }
   if (page === 'programmes') renderProgrammes();
   if (page === 'lots') { populateFilterProgrammes(); renderLots(); renderTerrains(); }
+  if (page === 'commercialisation') { renderCommercialisation(); }
   if (page === 'filiere') filiereRender();
   if (page === 'bilan-promotion') bpInit();
   if (page === 'comptabilite') { loadComptabilite(); updateCompteSuggestions(); }
@@ -25469,7 +25533,7 @@ var CMRC_STADES = [
   {k:'visite',       label:'Visite planifiée', proba:0.30, color:'#6366F1'},
   {k:'visite_faite', label:'Visite effectuée', proba:0.50, color:'#8B5CF6'},
   {k:'negociation',  label:'En négociation',   proba:0.75, color:'#C5A880'},
-  {k:'reservation',  label:'Réservé',          proba:0.95, color:'#10B981'}
+  {k:'reservation',  label:'Converti',         proba:0.95, color:'#10B981'}
 ];
 function _cmrcStade(k){ return CMRC_STADES.find(function(s){return s.k===k;}) || CMRC_STADES[0]; }
 
@@ -27112,6 +27176,11 @@ async function majStatutLotClient(clientId) {
       lot.date_reservation = today();
     }
     if (nouveau === 'vendu') { lot.date_vente = lot.date_vente || today(); }
+    /* 4.5 - Historique des changements de statut : traçabilité en cas de litige (double vente, erreur de saisie) */
+    lot.historique_statuts = (lot.historique_statuts || []).concat([{
+      date: new Date().toISOString(), ancien: lot.statut || null, nouveau: nouveau,
+      client_id: clientId, user: (APP.currentUser && (APP.currentUser.nom || APP.currentUser.login)) || 'system'
+    }]);
     lot.statut = nouveau; lot.client_id = clientId;
     await dbPut('lots', lot);
     if (typeof syncToSupabase === 'function') syncToSupabase('pi_lots', lot);
@@ -107093,6 +107162,16 @@ function dossierTechniqueLot(lotId){
   doc.autoTable({ startY:yS, head:[['SOUSCRIPTEUR / ACQUÉREUR','']], body:sRows, theme:'grid',
     styles:{fontSize:9,cellPadding:1.6}, headStyles:{fillColor:[30,64,120],halign:'left'},
     columnStyles:{0:{cellWidth:55,fontStyle:'bold'},1:{cellWidth:125}}, margin:{left:15,right:15} });
+
+  /* ── Historique des statuts (4.5) ── */
+  var yH=doc.lastAutoTable.finalY+4;
+  if (l.historique_statuts && l.historique_statuts.length) {
+    var hRows = l.historique_statuts.map(function(h){
+      return [(typeof _frDate==='function')?_frDate(h.date.substring(0,10)):h.date, (h.ancien||'—'), h.nouveau, h.user||'—'];
+    });
+    doc.autoTable({ startY:yH, head:[['Date','Ancien statut','Nouveau statut','Utilisateur']], body:hRows, theme:'grid',
+      styles:{fontSize:8,cellPadding:1.4}, headStyles:{fillColor:[90,90,90],halign:'left'}, margin:{left:15,right:15} });
+  }
 
   /* ── Plan coté du lot ── */
   var yP=doc.lastAutoTable.finalY+5;
