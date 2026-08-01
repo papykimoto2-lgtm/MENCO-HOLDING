@@ -3474,7 +3474,9 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <option value="vendu">Réalisé (vendus)</option>
             </select>
             <button class="btn btn-secondary btn-sm" onclick="exportMargeCSV()">⬇ Export CSV</button>
+            <button class="btn btn-secondary btn-sm" onclick="calculerCoutGestionLots()" title="Répartit les charges fonctionnelles (62/64/66 hors 629) sur les lots — analytique uniquement, sans écriture comptable">🧮 Coût de gestion (charges fonctionnelles)</button>
           </div>
+          <div id="cmz-cout-gestion-note" style="font-size:11px;color:var(--blanc-dim);margin-bottom:8px;"></div>
           <div id="lots-marge"></div>
         </div>
       </div>
@@ -30440,6 +30442,53 @@ function renderLotsDashboard() {
    Filtres : programme (barre) · nature (terrain/tous) · portée (tous/vendus)
    ══════════════════════════════════════════════════════════════════ */
 var _margeRows = [];
+/* ══════════════════════════════════════════════════════
+   COÛT DE GESTION (coût complet analytique) — NE MODIFIE JAMAIS lot.cout_revient
+   ni les comptes de stock SYSCOHADA (33x). Usage : piloter la marge réelle.
+   Charges fonctionnelles du promoteur (encadrement, administration, direction,
+   frais financiers de structure) réparties au prorata surface sur les lots actifs.
+   Base : comptes 62 (hors 629, commission directe déjà rattachée au lot vendu),
+   64 (personnel siège) et 66 (financier), sur l'exercice en cours. Les coûts
+   directs de chantier (matériaux, main-d'œuvre, DQE) restent exclusivement dans
+   lot.cout_revient — aucune double comptabilisation.
+   AUCUNE écriture comptable générée : une incorporation de frais généraux au
+   coût des stocks fausserait le bilan (art. 44 AUDCIF) et expose à un
+   redressement fiscal ; ceci reste un calcul de gestion interne, hors SYSCOHADA. */
+function calculerCoutGestionLots() {
+  var year = new Date().getFullYear();
+  var soldes = {};
+  (DATA.ecritures || []).filter(function(e){ return e.date && e.date.startsWith(String(year)); }).forEach(function(e){
+    ecrLignes(e).forEach(function(l){
+      if (!l.compte) return;
+      soldes[l.compte] = (soldes[l.compte] || 0) + (l.sens === 'D' ? 1 : -1) * (parseFloat(l.montant) || 0);
+    });
+  });
+  var fraisFonctionnels = 0;
+  Object.keys(soldes).forEach(function(compte){
+    if (compte.indexOf('629') === 0) return; /* commission directe sur vente, déjà affectée au lot */
+    if (compte.indexOf('62') === 0 || compte.indexOf('64') === 0 || compte.indexOf('66') === 0) {
+      fraisFonctionnels += soldes[compte];
+    }
+  });
+  fraisFonctionnels = Math.max(0, fraisFonctionnels);
+
+  var lotsActifs = (DATA.lots || []).filter(function(l){ return l.statut === 'disponible' || l.statut === 'reserve' || l.statut === 'vendu'; });
+  var sumSurf = lotsActifs.reduce(function(s,l){ return s + (parseFloat(l.surface)||0); }, 0);
+
+  lotsActifs.forEach(function(l){
+    var quotePart = sumSurf > 0
+      ? Math.round(fraisFonctionnels * (parseFloat(l.surface)||0) / sumSurf)
+      : Math.round(fraisFonctionnels / lotsActifs.length);
+    l._coutGestionIndirect = quotePart;
+    l._coutGestionComplet = (parseFloat(l.cout_revient)||0) + quotePart;
+  });
+
+  var note = document.getElementById('cmz-cout-gestion-note');
+  if (note) note.textContent = '🧮 Charges fonctionnelles ' + year + ' réparties : ' + fmtF(fraisFonctionnels) + ' FCFA sur ' + lotsActifs.length + ' lot(s) actif(s), au prorata surface — analytique uniquement, aucune écriture comptable générée.';
+  toast('✅ Coût de gestion calculé (analytique) — ' + fmtF(fraisFonctionnels) + ' FCFA de charges fonctionnelles réparties.', 'success');
+  renderMargeLots();
+}
+
 function renderMargeLots() {
   var box = document.getElementById('lots-marge'); if (!box) return;
   var N = function(v){ return parseFloat(v)||0; };
@@ -30481,6 +30530,8 @@ function renderMargeLots() {
     + '</div>';
   var avert = sansCout ? '<div class="card" style="margin-bottom:14px;border-left:3px solid var(--or);padding:10px 12px;font-size:12px;color:var(--blanc-dim);">⚠️ '+sansCout+' lot(s) sans coût de revient saisi — marge = prix (surévaluée). Renseignez le coût (forfait ou au m²) pour fiabiliser.</div>' : '';
 
+  var _hasCoutGestion = lots.some(function(l){ return l._coutGestionComplet != null; });
+
   /* Groupement par programme */
   var groupes = {};
   lots.forEach(function(l){ var k=l.programme_id||'—'; (groupes[k]=groupes[k]||[]).push(l); });
@@ -30488,12 +30539,15 @@ function renderMargeLots() {
   _margeRows = [];
   var sections = Object.keys(groupes).map(function(pid){
     var arr = groupes[pid].slice().sort(function(a,b){ return (a.numero||'').localeCompare(b.numero||''); });
-    var sCA=0,sCout=0,sSurf=0;
+    var sCA=0,sCout=0,sSurf=0,sCoutGest=0;
     var rows = arr.map(function(l){
       var prix=N(l.prix), cout=N(l.cout_revient), marge=prix-cout, pct=prix>0?(marge/prix*100):0;
-      sCA+=prix; sCout+=cout; sSurf+=N(l.surface);
-      _margeRows.push([progNom(pid), l.numero||'', natLbl[l.nature]||l.nature||'', N(l.surface), prix, cout, marge, pct.toFixed(1), statLbl[l.statut]||l.statut||'']);
+      var coutGest = l._coutGestionComplet!=null ? N(l._coutGestionComplet) : null;
+      var margeGest = coutGest!=null ? prix-coutGest : null;
+      sCA+=prix; sCout+=cout; sSurf+=N(l.surface); if(coutGest!=null) sCoutGest+=coutGest;
+      _margeRows.push([progNom(pid), l.numero||'', natLbl[l.nature]||l.nature||'', N(l.surface), prix, cout, marge, pct.toFixed(1), statLbl[l.statut]||l.statut||'', coutGest||'']);
       var mc = marge>=0?'var(--vert)':'var(--rouge)';
+      var mgc = margeGest!=null ? (margeGest>=0?'var(--vert)':'var(--rouge)') : '';
       return '<tr>'
         + '<td style="font-size:12px;">'+escHtml(l.numero||'—')+(l.ilot?' <span style="color:var(--blanc-dim);">/'+escHtml(l.ilot)+'</span>':'')+'</td>'
         + '<td style="text-align:right;">'+(N(l.surface)?fmtF(N(l.surface)):'—')+'</td>'
@@ -30501,25 +30555,31 @@ function renderMargeLots() {
         + '<td style="text-align:right;color:var(--blanc-dim);">'+(cout?fmtF(cout):'—')+'</td>'
         + '<td style="text-align:right;font-weight:700;color:'+mc+';">'+fmtF(marge)+'</td>'
         + '<td style="text-align:right;color:'+mc+';">'+(prix>0?pct.toFixed(1)+'%':'—')+'</td>'
+        + (_hasCoutGestion ? '<td style="text-align:right;color:var(--blanc-dim);">'+(coutGest!=null?fmtF(coutGest):'—')+'</td><td style="text-align:right;font-weight:700;color:'+mgc+';">'+(margeGest!=null?fmtF(margeGest):'—')+'</td>' : '')
         + '<td style="text-align:center;font-size:11px;">'+(statLbl[l.statut]||l.statut||'')+'</td>'
         + '</tr>';
     }).join('');
     var sMarge=sCA-sCout, sPct=sCA>0?(sMarge/sCA*100):0, smc=sMarge>=0?'var(--vert)':'var(--rouge)';
+    var sMargeGest = sCA-sCoutGest, smgc = sMargeGest>=0?'var(--vert)':'var(--rouge)';
     var sub = '<tr style="background:var(--card2);font-weight:700;">'
       + '<td>Sous-total</td><td style="text-align:right;">'+fmtF(sSurf)+'</td>'
       + '<td style="text-align:right;">'+fmtF(sCA)+'</td><td style="text-align:right;">'+fmtF(sCout)+'</td>'
       + '<td style="text-align:right;color:'+smc+';">'+fmtF(sMarge)+'</td>'
-      + '<td style="text-align:right;color:'+smc+';">'+sPct.toFixed(1)+'%</td><td></td></tr>';
+      + '<td style="text-align:right;color:'+smc+';">'+sPct.toFixed(1)+'%</td>'
+      + (_hasCoutGestion ? '<td style="text-align:right;">'+fmtF(sCoutGest)+'</td><td style="text-align:right;color:'+smgc+';">'+fmtF(sMargeGest)+'</td>' : '')
+      + '<td></td></tr>';
     return '<div class="card" style="margin-bottom:16px;overflow-x:auto;">'
       + '<div class="card-title">🗺️ '+escHtml(progNom(pid))+' <span style="font-size:11px;color:var(--blanc-dim);font-weight:400;">— '+arr.length+' lot(s)</span></div>'
       + '<table style="width:100%;font-size:12px;margin-top:8px;"><thead><tr>'
       + '<th style="text-align:left;">Lot</th><th style="text-align:right;">Surface m²</th>'
       + '<th style="text-align:right;">Prix vente</th><th style="text-align:right;">Coût revient</th>'
-      + '<th style="text-align:right;">Marge</th><th style="text-align:right;">%</th><th style="text-align:center;">Statut</th>'
+      + '<th style="text-align:right;">Marge</th><th style="text-align:right;">%</th>'
+      + (_hasCoutGestion ? '<th style="text-align:right;">Coût gestion*</th><th style="text-align:right;">Marge gestion*</th>' : '')
+      + '<th style="text-align:center;">Statut</th>'
       + '</tr></thead><tbody>'+rows+sub+'</tbody></table></div>';
   }).join('');
 
-  box.innerHTML = kpiHTML + avert + sections;
+  box.innerHTML = kpiHTML + avert + sections + (_hasCoutGestion ? '<div style="font-size:11px;color:var(--blanc-dim);margin-top:6px;">* Coût/marge de gestion : inclut la quote-part de charges fonctionnelles (analytique interne, hors SYSCOHADA — n\'affecte pas le coût de revient comptable ni les stocks).</div>' : '');
 }
 
 function exportMargeCSV() {
