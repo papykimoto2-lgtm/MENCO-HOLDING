@@ -96066,8 +96066,36 @@ function qrSvgTag(text){
     var id = sel ? sel.value : '';
     if (!id) { hint.textContent = '⚠️ Ce plan n\'est rattaché à aucun projet de conception enregistré.'; return; }
     var c = (DATA.conceptions||[]).find(function(x){ return x.id === id; });
-    hint.textContent = c ? ('Phase : ' + (c.phase||'—') + ' · Statut : ' + (c.statut||'—')) : '';
+    if (!c) { hint.textContent = ''; return; }
+    if (!c.programme_id) {
+      hint.innerHTML = '🔴 Cette fiche de conception n\'a AUCUN programme renseigné — elle restera invisible dans le DQE tant que ce n\'est pas corrigé. '
+        + '<button class="btn btn-danger btn-sm" style="margin-left:6px;padding:2px 8px;font-size:10px;" onclick="archiCorrigerProgrammeConception(\'' + c.id + '\')">🔧 Rattacher à un programme</button>';
+      return;
+    }
+    var prog = (DATA.programmes||[]).find(function(p){ return p.id === c.programme_id; });
+    hint.innerHTML = 'Programme : ' + (prog ? escHtml(prog.nom) : '⚠️ introuvable') + ' · Phase : ' + (c.phase||'—') + ' · Statut : ' + (c.statut||'—')
+      + (c.type_logements ? '' : ' · ⚠️ type de logement non renseigné (obligatoire pour le DQE)')
+      + ' <button class="btn btn-secondary btn-sm" style="margin-left:6px;padding:2px 8px;font-size:10px;" onclick="openConceptionFull(\'' + c.id + '\')">✏️ Ouvrir la fiche</button>';
   }
+
+  /* Répare une fiche de conception orpheline (sans programme) depuis
+     l'éditeur de plans — évite de devoir rouvrir le module Plans &
+     Conception pour un simple oubli de champ à la création. */
+  window.archiCorrigerProgrammeConception = async function(conceptionId) {
+    var c = (DATA.conceptions||[]).find(function(x){ return x.id === conceptionId; });
+    if (!c) return;
+    var options = (DATA.programmes||[]).map(function(p){ return p.nom; });
+    if (!options.length) { toast('Aucun programme existant à proposer.', 'error'); return; }
+    var choix = prompt('Programme à rattacher à cette fiche de conception « ' + (c.ref||'') + ' » :\n\n' + options.map(function(n,i){ return (i+1)+'. '+n; }).join('\n') + '\n\nTapez le numéro :', '');
+    var idx = parseInt(choix) - 1;
+    if (isNaN(idx) || !DATA.programmes[idx]) { toast('Annulé — aucun numéro valide saisi.', 'info'); return; }
+    c.programme_id = DATA.programmes[idx].id;
+    await dbPut('conceptions', c);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_conceptions', c);
+    toast('✅ Conception rattachée à ' + DATA.programmes[idx].nom + '.', 'success');
+    if (typeof window.archiPopulerConceptions === 'function') window.archiPopulerConceptions();
+    archiMajHintConception();
+  };
 
   /* Change le rattachement du plan courant. Le lien est persisté au prochain
      archiEnregistrerDessin() ; s'il n'y a pas encore de plan enregistré,
