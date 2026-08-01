@@ -16029,11 +16029,37 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
       <div style="margin-top:16px;padding:14px;background:rgba(74,196,122,0.08);border:1px solid rgba(74,196,122,0.3);border-radius:10px;">
         <div style="font-weight:700;color:var(--vert);margin-bottom:6px;">⚡ Génération automatique des lots</div>
         <div style="font-size:12px;color:var(--dim);margin-bottom:10px;">Génère automatiquement tous les lots à partir des modèles définis. Les lots déjà existants ne seront pas écrasés.</div>
-        <button class="btn btn-primary" style="background:var(--vert);" onclick="genererLotsDepuisModeles()" title="Étape 6 — Générer sur le nombre de maisons du programme"><span class="flux-step">⑥</span>🏗️ Générer les lots automatiquement</button>
+        <button class="btn btn-primary" style="background:var(--vert);" onclick="genererLotsDepuisModeles()" title="Étape 6 — Prévisualiser puis générer les lots"><span class="flux-step">⑥</span>🏗️ Générer les lots automatiquement</button>
       </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-modeles')">Fermer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal État récapitulatif — génération en série des lots -->
+<div class="modal-overlay" id="modal-serie-recap">
+  <div class="modal modal-lg">
+    <div class="modal-header"><h3>📋 État récapitulatif — Lots à générer</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-serie-recap')">✕</button></div>
+    <div class="modal-body">
+      <div id="serie-recap-summary" style="font-size:12px;color:var(--blanc-dim);margin-bottom:10px;"></div>
+      <div style="max-height:400px;overflow:auto;">
+        <table class="data-table" id="serie-recap-table" style="width:100%;">
+          <thead><tr>
+            <th>N° lot</th><th>Type</th><th>Surface (m²)</th><th>Prix (FCFA)</th>
+            <th>Standing</th><th>Livraison</th><th></th>
+          </tr></thead>
+          <tbody id="serie-recap-tbody"></tbody>
+        </table>
+      </div>
+      <div style="font-size:11px;color:var(--blanc-dim);margin-top:8px;">Modifiez les champs directement dans le tableau, ou supprimez une ligne avant validation. Rien n'est enregistré tant que vous n'avez pas cliqué sur « Valider la génération ».</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-serie-recap')">Annuler</button>
+      <button class="btn btn-secondary" onclick="serieExporterPDF()">📄 État PDF</button>
+      <button class="btn btn-primary" style="background:var(--vert);" onclick="serieValiderGeneration()">✅ Valider la génération</button>
     </div>
   </div>
 </div>
@@ -29062,13 +29088,15 @@ async function deleteModele(id) {
   toast('Type supprimé.', 'info');
 }
 
-async function genererLotsDepuisModeles() {
+/* Génération en série — ÉTAPE 1 : calcule la liste des lots à créer et ouvre
+   l'état récapitulatif (modifiable/supprimable) avant toute écriture en base. */
+function genererLotsDepuisModeles() {
   var progId = APP.currentProgrammeId;
   var prog = (DATA.programmes || []).find(function(p) { return p.id === progId; });
   var parcelleId = prog ? (prog.parcelle_id || '') : '';
   var modeles = (DATA.modeles_logement || []).filter(function(m) { return m.programme_id === progId; });
   if (!modeles.length) { toast('Aucun type défini pour ce programme.', 'error'); return; }
-  var lotsCreees = 0;
+  var preview = [];
   for (var mi = 0; mi < modeles.length; mi++) {
     var m = modeles[mi];
     var lotsExistants = (DATA.lots || []).filter(function(l) { return l.programme_id === progId && l.type === m.nom; });
@@ -29076,10 +29104,7 @@ async function genererLotsDepuisModeles() {
     var aCreer = m.nb_unites - dejaCreees;
     for (var i = 0; i < aCreer; i++) {
       var num = String(dejaCreees + i + 1).padStart(2, '0');
-      var lot = {
-        id: uid(),
-        programme_id: progId,
-        parcelle_id: parcelleId,
+      preview.push({
         numero: m.nom.substring(0, 2).toUpperCase() + '-' + num,
         ilot: '',
         type: m.nom,
@@ -29087,22 +29112,117 @@ async function genererLotsDepuisModeles() {
         pieces: m.pieces,
         prix: m.prix_vente,
         cout_revient: m.cout_revient,
-        standing: m.standing,
+        standing: m.standing || 'moyen',
         mode_livraison: m.mode_livraison || 'gros_oeuvre',
-        statut: 'disponible',
-        notes: m.description || '',
-        created_at: today()
-      };
-      if (!DATA.lots) DATA.lots = [];
-      DATA.lots.push(lot);
-      await dbPut('lots', lot);
-      syncToSupabase('pi_lots', lot);
-      lotsCreees++;
+        notes: m.description || ''
+      });
     }
   }
-  renderModelesList(progId);
+  if (!preview.length) { toast('Tous les lots sont déjà générés pour ce programme.', 'error'); return; }
+  _SERIE_PREVIEW = preview;
+  _SERIE_PROGID = progId;
+  _SERIE_PARCID = parcelleId;
+  serieRenderRecap();
+  openModal('modal-serie-recap');
+}
+var _SERIE_PREVIEW = [];
+var _SERIE_PROGID = null;
+var _SERIE_PARCID = null;
+
+function serieRenderRecap() {
+  var prog = (DATA.programmes || []).find(function(p) { return p.id === _SERIE_PROGID; });
+  document.getElementById('serie-recap-summary').textContent =
+    _SERIE_PREVIEW.length + ' lot(s) à générer — Programme : ' + ((prog && prog.nom) || '—');
+  var standings = { economique:'Économique', moyen:'Moyen', haut:'Haut de gamme', prestige:'Prestige' };
+  var livraisons = { gros_oeuvre:'Gros œuvre', second_oeuvre:'Second œuvre', cle_en_main:'Clé en main' };
+  document.getElementById('serie-recap-tbody').innerHTML = _SERIE_PREVIEW.map(function(r, idx) {
+    return '<tr>'
+      + '<td><input type="text" class="form-control" style="min-width:90px;" value="' + escHtml(r.numero) + '" onchange="serieModifierChamp(' + idx + ',\'numero\',this.value)"></td>'
+      + '<td><input type="text" class="form-control" style="min-width:100px;" value="' + escHtml(r.type) + '" onchange="serieModifierChamp(' + idx + ',\'type\',this.value)"></td>'
+      + '<td><input type="number" class="form-control" style="width:90px;" value="' + (r.surface||0) + '" onchange="serieModifierChamp(' + idx + ',\'surface\',this.value)"></td>'
+      + '<td><input type="number" class="form-control" style="width:120px;" value="' + (r.prix||0) + '" onchange="serieModifierChamp(' + idx + ',\'prix\',this.value)"></td>'
+      + '<td><select class="form-control" onchange="serieModifierChamp(' + idx + ',\'standing\',this.value)">'
+        + Object.keys(standings).map(function(k){ return '<option value="'+k+'"'+(r.standing===k?' selected':'')+'>'+standings[k]+'</option>'; }).join('')
+        + '</select></td>'
+      + '<td><select class="form-control" onchange="serieModifierChamp(' + idx + ',\'mode_livraison\',this.value)">'
+        + Object.keys(livraisons).map(function(k){ return '<option value="'+k+'"'+(r.mode_livraison===k?' selected':'')+'>'+livraisons[k]+'</option>'; }).join('')
+        + '</select></td>'
+      + '<td><button class="btn btn-danger btn-sm" onclick="serieSupprimerLigne(' + idx + ')">🗑</button></td>'
+      + '</tr>';
+  }).join('');
+}
+
+function serieModifierChamp(idx, champ, val) {
+  if (!_SERIE_PREVIEW[idx]) return;
+  _SERIE_PREVIEW[idx][champ] = (champ === 'surface' || champ === 'prix') ? parseFloat(val) || 0 : val;
+}
+
+function serieSupprimerLigne(idx) {
+  _SERIE_PREVIEW.splice(idx, 1);
+  serieRenderRecap();
+}
+
+/* ÉTAPE 2 : écriture effective en base, uniquement après validation de l'état récapitulatif. */
+async function serieValiderGeneration() {
+  if (!_SERIE_PREVIEW.length) { toast('Aucun lot à générer — liste vide.', 'error'); return; }
+  var n = 0;
+  for (var i = 0; i < _SERIE_PREVIEW.length; i++) {
+    var r = _SERIE_PREVIEW[i];
+    var lot = {
+      id: uid(),
+      programme_id: _SERIE_PROGID,
+      parcelle_id: _SERIE_PARCID,
+      numero: r.numero,
+      ilot: r.ilot || '',
+      type: r.type,
+      surface: r.surface,
+      pieces: r.pieces,
+      prix: r.prix,
+      cout_revient: r.cout_revient,
+      standing: r.standing,
+      mode_livraison: r.mode_livraison,
+      statut: 'disponible',
+      notes: r.notes || '',
+      created_at: today()
+    };
+    if (!DATA.lots) DATA.lots = [];
+    DATA.lots.push(lot);
+    await dbPut('lots', lot);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_lots', lot);
+    n++;
+  }
+  closeModal('modal-serie-recap');
+  renderModelesList(_SERIE_PROGID);
   renderLots();
-  toast('✅ ' + lotsCreees + ' lot(s) généré(s) automatiquement !', 'success');
+  toast('✅ ' + n + ' lot(s) généré(s) après validation !', 'success');
+  _SERIE_PREVIEW = [];
+}
+
+/* État PDF de la génération en série — avant validation, pour archivage/visa hiérarchique. */
+function serieExporterPDF() {
+  if (!(window.jspdf && window.jspdf.jsPDF)) { toast('jsPDF indisponible (hors ligne au 1er usage).', 'error'); return; }
+  if (!_SERIE_PREVIEW.length) { toast('Aucun lot à exporter.', 'error'); return; }
+  var prog = (DATA.programmes || []).find(function(p) { return p.id === _SERIE_PROGID; }) || {};
+  var soc = ((DATA.params||{}).societe) || 'MENKO IMMO';
+  var frd = (typeof _frDate === 'function') ? _frDate(today()) : today();
+  var doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.text(String(soc), 148, 14, { align: 'center' });
+  doc.setFontSize(15); doc.text('ÉTAT RÉCAPITULATIF — GÉNÉRATION EN SÉRIE DES LOTS', 148, 22, { align: 'center' });
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(90);
+  doc.text('Programme : ' + (prog.nom||'—') + '   ·   ' + _SERIE_PREVIEW.length + ' lot(s)   ·   ' + frd, 148, 29, { align: 'center' });
+  doc.setTextColor(0);
+  var standings = { economique:'Économique', moyen:'Moyen', haut:'Haut de gamme', prestige:'Prestige' };
+  var livraisons = { gros_oeuvre:'Gros œuvre', second_oeuvre:'Second œuvre', cle_en_main:'Clé en main' };
+  var rows = _SERIE_PREVIEW.map(function(r){
+    return [r.numero, r.type, (r.surface||0)+' m²', new Intl.NumberFormat('fr-FR').format(r.prix||0)+' FCFA',
+      standings[r.standing]||r.standing, livraisons[r.mode_livraison]||r.mode_livraison];
+  });
+  var totalPrix = _SERIE_PREVIEW.reduce(function(s,r){ return s + (parseFloat(r.prix)||0); }, 0);
+  doc.autoTable({ startY: 35, head: [['N° lot','Type','Surface','Prix de vente','Standing','Livraison']], body: rows,
+    foot: [['', '', '', 'Total : ' + new Intl.NumberFormat('fr-FR').format(totalPrix) + ' FCFA', '', '']],
+    theme: 'grid', styles: { fontSize: 9, cellPadding: 1.8 }, headStyles: { fillColor: [184,115,51] },
+    footStyles: { fillColor: [240,240,240], textColor: 0, fontStyle: 'bold' }, margin: { left: 12, right: 12 } });
+  doc.save('etat-generation-lots-' + (prog.nom||'programme').replace(/\s+/g,'_') + '-' + today() + '.pdf');
 }
 
 /* ══════════════════════════════════════════════════════
