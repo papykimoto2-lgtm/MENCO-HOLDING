@@ -3468,6 +3468,11 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <select class="filter-select" id="marge-nature" onchange="renderMargeLots()">
               <option value="terrain">🗺️ Terrains (parcelles)</option>
               <option value="all">Tous les lots</option>
+              <option value="villa">🏠 Famille : Villa</option>
+              <option value="immeuble">🏢 Famille : Immeuble</option>
+            </select>
+            <select class="filter-select" id="marge-type-logement" onchange="renderMargeLots()">
+              <option value="">Toutes familles logement</option>
             </select>
             <select class="filter-select" id="marge-scope" onchange="renderMargeLots()">
               <option value="all">Portefeuille (tous statuts)</option>
@@ -3481,6 +3486,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             </select>
             <button class="btn btn-secondary btn-sm" onclick="exportMargeCSV()">⬇ Export CSV</button>
             <button class="btn btn-secondary btn-sm" onclick="calculerCoutGestionLots()" title="Répartit les charges fonctionnelles (62/64/66 hors 629) sur les lots — analytique uniquement, sans écriture comptable">🧮 Coût de gestion (charges fonctionnelles)</button>
+            <button class="btn btn-secondary btn-sm" style="background:var(--vert);color:#fff;" onclick="figerExerciceCoutGestion()" title="Verrouille le calcul de l'exercice — plus aucun recalcul silencieux possible">🔒 Figer l'exercice</button>
           </div>
           <div id="cmz-cout-gestion-note" style="font-size:11px;color:var(--blanc-dim);margin-bottom:8px;"></div>
           <div id="lots-marge"></div>
@@ -5261,6 +5267,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div class="etape-btns">
               <button class="tab-btn" onclick="switchTab('params','users')" title="Comptes, rôles et audit des accès"><i>👤</i>Utilisateurs</button>
               <button class="tab-btn" onclick="switchTab('params','securite')" title="Politique de mots de passe et journalisation"><i>🔒</i>Sécurité</button>
+              <button class="tab-btn" onclick="switchTab('params','api');renderApiKeysAdmin()" title="Clés API pour partenaires externes (comparateurs, agences, banques)"><i>🔌</i>API partenaires</button>
             </div>
           </div>
           <div class="etape">
@@ -6685,6 +6692,38 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           </div>
           <div style="margin-top:16px;">
             <button class="btn btn-primary" onclick="saveSecuriteParams()">💾 Enregistrer la politique de sécurité</button>
+          </div>
+        </div>
+
+        <!-- ══ API partenaires ═════════════════════════════════ -->
+        <div class="tab-pane" id="tab-params-api">
+          <div class="card" style="margin-bottom:16px;">
+            <div class="form-section-title">🔌 Génération de clé API</div>
+            <div style="font-size:12px;color:var(--blanc-dim);margin:6px 0 12px;">
+              Endpoints exposés en lecture seule : <code>/v1/lots</code> (comparateurs/agences, lots disponibles uniquement),
+              <code>/v1/programmes</code> (tous scopes), <code>/v1/verification-souscripteur</code> (banques, dossier uniquement).
+              Aucune donnée interne (coût de revient, notes, pièce d'identité) n'est jamais exposée. Documentation OpenAPI fournie séparément.
+            </div>
+            <div class="form-grid">
+              <div class="form-group"><label>Partenaire (raison sociale)</label>
+                <input type="text" class="form-control" id="api-partenaire-nom" placeholder="Ex : Expat-Dakar, ECOBANK CI..."></div>
+              <div class="form-group"><label>Email de contact</label>
+                <input type="email" class="form-control" id="api-partenaire-email"></div>
+              <div class="form-group"><label>Scope</label>
+                <select class="form-control" id="api-partenaire-scope">
+                  <option value="comparateur_immobilier">Comparateur immobilier</option>
+                  <option value="agence_partenaire">Agence partenaire</option>
+                  <option value="banque">Banque (vérification dossier)</option>
+                </select></div>
+              <div class="form-group"><label>Limite requêtes/heure</label>
+                <input type="number" class="form-control" id="api-partenaire-limite" value="200" min="10"></div>
+            </div>
+            <button class="btn btn-primary" style="margin-top:10px;" onclick="genererCleApi()">🔑 Générer la clé</button>
+            <div id="api-cle-generee" style="margin-top:12px;"></div>
+          </div>
+          <div class="card">
+            <div class="form-section-title">🗝️ Clés actives</div>
+            <div id="api-keys-liste" style="margin-top:10px;"></div>
           </div>
         </div>
 
@@ -15134,6 +15173,9 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           </div>
           <div id="comm-client-status" style="margin-top:10px;font-size:12px;"></div>
         </div>
+
+        <!-- Historique / traçabilité (audit_log) -->
+        <div id="client-historique-block" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--bord);"></div>
       </div>
     </div>
     <div class="modal-footer">
@@ -22731,6 +22773,8 @@ function _filtrerFantomes(table, store, ids) {
 
 /* Correspondance table Supabase ↔ store local (IndexedDB / DATA) */
 var SUPA_STORE_MAP = [
+  ['pi_cout_gestion_exercices', 'cout_gestion_exercices'],
+  ['pi_audit_log',        'audit_log'],
   ['pi_suppressions',     'suppressions_sync'],
   ['pi_paiements_online', 'paiements_online'],
   ['pi_baux',             'baux'],
@@ -27103,6 +27147,30 @@ function validateCommApporteur() {
   alert.style.display = (!commId && !apId) ? 'block' : 'none';
 }
 
+function renderClientHistorique(id) {
+  var box = document.getElementById('client-historique-block');
+  if (!box) return;
+  var versIds = (DATA.versements||[]).filter(function(v){ return v.client_id===id; }).map(function(v){ return v.id; });
+  var entries = auditHistorique('clients', id);
+  versIds.forEach(function(vid){ entries = entries.concat(auditHistorique('versements', vid)); });
+  entries.sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); });
+  if (!entries.length) { box.innerHTML = '<div style="font-size:11px;color:var(--blanc-dim);">Aucun historique enregistré.</div>'; return; }
+  var lbl = { create:'🟢 Création', update:'🟡 Modification', delete:'🔴 Suppression' };
+  box.innerHTML = '<div class="form-section-title">🕓 Historique / Traçabilité</div>'
+    + '<div style="max-height:180px;overflow:auto;font-size:11px;margin-top:8px;">'
+    + entries.map(function(e){
+        var frd = (typeof _frDate==='function') ? _frDate(e.date.substring(0,10)) : e.date.substring(0,10);
+        var detail = (e.modifs && e.modifs.length)
+          ? e.modifs.map(function(m){ return m.champ+' : '+(m.avant||'—')+' → '+(m.apres||'—'); }).join(' · ')
+          : (e.entite==='versements' ? 'Versement' : '');
+        return '<div style="padding:4px 0;border-bottom:1px solid var(--bord);">'
+          + '<b>'+(lbl[e.action]||e.action)+'</b> — '+(e.entite==='versements'?'Versement':'Fiche')+' · '+frd+' · '+escHtml(e.user||'')
+          + (detail ? '<br><span style="color:var(--blanc-dim);">'+escHtml(detail)+'</span>' : '')
+          + '</div>';
+      }).join('')
+    + '</div>';
+}
+
 function openClientModal(id) {
   APP.editingId = id || null;
   clearClientForm();
@@ -27127,9 +27195,11 @@ function openClientModal(id) {
       + '<button class="btn btn-secondary btn-sm" onclick="etatEcheancier(\'' + id + '\')">📅 Échéancier</button>';
     // Documents téléversés
     setTimeout(function(){ refreshDocumentsForEntity('client', id); }, 80);
+    renderClientHistorique(id);
   } else {
     document.getElementById('modal-client-title').textContent = 'Nouveau Souscripteur';
     document.getElementById('c-date-debut').value = today();
+    document.getElementById('client-historique-block').innerHTML = '';
   }
   if (typeof updateLotsByProgramme === 'function') updateLotsByProgramme();
   openModal('modal-client');
@@ -27237,6 +27307,46 @@ function genererCodeDossier() {
   return 'SS' + String(max + 1).padStart(3, '0');
 }
 
+/* ══════════════════════════════════════════════════════
+   AUDIT LOG CENTRALISÉ — traçabilité des entités sensibles
+   (clients, versements, et extensible à toute entité) en cas de litige.
+   Complète l'historique déjà présent sur lot.historique_statuts (v13.68). */
+var CHAMPS_SENSIBLES = {
+  clients: ['statut','lot_id','montant_total','apport','duree','commercial_id','apporteur_id','programme_id'],
+  versements: ['montant','date','type','mode','reference','client_id'],
+  cout_gestion_exercices: ['fige','total_frais_fonctionnels']
+};
+async function logAudit(entite, entiteId, action, avant, apres) {
+  var champs = CHAMPS_SENSIBLES[entite] || [];
+  var modifs = [];
+  if (action === 'update' && avant && apres) {
+    champs.forEach(function(c){
+      var v1 = avant[c], v2 = apres[c];
+      if (String(v1||'') !== String(v2||'')) modifs.push({ champ: c, avant: v1!=null?v1:null, apres: v2!=null?v2:null });
+    });
+    if (!modifs.length) return; /* rien de sensible n'a changé — pas de bruit dans le log */
+  }
+  var entry = {
+    id: uid(),
+    entite: entite,
+    entite_id: entiteId,
+    action: action, /* 'create' | 'update' | 'delete' */
+    modifs: modifs,
+    snapshot: action === 'delete' ? avant : null,
+    date: new Date().toISOString(),
+    user: (APP.currentUser && (APP.currentUser.nom || APP.currentUser.login)) || 'system'
+  };
+  if (!DATA.audit_log) DATA.audit_log = [];
+  DATA.audit_log.push(entry);
+  await dbPut('audit_log', entry);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_audit_log', entry);
+}
+
+function auditHistorique(entite, entiteId) {
+  return (DATA.audit_log || []).filter(function(e){ return e.entite === entite && e.entite_id === entiteId; })
+    .sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); });
+}
+
 async function saveClient() {
   if (APP._savingClient) return; /* anti double-clic / double-tap mobile */
   var nom = document.getElementById('c-nom').value.trim();
@@ -27311,6 +27421,7 @@ async function saveClient() {
     var existing = DATA.clients.find(function(c) { return c.id === id; });
     if (existing) client.created_at = existing.created_at;
   }
+  var _clientAvant = existing ? JSON.parse(JSON.stringify(existing)) : null;
 
   try {
     if (APP.editingId) {
@@ -27335,6 +27446,7 @@ async function saveClient() {
     /* Statut du lot : réservé jusqu'au seuil d'immobilisation, vendu au-delà */
     await majStatutLotClient(id);
     syncToSupabase('pi_clients', client);
+    await logAudit('clients', client.id, _clientAvant ? 'update' : 'create', _clientAvant, client);
     closeModal('modal-client');
     toast('Souscripteur enregistré.', 'success');
     renderClients();
@@ -27558,6 +27670,7 @@ async function deleteClient(id) {
   if (!confirm('Supprimer ce souscripteur et tous ses versements ?')) return;
   /* Libérer le lot rattaché */
   var cli = DATA.clients.find(function(c){ return c.id === id; });
+  await logAudit('clients', id, 'delete', cli || null, null);
   if (cli && cli.lot_id) {
     var lot = DATA.lots.find(function(l){ return l.id === cli.lot_id; });
     if (lot) { lot.statut = 'disponible'; lot.client_id = null; await dbPut('lots', lot); if (typeof syncToSupabase === 'function') syncToSupabase('pi_lots', lot); }
@@ -28476,6 +28589,7 @@ async function savePaiement() {
   if (APP._editVersementId) {
     var vEdit = DATA.versements.find(function(x){ return x.id === APP._editVersementId; });
     if (vEdit) {
+      var _vAvant = JSON.parse(JSON.stringify(vEdit));
       vEdit.client_id = cid;
       vEdit.date      = date;
       vEdit.type      = document.getElementById('v-type').value;
@@ -28487,6 +28601,7 @@ async function savePaiement() {
       vEdit.modified_at = today();
       await dbPut('versements', vEdit);
       if (typeof syncToSupabase === 'function') syncToSupabase('pi_versements', vEdit);
+      await logAudit('versements', vEdit.id, 'update', _vAvant, vEdit);
       await reimpacterCommissionsVersement(vEdit);
       await genererEcritureVersement(vEdit);
       if (typeof majStatutLotClient === 'function') await majStatutLotClient(vEdit.client_id);
@@ -28519,6 +28634,7 @@ async function savePaiement() {
   DATA.versements.push(versement);
   await dbPut('versements', versement);
   syncToSupabase('pi_versements', versement);
+  await logAudit('versements', versement.id, 'create', null, versement);
 
   // ── Écriture comptable automatique (Débit Trésorerie / Crédit Client) ──────
   await genererEcritureVersement(versement);
@@ -28583,6 +28699,7 @@ async function deleteVersement(id) {
   if (!confirm('Supprimer ce versement ?')) return;
   var v = DATA.versements.find(function(x){ return x.id === id; });
   var clientId = v ? v.client_id : null;
+  await logAudit('versements', id, 'delete', v || null, null);
   DATA.versements = DATA.versements.filter(function(v) { return v.id !== id; });
   await deleteRecord('versements', id);
   await supprimerEcritureVersement(id);
@@ -30460,8 +30577,21 @@ var _margeRows = [];
    AUCUNE écriture comptable générée : une incorporation de frais généraux au
    coût des stocks fausserait le bilan (art. 44 AUDCIF) et expose à un
    redressement fiscal ; ceci reste un calcul de gestion interne, hors SYSCOHADA. */
+function _getExerciceCoutGestion(year) {
+  return (DATA.cout_gestion_exercices || []).find(function(e){ return e.annee === year; }) || null;
+}
+
 function calculerCoutGestionLots() {
   var year = new Date().getFullYear();
+  var exo = _getExerciceCoutGestion(year);
+  if (exo && exo.fige) {
+    if (!confirm('L\'exercice ' + year + ' est déjà figé (calculé le ' + (exo.date_figeage||'').substring(0,10) + ' par ' + exo.user_figeage + ').\n\nRecalculer écrasera ce figeage. Continuer ?')) {
+      _appliquerSnapshotCoutGestion(exo);
+      renderMargeLots();
+      return;
+    }
+  }
+
   var soldes = {};
   (DATA.ecritures || []).filter(function(e){ return e.date && e.date.startsWith(String(year)); }).forEach(function(e){
     ecrLignes(e).forEach(function(l){
@@ -30480,6 +30610,7 @@ function calculerCoutGestionLots() {
 
   var lotsActifs = (DATA.lots || []).filter(function(l){ return l.statut === 'disponible' || l.statut === 'reserve' || l.statut === 'vendu'; });
   var sumSurf = lotsActifs.reduce(function(s,l){ return s + (parseFloat(l.surface)||0); }, 0);
+  var details = [];
 
   lotsActifs.forEach(function(l){
     var quotePart = sumSurf > 0
@@ -30487,22 +30618,83 @@ function calculerCoutGestionLots() {
       : Math.round(fraisFonctionnels / lotsActifs.length);
     l._coutGestionIndirect = quotePart;
     l._coutGestionComplet = (parseFloat(l.cout_revient)||0) + quotePart;
+    details.push({ lot_id: l.id, surface: parseFloat(l.surface)||0, quote_part: quotePart, cout_gestion_complet: l._coutGestionComplet });
   });
 
+  /* Snapshot brouillon (non figé) — écrase le précédent brouillon, jamais un figeage sans confirmation ci-dessus */
+  saveExerciceCoutGestion(year, fraisFonctionnels, details, false);
+
   var note = document.getElementById('cmz-cout-gestion-note');
-  if (note) note.textContent = '🧮 Charges fonctionnelles ' + year + ' réparties : ' + fmtF(fraisFonctionnels) + ' FCFA sur ' + lotsActifs.length + ' lot(s) actif(s), au prorata surface — analytique uniquement, aucune écriture comptable générée.';
-  toast('✅ Coût de gestion calculé (analytique) — ' + fmtF(fraisFonctionnels) + ' FCFA de charges fonctionnelles réparties.', 'success');
+  if (note) note.textContent = '🧮 [Brouillon] Charges fonctionnelles ' + year + ' réparties : ' + fmtF(fraisFonctionnels) + ' FCFA sur ' + lotsActifs.length + ' lot(s) actif(s), au prorata surface — non figé, recalculable. Cliquez « Figer l\'exercice » pour verrouiller.';
+  toast('✅ Coût de gestion calculé (brouillon, non figé) — ' + fmtF(fraisFonctionnels) + ' FCFA de charges fonctionnelles réparties.', 'success');
   renderMargeLots();
+}
+
+async function saveExerciceCoutGestion(year, total, details, fige) {
+  var exo = _getExerciceCoutGestion(year);
+  var entry = exo || { id: uid(), annee: year };
+  entry.total_frais_fonctionnels = total;
+  entry.details = details;
+  entry.date_calcul = new Date().toISOString();
+  entry.user_calcul = (APP.currentUser && (APP.currentUser.nom || APP.currentUser.login)) || 'system';
+  if (fige) { entry.fige = true; entry.date_figeage = new Date().toISOString(); entry.user_figeage = entry.user_calcul; }
+  else if (!entry.fige) { entry.fige = false; }
+  if (!DATA.cout_gestion_exercices) DATA.cout_gestion_exercices = [];
+  if (!exo) DATA.cout_gestion_exercices.push(entry);
+  await dbPut('cout_gestion_exercices', entry);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_cout_gestion_exercices', entry);
+  return entry;
+}
+
+function _appliquerSnapshotCoutGestion(exo) {
+  var byLot = {};
+  (exo.details || []).forEach(function(d){ byLot[d.lot_id] = d; });
+  (DATA.lots || []).forEach(function(l){
+    var d = byLot[l.id];
+    if (d) { l._coutGestionIndirect = d.quote_part; l._coutGestionComplet = d.cout_gestion_complet; }
+  });
+  var note = document.getElementById('cmz-cout-gestion-note');
+  if (note) note.textContent = '🔒 [Figé le ' + exo.date_figeage.substring(0,10) + ' par ' + exo.user_figeage + '] Charges fonctionnelles ' + exo.annee + ' : ' + fmtF(exo.total_frais_fonctionnels) + ' FCFA — verrouillé, non modifiable sans déverrouillage explicite.';
+}
+
+async function figerExerciceCoutGestion() {
+  var year = new Date().getFullYear();
+  var exo = _getExerciceCoutGestion(year);
+  if (!exo || !exo.details || !exo.details.length) { toast('Lancez d\'abord « Coût de gestion » avant de figer.', 'error'); return; }
+  if (exo.fige) { toast('Exercice ' + year + ' déjà figé le ' + exo.date_figeage.substring(0,10) + '.', 'info'); return; }
+  if (!confirm('Figer définitivement le calcul ' + year + ' (' + fmtF(exo.total_frais_fonctionnels) + ' FCFA) ?\n\nAprès figeage, tout recalcul nécessitera une confirmation explicite.')) return;
+  exo = await saveExerciceCoutGestion(year, exo.total_frais_fonctionnels, exo.details, true);
+  await logAudit('cout_gestion_exercices', exo.id, 'update', { fige:false }, { fige:true, total: exo.total_frais_fonctionnels });
+  _appliquerSnapshotCoutGestion(exo);
+  toast('🔒 Exercice ' + year + ' figé — ' + fmtF(exo.total_frais_fonctionnels) + ' FCFA verrouillés.', 'success');
+  renderMargeLots();
+}
+
+/* Au chargement de l'onglet Marge : si un exercice figé existe, l'appliquer automatiquement
+   (pas de recalcul silencieux qui écraserait un chiffre déjà validé/diffusé). */
+function _autoChargerCoutGestionSiFige() {
+  var exo = _getExerciceCoutGestion(new Date().getFullYear());
+  if (exo && exo.fige) _appliquerSnapshotCoutGestion(exo);
 }
 
 function renderMargeLots() {
   var box = document.getElementById('lots-marge'); if (!box) return;
+  _autoChargerCoutGestionSiFige();
   var N = function(v){ return parseFloat(v)||0; };
   var fProg = (document.getElementById('filter-programme-lots')||{}).value || '';
   var nat = (document.getElementById('marge-nature')||{}).value || 'terrain';
   var scope = (document.getElementById('marge-scope')||{}).value || 'all';
   var fParc = (document.getElementById('marge-parcelle')||{}).value || '';
   var fOp = (document.getElementById('marge-operation')||{}).value || '';
+  var fTypeLog = (document.getElementById('marge-type-logement')||{}).value || '';
+
+  var selTypeLog = document.getElementById('marge-type-logement');
+  if (selTypeLog && selTypeLog.options.length <= 1) {
+    var typesUtilises = {};
+    (DATA.lots||[]).forEach(function(l){ if (l.type) typesUtilises[l.type] = true; });
+    selTypeLog.innerHTML = '<option value="">Toutes familles logement</option>'
+      + Object.keys(typesUtilises).sort().map(function(t){ return '<option value="'+escHtml(t)+'">'+escHtml(t)+'</option>'; }).join('');
+  }
 
   /* Peuplement dynamique parcelle/opération — uniquement les valeurs réellement utilisées par des lots */
   var selParc = document.getElementById('marge-parcelle');
@@ -30529,9 +30721,11 @@ function renderMargeLots() {
   var lots = (DATA.lots||[]).filter(function(l){
     if (fProg && l.programme_id !== fProg) return false;
     if (nat==='terrain' && l.nature !== 'terrain') return false;
+    if ((nat==='villa' || nat==='immeuble') && l.nature !== nat) return false;
     if (scope==='vendu' && l.statut !== 'vendu') return false;
     if (fParc && l.parcelle_id !== fParc) return false;
     if (fOp && l.operation_id !== fOp) return false;
+    if (fTypeLog && l.type !== fTypeLog) return false;
     return true;
   });
 
@@ -37129,6 +37323,77 @@ function renderApercuPaiement() {
 }
 
 /* ── Sécurité ───────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════
+   API PARTENAIRES — génération de clés pour intégrations tierces
+   (comparateurs immobiliers, agences, banques). La clé en clair n'est
+   affichée qu'une seule fois à la génération ; seul son hash SHA-256
+   est stocké côté serveur (table typée api_keys, cf. migration SQL). */
+async function _sha256Hex(text) {
+  var buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map(function(b){ return b.toString(16).padStart(2,'0'); }).join('');
+}
+
+async function genererCleApi() {
+  var partenaire = document.getElementById('api-partenaire-nom').value.trim();
+  var email = document.getElementById('api-partenaire-email').value.trim();
+  var scope = document.getElementById('api-partenaire-scope').value;
+  var limite = parseInt(document.getElementById('api-partenaire-limite').value) || 200;
+  if (!partenaire) { toast('Nom du partenaire obligatoire.', 'error'); return; }
+  if (!SB.url || !SB.key) { toast('Connexion Supabase non configurée.', 'error'); return; }
+
+  var cleClaire = 'sk_live_' + Array.from(crypto.getRandomValues(new Uint8Array(24))).map(function(b){ return b.toString(16).padStart(2,'0'); }).join('');
+  var hash = await _sha256Hex(cleClaire);
+  var prefix = cleClaire.substring(0, 16);
+
+  var row = {
+    key_hash: hash, key_prefix: prefix, partenaire: partenaire, contact_email: email,
+    scope: scope, actif: true, rate_limit_h: limite,
+    cree_par: (APP.currentUser && (APP.currentUser.nom || APP.currentUser.login)) || 'system'
+  };
+  var res = await sbFetch('api_keys', 'POST', row);
+  if (!res) { toast('Échec de génération — vérifier la connexion Supabase.', 'error'); return; }
+
+  document.getElementById('api-cle-generee').innerHTML =
+    '<div style="background:#FEF3C7;border:1px solid #F59E0B;border-radius:8px;padding:12px;">'
+    + '<b>⚠️ Clé générée — copiez-la maintenant, elle ne sera plus jamais affichée :</b>'
+    + '<div style="font-family:monospace;font-size:13px;background:#fff;padding:8px;border-radius:6px;margin-top:6px;word-break:break-all;user-select:all;">' + cleClaire + '</div>'
+    + '<button class="btn btn-secondary btn-sm" style="margin-top:8px;" onclick="navigator.clipboard.writeText(\'' + cleClaire + '\');toast(\'Copié.\',\'success\')">📋 Copier</button>'
+    + '</div>';
+  toast('✅ Clé API générée pour ' + partenaire + '.', 'success');
+  document.getElementById('api-partenaire-nom').value = '';
+  document.getElementById('api-partenaire-email').value = '';
+  renderApiKeysAdmin();
+}
+
+async function renderApiKeysAdmin() {
+  var box = document.getElementById('api-keys-liste');
+  if (!box) return;
+  if (!SB.url || !SB.key) { box.innerHTML = '<div style="color:var(--blanc-dim);font-size:12px;">Connexion Supabase requise.</div>'; return; }
+  var rows = await sbFetch('api_keys_admin_view?order=cree_le.desc', 'GET');
+  if (!rows || !rows.length) { box.innerHTML = '<div style="color:var(--blanc-dim);font-size:12px;">Aucune clé API générée.</div>'; return; }
+  var scopeLbl = { comparateur_immobilier:'Comparateur', agence_partenaire:'Agence', banque:'Banque' };
+  box.innerHTML = '<table class="data-table" style="width:100%;"><thead><tr>'
+    + '<th>Partenaire</th><th>Scope</th><th>Préfixe</th><th>Limite/h</th><th>Statut</th><th>Créée le</th><th></th>'
+    + '</tr></thead><tbody>' + rows.map(function(k){
+        return '<tr>'
+          + '<td>' + escHtml(k.partenaire) + (k.contact_email?'<br><span style="font-size:11px;color:var(--blanc-dim);">'+escHtml(k.contact_email)+'</span>':'') + '</td>'
+          + '<td>' + (scopeLbl[k.scope]||k.scope) + '</td>'
+          + '<td style="font-family:monospace;font-size:11px;">' + escHtml(k.key_prefix) + '…</td>'
+          + '<td>' + k.rate_limit_h + '</td>'
+          + '<td>' + (k.actif ? '<span style="color:var(--vert);">● Active</span>' : '<span style="color:var(--rouge);">● Révoquée</span>') + '</td>'
+          + '<td style="font-size:11px;">' + (k.cree_le||'').substring(0,10) + '</td>'
+          + '<td>' + (k.actif ? '<button class="btn btn-danger btn-sm" onclick="revoquerCleApi(\''+k.id+'\')">Révoquer</button>' : '') + '</td>'
+          + '</tr>';
+      }).join('') + '</tbody></table>';
+}
+
+async function revoquerCleApi(id) {
+  if (!confirm('Révoquer cette clé API ? Toute intégration l\'utilisant cessera de fonctionner immédiatement.')) return;
+  await sbFetch('api_keys?id=eq.' + id, 'PATCH', { actif: false, revoque_le: new Date().toISOString() });
+  toast('Clé révoquée.', 'info');
+  renderApiKeysAdmin();
+}
+
 async function saveSecuriteParams() {
   var gv = function(id){ var e=document.getElementById(id); return e?e.value.trim():''; };
   var gc = function(id){ var e=document.getElementById(id); return e?e.checked:false; };
