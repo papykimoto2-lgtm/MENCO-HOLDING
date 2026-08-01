@@ -6765,6 +6765,14 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                   </select>
                 </div>
                 <div class="form-group">
+                  <label>Taux EUR → XOF (parité fixe UEMOA)</label>
+                  <input type="number" step="0.001" class="form-control" id="param-taux-eur" value="655.957" readonly title="Parité fixe FCFA/Euro, garantie par le Trésor français — jamais modifiable">
+                </div>
+                <div class="form-group">
+                  <label>Taux USD → XOF (flottant, à mettre à jour)</label>
+                  <input type="number" step="0.01" class="form-control" id="param-taux-usd" placeholder="Ex : 605.50">
+                </div>
+                <div class="form-group">
                   <label>Format date</label>
                   <select class="form-control" id="param-format-date">
                     <option value="dd/mm/yyyy">JJ/MM/AAAA</option>
@@ -25185,7 +25193,25 @@ function switchTab(context, tab) {
 ────────────────────────────────────────────────────── */
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
+/* Montants XOF stockés partout en base (fonctionnel SYSCOHADA, jamais converti à
+   l'écriture). fcfa() est réservée à l'AFFICHAGE commercial (souscripteurs, relances,
+   copropriété, cessions foncières...) et respecte param-devise si configuré. Les
+   modules SYSCOHADA (bilan, CR, TVA, liasse, balance, journal) n'appellent jamais
+   fcfa() — ils utilisent leurs propres formateurs, toujours en XOF. fcfaXOF() est un
+   garde-fou explicite pour tout futur usage comptable qui ne doit jamais être converti. */
 function fcfa(n) {
+  n = parseFloat(n) || 0;
+  var p = DATA.params || {};
+  var devise = p.devise || 'XOF';
+  if (devise === 'XOF') return n.toLocaleString('fr-FR') + ' FCFA';
+  var taux = devise === 'EUR' ? (p.taux_eur_xof || 655.957) : (p.taux_usd_xof || 0);
+  if (!taux) return n.toLocaleString('fr-FR') + ' FCFA (taux ' + devise + ' non configuré — Paramètres → Localisation)';
+  var converti = n / taux;
+  var symb = devise === 'EUR' ? '€' : '$';
+  return converti.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ' + symb
+    + ' (' + n.toLocaleString('fr-FR') + ' FCFA)';
+}
+function fcfaXOF(n) {
   n = parseFloat(n) || 0;
   return n.toLocaleString('fr-FR') + ' FCFA';
 }
@@ -37471,6 +37497,8 @@ async function saveLocalisationParams() {
     langue: gv('param-langue')||'fr',
     timezone: gv('param-timezone')||'Africa/Abidjan',
     devise: gv('param-devise')||'XOF',
+    taux_eur_xof: 655.957, /* parité fixe UEMOA — non modifiable, jamais lue depuis le formulaire readonly */
+    taux_usd_xof: parseFloat(gv('param-taux-usd')) || (DATA.params && DATA.params.taux_usd_xof) || 0,
     format_date: gv('param-format-date')||'dd/mm/yyyy',
     sep_milliers: gv('param-sep-milliers')||' ',
     sep_decimal: gv('param-sep-decimal')||',',
@@ -37499,6 +37527,7 @@ function loadLocalisationParams() {
   sv('param-langue', p.langue||'fr');
   sv('param-timezone', p.timezone||'Africa/Abidjan');
   sv('param-devise', p.devise||'XOF');
+  sv('param-taux-usd', p.taux_usd_xof||'');
   sv('param-format-date', p.format_date||'dd/mm/yyyy');
   sv('param-sep-milliers', p.sep_milliers!==undefined?p.sep_milliers:' ');
   sv('param-sep-decimal', p.sep_decimal||',');
