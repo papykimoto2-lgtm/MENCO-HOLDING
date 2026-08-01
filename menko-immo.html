@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.60 · 2026-07-31';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.63 · 2026-07-31';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -15941,7 +15941,8 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         <div class="form-grid">
           <div class="form-group">
             <label>Type / Nom *</label>
-            <input type="text" class="form-control" id="modele-nom" placeholder="Villa Duplex, F3, Studio...">
+            <select class="form-control" id="modele-nom" onchange="modeleAfficherCoutDQE()"></select>
+            <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;" id="modele-nom-hint"></div>
           </div>
           <div class="form-group">
             <label>Nb unités prévues</label>
@@ -15962,6 +15963,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="form-group">
             <label>Coût de revient (FCFA)</label>
             <input type="number" class="form-control" id="modele-cout">
+            <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;" id="modele-cout-hint"></div>
           </div>
           <div class="form-group">
             <label>Standing</label>
@@ -28749,8 +28751,50 @@ function openModelesModal(programmeId) {
   document.getElementById('modal-modeles-prog-nom').textContent = '🏠 Types de logements — ' + (prog ? prog.nom : '');
   document.getElementById('modele-programme-id').value = programmeId;
   clearModeleForm();
+  modeleRafraichirTypes(programmeId, '');
   renderModelesList(programmeId);
   openModal('modal-modeles');
+}
+
+/* [FIX ligne cassée montage↔DQE] « Type / Nom » était un champ libre, sans
+   rapport avec conceptions.type_logements (source du DQE) : un lot créé
+   depuis un modèle ne retrouvait donc jamais son chiffrage réel — le coût de
+   revient venait uniquement de la saisie manuelle ci-dessous, et le module
+   Structure/DQE/Déboursé sec construit ces derniers échanges n'avait aucune
+   prise dessus. Le sélecteur puise désormais dans les mêmes types de
+   conception que le reste du DQE (_dqeOptionsTypesConception), pour le
+   programme concerné. Les modèles existants dont le libellé ne correspond à
+   aucune conception restent modifiables (option ajoutée, signalée). */
+function modeleRafraichirTypes(progId, valeurCourante) {
+  var sel = document.getElementById('modele-nom');
+  if (!sel) return;
+  var html = _dqeOptionsTypesConception(progId);
+  var manque = valeurCourante && html.indexOf('value="' + escHtml(valeurCourante) + '"') === -1;
+  if (manque) {
+    html = '<option value="' + escHtml(valeurCourante) + '">⚠️ ' + escHtml(valeurCourante) + ' (introuvable en conception)</option>' + html;
+  }
+  sel.innerHTML = html || '<option value="" disabled selected>Aucune conception pour ce programme — créez-en une dans Plans &amp; Conception</option>';
+  if (valeurCourante) sel.value = valeurCourante;
+  var hint = document.getElementById('modele-nom-hint');
+  if (hint) hint.textContent = manque
+    ? '⚠️ Ce libellé ne correspond à aucun projet de conception — le chiffrage DQE ne le retrouvera pas tant qu\'il n\'est pas corrigé.'
+    : (html ? '' : '');
+  modeleAfficherCoutDQE();
+}
+
+/* Affiche, à titre indicatif, le coût DQE réel du type sélectionné pour ce
+   programme — sans écraser une saisie manuelle déjà en place. */
+function modeleAfficherCoutDQE() {
+  var sel = document.getElementById('modele-nom');
+  var progId = (document.getElementById('modele-programme-id')||{}).value;
+  var hintCout = document.getElementById('modele-cout-hint');
+  if (!sel || !hintCout) return;
+  var type = sel.value;
+  if (!type || typeof _coutTypeDansProgramme !== 'function') { hintCout.textContent = ''; return; }
+  var cout = _coutTypeDansProgramme(type, progId);
+  if (!cout) { hintCout.textContent = 'Aucun chiffrage DQE pour ce type sur ce programme pour l\'instant.'; return; }
+  hintCout.innerHTML = '💡 Coût DQE actuel pour « ' + escHtml(type) + ' » : <strong>' + fcfa(cout) + '</strong>'
+    + ' <button type="button" class="btn btn-secondary btn-sm" style="padding:1px 6px;font-size:9px;" onclick="document.getElementById(\'modele-cout\').value=' + Math.round(cout) + '">↧ Reprendre</button>';
 }
 
 function clearModeleForm() {
@@ -28841,7 +28885,7 @@ function editModele(id) {
   if (!m) return;
   APP.editingModeleId = id;
   document.getElementById('modele-id').value = m.id;
-  document.getElementById('modele-nom').value = m.nom || '';
+  modeleRafraichirTypes(m.programme_id, m.nom || '');
   document.getElementById('modele-nb').value = m.nb_unites || 1;
   document.getElementById('modele-surface').value = m.surface || '';
   document.getElementById('modele-pieces').value = m.pieces || '';
@@ -89786,13 +89830,10 @@ function dqeRevueCompletude(type) {
 function dqeOuvrirRevue() {
   var sel = document.getElementById('rev-type');
   if (sel) {
-    var types = [];
-    (DATA.nomenclatures || []).forEach(function(n){
-      if (n.type_logement && types.indexOf(n.type_logement) === -1) types.push(n.type_logement);
-    });
     var actuel = sel.value;
-    sel.innerHTML = types.sort().map(function(t){ return '<option value="' + escHtml(t) + '">' + escHtml(t) + '</option>'; }).join('');
-    if (actuel && types.indexOf(actuel) !== -1) sel.value = actuel;
+    var html = _dqeOptionsTypesConception();
+    sel.innerHTML = html || '<option value="" disabled selected>Aucun projet de conception — créez-en un dans Plans &amp; Conception</option>';
+    if (actuel && html.indexOf('value="' + escHtml(actuel) + '"') !== -1) sel.value = actuel;
   }
   dqeRendreRevue();
   openModal('modal-dqe-revue');
@@ -90014,8 +90055,19 @@ function edsProposerOuvrage(ligne) {
 }
 
 /* Analyse de couverture pour un type de logement. */
-function edsAnalyserLiaison(type) {
-  var L = (DATA.nomenclatures || []).filter(function(n){ return n.type_logement === type; });
+/* Analyse de couverture pour un type de logement, dans un programme donné.
+   [FIX incohérence] Filtrait DATA.nomenclatures par type_logement seul,
+   sans le rattachement programme_id posé sur les lignes structure/fluides
+   (dqeNomenclaturesPourType) — deux programmes partageant un type auraient
+   vu leurs lignes mélangées dans la même analyse de liaison. */
+function edsAnalyserLiaison(type, programmeId) {
+  var selDQE = document.getElementById('dqe-filter-programme');
+  var prevDQE = selDQE ? selDQE.value : '';
+  if (selDQE && programmeId) selDQE.value = programmeId;
+  var _r = (typeof dqeNomenclaturesPourType === 'function') ? dqeNomenclaturesPourType(type) : { nomens:[], isDefault:true };
+  var L = _r.isDefault ? [] : _r.nomens;
+  if (selDQE) selDQE.value = prevDQE;
+
   var R = { type:type, total:L.length, lies:[], proposables:[], sansOuvrage:[],
             montantLie:0, montantRef:0, besoins:{ materiau:0, mo:0, materiel:0 } };
 
@@ -90049,7 +90101,8 @@ function edsAnalyserLiaison(type) {
 
 /* Application des propositions retenues. */
 async function edsAppliquerLiaisons(type, niveauMini) {
-  var R = edsAnalyserLiaison(type);
+  var programmeId = (document.getElementById('eds-lien-programme')||{}).value || '';
+  var R = edsAnalyserLiaison(type, programmeId);
   var ordre = { fort:3, moyen:2, faible:1 };
   var seuil = ordre[niveauMini || 'fort'] || 3;
   var aLier = R.proposables.filter(function(p){ return ordre[p.prop.confiance] >= seuil; });
@@ -90097,23 +90150,39 @@ function _dqeOptionsTypesConception(progId) {
 }
 
 function edsOuvrirLiaison() {
+  var selProg = document.getElementById('eds-lien-programme');
+  if (selProg) {
+    var progDQE = (document.getElementById('dqe-filter-programme') || {}).value || '';
+    selProg.innerHTML = '<option value="">— Sélectionner —</option>'
+      + DATA.programmes.map(function(p){ return '<option value="' + p.id + '">' + escHtml(p.nom) + '</option>'; }).join('');
+    if (progDQE) selProg.value = progDQE;
+  }
+  edsLiaisonRafraichirTypes();
+  openModal('modal-eds-liaison');
+}
+
+/* Recharge le sélecteur de type d'après le programme choisi — même source
+   que le sélecteur principal du DQE (fiches de conception). */
+function edsLiaisonRafraichirTypes() {
   var sel = document.getElementById('eds-lien-type');
+  var progId = (document.getElementById('eds-lien-programme')||{}).value || '';
   if (sel) {
     var actuel = sel.value;
-    var html = _dqeOptionsTypesConception();
-    sel.innerHTML = html || '<option value="" disabled selected>Aucun projet de conception</option>';
+    var html = _dqeOptionsTypesConception(progId);
+    sel.innerHTML = html || '<option value="" disabled selected>' + (progId ? 'Aucune conception pour ce programme' : 'Sélectionnez un programme') + '</option>';
     if (actuel && html.indexOf('value="' + escHtml(actuel) + '"') !== -1) sel.value = actuel;
   }
   edsRendreLiaison();
-  openModal('modal-eds-liaison');
 }
 
 function edsRendreLiaison() {
   var host = document.getElementById('eds-lien-contenu');
   if (!host) return;
+  var programmeId = (document.getElementById('eds-lien-programme') || {}).value || '';
   var type = (document.getElementById('eds-lien-type') || {}).value || '';
+  if (!programmeId) { host.innerHTML = '<div style="text-align:center;padding:26px;color:var(--blanc-dim);">Sélectionnez un programme.</div>'; return; }
   if (!type) { host.innerHTML = '<div style="text-align:center;padding:26px;color:var(--blanc-dim);">Aucun type chiffré.</div>'; return; }
-  var R = edsAnalyserLiaison(type);
+  var R = edsAnalyserLiaison(type, programmeId);
   var totalGen = R.montantLie + R.montantRef;
 
   var h = '';
@@ -90474,8 +90543,13 @@ function dqePopulateTypeLogement(){
      — des libellés qui n'existent dans AUCUNE fiche de conception réelle,
      source d'incohérence avec le module Plans & Conception. Restreint
      désormais aux seuls types déclarés dans une fiche de conception
-     (projet villa/immeuble), groupés par programme. */
+     (projet villa/immeuble), groupés par programme.
+     [FIX incohérence] Le filtre « dqe-filter-programme » en haut de page ne
+     se répercutait pas ici : changer de programme laissait la liste des
+     types affichée pour TOUS les programmes. Filtré désormais. */
+  var progFiltre = (document.getElementById('dqe-filter-programme') || {}).value || '';
   (DATA.conceptions||[]).forEach(function(c){
+    if (progFiltre && c.programme_id !== progFiltre) return;
     var types=(c.type_logements||'').split('/').map(function(t){return t.trim();}).filter(Boolean);
     if(!types.length) return;
     var prog=(DATA.programmes||[]).find(function(p){return p.id===c.programme_id;});
@@ -90485,7 +90559,7 @@ function dqePopulateTypeLogement(){
     types.forEach(function(t){ seen[t]=true; var u=(c.nature==='immeuble')?' (appartement vendu)':''; html+='<option value="'+escHtml(t)+'">'+escHtml(t)+u+'</option>'; });
     html+='</optgroup>';
   });
-  if(!html) html='<option value="" disabled selected>Aucun projet de conception \u2014 cr\u00e9ez-en un dans Plans &amp; Conception</option>';
+  if(!html) html='<option value="" disabled selected>' + (progFiltre ? 'Aucune conception pour ce programme' : 'Aucun projet de conception \u2014 cr\u00e9ez-en un dans Plans &amp; Conception') + '</option>';
   sel.innerHTML=html;
   if(cur && seen[cur]) sel.value=cur;
   var sel2=document.getElementById('calc-type-logement');
@@ -104899,9 +104973,15 @@ goTo = function(page) {
       <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-eds-liaison')">✕</button>
     </div>
     <div class="modal-body">
-      <div class="form-group" style="margin-bottom:12px;">
-        <label>Type de logement</label>
-        <select class="form-control" id="eds-lien-type" onchange="edsRendreLiaison()"></select>
+      <div class="form-grid" style="margin-bottom:12px;">
+        <div class="form-group">
+          <label>Programme *</label>
+          <select class="form-control" id="eds-lien-programme" onchange="edsLiaisonRafraichirTypes()"></select>
+        </div>
+        <div class="form-group">
+          <label>Type de logement</label>
+          <select class="form-control" id="eds-lien-type" onchange="edsRendreLiaison()"></select>
+        </div>
       </div>
       <div id="eds-lien-contenu"></div>
     </div>
