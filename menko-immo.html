@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.63 · 2026-07-31';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.64 · 2026-08-01 — correctif anti-double-réservation';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -5744,6 +5744,14 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                 <div class="form-group">
                   <label>Objectif taux conversion prospects</label>
                   <input type="number" id="param-obj-conversion" class="form-control" value="25" min="1" max="100">
+                </div>
+                <div class="form-group">
+                  <label title="% du prix encaissé au-delà duquel un lot « réservé » passe automatiquement en « vendu »">Seuil d'immobilisation réservé → vendu (%)</label>
+                  <input type="number" id="param-seuil-immob" class="form-control" value="70" min="1" max="100">
+                </div>
+                <div class="form-group">
+                  <label title="Au-delà de ce délai sans complément de paiement, une alerte signale la réservation à relancer ou à libérer">Durée de validité d'une réservation (jours)</label>
+                  <input type="number" id="param-delai-validite-reservation" class="form-control" value="30" min="1">
                 </div>
               </div>
             </div>
@@ -15037,6 +15045,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <label>Mode de livraison</label>
             <select class="form-control" id="c-mode-livraison" style="font-weight:700;">
               <option value="gros_oeuvre">🧱 Gros œuvre</option>
+              <option value="second_oeuvre">🔧 Second œuvre</option>
               <option value="cle_en_main">🔑 Clé en main</option>
             </select>
           </div>
@@ -15980,6 +15989,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <label>Mode de livraison</label>
             <select class="form-control" id="modele-mode-livraison">
               <option value="gros_oeuvre">🧱 Gros œuvre</option>
+              <option value="second_oeuvre">🔧 Second œuvre</option>
               <option value="cle_en_main">🔑 Clé en main</option>
             </select>
           </div>
@@ -16211,6 +16221,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <label>Mode de livraison</label>
           <select class="form-control" id="l-mode-livraison">
             <option value="gros_oeuvre">🧱 Gros œuvre</option>
+            <option value="second_oeuvre">🔧 Second œuvre</option>
             <option value="cle_en_main">🔑 Clé en main</option>
           </select>
         </div>
@@ -25731,6 +25742,20 @@ function cmrcBuildActions(leads, ticketMoyen) {
     actions.push({prio:2, icon:'📝', titre:reservesNonClients.length+' lot(s) réservé(s) sans dossier souscripteur', detail:'Finaliser la convention avant expiration de la réservation', action:"goTo('lots')"});
   }
 
+  /* 4bis. CORRECTIF — Réservations dont le délai de validité est dépassé.
+     Auparavant aucune échéance n'était suivie sur une réservation (contrairement
+     aux permis/agréments/CDD qui ont tous une alerte J-30) : un lot pouvait
+     rester « réservé » indéfiniment sans complément de paiement, bloquant sa
+     commercialisation sans limite de temps. */
+  var _delaiResa = parseInt((DATA.params||{}).delai_validite_reservation_j) || 30;
+  var _seuilDateResa = new Date(now.getFullYear(), now.getMonth(), now.getDate() - _delaiResa).toISOString().slice(0,10);
+  var reservationsExpirees = DATA.lots.filter(function(l){
+    return l.statut==='reserve' && l.date_reservation && l.date_reservation < _seuilDateResa;
+  });
+  if (reservationsExpirees.length) {
+    actions.push({prio:1, icon:'⏰', titre:reservationsExpirees.length+' réservation(s) au-delà du délai de validité ('+_delaiResa+' j)', detail:'Relancer le souscripteur pour le complément de paiement, ou libérer le lot pour remise en commercialisation', action:"goTo('lots')"});
+  }
+
   actions.sort(function(a,b){ return a.prio-b.prio; });
   if (!actions.length) {
     host.innerHTML = '<div style="color:#10B981;padding:16px 0;text-align:center;font-size:13px;font-weight:600;">✅ Aucune action urgente — pipeline sous contrôle</div>';
@@ -26998,7 +27023,9 @@ function openClientModal(id) {
     // Boutons documents imprimables
     var docBtns = document.getElementById('doc-btns');
     docBtns.style.display = 'flex';
-    docBtns.innerHTML = '<button class="btn btn-secondary btn-sm" onclick="printContrat(\'' + id + '\')">📄 Contrat réservation</button>'
+    var _lotDoc = DATA.lots.find(function(l) { return l.id === c.lot_id; });
+    var _libelleDoc = (_lotDoc && _lotDoc.statut === 'vendu') ? '📄 Contrat de vente' : '📄 Contrat réservation';
+    docBtns.innerHTML = '<button class="btn btn-secondary btn-sm" onclick="printContrat(\'' + id + '\')">' + _libelleDoc + '</button>'
       + '<button class="btn btn-secondary btn-sm" onclick="etatEcheancier(\'' + id + '\')">📅 Échéancier</button>';
     // Documents téléversés
     setTimeout(function(){ refreshDocumentsForEntity('client', id); }, 80);
@@ -27077,6 +27104,14 @@ async function majStatutLotClient(clientId) {
   var pct = total > 0 ? (paye / total * 100) : 0;
   var nouveau = pct >= seuil ? 'vendu' : 'reserve';
   if (lot.statut !== nouveau || lot.client_id !== clientId) {
+    /* CORRECTIF : date_reservation n'était jamais écrite alors qu'elle est lue
+       ailleurs (ancienneté des réservations, alerte de délai de validité). On la
+       fixe à la première mise en réservation, et on la réinitialise si le lot
+       change de souscripteur (nouvelle réservation) ou repasse dispo → reserve. */
+    if (nouveau === 'reserve' && (lot.statut !== 'reserve' || lot.client_id !== clientId || !lot.date_reservation)) {
+      lot.date_reservation = today();
+    }
+    if (nouveau === 'vendu') { lot.date_vente = lot.date_vente || today(); }
     lot.statut = nouveau; lot.client_id = clientId;
     await dbPut('lots', lot);
     if (typeof syncToSupabase === 'function') syncToSupabase('pi_lots', lot);
@@ -27116,6 +27151,19 @@ async function saveClient() {
     if (eComm) { eComm.style.borderColor='#EF4444'; eComm.style.boxShadow='0 0 0 3px rgba(239,68,68,0.15)'; setTimeout(function(){ eComm.style.borderColor=''; eComm.style.boxShadow=''; },3000); }
     if (eAp)   { eAp.style.borderColor='#EF4444';   eAp.style.boxShadow='0 0 0 3px rgba(239,68,68,0.15)';   setTimeout(function(){ eAp.style.borderColor=''; eAp.style.boxShadow=''; },3000); }
     return;
+  }
+
+  // ── Verrou anti-double-réservation : re-vérifié ici (indépendamment du filtrage
+  //    du <select>) car le DOM peut être obsolète (import concurrent, sync distante). ──
+  var _lotIdChoisi = document.getElementById('c-lot') ? document.getElementById('c-lot').value : '';
+  if (_lotIdChoisi) {
+    var _lotVerif = DATA.lots.find(function(l) { return l.id === _lotIdChoisi; });
+    if (_lotVerif && _lotVerif.client_id && _lotVerif.client_id !== APP.editingId) {
+      var _proprietaire = DATA.clients.find(function(c) { return c.id === _lotVerif.client_id; });
+      var _nomProprietaire = _proprietaire ? ((_proprietaire.prenoms || '') + ' ' + (_proprietaire.nom || '')).trim() : 'un autre souscripteur';
+      toast('⚠️ Lot ' + (_lotVerif.numero || '') + ' déjà rattaché à ' + _nomProprietaire + '. Choisissez un autre lot ou libérez-le d\'abord.', 'error');
+      return;
+    }
   }
 
   APP._savingClient = true;
@@ -36440,8 +36488,15 @@ function printContrat(clientId) {
   var prog = DATA.programmes.find(function(p) { return p.id === client.programme_id; });
   var lot = DATA.lots.find(function(l) { return l.id === client.lot_id; });
   var params = DATA.params;
+  /* CORRECTIF : le document imprimé doit correspondre au statut réel du dossier —
+     un souscripteur soldé (lot « vendu ») ne doit plus recevoir un simple
+     « Contrat de réservation » mais un « Contrat de vente ». Le libellé « bien
+     réservé » plus bas est également adapté en conséquence. */
+  var estSolde = !!(lot && lot.statut === 'vendu');
+  var titreDoc = estSolde ? 'CONTRAT DE VENTE' : 'CONTRAT DE RÉSERVATION';
+  var refPrefixe = estSolde ? 'VENTE-' : 'CONT-';
   var win = window.open('', '_blank', 'width=800,height=700');
-  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Contrat Réservation</title>'
+  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>' + titreDoc.charAt(0) + titreDoc.slice(1).toLowerCase() + '</title>'
     + '<style>body{font-family:Georgia,serif;color:#222;padding:40px;max-width:750px;margin:0 auto;}'
     + 'h1{color:#1D4ED8;border-bottom:2px solid #2563EB;padding-bottom:10px;}'
     + 'table{width:100%;border-collapse:collapse;margin:20px 0;}td{padding:8px 12px;border:1px solid #ddd;}'
@@ -36450,8 +36505,8 @@ function printContrat(clientId) {
     + '.sig-box{border-top:1px solid #999;padding-top:10px;font-size:12px;color:#666;}</style></head><body>'
     + '<div style="display:flex;justify-content:space-between;margin-bottom:30px;">'
     + '<div><h2 style="color:#1D4ED8;margin:0;">' + (params.societe || 'ImmoSuite ERP') + '</h2><p style="font-size:12px;color:#666;">' + (params.email || '') + '<br>' + (params.tel || '') + '</p></div>'
-    + '<div style="text-align:right;"><p style="font-size:12px;">Date : ' + dateShort(today()) + '</p><p style="font-size:12px;">Réf : CONT-' + client.id.slice(-6).toUpperCase() + '</p></div></div>'
-    + '<h1>CONTRAT DE RÉSERVATION</h1>'
+    + '<div style="text-align:right;"><p style="font-size:12px;">Date : ' + dateShort(today()) + '</p><p style="font-size:12px;">Réf : ' + refPrefixe + client.id.slice(-6).toUpperCase() + '</p></div></div>'
+    + '<h1>' + titreDoc + '</h1>'
     + '<h3 style="color:#555;">Programme : ' + (prog ? prog.nom : 'N/A') + '</h3>'
     + '<h4>INFORMATIONS SOUSCRIPTEUR</h4>'
     + '<table><tr><td><strong>Nom complet</strong></td><td>' + client.nom + ' ' + client.prenoms + '</td></tr>'
@@ -36459,7 +36514,7 @@ function printContrat(clientId) {
     + '<tr><td><strong>Email</strong></td><td>' + (client.email || 'N/A') + '</td></tr>'
     + '<tr><td><strong>Adresse</strong></td><td>' + (client.adresse || 'N/A') + '</td></tr>'
     + '<tr><td><strong>Pièce d\'identité</strong></td><td>' + (client.piece_type || '') + ' N°' + (client.piece_num || 'N/A') + '</td></tr></table>'
-    + '<h4>BIEN RÉSERVÉ</h4>'
+    + '<h4>' + (estSolde ? 'BIEN VENDU (solde payé)' : 'BIEN RÉSERVÉ') + '</h4>'
     + '<table><tr><td><strong>Programme</strong></td><td>' + (prog ? prog.nom : 'N/A') + '</td></tr>'
     + '<tr><td><strong>Lot</strong></td><td>' + (lot ? 'Lot ' + lot.numero + (lot.ilot ? ', Îlot ' + lot.ilot : '') : 'N/A') + '</td></tr>'
     + '<tr><td><strong>Type</strong></td><td>' + (lot ? lot.type || 'N/A' : 'N/A') + '</td></tr>'
@@ -37272,6 +37327,8 @@ async function saveObjectifs() {
     objectif_visites_mensuel:gv('param-obj-visites'),
     objectif_recouvrement:   gv('param-obj-recouvrement'),
     objectif_conversion:     gv('param-obj-conversion'),
+    seuil_immobilisation_pct:      gv('param-seuil-immob') || 70,
+    delai_validite_reservation_j:  gv('param-delai-validite-reservation') || 30,
     max_sans_rapport:        gv('param-max-sans-rapport'),
     objectif_avancement:     gv('param-obj-avancement'),
     delai_relance:           gv('param-delai-relance'),
@@ -37369,6 +37426,8 @@ function loadParamFields() {
   sv('param-obj-visites',p.objectif_visites_mensuel||30);
   sv('param-obj-recouvrement',p.objectif_recouvrement||30);
   sv('param-obj-conversion',p.objectif_conversion||25);
+  sv('param-seuil-immob',p.seuil_immobilisation_pct||70);
+  sv('param-delai-validite-reservation',p.delai_validite_reservation_j||30);
   sv('param-max-sans-rapport',p.max_sans_rapport||14);
   sv('param-obj-avancement',p.objectif_avancement||8);
   sv('param-delai-relance',p.delai_relance||7);
@@ -39771,8 +39830,19 @@ function updateLotsByProgramme() {
     return;
   }
   var lotsProg = DATA.lots.filter(function(l) { return l.programme_id === progId; });
-  var dispo = lotsProg.filter(function(l) { return l.statut === 'disponible' || l.statut === 'reserve' || !l.statut; });
+  /* CORRECTIF sécurité anti-double-réservation : un lot « reserve » déjà rattaché
+     à un AUTRE souscripteur (client_id ≠ souscripteur en cours d'édition) ne doit
+     plus apparaître comme sélectionnable — sans ce filtre, deux souscripteurs
+     pouvaient être enregistrés sur le même lot (double vente). */
+  var editingClientId = APP.editingId || null;
+  var estLibrePourEdition = function(l) { return !l.client_id || l.client_id === editingClientId; };
+  var dispo = lotsProg.filter(function(l) {
+    if (l.statut === 'vendu') return false;
+    if (l.statut === 'reserve') return estLibrePourEdition(l);
+    return true; /* disponible ou statut vide */
+  });
   var vendus = lotsProg.filter(function(l) { return l.statut === 'vendu'; });
+  var reservesAutrui = lotsProg.filter(function(l) { return l.statut === 'reserve' && !estLibrePourEdition(l); });
   if (APP.editingId) {
     var editClient = DATA.clients.find(function(c) { return c.id === APP.editingId; });
     if (editClient && editClient.lot_id) {
@@ -39795,8 +39865,18 @@ function updateLotsByProgramme() {
   };
   dispo.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
   vendus.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
+  reservesAutrui.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
   var html = '<option value="">— Choisir un lot (' + dispo.length + ' dispo / ' + lotsProg.length + ' au total) —</option>';
   html += dispo.map(fmt).join('');
+  if (reservesAutrui.length) {
+    html += '<optgroup label="Déjà réservés par un autre souscripteur (' + reservesAutrui.length + ', non sélectionnables)">'
+      + reservesAutrui.map(function(l){
+          var propr = (DATA.clients||[]).find(function(c){ return c.id === l.client_id; });
+          var nomPropr = propr ? ((propr.prenoms||'')+' '+(propr.nom||'')).trim() : '';
+          return '<option value="" disabled>Lot ' + l.numero + (l.ilot ? ' / Îlot ' + l.ilot : '') + ' — réservé' + (nomPropr ? ' (' + nomPropr + ')' : '') + '</option>';
+        }).join('')
+      + '</optgroup>';
+  }
   if (vendus.length) {
     html += '<optgroup label="Déjà vendus (' + vendus.length + ', non sélectionnables)">'
       + vendus.map(function(l){ return '<option value="" disabled>Lot ' + l.numero + (l.ilot ? ' / Îlot ' + l.ilot : '') + ' — vendu</option>'; }).join('')
@@ -42660,6 +42740,21 @@ function lancerAuditIntegrite(){
   (DATA.lots||[]).forEach(function(l){
     if(l.statut==='vendu' && !(DATA.clients||[]).some(function(c){return c.lot_id===l.id;})) A('mineur','Métier','Lot vendu sans souscripteur','Lot '+(l.numero||l.id)+' marqué « vendu » mais aucun client ne le référence.','lots',_fixAuto('Repasser en « disponible »',_auditFixSetField('lots',l.id,'statut','disponible')));
   });
+  /* CORRECTIF : détecte le cas critique inverse — un même lot référencé par
+     PLUSIEURS souscripteurs (double réservation/vente). Aucune correction
+     automatique n'est proposée : le choix du dossier à conserver est une
+     décision commerciale/juridique, pas un nettoyage de données. */
+  (function(){
+    var parLot = {};
+    (DATA.clients||[]).forEach(function(c){ if(c.lot_id) (parLot[c.lot_id]=parLot[c.lot_id]||[]).push(c); });
+    Object.keys(parLot).forEach(function(lid){
+      if (parLot[lid].length > 1) {
+        var lotX = (DATA.lots||[]).find(function(l){ return l.id === lid; });
+        var noms = parLot[lid].map(function(c){ return ((c.prenoms||'')+' '+(c.nom||'')).trim() || c.dossier || c.id; }).join(', ');
+        A('critique','Métier','Lot attribué à plusieurs souscripteurs','Lot '+(lotX?lotX.numero:lid)+' référencé par '+parLot[lid].length+' souscripteurs : '+noms+'.','clients',_fixManuel('Résoudre le conflit','Ouvrez chaque dossier souscripteur concerné et confirmez lequel conserve le lot ; réaffectez le(s) autre(s) sur un lot différent ou annulez le doublon.'));
+      }
+    });
+  })();
   (DATA.conventions||[]).forEach(function(c){
     var av=parseFloat(c.avancement)||0;
     if(av>100) A('majeur','Métier','Avancement > 100%','Convention '+(c.numero||c.id)+' : avancement '+av+'%.','conventions',_fixAuto('Plafonner à 100%',_auditFixSetField('conventions',c.id,'avancement',100)));
