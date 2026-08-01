@@ -31113,7 +31113,7 @@ function rebuildPlanComptable() {
   APP.planComptable = baseSource
     .filter(function(c){ return supprimes.indexOf(c.code) === -1; })
     .map(function(c){ return modifs[c.code] ? Object.assign({}, c, modifs[c.code]) : c; })
-    .concat(ajouts);
+    .concat((ajouts || []).filter(function(c){ return c && c.code; })); /* garde-fou : rejette null/undefined/entrées sans code — évite un plan comptable corrompu de faire planter l'arborescence */
 
   /* ── GARDE-FOU AUDITABILITÉ : tout compte mouvementé dans les écritures
      mais absent du plan est réintégré dynamiquement (nature déduite de la
@@ -31511,14 +31511,15 @@ var _pcExpanded = {}; /* état d'ouverture des nœuds, persiste pendant la sessi
 function _buildPlanTree(liste) {
   var stack = [];
   liste.forEach(function(c) {
+    if (!c || !c.code) return; /* garde-fou : entrée corrompue (null/undefined/sans code), on l'ignore plutôt que de planter */
     while (stack.length && c.code.indexOf(stack[stack.length-1].code) !== 0) stack.pop();
     c._depth = stack.length;
     c._parentCode = stack.length ? stack[stack.length-1].code : null;
     stack.push(c);
   });
   var nbEnfants = {};
-  liste.forEach(function(c){ if (c._parentCode) nbEnfants[c._parentCode] = (nbEnfants[c._parentCode]||0)+1; });
-  liste.forEach(function(c){ c._nbEnfants = nbEnfants[c.code] || 0; });
+  liste.forEach(function(c){ if (c && c._parentCode) nbEnfants[c._parentCode] = (nbEnfants[c._parentCode]||0)+1; });
+  liste.forEach(function(c){ if (c) c._nbEnfants = nbEnfants[c.code] || 0; });
   _pcMarquerDernierEnfant(liste);
   return liste;
 }
@@ -31532,9 +31533,11 @@ function _buildPlanTree(liste) {
    contrairement à un calcul répété par écriture (voir _importPlanComptable). */
 function _pcMarquerDernierEnfant(liste) {
   for (var i = 0; i < liste.length; i++) {
+    if (!liste[i]) continue; /* garde-fou : trou de tableau ou entrée corrompue */
     var d = liste[i]._depth;
     var estDernier = true;
     for (var j = i + 1; j < liste.length; j++) {
+      if (!liste[j]) continue;
       var d2 = liste[j]._depth;
       if (d2 > d) continue; /* descendant du nœud i : on continue de chercher au-delà */
       estDernier = (d2 !== d); /* un frère (même profondeur) suit → pas le dernier */
