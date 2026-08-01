@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.58 · 2026-07-31';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.60 · 2026-07-31';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -68402,16 +68402,61 @@ function dqeRenderListeProgramme() {
         + '<td>' + escHtml(l.type) + '</td>'
         + '<td style="text-align:right;">' + l.nb + '</td>'
         + '<td style="text-align:right;">' + fmtF(l.coutUnitaire) + '</td>'
+        + '<td style="text-align:right;font-weight:700;">' + fmtF(l.sousTotal) + '</td>'
         + '<td>' + (l.isDefault ? '<span style="color:var(--rouge);">⚠️ par défaut</span>' : '<span style="color:var(--vert);">✔ chiffré</span>') + '</td>'
-        + '<td><button class="btn btn-secondary btn-sm btn-icon" title="Ouvrir / modifier" onclick="dqeOuvrirDepuisListe(\'' + prog.id + '\',\'' + String(l.type).replace(/'/g,"\\'") + '\')">✏️</button></td>'
+        + '<td style="white-space:nowrap;">'
+          + '<button class="btn btn-secondary btn-sm btn-icon" title="Ouvrir / modifier" onclick="dqeOuvrirDepuisListe(\'' + prog.id + '\',\'' + String(l.type).replace(/'/g,"\\'") + '\')">✏️</button> '
+          + '<button class="btn btn-danger btn-sm btn-icon" title="Supprimer ce DQE" onclick="dqeSupprimerDepuisListe(\'' + prog.id + '\',\'' + String(l.type).replace(/'/g,"\\'") + '\')">🗑</button>'
+        + '</td>'
         + '</tr>';
     });
   });
-  tbody.innerHTML = html || '<tr><td colspan="6" style="text-align:center;color:var(--dim);">Aucun DQE trouvé.</td></tr>';
+  tbody.innerHTML = html || '<tr><td colspan="7" style="text-align:center;color:var(--dim);">Aucun DQE trouvé.</td></tr>';
 }
 
 /* Ouvre directement la nomenclature du couple (programme, type) choisi dans
    la liste — synchronise les deux filtres de la page DQE puis y bascule. */
+async function dqeSupprimerDepuisListe(programmeId, type) {
+  /* [ATTENTION] Un même libellé de type peut être partagé entre programmes :
+     les lignes de finitions (sans programme_id) s'appliquent à TOUS les
+     programmes utilisant ce type, seules les lignes structure/fluides
+     (_genere_struct/_genere_fluides, avec programme_id) sont propres à CE
+     programme. Supprimer les finitions partagées casserait le DQE des
+     autres programmes qui les utilisent encore — on ne les touche donc
+     jamais depuis cette suppression. */
+  var prog = (DATA.programmes||[]).find(function(p){ return p.id === programmeId; });
+  var nomProg = prog ? prog.nom : programmeId;
+  var toutes = (DATA.nomenclatures||[]).filter(function(n){ return n.type_logement === type; });
+  var partageAilleurs = toutes.some(function(n){ return n.programme_id && n.programme_id !== programmeId; })
+    || (DATA.programmes||[]).some(function(p){
+         if (p.id === programmeId) return false;
+         return (DATA.lots||[]).some(function(l){ return l.programme_id === p.id && _typeKey(l.type_logement||l.type) === type; });
+       });
+
+  var aSupprimer, msg;
+  if (partageAilleurs) {
+    aSupprimer = toutes.filter(function(n){ return n.programme_id === programmeId; });
+    if (!aSupprimer.length) {
+      toast('Aucune ligne propre à « ' + nomProg + ' » pour ce type — les lignes existantes sont des finitions partagées avec d\'autres programmes, non supprimables ici.', 'info');
+      return;
+    }
+    msg = 'Type « ' + type + ' » partagé avec d\'autres programmes.\n\n'
+        + aSupprimer.length + ' ligne(s) propres à « ' + nomProg + ' » (structure/fluides) seront supprimées.\n'
+        + (toutes.length - aSupprimer.length) + ' ligne(s) de finitions partagées seront conservées (utilisées par d\'autres programmes).\n\nConfirmer ?';
+  } else {
+    aSupprimer = toutes;
+    msg = 'Supprimer tout le DQE « ' + type + ' » du programme « ' + nomProg + ' » — ' + aSupprimer.length + ' ligne(s) ?\n\nAction irréversible.';
+  }
+  if (!confirm(msg)) return;
+
+  for (var i = 0; i < aSupprimer.length; i++) {
+    await deleteRecord('nomenclatures', aSupprimer[i].id, { skipIntegrity:true });
+  }
+  toast(aSupprimer.length + ' ligne(s) supprimée(s).', 'success');
+  dqeRenderListeProgramme();
+  if (typeof chargerNomenclature === 'function') chargerNomenclature();
+}
+
 function dqeOuvrirDepuisListe(programmeId, type) {
   closeModal('modal-dqe-liste-programme');
   var selProg = document.getElementById('dqe-filter-programme');
@@ -88579,6 +88624,19 @@ async function structOuvrirHypotheses() {
   toast('Hypothèses enregistrées.', 'success');
 }
 
+/* Recharge le sélecteur de type structure d'après le programme choisi —
+   même source que le sélecteur principal du DQE (fiches de conception). */
+function structRafraichirTypes() {
+  var sel = document.getElementById('str-type-logement');
+  var selProg = document.getElementById('str-programme');
+  if (!sel) return;
+  var progId = selProg ? selProg.value : '';
+  var cur = sel.value;
+  var html = _dqeOptionsTypesConception(progId);
+  sel.innerHTML = html || '<option value="" disabled selected>' + (progId ? 'Aucune conception pour ce programme' : 'Sélectionnez un programme') + '</option>';
+  if (cur && html.indexOf('value="' + escHtml(cur) + '"') !== -1) sel.value = cur;
+}
+
 function structOuvrir() {
   var geo = structGeometriePlan();
   var el = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
@@ -88604,17 +88662,10 @@ function structOuvrir() {
   if (srcQ) srcQ.textContent = qadm
     ? '🪨 σ repris de l\'étude géotechnique'
     : '⚠️ Aucune étude géotechnique renseignée dans l\'application';
-  /* Types de logement déjà présents dans le DQE (nomenclatures) — proposés en
-     suggestion pour garantir la correspondance exacte attendue par l'injection
-     (structInjecterDQE compare par égalité stricte de chaîne). */
-  var dl = document.getElementById('str-types-dqe');
-  if (dl) {
-    var typesExistants = {};
-    (DATA.nomenclatures || []).forEach(function(n){ if (n.type_logement) typesExistants[n.type_logement] = true; });
-    dl.innerHTML = Object.keys(typesExistants).sort().map(function(t){
-      return '<option value="' + escHtml(t) + '">';
-    }).join('');
-  }
+  /* [FIX] Le type proposé venait des nomenclatures déjà chiffrées (risque de
+     divergence avec les fiches de conception) et acceptait toute saisie
+     libre. Restreint désormais aux types déclarés dans une fiche de
+     conception du programme sélectionné — cohérent avec dqePopulateTypeLogement. */
   var selProg = document.getElementById('str-programme');
   if (selProg) {
     var progDQE = (document.getElementById('dqe-filter-programme') || {}).value || '';
@@ -88622,6 +88673,7 @@ function structOuvrir() {
       + DATA.programmes.map(function(p){ return '<option value="' + p.id + '">' + escHtml(p.nom) + '</option>'; }).join('');
     if (progDQE) selProg.value = progDQE;
   }
+  structRafraichirTypes();
   structRecalculer();
   openModal('modal-structure');
 }
@@ -89339,6 +89391,19 @@ function epCalculer(pieces, standing, opts) {
 /* Interface. La comparaison des trois standings est affichée simultanément :
    c'est la décision commerciale que le promoteur doit prendre, et elle se
    prend en voyant l'écart, pas en recalculant trois fois. */
+/* Recharge le sélecteur de type élec/plomberie d'après le programme choisi
+   — même source que le sélecteur principal du DQE (fiches de conception). */
+function epRafraichirTypes() {
+  var sel = document.getElementById('ep-type-logement');
+  var selProg = document.getElementById('ep-programme');
+  if (!sel) return;
+  var progId = selProg ? selProg.value : '';
+  var cur = sel.value;
+  var html = _dqeOptionsTypesConception(progId);
+  sel.innerHTML = html || '<option value="" disabled selected>' + (progId ? 'Aucune conception pour ce programme' : 'Sélectionnez un programme') + '</option>';
+  if (cur && html.indexOf('value="' + escHtml(cur) + '"') !== -1) sel.value = cur;
+}
+
 function epOuvrir() {
   var pieces = epCollecterPieces();
   var selProg = document.getElementById('ep-programme');
@@ -89348,6 +89413,7 @@ function epOuvrir() {
       + DATA.programmes.map(function(p){ return '<option value="' + p.id + '">' + escHtml(p.nom) + '</option>'; }).join('');
     if (progDQE) selProg.value = progDQE;
   }
+  epRafraichirTypes();
   var host = document.getElementById('ep-pieces');
   if (host) {
     host.innerHTML = pieces.length
@@ -90006,16 +90072,37 @@ async function edsAppliquerLiaisons(type, niveauMini) {
   toast(aLier.length + ' ligne(s) rattachée(s) au déboursé sec.', 'success');
 }
 
+/* Source unique des types de logement proposés dans les sélecteurs "type
+   de destination DQE" (Structure, Élec/Plomberie, Liaison Déboursé sec) —
+   uniquement les types déclarés dans une fiche de conception réelle, comme
+   pour le sélecteur principal du DQE (dqePopulateTypeLogement). Si progId
+   est fourni, ne renvoie que les types du programme concerné. */
+function _dqeOptionsTypesConception(progId) {
+  var html = '';
+  (DATA.programmes||[]).forEach(function(prog){
+    if (progId && prog.id !== progId) return;
+    var concs = (DATA.conceptions||[]).filter(function(c){ return c.programme_id === prog.id; });
+    var types = [];
+    concs.forEach(function(c){
+      (c.type_logements||'').split(/[\/,;+]/).map(function(t){ return t.trim(); }).filter(Boolean).forEach(function(t){
+        if (types.indexOf(t) === -1) types.push(t);
+      });
+    });
+    if (!types.length) return;
+    html += '<optgroup label="' + escHtml(prog.nom) + '">'
+      + types.map(function(t){ return '<option value="' + escHtml(t) + '">' + escHtml(t) + '</option>'; }).join('')
+      + '</optgroup>';
+  });
+  return html;
+}
+
 function edsOuvrirLiaison() {
   var sel = document.getElementById('eds-lien-type');
   if (sel) {
-    var types = [];
-    (DATA.nomenclatures || []).forEach(function(n){
-      if (n.type_logement && types.indexOf(n.type_logement) === -1) types.push(n.type_logement);
-    });
     var actuel = sel.value;
-    sel.innerHTML = types.sort().map(function(t){ return '<option value="' + escHtml(t) + '">' + escHtml(t) + '</option>'; }).join('');
-    if (actuel && types.indexOf(actuel) !== -1) sel.value = actuel;
+    var html = _dqeOptionsTypesConception();
+    sel.innerHTML = html || '<option value="" disabled selected>Aucun projet de conception</option>';
+    if (actuel && html.indexOf('value="' + escHtml(actuel) + '"') !== -1) sel.value = actuel;
   }
   edsRendreLiaison();
   openModal('modal-eds-liaison');
@@ -104784,11 +104871,11 @@ goTo = function(page) {
         </div>
         <div class="form-group">
           <label>Type de logement (DQE)</label>
-          <input type="text" class="form-control" id="ep-type-logement" list="str-types-dqe" placeholder="Ex. Villa F4">
+          <select class="form-control" id="ep-type-logement"></select>
         </div>
         <div class="form-group">
           <label>Programme (site) *</label>
-          <select class="form-control" id="ep-programme"></select>
+          <select class="form-control" id="ep-programme" onchange="epRafraichirTypes()"></select>
         </div>
       </div>
       <div id="ep-resultat"></div>
@@ -105000,13 +105087,13 @@ goTo = function(page) {
         </div>
         <div class="form-group span-2">
           <label>Programme (site — détermine le DQE cible) *</label>
-          <select class="form-control" id="str-programme"></select>
+          <select class="form-control" id="str-programme" onchange="structRafraichirTypes()"></select>
           <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;">La fondation dépend du sol du site : injecter sans programme risquerait d'écraser le DQE d'un autre programme utilisant le même type de logement.</div>
         </div>
         <div class="form-group span-2">
           <label>Type de logement de destination (DQE)</label>
-          <input type="text" class="form-control" id="str-type-logement" list="str-types-dqe" placeholder="Ex. Villa F4 — doit correspondre au type utilisé dans le DQE">
-          <datalist id="str-types-dqe"></datalist>
+          <select class="form-control" id="str-type-logement"></select>
+          <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;">Uniquement les types déclarés dans une fiche de conception (Plans &amp; Conception) du programme sélectionné ci-dessus.</div>
         </div>
       </div>
       <div id="str-resultat"></div>
@@ -105141,7 +105228,7 @@ goTo = function(page) {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Programme</th><th>Type de logement</th><th style="text-align:right;">Nb lots</th><th style="text-align:right;">Coût DQE unitaire</th><th>Statut</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Programme</th><th>Type de logement</th><th style="text-align:right;">Nb lots</th><th style="text-align:right;">Coût DQE unitaire</th><th style="text-align:right;">Coût total</th><th>Statut</th><th>Actions</th></tr></thead>
           <tbody id="dqe-liste-prog-tbody"></tbody>
         </table>
       </div>
