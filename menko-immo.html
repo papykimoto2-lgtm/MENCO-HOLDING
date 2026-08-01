@@ -12258,6 +12258,8 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <button class="btn btn-secondary btn-sm" onclick="dqeListePlans()" title="Tous les DQE générés depuis l'éditeur de plan">📐 DQE issus des plans</button>
           <button class="btn btn-secondary btn-sm" onclick="structOuvrir()" title="Fondations et structure : le DQE du plan ne couvre que les finitions">🏗️ Structure &amp; fondations</button>
           <button class="btn btn-secondary btn-sm" onclick="epOuvrir()" title="Électricité et plomberie, primaire et finitions, par niveau de standing">⚡🚿 Élec &amp; Plomberie</button>
+          <button class="btn btn-secondary btn-sm" onclick="couvOuvrir()" title="Charpente, couverture, faîtage, rives, gouttières, descentes EP et étanchéité toiture-terrasse">🏠 Charpente &amp; Couverture</button>
+          <button class="btn btn-secondary btn-sm" onclick="macOuvrir()" title="Élévation en agglos, enduits intérieurs/extérieurs et faux plafonds">🧱 Maçonnerie &amp; Enduits</button>
           <button class="btn btn-primary btn-sm" onclick="dqeOuvrirRevue()" title="Quels lots sont chiffrés, lesquels manquent, et ce qu'ils pèsent">🔍 Complétude</button>
           <button class="btn btn-secondary btn-sm" onclick="edsOuvrirLiaison()" title="Relier les lignes du DQE aux ouvrages du déboursé sec">🔗 Déboursé sec</button>
           <button class="btn btn-secondary btn-sm" onclick="exportDQE()">⬇ Export CSV</button>
@@ -88442,15 +88444,32 @@ function structGeometriePlan() {
 }
 
 /* Cœur du pré-dimensionnement. */
-function structCalculer(geo, qadm, hyp) {
+function structCalculer(geo, qadm, hyp, typeToiture) {
   hyp = hyp || structHypotheses();
   var R = { hyp:hyp, geo:geo, qadm:qadm, lignes:[], warn:[], type_fondation:'', charge_totale:0 };
   var S = parseFloat(geo.emprise) || 0;
   var N = parseInt(geo.niveaux) || 1;
   if (S <= 0) { R.warn.push('Emprise au sol inconnue : dessinez le plan ou saisissez la surface.'); return R; }
 
+  /* [FIX] Sections (poteau 20×20), ratios d'acier et hauteur d'étage sont
+     calibrés « villa courante » (voir STRUCT_HYP) — au-delà de R+2, un
+     immeuble collectif sort de cette fourchette et les sous-dimensionne
+     silencieusement. Alerte, sans bloquer le pré-dimensionnement. */
+  if (N >= 3) {
+    R.warn.push('Bâtiment à ' + N + ' niveaux : les hypothèses par défaut (section poteau 20×20, ratios d\'acier) sont '
+      + 'calibrées pour une villa courante et sous-dimensionnent probablement un immeuble collectif R+2 et plus. '
+      + 'Ajustez-les via « ⚙️ Hypothèses & ratios » ou faites confirmer par l\'ingénieur structure.');
+  }
+
   /* ── 1. Descente de charge ────────────────────────────────────────────── */
-  var chargeUtile = (N * hyp.charge_niveau) + hyp.charge_toiture;   /* kN/m² */
+  /* [FIX] La charge de toiture était fixe (6 kN/m²) quel que soit le type de
+     couverture, sans lien avec le module Charpente & Couverture qui, lui,
+     distingue tôle légère, tuile et dalle-terrasse (nettement plus lourde). */
+  var CHARGE_TOITURE = { tole:5, tuile:6.5, terrasse:9 };
+  var tt = typeToiture || 'tole';
+  var chargeToiture = CHARGE_TOITURE[tt] || hyp.charge_toiture;
+  R.type_toiture = tt;
+  var chargeUtile = (N * hyp.charge_niveau) + chargeToiture;   /* kN/m² */
   var Ntot = S * chargeUtile;                                        /* kN */
   R.charge_totale = Math.round(Ntot);
   R.charge_m2 = Math.round(chargeUtile * 10) / 10;
@@ -88490,7 +88509,7 @@ function structCalculer(geo, qadm, hyp) {
   var volBetonTotal = 0, poidsAcierTotal = 0;
 
   if (R.type_fondation === 'radier') {
-    var volRadier = S * hyp.ep_radier || S * hyp.h_radier;
+    var volRadier = S * hyp.h_radier;
     L('Fondations', 'Béton radier général ép. ' + (hyp.h_radier*100) + ' cm', 'm³', volRadier);
     L('Fondations', 'Coffrage rive de radier', 'm²', Math.sqrt(S) * 4 * hyp.h_radier);
     var aRad = acier(volRadier, hyp.ratio_radier);
@@ -88698,6 +88717,8 @@ function structOuvrir() {
     }
   } catch(e) {}
   el('str-qadm', qadm);
+  var toitSel = document.getElementById('str-toiture-type');
+  if (toitSel && window._couvDernier && window._couvDernier.type) toitSel.value = window._couvDernier.type;
   var src = document.getElementById('str-source');
   if (src) src.textContent = geo.source === 'plan'
     ? '📐 Géométrie reprise du plan ouvert dans l\'éditeur'
@@ -88730,7 +88751,9 @@ function structRecalculer() {
     source: 'saisie'
   };
   var q = parseFloat((document.getElementById('str-qadm')||{}).value) || 0;
-  var R = structCalculer(g, q);
+  var tt = (document.getElementById('str-toiture-type')||{}).value
+    || (window._couvDernier ? window._couvDernier.type : '') || 'tole';
+  var R = structCalculer(g, q, null, tt);
   window._structDernier = R;
 
   var box = document.getElementById('str-resultat');
@@ -89395,7 +89418,10 @@ function epCalculer(pieces, standing, opts) {
   /* Longueur de gaine : ~8 m par point en moyenne (aller tableau + boucles). */
   L('elec','go','Gaine ICTA Ø20 encastrée, y/c saignées','ml', nbPts * 8, epPrix('gaine_icta',S));
   L('elec','go','Boîte d\'encastrement / dérivation','u', nbPts, epPrix('boite_encast',S));
-  L('elec','go','Boucle de terre fond de fouille + piquet','ml', Math.max(12, Math.sqrt(surfTot) * 4), epPrix('boucle_terre',S));
+  /* [FIX] Sans plafond, cette boucle grimpait avec la surface bien au-delà
+     de ce qui est techniquement nécessaire : une seule boucle de 15-20 ml
+     suffit quelle que soit la taille de la villa. */
+  L('elec','go','Boucle de terre fond de fouille + piquet','ml', Math.min(20, Math.max(12, Math.sqrt(surfTot) * 4)), epPrix('boucle_terre',S));
   L('elec','go','Fourreau d\'alimentation depuis coffret CIE','ml', opts.distance_cie || 20, epPrix('fourreau_alim',S));
 
   /* ── ÉLECTRICITÉ — finitions ──────────────────────────────────────────── */
@@ -89475,6 +89501,50 @@ function epOuvrir() {
   openModal('modal-elec-plomb');
 }
 
+/* [FIX] Déduit une composition-type du libellé du type de logement (F3, T4,
+   Studio…), convention francophone n° = (n-1) chambres + séjour. Utilisée
+   pour préremplir la saisie manuelle : avant ce correctif, le profil par
+   défaut restait figé sur un F4 (1 séjour, 3 chambres, 2 SDB) quel que soit
+   le type sélectionné dans le DQE, tant qu'aucun plan n'était ouvert. */
+function epComposantsDepuisType(label) {
+  var s = String(label || '').toUpperCase().replace(/\s+/g, '');
+  if (/STUDIO/.test(s)) return { sejour:1, chambre:0, cuisine:1, sdb:1, wc:0, deg:0, terrasse:1 };
+  var m = s.match(/^[FT](\d+)/);
+  if (!m) return null;
+  var n = parseInt(m[1], 10);
+  if (n <= 1) return { sejour:1, chambre:0, cuisine:1, sdb:1, wc:0, deg:0, terrasse:1 };
+  var chambres = n - 1;
+  return { sejour:1, chambre:chambres, cuisine:1, sdb:(chambres >= 3 ? 2 : 1), wc:(chambres >= 3 ? 1 : 0), deg:1, terrasse:1 };
+}
+
+/* Appelée au changement de type de logement dans la modale. N'écrase la
+   saisie manuelle que si aucun plan n'est ouvert (sinon le plan fait foi) et
+   que le type est reconnu (Fn/Tn/Studio) — un libellé libre non reconnu
+   laisse la composition courante intacte plutôt que de la vider. */
+function epAppliquerTypeManuel() {
+  var type = (document.getElementById('ep-type-logement')||{}).value || '';
+  if (epCollecterPieces().length) { epRecalculer(); return; }
+  var comp = epComposantsDepuisType(type);
+  if (comp) {
+    var set = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
+    set('ep-n-sejour', comp.sejour);
+    set('ep-n-chambre', comp.chambre);
+    set('ep-n-cuisine', comp.cuisine);
+    set('ep-n-sdb', comp.sdb);
+    set('ep-n-wc', comp.wc);
+    set('ep-n-deg', comp.deg);
+    set('ep-n-terrasse', comp.terrasse);
+  }
+  /* [FIX] La fosse septique était injectée pour CHAQUE type de logement sans
+     condition — correct pour une villa individuelle, faux pour un
+     appartement en collectif où elle est mutualisée au niveau du programme
+     (surcoût par duplication). Décochée par défaut sur un libellé évoquant
+     du collectif ; l'utilisateur reste libre de corriger. */
+  var fosse = document.getElementById('ep-fosse');
+  if (fosse) fosse.checked = !/APPART|APPT|IMMEUBLE|COLLECTIF|DUPLEX.?COLLECTIF/i.test(type);
+  epRecalculer();
+}
+
 /* Composition saisie à la main quand aucun plan n'est ouvert. */
 function epPiecesManuelles() {
   var g = function(id){ return parseInt((document.getElementById(id)||{}).value) || 0; };
@@ -89502,8 +89572,9 @@ function epRecalculer() {
     return;
   }
 
+  var fosseIndiv = document.getElementById('ep-fosse') ? document.getElementById('ep-fosse').checked : true;
   var res = {};
-  ['eco','moyen','haut'].forEach(function(s){ res[s] = epCalculer(pieces, s); });
+  ['eco','moyen','haut'].forEach(function(s){ res[s] = epCalculer(pieces, s, { fosse: fosseIndiv }); });
   window._epDernier = res;
   var ref = res.eco;
 
@@ -89618,6 +89689,492 @@ async function epInjecterDQE() {
   if (typeof chargerNomenclature === 'function') chargerNomenclature();
   toast(n + ' poste(s) électricité/plomberie injecté(s) — ' + EP_STANDINGS[sel].label + ' · '
     + fmtF(r.total) + ' F (dont ' + fmtF(r.totalGO) + ' F au gros œuvre).', 'success');
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   CHARPENTE & COUVERTURE — pré-dimensionnement par type de toiture
+   ──────────────────────────────────────────────────────────────────────────
+   Même logique que Structure & fondations et Élec & Plomberie : géométrie
+   reprise du plan (emprise du dernier niveau — la toiture coiffe l'étage
+   sommital, pas le rez-de-chaussée), quantités par ratios, injection scopée
+   par programme + type de logement.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Prix unitaires indicatifs, marché ivoirien, par standing. La différence
+   éco/moyen/haut porte sur la nature du matériau de couverture (bac alu nu
+   → tuile terre cuite premium) et la présence d'un écran de sous-toiture,
+   absent des chantiers économiques. */
+var COUV_PRIX = {
+  chevron:          { eco:1200,  moyen:1400,  haut:1600  },   /* ml */
+  ferme:            { eco:45000, moyen:55000, haut:70000 },   /* u, trame ~3,5 m */
+  panne:            { eco:1500,  moyen:1800,  haut:2200  },   /* ml */
+  tole:             { eco:6500,  moyen:8500,  haut:12000 },   /* m² */
+  tuile:            { eco:9500,  moyen:13000, haut:19000 },   /* m² */
+  ecran_ss_toiture: { eco:0,     moyen:2200,  haut:3200  },   /* m², absent en éco */
+  faitage:          { eco:4500,  moyen:5200,  haut:6200  },   /* ml */
+  rive:             { eco:3200,  moyen:3800,  haut:4500  },   /* ml */
+  gouttiere:        { eco:5500,  moyen:6800,  haut:8500  },   /* ml */
+  descente_ep:      { eco:8500,  moyen:10500, haut:13500 },   /* u, tuyau + coudes + dauphin */
+  forme_pente:      { eco:3500,  moyen:4200,  haut:5200  },   /* m², béton allégé */
+  etancheite:       { eco:7500,  moyen:9500,  haut:13000 }    /* m², multicouche + protection */
+};
+
+function couvPrix(article, standing) {
+  var p = COUV_PRIX[article];
+  return p ? (p[standing] || p.eco || 0) : 0;
+}
+
+/* Emprise de toiture = footprint du DERNIER niveau dessiné, pas du rez-de-
+   chaussée : un bâtiment en retrait d'étage n'a pas la même toiture que son
+   emprise au sol (contrairement aux fondations, qui suivent le niveau 0). */
+function couvGeometriePlan() {
+  var g = { emprise:0, niveaux:1, lineaire_murs:0, source:'saisie' };
+  try {
+    if (typeof ED !== 'undefined' && ED.elements && ED.elements.length) {
+      var pieces = ED.elements.filter(function(e){ return e.type === 'piece'; });
+      var nivMax = 0;
+      pieces.forEach(function(p){ if ((p.niv|0) > nivMax) nivMax = p.niv|0; });
+      var top = pieces.filter(function(p){ return (p.niv|0) === nivMax; });
+      var base = top.length ? top : pieces;
+      g.emprise = base.reduce(function(s,p){ return s + (parseFloat(p.l)||0) * (parseFloat(p.w)||0); }, 0);
+      g.niveaux = (ED.niveaux && ED.niveaux.length) ? ED.niveaux.length : 1;
+      ED.elements.filter(function(e){ return (e.type==='mur'||e.type==='cloison'||e.type==='mur_courbe') && (e.niv|0) === nivMax; })
+        .forEach(function(m){ g.lineaire_murs += parseFloat(m.longueur || m.l) || 0; });
+      g.source = 'plan';
+    }
+  } catch(e) {}
+  return g;
+}
+
+/* Cœur du chiffrage. Deux familles : toiture en pente (tôle/tuile — charpente
+   bois + couverture) et toiture-terrasse (dalle déjà chiffrée en structure —
+   ici uniquement forme de pente + étanchéité). Une zone de terrasse
+   accessible partielle peut s'ajouter à une toiture en pente (ex. terrasse
+   sur garage attenant), d'où le lot « étanchéité » toujours disponible. */
+function couvCalculer(geo, type, pente, standing, opts) {
+  opts = opts || {};
+  var S = standing || 'eco';
+  var R = { type:type, standing:S, pente:pente, lignes:[], total:0, geo:geo };
+  var emprise = geo.emprise || 0;
+  if (!(emprise > 0)) { R.warn = ['Emprise de toiture nulle — saisissez une surface ou ouvrez un plan.']; return R; }
+
+  /* Débord de toit : +6 % de surface pour les avancées de rive, protection
+     des façades, constant quel que soit le type de couverture. */
+  var DEBORD = 1.06;
+  /* Périmètre : repris du linéaire de murs du dernier niveau si le plan est
+     ouvert (fidèle) ; sinon estimé par un rectangle équivalent de ratio 1,3:1
+     (villa courante), comme la trame de 4 m sert à estimer les poteaux en
+     Structure & fondations en l'absence de tracé. */
+  var ratio = 1.3;
+  var Lr = Math.sqrt(emprise * ratio), lr = Math.sqrt(emprise / ratio);
+  var perimetre = geo.lineaire_murs > 0 ? geo.lineaire_murs : 2 * (Lr + lr);
+  var faitage = Lr;
+
+  var L = function(lot, materiau, unite, qte, pu) {
+    if (!(qte > 0)) return;
+    var mt = Math.round(qte * pu);
+    R.lignes.push({ lot:lot,
+                     poste: lot === 'etancheite' ? 'Étanchéité toiture-terrasse' : 'Charpente & Couverture',
+                     materiau:materiau, unite:unite, quantite:Math.round(qte*100)/100, pu:pu, montant:mt });
+    R.total += mt;
+  };
+
+  if (type === 'terrasse') {
+    var surfT = emprise * DEBORD;
+    L('etancheite', 'Forme de pente (béton allégé, ép. moy. 5 cm)', 'm²', surfT, couvPrix('forme_pente', S));
+    L('etancheite', 'Étanchéité multicouche + protection', 'm²', surfT, couvPrix('etancheite', S));
+    L('etancheite', 'Relevés d\'étanchéité en périphérie', 'ml', perimetre, couvPrix('rive', S));
+  } else {
+    var penteRad = (pente || 30) * Math.PI / 180;
+    var surfPente = (emprise * DEBORD) / Math.cos(penteRad);
+    /* Une ferme triangulée tous les 3,5 m de long-pan ; pannes et chevrons
+       par ratio ml/m² courant en petite/moyenne portée. */
+    var nbFermes = Math.max(2, Math.ceil(faitage / 3.5) + 1);
+    L('charpente', 'Fermes triangulées bois', 'u', nbFermes, couvPrix('ferme', S));
+    L('charpente', 'Pannes bois', 'ml', surfPente * 1.8, couvPrix('panne', S));
+    L('charpente', 'Chevrons / liteaux bois', 'ml', surfPente * 2.2, couvPrix('chevron', S));
+    var materiauCouv = type === 'tuile' ? 'Tuile' : 'Tôle bac alu';
+    L('couverture', materiauCouv + ' de couverture', 'm²', surfPente, couvPrix(type, S));
+    if (S !== 'eco') L('couverture', 'Écran de sous-toiture', 'm²', surfPente, couvPrix('ecran_ss_toiture', S));
+    L('couverture', 'Faîtage', 'ml', faitage, couvPrix('faitage', S));
+    L('couverture', 'Rives de rampant', 'ml', perimetre * 0.5, couvPrix('rive', S));
+    L('couverture', 'Gouttières + crochets', 'ml', perimetre * 0.5, couvPrix('gouttiere', S));
+    L('couverture', 'Descente EP (tuyau + coudes + dauphin)', 'u', Math.max(2, Math.ceil(perimetre / 10)), couvPrix('descente_ep', S));
+
+    if (opts.terrasse_partielle > 0) {
+      L('etancheite', 'Forme de pente — terrasse accessible', 'm²', opts.terrasse_partielle, couvPrix('forme_pente', S));
+      L('etancheite', 'Étanchéité — terrasse accessible', 'm²', opts.terrasse_partielle, couvPrix('etancheite', S));
+    }
+  }
+  return R;
+}
+
+/* Recharge le sélecteur de type de logement d'après le programme choisi —
+   même source que Structure & fondations et Élec & Plomberie. */
+function couvRafraichirTypes() {
+  var sel = document.getElementById('couv-type-logement');
+  var selProg = document.getElementById('couv-programme');
+  if (!sel) return;
+  var progId = selProg ? selProg.value : '';
+  var cur = sel.value;
+  var html = _dqeOptionsTypesConception(progId);
+  sel.innerHTML = html || '<option value="" disabled selected>' + (progId ? 'Aucune conception pour ce programme' : 'Sélectionnez un programme') + '</option>';
+  if (cur && html.indexOf('value="' + escHtml(cur) + '"') !== -1) sel.value = cur;
+}
+
+function couvOuvrir() {
+  var geo = couvGeometriePlan();
+  var el = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
+  el('couv-emprise', geo.emprise ? geo.emprise.toFixed(1) : '');
+  el('couv-perimetre', geo.lineaire_murs ? geo.lineaire_murs.toFixed(1) : '');
+  var src = document.getElementById('couv-source');
+  if (src) src.textContent = geo.source === 'plan'
+    ? '📐 Emprise reprise du dernier niveau du plan ouvert dans l\'éditeur'
+    : '✏️ Aucun plan ouvert — saisissez la surface';
+  var selProg = document.getElementById('couv-programme');
+  if (selProg) {
+    var progDQE = (document.getElementById('dqe-filter-programme') || {}).value || '';
+    selProg.innerHTML = '<option value="">— Sélectionner —</option>'
+      + DATA.programmes.map(function(p){ return '<option value="' + p.id + '">' + escHtml(p.nom) + '</option>'; }).join('');
+    if (progDQE) selProg.value = progDQE;
+  }
+  couvRafraichirTypes();
+  couvRecalculer();
+  openModal('modal-couverture');
+}
+
+function couvRecalculer() {
+  var geo = {
+    emprise: parseFloat((document.getElementById('couv-emprise')||{}).value) || 0,
+    lineaire_murs: parseFloat((document.getElementById('couv-perimetre')||{}).value) || 0,
+    source:'saisie'
+  };
+  var type = (document.getElementById('couv-type')||{}).value || 'tole';
+  var pente = parseFloat((document.getElementById('couv-pente')||{}).value) || 30;
+  var standing = (document.getElementById('couv-standing')||{}).value || 'eco';
+  var terrassePart = parseFloat((document.getElementById('couv-terrasse-part')||{}).value) || 0;
+
+  var penteBloc = document.getElementById('couv-bloc-pente');
+  if (penteBloc) penteBloc.style.display = (type === 'terrasse') ? 'none' : '';
+  var terrasseBloc = document.getElementById('couv-bloc-terrasse-part');
+  if (terrasseBloc) terrasseBloc.style.display = (type === 'terrasse') ? 'none' : '';
+
+  var R = couvCalculer(geo, type, pente, standing, { terrasse_partielle: terrassePart });
+  window._couvDernier = R;
+
+  var box = document.getElementById('couv-resultat');
+  if (!box) return;
+  if (R.warn) {
+    box.innerHTML = R.warn.map(function(w){
+      return '<div style="padding:10px 12px;background:rgba(224,82,82,.10);border-left:3px solid var(--rouge);border-radius:6px;font-size:12px;line-height:1.7;margin-bottom:8px;">⚠️ ' + escHtml(w) + '</div>';
+    }).join('');
+    return;
+  }
+
+  var surfCouvLigne = R.lignes.find(function(l){ return l.lot === 'couverture' && (l.materiau === 'Tuile de couverture' || l.materiau === 'Tôle bac alu de couverture'); });
+  var surfEtancheLigne = R.lignes.find(function(l){ return l.lot === 'etancheite' && /^Étanchéité/.test(l.materiau); });
+  var surfRef = surfCouvLigne ? surfCouvLigne.quantite : (surfEtancheLigne ? surfEtancheLigne.quantite : 0);
+
+  var h = '';
+  h += '<div class="kpi-grid" style="margin-bottom:12px;">'
+    + '<div class="kpi-card" data-icon="🏠"><div class="kpi-label">Surface couverte</div><div class="kpi-value or" style="font-size:15px;">' + fmtF(Math.round(surfRef)) + ' m²</div><div class="kpi-delta">' + (R.type === 'terrasse' ? 'toiture-terrasse' : 'pente ' + R.pente + '°') + '</div></div>'
+    + '<div class="kpi-card" data-icon="💰"><div class="kpi-label">Coût total</div><div class="kpi-value or" style="font-size:15px;">' + fmtF(R.total) + ' F</div><div class="kpi-delta">' + (surfRef ? fmtF(Math.round(R.total/surfRef)) + ' F/m²' : '') + '</div></div>'
+    + '</div>';
+
+  h += '<div class="table-wrap"><table style="width:100%;font-size:12px;"><thead><tr>'
+    + '<th>Lot</th><th>Ouvrage</th><th>Unité</th><th style="text-align:right;">Quantité</th>'
+    + '<th style="text-align:right;">PU</th><th style="text-align:right;">Montant</th></tr></thead><tbody>';
+  R.lignes.forEach(function(l){
+    h += '<tr><td style="white-space:nowrap;font-size:10.5px;color:var(--blanc-dim);">' + (l.lot === 'etancheite' ? '💧 étanchéité' : (l.lot === 'charpente' ? '🪵 charpente' : '🏠 couverture')) + '</td>'
+      + '<td>' + escHtml(l.materiau) + '</td><td>' + escHtml(l.unite) + '</td>'
+      + '<td style="text-align:right;">' + fmtF(l.quantite) + '</td>'
+      + '<td style="text-align:right;">' + fmtF(l.pu) + '</td>'
+      + '<td style="text-align:right;font-weight:600;">' + fmtF(l.montant) + '</td></tr>';
+  });
+  h += '</tbody></table></div>';
+
+  h += '<div style="margin-top:10px;padding:10px 12px;background:rgba(224,82,82,.09);border-left:3px solid var(--rouge);border-radius:6px;font-size:11.5px;line-height:1.8;">'
+    + '<strong>Pré-dimensionnement d\'avant-projet.</strong> Le périmètre et le faîtage sont estimés par un rectangle équivalent '
+    + 'faute de tracé de contour de toiture ; corrigez le linéaire ci-dessus si le bâtiment est composé (plusieurs pans). '
+    + 'Ne remplace pas le plan de charpente du bureau d\'études bois.'
+    + '</div>';
+
+  box.innerHTML = h;
+}
+
+async function couvInjecterDQE() {
+  var R = window._couvDernier;
+  if (!R || !R.lignes.length) { toast('Aucune quantité à injecter.', 'error'); return; }
+  var type = (document.getElementById('couv-type-logement')||{}).value || '';
+  if (!type) { toast('Indiquez le type de logement de destination.', 'error'); return; }
+  var progId = (document.getElementById('couv-programme')||{}).value || '';
+  if (!progId) { toast('Sélectionnez le programme de destination.', 'error'); return; }
+
+  /* Remplace uniquement les lignes couverture déjà générées pour CE type ET
+     CE programme, comme structInjecterDQE/epInjecterDQE : un poste corrigé à
+     la main survit au recalcul. */
+  var anciennes = (DATA.nomenclatures||[]).filter(function(n){
+    return n.type_logement === type && n.programme_id === progId && n._genere_couverture && !n._ajuste_manuel; });
+  var ajustes = (DATA.nomenclatures||[]).filter(function(n){
+    return n.type_logement === type && n.programme_id === progId && n._genere_couverture && n._ajuste_manuel; });
+  for (var i = 0; i < anciennes.length; i++) {
+    await deleteRecord('nomenclatures', anciennes[i].id, { skipIntegrity:true });
+  }
+
+  var le = new Date().toISOString();
+  var n = 0;
+  for (var j = 0; j < R.lignes.length; j++) {
+    var l = R.lignes[j];
+    if (ajustes.some(function(a){ return String(a.materiau||'') === String(l.materiau||''); })) continue;
+    var entry = {
+      id: uid(), type_logement: type, programme_id: progId, poste: l.poste, materiau: l.materiau,
+      unite: l.unite, quantite: l.quantite, prix_forfait: l.montant, ouvrage_id: '',
+      _genere_couverture: true, _genere_le: le,
+      _couv_lot: l.lot, _couv_standing: R.standing, _couv_type: R.type,
+      _plan_id: (window._archiPlanCourant ? window._archiPlanCourant.id : ''),
+      _plan_ref: (window._archiPlanCourant ? (window._archiPlanCourant.ref || '') : '')
+    };
+    DATA.nomenclatures.push(entry);
+    await dbPut('nomenclatures', entry);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', entry);
+    n++;
+  }
+  closeModal('modal-couverture');
+  if (typeof chargerNomenclature === 'function') chargerNomenclature();
+  toast(n + ' poste(s) charpente/couverture injecté(s) — ' + fmtF(R.total) + ' F.', 'success');
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   MAÇONNERIE & ENDUITS — élévation, enduits, faux plafonds
+   ──────────────────────────────────────────────────────────────────────────
+   Trois lots DQE en un seul module car ils partagent la même géométrie
+   (linéaire de murs/cloisons, surface des pièces) et se pilotent sur le
+   même écran : l'élévation en agglos, les trois passes d'enduit qui la
+   suivent, et les faux plafonds qui ferment le volume avant peinture.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+var MAC_PRIX = {
+  agglo20:        { eco:350,   moyen:380,   haut:420   },   /* u — mur porteur 20 */
+  agglo15:        { eco:280,   moyen:300,   haut:330   },   /* u — cloison 15 */
+  mortier_pose:   { eco:68000, moyen:72000, haut:78000 },   /* m³ — mortier bâtard de pose */
+  enduit_int:     { eco:2800,  moyen:3400,  haut:4200  },   /* m² — gobetis + corps + finition */
+  enduit_ext:     { eco:3200,  moyen:3900,  haut:4800  },   /* m² — façade, enduit taloché/gratté */
+  plafond:        { eco:9500,  moyen:14000, haut:24000 }    /* m² — lambris/placo → staff+dalle décorative */
+};
+
+function macPrix(article, standing) {
+  var p = MAC_PRIX[article];
+  return p ? (p[standing] || p.eco || 0) : 0;
+}
+
+/* Reprend TOUT le plan (tous niveaux confondus, contrairement à la toiture
+   qui ne coiffe que le dernier) : l'élévation, les enduits et les plafonds
+   concernent chaque étage. */
+function macGeometriePlan() {
+  var g = { lineaire_murs:0, lineaire_cloisons:0, niveaux:1, surface_pieces:0, perimetre_ext:0, source:'saisie' };
+  try {
+    if (typeof ED !== 'undefined' && ED.elements && ED.elements.length) {
+      g.niveaux = (ED.niveaux && ED.niveaux.length) ? ED.niveaux.length : 1;
+      ED.elements.filter(function(e){ return e.type === 'mur' || e.type === 'mur_courbe'; })
+        .forEach(function(m){ g.lineaire_murs += parseFloat(m.longueur || m.l) || 0; });
+      ED.elements.filter(function(e){ return e.type === 'cloison'; })
+        .forEach(function(c){ g.lineaire_cloisons += parseFloat(c.longueur || c.l) || 0; });
+      var pieces = ED.elements.filter(function(e){ return e.type === 'piece'; });
+      g.surface_pieces = pieces.reduce(function(s,p){ return s + (parseFloat(p.l)||0) * (parseFloat(p.w)||0); }, 0);
+      /* Périmètre extérieur (pour l'enduit de façade) : celui du niveau 0,
+         une villa courante gardant la même emprise à chaque étage. Estimé
+         par rectangle équivalent faute de distinction mur porteur
+         extérieur / de refend dans les données du plan. */
+      var niv0 = pieces.filter(function(p){ return (p.niv|0) === 0; });
+      var emprise0 = (niv0.length ? niv0 : pieces).reduce(function(s,p){ return s + (parseFloat(p.l)||0)*(parseFloat(p.w)||0); }, 0);
+      var ratio = 1.3, L = Math.sqrt(emprise0*ratio), l = Math.sqrt(emprise0/ratio);
+      g.perimetre_ext = 2 * (L + l);
+      g.source = 'plan';
+    }
+  } catch(e) {}
+  return g;
+}
+
+function macCalculer(geo, hauteur, standing, opts) {
+  opts = opts || {};
+  var S = standing || 'eco';
+  var H = hauteur || 2.8;
+  var R = { standing:S, hauteur:H, lignes:[], total:0, geo:geo };
+  if (!(geo.lineaire_murs > 0 || geo.lineaire_cloisons > 0)) {
+    R.warn = ['Aucun linéaire de murs ou cloisons — saisissez une valeur ou ouvrez un plan.'];
+    return R;
+  }
+
+  var L = function(lot, materiau, unite, qte, pu) {
+    if (!(qte > 0)) return;
+    var mt = Math.round(qte * pu);
+    R.lignes.push({ lot:lot,
+                     poste: lot === 'maconnerie' ? 'Maçonnerie d\'élévation' : (lot === 'enduits' ? 'Enduits' : 'Faux plafonds'),
+                     materiau:materiau, unite:unite, quantite:Math.round(qte*100)/100, pu:pu, montant:mt });
+    R.total += mt;
+  };
+
+  /* ── ÉLÉVATION ─────────────────────────────────────────────────────────
+     12,5 blocs/m² (face 0,20 × 0,40 m, joints inclus), quel que soit
+     l'épaisseur d'agglo — seule la face compte pour le nombre de blocs.
+     Déduction forfaitaire des réservations de menuiseries : 12 % sur les
+     murs porteurs (baies), 15 % sur les cloisons (portes, plus fréquentes
+     au linéaire). */
+  var BLOCS_M2 = 12.5;
+  var surfMurs = geo.lineaire_murs * H * 0.88;
+  var surfCloisons = geo.lineaire_cloisons * H * 0.85;
+  L('maconnerie', 'Agglos creux 20×20×40 (murs porteurs)', 'u', surfMurs * BLOCS_M2, macPrix('agglo20', S));
+  L('maconnerie', 'Agglos creux 15×20×40 (cloisons)', 'u', surfCloisons * BLOCS_M2, macPrix('agglo15', S));
+  L('maconnerie', 'Mortier bâtard de pose', 'm³', (surfMurs + surfCloisons) * 0.012, macPrix('mortier_pose', S));
+
+  /* ── ENDUITS ───────────────────────────────────────────────────────────
+     Intérieur : face interne des murs porteurs + les deux faces des
+     cloisons. Extérieur : enveloppe du bâtiment (périmètre × hauteur ×
+     niveaux), séparée pour ne pas la compter deux fois avec les murs. */
+  var surfEnduitInt = surfMurs + surfCloisons * 2;
+  var surfEnduitExt = geo.perimetre_ext * H * geo.niveaux * 0.85;
+  L('enduits', 'Enduit intérieur, 3 passes (gobetis + corps + finition)', 'm²', surfEnduitInt, macPrix('enduit_int', S));
+  L('enduits', 'Enduit de façade extérieure', 'm²', surfEnduitExt, macPrix('enduit_ext', S));
+
+  /* ── FAUX PLAFONDS ─────────────────────────────────────────────────────
+     Sur la surface totale des pièces, tous niveaux. À corriger si le plan
+     inclut des zones sans plafond suspendu (garage, terrasses ouvertes). */
+  var libPlafond = S === 'eco' ? 'Faux plafond lambris PVC + staff (pièces principales)'
+    : (S === 'moyen' ? 'Faux plafond placo hydrofuge' : 'Faux plafond staff/placo + dalle minérale décorative');
+  L('plafonds', libPlafond, 'm²', geo.surface_pieces, macPrix('plafond', S));
+
+  return R;
+}
+
+function macRafraichirTypes() {
+  var sel = document.getElementById('mac-type-logement');
+  var selProg = document.getElementById('mac-programme');
+  if (!sel) return;
+  var progId = selProg ? selProg.value : '';
+  var cur = sel.value;
+  var html = _dqeOptionsTypesConception(progId);
+  sel.innerHTML = html || '<option value="" disabled selected>' + (progId ? 'Aucune conception pour ce programme' : 'Sélectionnez un programme') + '</option>';
+  if (cur && html.indexOf('value="' + escHtml(cur) + '"') !== -1) sel.value = cur;
+}
+
+function macOuvrir() {
+  var geo = macGeometriePlan();
+  var el = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
+  el('mac-murs', geo.lineaire_murs ? geo.lineaire_murs.toFixed(1) : '');
+  el('mac-cloisons', geo.lineaire_cloisons ? geo.lineaire_cloisons.toFixed(1) : '');
+  el('mac-perimetre', geo.perimetre_ext ? geo.perimetre_ext.toFixed(1) : '');
+  el('mac-surface-pieces', geo.surface_pieces ? geo.surface_pieces.toFixed(1) : '');
+  el('mac-niveaux', geo.niveaux || 1);
+  var src = document.getElementById('mac-source');
+  if (src) src.textContent = geo.source === 'plan'
+    ? '📐 Géométrie reprise du plan ouvert (tous niveaux)'
+    : '✏️ Aucun plan ouvert — saisissez les valeurs';
+  var selProg = document.getElementById('mac-programme');
+  if (selProg) {
+    var progDQE = (document.getElementById('dqe-filter-programme') || {}).value || '';
+    selProg.innerHTML = '<option value="">— Sélectionner —</option>'
+      + DATA.programmes.map(function(p){ return '<option value="' + p.id + '">' + escHtml(p.nom) + '</option>'; }).join('');
+    if (progDQE) selProg.value = progDQE;
+  }
+  macRafraichirTypes();
+  macRecalculer();
+  openModal('modal-maconnerie');
+}
+
+function macRecalculer() {
+  var geo = {
+    lineaire_murs: parseFloat((document.getElementById('mac-murs')||{}).value) || 0,
+    lineaire_cloisons: parseFloat((document.getElementById('mac-cloisons')||{}).value) || 0,
+    perimetre_ext: parseFloat((document.getElementById('mac-perimetre')||{}).value) || 0,
+    surface_pieces: parseFloat((document.getElementById('mac-surface-pieces')||{}).value) || 0,
+    niveaux: parseInt((document.getElementById('mac-niveaux')||{}).value) || 1,
+    source:'saisie'
+  };
+  var hauteur = parseFloat((document.getElementById('mac-hauteur')||{}).value) || 2.8;
+  var standing = (document.getElementById('mac-standing')||{}).value || 'eco';
+
+  var R = macCalculer(geo, hauteur, standing);
+  window._macDernier = R;
+
+  var box = document.getElementById('mac-resultat');
+  if (!box) return;
+  if (R.warn) {
+    box.innerHTML = R.warn.map(function(w){
+      return '<div style="padding:10px 12px;background:rgba(224,82,82,.10);border-left:3px solid var(--rouge);border-radius:6px;font-size:12px;line-height:1.7;margin-bottom:8px;">⚠️ ' + escHtml(w) + '</div>';
+    }).join('');
+    return;
+  }
+
+  var lots = { maconnerie:0, enduits:0, plafonds:0 };
+  R.lignes.forEach(function(l){ lots[l.lot] = (lots[l.lot]||0) + l.montant; });
+
+  var h = '';
+  h += '<div class="kpi-grid" style="margin-bottom:12px;">'
+    + '<div class="kpi-card" data-icon="🧱"><div class="kpi-label">Élévation</div><div class="kpi-value or" style="font-size:15px;">' + fmtF(lots.maconnerie) + ' F</div></div>'
+    + '<div class="kpi-card" data-icon="🪣"><div class="kpi-label">Enduits</div><div class="kpi-value or" style="font-size:15px;">' + fmtF(lots.enduits) + ' F</div></div>'
+    + '<div class="kpi-card" data-icon="⬜"><div class="kpi-label">Faux plafonds</div><div class="kpi-value or" style="font-size:15px;">' + fmtF(lots.plafonds) + ' F</div></div>'
+    + '<div class="kpi-card" data-icon="💰"><div class="kpi-label">Total</div><div class="kpi-value or" style="font-size:15px;">' + fmtF(R.total) + ' F</div></div>'
+    + '</div>';
+
+  h += '<div class="table-wrap"><table style="width:100%;font-size:12px;"><thead><tr>'
+    + '<th>Lot</th><th>Ouvrage</th><th>Unité</th><th style="text-align:right;">Quantité</th>'
+    + '<th style="text-align:right;">PU</th><th style="text-align:right;">Montant</th></tr></thead><tbody>';
+  var icones = { maconnerie:'🧱 élévation', enduits:'🪣 enduits', plafonds:'⬜ plafonds' };
+  R.lignes.forEach(function(l){
+    h += '<tr><td style="white-space:nowrap;font-size:10.5px;color:var(--blanc-dim);">' + icones[l.lot] + '</td>'
+      + '<td>' + escHtml(l.materiau) + '</td><td>' + escHtml(l.unite) + '</td>'
+      + '<td style="text-align:right;">' + fmtF(l.quantite) + '</td>'
+      + '<td style="text-align:right;">' + fmtF(l.pu) + '</td>'
+      + '<td style="text-align:right;font-weight:600;">' + fmtF(l.montant) + '</td></tr>';
+  });
+  h += '</tbody></table></div>';
+
+  h += '<div style="margin-top:10px;padding:10px 12px;background:rgba(224,82,82,.09);border-left:3px solid var(--rouge);border-radius:6px;font-size:11.5px;line-height:1.8;">'
+    + '<strong>Pré-dimensionnement d\'avant-projet.</strong> Le nombre de blocs suppose 12,5 blocs/m² de face et une '
+    + 'déduction forfaitaire de réservations de menuiseries (12 % murs, 15 % cloisons). Le périmètre extérieur est estimé '
+    + 'par rectangle équivalent — corrigez-le si le bâtiment est composé de plusieurs corps.'
+    + '</div>';
+
+  box.innerHTML = h;
+}
+
+async function macInjecterDQE() {
+  var R = window._macDernier;
+  if (!R || !R.lignes.length) { toast('Aucune quantité à injecter.', 'error'); return; }
+  var type = (document.getElementById('mac-type-logement')||{}).value || '';
+  if (!type) { toast('Indiquez le type de logement de destination.', 'error'); return; }
+  var progId = (document.getElementById('mac-programme')||{}).value || '';
+  if (!progId) { toast('Sélectionnez le programme de destination.', 'error'); return; }
+
+  var anciennes = (DATA.nomenclatures||[]).filter(function(n){
+    return n.type_logement === type && n.programme_id === progId && n._genere_maconnerie && !n._ajuste_manuel; });
+  var ajustes = (DATA.nomenclatures||[]).filter(function(n){
+    return n.type_logement === type && n.programme_id === progId && n._genere_maconnerie && n._ajuste_manuel; });
+  for (var i = 0; i < anciennes.length; i++) {
+    await deleteRecord('nomenclatures', anciennes[i].id, { skipIntegrity:true });
+  }
+
+  var le = new Date().toISOString();
+  var n = 0;
+  for (var j = 0; j < R.lignes.length; j++) {
+    var l = R.lignes[j];
+    if (ajustes.some(function(a){ return String(a.materiau||'') === String(l.materiau||''); })) continue;
+    var entry = {
+      id: uid(), type_logement: type, programme_id: progId, poste: l.poste, materiau: l.materiau,
+      unite: l.unite, quantite: l.quantite, prix_forfait: l.montant, ouvrage_id: '',
+      _genere_maconnerie: true, _genere_le: le,
+      _mac_lot: l.lot, _mac_standing: R.standing,
+      _plan_id: (window._archiPlanCourant ? window._archiPlanCourant.id : ''),
+      _plan_ref: (window._archiPlanCourant ? (window._archiPlanCourant.ref || '') : '')
+    };
+    DATA.nomenclatures.push(entry);
+    await dbPut('nomenclatures', entry);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', entry);
+    n++;
+  }
+  closeModal('modal-maconnerie');
+  if (typeof chargerNomenclature === 'function') chargerNomenclature();
+  toast(n + ' poste(s) maçonnerie/enduits/plafonds injecté(s) — ' + fmtF(R.total) + ' F.', 'success');
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -104945,18 +105502,155 @@ goTo = function(page) {
         </div>
         <div class="form-group">
           <label>Type de logement (DQE)</label>
-          <select class="form-control" id="ep-type-logement"></select>
+          <select class="form-control" id="ep-type-logement" onchange="epAppliquerTypeManuel()"></select>
+          <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;">F3/T4/Studio préremplit la composition manuelle si aucun plan n'est ouvert.</div>
         </div>
         <div class="form-group">
           <label>Programme (site) *</label>
           <select class="form-control" id="ep-programme" onchange="epRafraichirTypes()"></select>
         </div>
+        <div class="form-group" style="display:flex;align-items:flex-end;">
+          <label style="display:flex;align-items:center;gap:6px;font-weight:400;">
+            <input type="checkbox" id="ep-fosse" checked onchange="epRecalculer()"> Fosse septique individuelle
+          </label>
+        </div>
       </div>
+      <div style="font-size:10px;color:var(--blanc-dim);margin-top:-8px;margin-bottom:10px;">Décochez pour un logement en collectif (appartement) où la fosse est mutualisée au niveau du programme — sinon comptée en double.</div>
       <div id="ep-resultat"></div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-elec-plomb')">Fermer</button>
       <button class="btn btn-primary" onclick="epInjecterDQE()">↧ Injecter dans le DQE</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : charpente & couverture -->
+<div class="modal-overlay" id="modal-couverture">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div>
+        <h3>🏠 Charpente &amp; Couverture — pré-dimensionnement</h3>
+        <div style="font-size:11px;color:var(--dim);">Charpente bois, couverture, faîtage, rives, gouttières, descentes EP — ou toiture-terrasse (forme de pente + étanchéité).</div>
+      </div>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-couverture')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid" style="margin-bottom:14px;">
+        <div class="form-group">
+          <label>Emprise de toiture (m²) *</label>
+          <input type="number" step="0.1" class="form-control" id="couv-emprise" oninput="couvRecalculer()">
+          <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;" id="couv-source"></div>
+        </div>
+        <div class="form-group">
+          <label>Périmètre (m)</label>
+          <input type="number" step="0.1" class="form-control" id="couv-perimetre" oninput="couvRecalculer()">
+          <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;">Laisser vide pour une estimation par rectangle équivalent.</div>
+        </div>
+        <div class="form-group">
+          <label>Type de toiture</label>
+          <select class="form-control" id="couv-type" onchange="couvRecalculer()">
+            <option value="tole">Tôle bac alu (pente)</option>
+            <option value="tuile">Tuile (pente)</option>
+            <option value="terrasse">Toiture-terrasse (dalle + étanchéité)</option>
+          </select>
+        </div>
+        <div class="form-group" id="couv-bloc-pente">
+          <label>Pente (degrés)</label>
+          <input type="number" step="1" min="5" max="60" value="30" class="form-control" id="couv-pente" oninput="couvRecalculer()">
+        </div>
+        <div class="form-group">
+          <label>Standing / qualité</label>
+          <select class="form-control" id="couv-standing" onchange="couvRecalculer()">
+            <option value="eco">Économique</option>
+            <option value="moyen">Moyen standing</option>
+            <option value="haut">Haut standing</option>
+          </select>
+        </div>
+        <div class="form-group" id="couv-bloc-terrasse-part">
+          <label>Terrasse accessible partielle (m²)</label>
+          <input type="number" step="0.1" min="0" value="0" class="form-control" id="couv-terrasse-part" oninput="couvRecalculer()">
+          <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;">Ex. terrasse sur garage attenant à une toiture en pente.</div>
+        </div>
+        <div class="form-group span-2">
+          <label>Programme (site — détermine le DQE cible) *</label>
+          <select class="form-control" id="couv-programme" onchange="couvRafraichirTypes()"></select>
+        </div>
+        <div class="form-group span-2">
+          <label>Type de logement de destination (DQE)</label>
+          <select class="form-control" id="couv-type-logement"></select>
+        </div>
+      </div>
+      <div id="couv-resultat"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-couverture')">Fermer</button>
+      <button class="btn btn-primary" onclick="couvInjecterDQE()">↧ Injecter dans le DQE</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : maçonnerie & enduits -->
+<div class="modal-overlay" id="modal-maconnerie">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div>
+        <h3>🧱 Maçonnerie &amp; Enduits — pré-dimensionnement</h3>
+        <div style="font-size:11px;color:var(--dim);">Élévation en agglos, enduits intérieurs/extérieurs, faux plafonds — tous niveaux confondus.</div>
+      </div>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-maconnerie')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid" style="margin-bottom:14px;">
+        <div class="form-group">
+          <label>Linéaire murs porteurs (m) *</label>
+          <input type="number" step="0.1" class="form-control" id="mac-murs" oninput="macRecalculer()">
+          <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;" id="mac-source"></div>
+        </div>
+        <div class="form-group">
+          <label>Linéaire cloisons (m)</label>
+          <input type="number" step="0.1" class="form-control" id="mac-cloisons" oninput="macRecalculer()">
+        </div>
+        <div class="form-group">
+          <label>Périmètre extérieur (m)</label>
+          <input type="number" step="0.1" class="form-control" id="mac-perimetre" oninput="macRecalculer()">
+          <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;">Pour l'enduit de façade — laisser vide pour une estimation par rectangle équivalent.</div>
+        </div>
+        <div class="form-group">
+          <label>Surface des pièces (m²)</label>
+          <input type="number" step="0.1" class="form-control" id="mac-surface-pieces" oninput="macRecalculer()">
+          <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;">Pour les faux plafonds — tous niveaux.</div>
+        </div>
+        <div class="form-group">
+          <label>Nombre de niveaux</label>
+          <input type="number" min="1" class="form-control" id="mac-niveaux" value="1" oninput="macRecalculer()">
+        </div>
+        <div class="form-group">
+          <label>Hauteur sous plafond (m)</label>
+          <input type="number" step="0.05" min="2" value="2.8" class="form-control" id="mac-hauteur" oninput="macRecalculer()">
+        </div>
+        <div class="form-group">
+          <label>Standing / qualité</label>
+          <select class="form-control" id="mac-standing" onchange="macRecalculer()">
+            <option value="eco">Économique</option>
+            <option value="moyen">Moyen standing</option>
+            <option value="haut">Haut standing</option>
+          </select>
+        </div>
+        <div class="form-group span-2">
+          <label>Programme (site — détermine le DQE cible) *</label>
+          <select class="form-control" id="mac-programme" onchange="macRafraichirTypes()"></select>
+        </div>
+        <div class="form-group span-2">
+          <label>Type de logement de destination (DQE)</label>
+          <select class="form-control" id="mac-type-logement"></select>
+        </div>
+      </div>
+      <div id="mac-resultat"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-maconnerie')">Fermer</button>
+      <button class="btn btn-primary" onclick="macInjecterDQE()">↧ Injecter dans le DQE</button>
     </div>
   </div>
 </div>
@@ -105164,6 +105858,14 @@ goTo = function(page) {
           <label>σ admissible du sol (kPa) *</label>
           <input type="number" step="1" class="form-control" id="str-qadm" oninput="structRecalculer()" placeholder="Ex. 150">
           <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;" id="str-source-qadm"></div>
+        </div>
+        <div class="form-group">
+          <label>Type de toiture (charge)</label>
+          <select class="form-control" id="str-toiture-type" onchange="structRecalculer()">
+            <option value="tole">Tôle légère</option>
+            <option value="tuile">Tuile</option>
+            <option value="terrasse">Dalle-terrasse</option>
+          </select>
         </div>
         <div class="form-group span-2">
           <label>Programme (site — détermine le DQE cible) *</label>
