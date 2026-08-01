@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.55 · 2026-07-31';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.58 · 2026-07-31';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -1133,6 +1133,16 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .print-preview-page hr { border: none; margin: 14px 0; }
 @media (max-width: 870px) {
   .print-preview-page { width: 100%; padding: 12px; }
+}
+.ppt-pages-wrap {
+  display: flex; flex-direction: column; align-items: center; gap: 22px;
+}
+.ppt-pages-wrap .print-preview-page {
+  position: relative; overflow: hidden; /* garde-fou visuel : coupe net plutôt que déborder si la mesure a sous-estimé une hauteur */
+}
+.ppt-page-num {
+  position: absolute; bottom: 6mm; right: 14mm;
+  font-family: sans-serif; font-size: 8.5pt; color: #9AA0AC;
 }
 /* ── Impression depuis l'aperçu : seule la page blanche sort ── */
 @media print {
@@ -12288,7 +12298,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <option value="F4">F4</option>
               <option value="VILLA">Villa</option>
             </select>
-            <button class="btn btn-secondary btn-sm" onclick="dqeAjouterTypePerso()" title="Ajouter un type de logement personnalisé">➕ Type</button>
+            <button class="btn btn-secondary btn-sm" onclick="dqeAjouterTypePerso()" title="Un type se déclare dans une fiche de conception (Plans & Conception)">➕ Type</button>
             <button class="btn btn-secondary btn-sm" onclick="ajouterPosteNomenclature()">+ Ajouter poste</button>
             <button class="btn btn-secondary btn-sm" onclick="cctpOuvrirImport()" title="Détecter la composition des murs (agglo 15/20, béton banché) depuis un CCTP">📄 Importer CCTP</button>
             <button class="btn btn-secondary btn-sm" onclick="exporterNomenclatureCSV()">⬇ CSV</button>
@@ -90372,6 +90382,12 @@ function ouvrirPrixModal(id) {
 function dqePopulateTypeLogement(){
   var sel=document.getElementById('dqe-type-logement'); if(!sel) return;
   var cur=sel.value; var seen={}; var html='';
+  /* [FIX] Le sélecteur proposait aussi les types "présents sur les lots",
+     "personnalisés", "chiffrés" et des gabarits par défaut (F2/F3/F4/VILLA)
+     — des libellés qui n'existent dans AUCUNE fiche de conception réelle,
+     source d'incohérence avec le module Plans & Conception. Restreint
+     désormais aux seuls types déclarés dans une fiche de conception
+     (projet villa/immeuble), groupés par programme. */
   (DATA.conceptions||[]).forEach(function(c){
     var types=(c.type_logements||'').split('/').map(function(t){return t.trim();}).filter(Boolean);
     if(!types.length) return;
@@ -90382,41 +90398,20 @@ function dqePopulateTypeLogement(){
     types.forEach(function(t){ seen[t]=true; var u=(c.nature==='immeuble')?' (appartement vendu)':''; html+='<option value="'+escHtml(t)+'">'+escHtml(t)+u+'</option>'; });
     html+='</optgroup>';
   });
-  var lotTypes={};
-  (DATA.lots||[]).forEach(function(l){ var t=(l.type_logement||l.type||'').trim(); if(t && !seen[t]) lotTypes[t]=true; });
-  var lotList=Object.keys(lotTypes);
-  if(lotList.length){ html+='<optgroup label="Types pr\u00e9sents sur les lots">'+lotList.map(function(t){seen[t]=true;return '<option value="'+escHtml(t)+'">'+escHtml(t)+'</option>';}).join('')+'</optgroup>'; }
-  var custom=((DATA.params&&DATA.params.dqe_types_custom)||[]).filter(function(t){return t && !seen[t];});
-  if(custom.length){ html+='<optgroup label="Types personnalis\u00e9s">'+custom.map(function(t){seen[t]=true;return '<option value="'+escHtml(t)+'">'+escHtml(t)+'</option>';}).join('')+'</optgroup>'; }
-  var nomTypes={};
-  (DATA.nomenclatures||[]).forEach(function(n){ if(n.type_logement && !seen[n.type_logement]) nomTypes[n.type_logement]=true; });
-  var nomList=Object.keys(nomTypes);
-  if(nomList.length){ html+='<optgroup label="Types chiffr\u00e9s">'+nomList.map(function(t){seen[t]=true;return '<option value="'+escHtml(t)+'">'+escHtml(t)+'</option>';}).join('')+'</optgroup>'; }
-  var def=Object.keys(NOMENCLATURES_PAR_DEFAUT||{}).filter(function(t){return !seen[t];});
-  if(def.length) html+='<optgroup label="Mod\u00e8les par d\u00e9faut">'+def.map(function(t){return '<option value="'+escHtml(t)+'">'+escHtml(t)+'</option>';}).join('')+'</optgroup>';
-  ['F2','F3','F4','VILLA'].forEach(function(t){ if(!seen[t]){ html+='<option value="'+t+'">'+t+'</option>'; seen[t]=true; } });
-  if(!html) html=['F2','F3','F4','VILLA'].map(function(t){return '<option value="'+t+'">'+t+'</option>';}).join('');
+  if(!html) html='<option value="" disabled selected>Aucun projet de conception \u2014 cr\u00e9ez-en un dans Plans &amp; Conception</option>';
   sel.innerHTML=html;
-  if(cur) sel.value=cur;
+  if(cur && seen[cur]) sel.value=cur;
   var sel2=document.getElementById('calc-type-logement');
-  if(sel2){ var cur2=sel2.value; sel2.innerHTML=html; if(cur2) sel2.value=cur2; }
+  if(sel2){ var cur2=sel2.value; sel2.innerHTML=html; if(cur2 && seen[cur2]) sel2.value=cur2; }
 }
 
 async function dqeAjouterTypePerso(){
-  var t=prompt('Nom du nouveau type de logement (ex : F5, Studio, Duplex, Magasin, Bureau) :');
-  if(!t) return;
-  t=t.trim(); if(!t) return;
-  DATA.params=DATA.params||{};
-  DATA.params.dqe_types_custom=DATA.params.dqe_types_custom||[];
-  if(DATA.params.dqe_types_custom.indexOf(t)>=0 || ['F2','F3','F4','VILLA'].indexOf(t.toUpperCase())>=0){ toast('Ce type existe deja.','info'); }
-  else {
-    DATA.params.dqe_types_custom.push(t);
-    if(typeof dbPut==='function') await dbPut('params', DATA.params);
-    if(typeof syncToSupabase==='function') syncToSupabase('pi_params', DATA.params);
-  }
-  dqePopulateTypeLogement();
-  var sel=document.getElementById('dqe-type-logement'); if(sel){ sel.value=t; chargerNomenclature(); }
-  toast('Type ajoute. Composez sa nomenclature.','success');
+  /* [FIX] Les types "personnalisés" ne correspondaient à aucune fiche de
+     conception réelle — source d'incohérence avec Plans & Conception,
+     désormais seule source des types proposés dans le DQE (dqePopulateTypeLogement).
+     On guide donc vers la bonne saisie plutôt que de recréer un type fantôme. */
+  toast('Un type de logement se déclare dans une fiche de conception (Plans & Conception), pas ici — ouverture du module.', 'info');
+  goTo('conception');
 }
 /* Le type sélectionné appartient-il à un immeuble (→ coût par appartement) ? */
 function dqeImmeubleInfo(type){
@@ -90451,9 +90446,147 @@ function openPrintPreviewDQE(title, html) {
   content.innerHTML = html || '';
   root.classList.add('open');
   document.body.style.overflow = 'hidden';
+  /* [FIX] L'aperçu affichait tout le document dans UN seul bloc de hauteur
+     libre (min-height:297mm sans max), donc sans rapport avec le nombre de
+     pages réel — un DQE un peu long débordait visuellement sans qu'on sache
+     où l'impression coupait vraiment. On pagine désormais pour de vrai :
+     mesure la hauteur utile d'une page A4, découpe le contenu (lignes de
+     tableau incluses, en-tête <thead> répété sur chaque page) en autant de
+     pages qu'il en faut. L'impression réelle (doPrintPreview) continue de
+     lire #ppt-content brut et de laisser le moteur de pagination du
+     navigateur faire foi — cette pagination est un aperçu, pas la source. */
+  try { _ppPaginer(); } catch (ePag) {
+    console.warn('Pagination aperçu impossible, affichage brut :', ePag);
+    var pagesHost = document.getElementById('ppt-pages');
+    if (pagesHost) {
+      pagesHost.innerHTML = '';
+      var fallback = document.createElement('div');
+      fallback.className = 'print-preview-page';
+      fallback.innerHTML = content.innerHTML;
+      pagesHost.appendChild(fallback);
+    }
+  }
   /* Scroll haut */
   var scroll = root.querySelector('.print-preview-scroll');
   if (scroll) scroll.scrollTop = 0;
+}
+
+/* ── Pagination de l'aperçu à l'écran (approximative, à but visuel) ──────
+   Découpe le contenu source (#ppt-content) en plusieurs divs .print-
+   preview-page dimensionnés A4, en respectant les lignes de tableau comme
+   unités insécables et en répétant le <thead> sur chaque nouvelle page.
+   N'affecte jamais l'impression réelle (doPrintPreview lit la source brute
+   et laisse le navigateur paginer, ce qui reste la référence). ── */
+function _ppPaginer() {
+  var source = document.getElementById('ppt-content');
+  var pagesHost = document.getElementById('ppt-pages');
+  if (!source || !pagesHost) return;
+  pagesHost.innerHTML = '';
+  if (!source.children.length) return;
+
+  /* Gabarit de page vide pour mesurer la hauteur utile réelle (padding déduit) */
+  var probe = document.createElement('div');
+  probe.className = 'print-preview-page';
+  probe.style.cssText = 'position:fixed;left:-99999px;top:0;visibility:hidden;';
+  document.body.appendChild(probe);
+  var probeRect = probe.getBoundingClientRect();
+  var csProbe = getComputedStyle(probe);
+  var padTop = parseFloat(csProbe.paddingTop) || 0, padBottom = parseFloat(csProbe.paddingBottom) || 0;
+  var pageBudget = probeRect.height - padTop - padBottom;
+  document.body.removeChild(probe);
+  if (!(pageBudget > 0)) { // mesure impossible (ex. environnement headless) : repli sans pagination
+    var fb = document.createElement('div');
+    fb.className = 'print-preview-page';
+    fb.innerHTML = source.innerHTML;
+    pagesHost.appendChild(fb);
+    return;
+  }
+
+  /* Conteneur de mesure invisible, même gabarit que la page réelle */
+  var meas = document.createElement('div');
+  meas.className = 'print-preview-page';
+  meas.style.cssText = 'position:fixed;left:-99999px;top:0;visibility:hidden;height:auto;min-height:0;';
+  document.body.appendChild(meas);
+  function _ppHauteur(node) {
+    meas.innerHTML = '';
+    meas.appendChild(node.cloneNode(true));
+    return meas.firstChild.getBoundingClientRect().height;
+  }
+
+  var pages = [];
+  var curPage = document.createElement('div');
+  pages.push(curPage);
+  var curH = 0;
+  function _ppNouvellePage() { curPage = document.createElement('div'); pages.push(curPage); curH = 0; }
+
+  Array.prototype.slice.call(source.children).forEach(function(node) {
+    if (node.tagName === 'TABLE') {
+      var thead = node.querySelector(':scope > thead');
+      var tfoot = node.querySelector(':scope > tfoot');
+      var tbody = node.querySelector(':scope > tbody');
+      var rows = tbody ? Array.prototype.slice.call(tbody.children) : [];
+      var theadH = thead ? _ppHauteur(thead) : 0;
+
+      function _ppNouvelleTable() {
+        var t = document.createElement('table');
+        if (node.className) t.className = node.className;
+        if (node.getAttribute('style')) t.setAttribute('style', node.getAttribute('style'));
+        if (thead) t.appendChild(thead.cloneNode(true));
+        var tb = document.createElement('tbody');
+        t.appendChild(tb);
+        curPage.appendChild(t);
+        curH += theadH;
+        return tb;
+      }
+
+      var courTbody = _ppNouvelleTable();
+      var courTable = curPage.lastChild;
+
+      if (!rows.length) {
+        /* Table sans lignes de tbody structurées (rare) : mesurer et poser
+           le contenu restant tel quel dans la table déjà ouverte. */
+        Array.prototype.slice.call(tbody ? tbody.children : node.children).forEach(function(child) {
+          courTbody.appendChild(child.cloneNode(true));
+        });
+      }
+      rows.forEach(function(tr) {
+        var rh = _ppHauteur(tr);
+        if (curH + rh > pageBudget && curH > theadH) {
+          _ppNouvellePage();
+          courTbody = _ppNouvelleTable();
+          courTable = curPage.lastChild;
+        }
+        courTbody.appendChild(tr.cloneNode(true));
+        curH += rh;
+      });
+      if (tfoot) {
+        var tfH = _ppHauteur(tfoot);
+        if (curH + tfH > pageBudget) { _ppNouvellePage(); courTbody = _ppNouvelleTable(); courTable = curPage.lastChild; }
+        courTable.appendChild(tfoot.cloneNode(true));
+        curH += tfH;
+      }
+    } else {
+      var h = _ppHauteur(node);
+      if (curH + h > pageBudget && curH > 0) _ppNouvellePage();
+      curPage.appendChild(node.cloneNode(true));
+      curH += h;
+    }
+  });
+
+  document.body.removeChild(meas);
+
+  pages.forEach(function(pageContent, idx) {
+    var pageDiv = document.createElement('div');
+    pageDiv.className = 'print-preview-page';
+    pageDiv.appendChild(pageContent);
+    if (pages.length > 1) {
+      var num = document.createElement('div');
+      num.className = 'ppt-page-num';
+      num.textContent = 'Page ' + (idx + 1) + ' / ' + pages.length;
+      pageDiv.appendChild(num);
+    }
+    pagesHost.appendChild(pageDiv);
+  });
 }
 
 /* [FIX 2026-06-30] Renommée closePrintPreviewDQE pour ne plus écraser
@@ -91858,10 +91991,11 @@ function finImprimerAttestationReservation(fid) {
           <button class="btn btn-primary" onclick="doPrintPreview()" style="flex-shrink:0;">🖨️ Imprimer</button>
           <button class="btn btn-secondary" onclick="closePrintPreviewDQE()" style="flex-shrink:0;">✕ Fermer</button>
         </div>
-        <!-- Zone de défilement avec la page A4 simulée -->
+        <!-- Zone de défilement avec les pages A4 simulées -->
         <div class="print-preview-scroll">
-          <div class="print-preview-page" id="ppt-content">
-            <!-- contenu généré dynamiquement -->
+          <div id="ppt-pages" class="ppt-pages-wrap"><!-- pages générées dynamiquement (pagination réelle) --></div>
+          <div class="print-preview-page" id="ppt-content" style="display:none;">
+            <!-- source brute : alimente l'impression réelle (doPrintPreview) et la pagination à l'écran -->
           </div>
         </div>
       </div>
@@ -94359,6 +94493,11 @@ function qrSvgTag(text){
     archiRenderCouches();
     archiRedraw();
     _archiUpdateLegend();
+    /* [FIX] Enregistrer/Ouvrir/Nouveau n'apparaissaient qu'après un premier
+       tracé : le conteneur qui les porte (#archi-kpis-surf) n'était rempli
+       que par _archiUpdateSurfKpis(), jamais appelée à l'ouverture — sur un
+       plan encore vide, impossible d'enregistrer ni d'ouvrir un plan existant. */
+    _archiUpdateSurfKpis();
     window.addEventListener('resize', _archiResizeCanvas);
   };
 
@@ -96192,7 +96331,7 @@ function qrSvgTag(text){
       + (rows ? '<table style="width:100%;border-collapse:collapse;">' + rows + '</table>' : '<div style="font-size:12px;color:var(--dim);">Aucun élément dessiné.</div>')
       + (surfBatiments ? '<div style="font-size:11px;color:var(--dim);margin-top:6px;">Bâti : ' + surfBatiments + ' m² · Voirie : ' + surfVoirie + ' m² · Parking : ' + surfParking + ' m² · Espaces verts : ' + surfEspaceVert + ' m²' + (surfLots ? ' · Lots : ' + surfLots + ' m²' : '') + '</div>' : '')
       + (regards.length || poteaux.length || reseaux.length ? '<div style="font-size:11px;color:var(--dim);margin-top:4px;">Regards : ' + regards.length + ' · Poteaux : ' + poteaux.length + ' · Canalisations : ' + reseaux.length + ' (' + mlReseau + ' ml)</div>' : '')
-      + '</div>'
+      + _archiBlocEnregistrer()
       + blocVRD
       + blocReseaux;
   }
@@ -96200,6 +96339,21 @@ function qrSvgTag(text){
   /* ════════════════════════════════
      KPIs SURFACES (mode intérieur)
   ════════════════════════════════ */
+  /* Bloc Enregistrer/Ouvrir un plan — partagé entre Plan de masse et Plan
+     intérieur (auparavant présent uniquement côté intérieur : en mode masse,
+     mode par défaut à l'ouverture de l'éditeur, impossible d'enregistrer ou
+     de rouvrir un plan). Referme le <div class="card"> ouvert par l'appelant. */
+  function _archiBlocEnregistrer() {
+    return '<div style="display:flex;gap:6px;margin-top:8px;">'
+      +   '<button class="btn btn-secondary btn-sm" style="flex:1;" onclick="archiEnregistrerDessin()" title="Enregistrer ce dessin pour le rouvrir et le rattacher aux DQE">💾 Enregistrer le plan</button>'
+      +   '<button class="btn btn-secondary btn-sm" style="flex:1;" onclick="archiOuvrirDessin()" title="Rouvrir un plan enregistré">📂 Ouvrir</button>'
+      + '</div>'
+      + (window._archiPlanCourant
+          ? '<div style="font-size:10px;color:var(--vert);margin-top:5px;text-align:center;">📄 Plan courant : <strong>' + escHtml(window._archiPlanCourant.ref || '') + '</strong></div>'
+          : '<div style="font-size:10px;color:var(--blanc-dim);margin-top:5px;text-align:center;">Dessin non enregistré</div>')
+      + '</div>';
+  }
+
   function _archiUpdateSurfKpis() {
     var box = document.getElementById('archi-kpis-surf');
     if (!box) return;
@@ -96322,14 +96476,7 @@ function qrSvgTag(text){
       /* Enregistrement du dessin. Sans lui, le tracé disparaît à la fermeture
          de l'onglet : on ne peut ni le reprendre, ni savoir quel plan a produit
          quel DQE. */
-      + '<div style="display:flex;gap:6px;margin-top:8px;">'
-      +   '<button class="btn btn-secondary btn-sm" style="flex:1;" onclick="archiEnregistrerDessin()" title="Enregistrer ce dessin pour le rouvrir et le rattacher aux DQE">💾 Enregistrer le plan</button>'
-      +   '<button class="btn btn-secondary btn-sm" style="flex:1;" onclick="archiOuvrirDessin()" title="Rouvrir un plan enregistré">📂 Ouvrir</button>'
-      + '</div>'
-      + (window._archiPlanCourant
-          ? '<div style="font-size:10px;color:var(--vert);margin-top:5px;text-align:center;">📄 Plan courant : <strong>' + escHtml(window._archiPlanCourant.ref || '') + '</strong></div>'
-          : '<div style="font-size:10px;color:var(--blanc-dim);margin-top:5px;text-align:center;">Dessin non enregistré</div>')
-      + '</div>'
+      + _archiBlocEnregistrer()
       + blocCout
       + blocGrosOeuvre
       + blocMenuiserie;
