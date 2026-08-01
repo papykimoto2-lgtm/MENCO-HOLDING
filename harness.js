@@ -11,6 +11,11 @@ function freshHarness() {
     <input id="c-email"><input id="c-adresse"><input id="c-piece-type"><input id="c-piece-num">
     <select id="c-programme"><option value="">--</option><option value="prog1">Programme 1</option><option value="p1">Programme P1</option></select>
     <select id="c-lot"><option value="">--</option><option value="l1">Lot 1</option><option value="l2">Lot 2</option></select>
+    <select id="v-client"><option value="">--</option><option value="cA">Client A</option></select>
+    <input id="v-montant"><input id="v-date">
+    <select id="v-type"><option value="principal">Principal</option><option value="frais_souscription">Frais souscription</option></select>
+    <select id="v-mode"><option value="especes">Espèces</option><option value="mobile_money">Mobile Money</option></select>
+    <input id="v-reference"><input id="v-mois"><input id="v-notes">
     <input id="c-type-logement"><select id="c-mode-livraison"><option value="gros_oeuvre">Gros œuvre</option></select>
     <select id="c-standing"><option value="moyen">Moyen</option></select>
     <input id="c-montant-total" value="0"><input id="c-apport" value="0"><input id="c-duree" value="60">
@@ -38,6 +43,16 @@ function freshHarness() {
   global.closeModal = (id) => { calls.closeModal.push(id); };
   global.renderClients = () => { calls.renderClients++; };
   global.refreshDashboard = () => { calls.refreshDashboard++; };
+  global.prochainNumeroRef = () => '0001';
+  global.genererEcritureVersement = async (v) => { calls.ecrituresVersement = calls.ecrituresVersement || []; calls.ecrituresVersement.push(v.id); };
+  global.genererCommissionsVersement = async (v) => { calls.commissionsGenerees = calls.commissionsGenerees || []; calls.commissionsGenerees.push(v.id); };
+  global.reimpacterCommissionsVersement = async (v) => { calls.commissionsReimpactees = calls.commissionsReimpactees || []; calls.commissionsReimpactees.push(v.id); };
+  global._compteTresoVersement = () => '571';
+  global.requireParamCompte = () => '706';
+  global.requireCompteDefaut = () => '4111';
+  global.showRecu = (v) => { calls.recus = calls.recus || []; calls.recus.push(v.id); };
+  global.renderVersements = () => { calls.renderVersements = (calls.renderVersements||0)+1; };
+  global.renderComptaVersements = () => {};
 
   // Recharge le module à chaque test pour repartir d'un scope propre
   delete require.cache[require.resolve('./extracted_functions.js')];

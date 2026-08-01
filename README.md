@@ -8,7 +8,7 @@ Extrait et teste le CODE RÉEL de menko-immo (pas de réimplémentation).
 3. python3 extract_functions.py   (régénère extracted_functions.js depuis le HTML)
 4. cd tests && node --test test_coeur_metier.js
 
-## Portée actuelle (30 tests)
+## Portée actuelle (41 tests)
 - majStatutLotClient : seuils, historique_statuts, date_reservation, exclusion frais_souscription
 - logAudit / auditHistorique : diff sélectif, anti-bruit, snapshot delete
 - calculerCoutGestionLots / figerExerciceCoutGestion : répartition prorata, exclusion 629,
@@ -32,3 +32,10 @@ plus complet — non couvert ici, prochaine étape naturelle.
 Les deux moitiés du verrou anti-double-réservation sont testées : le filtrage
 du <select> (updateLotsByProgramme) ET la vérification serveur indépendante
 au clic Enregistrer (saveClient), qui protège même si le DOM est contourné.
+- test_savepaiement_devise.js — savePaiement() création/édition/audit/statut lot, fcfa() multi-devise (11 tests)
+
+## Hors périmètre (assumé)
+Dalle/toiture (éditeur de plans) : fonctions canvas 2D/3D fortement couplées au DOM
+(mousedown/mouseup, contexte de rendu, boucle d'animation) — non extractibles
+proprement pour un test unitaire isolé. Un test fonctionnel nécessiterait un
+navigateur headless (Playwright), hors du périmètre "node:test + jsdom" actuel.

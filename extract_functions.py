@@ -43,7 +43,7 @@ names = [
     "logAudit", "auditHistorique", "saveClient",
     "ecrLignes", "_getExerciceCoutGestion", "saveExerciceCoutGestion",
     "_appliquerSnapshotCoutGestion", "calculerCoutGestionLots", "figerExerciceCoutGestion",
-    "updateLotsByProgramme",
+    "updateLotsByProgramme", "savePaiement", "fcfa", "fcfaXOF",
 ]
 
 out = []
@@ -57,6 +57,6 @@ with open(out_path, "w", encoding="utf-8") as f:
     f.write(champs_sensibles_src)
     f.write("\n\n")
     f.write("\n\n".join(out))
-    f.write("\n\nmodule.exports = { today, uid, genererCodeDossier, totalPayePrix, _versementSurPrix, majStatutLotClient, logAudit, auditHistorique, saveClient, ecrLignes, _getExerciceCoutGestion, saveExerciceCoutGestion, _appliquerSnapshotCoutGestion, calculerCoutGestionLots, figerExerciceCoutGestion, updateLotsByProgramme };\n")
+    f.write("\n\nmodule.exports = { today, uid, genererCodeDossier, totalPayePrix, _versementSurPrix, majStatutLotClient, logAudit, auditHistorique, saveClient, ecrLignes, _getExerciceCoutGestion, saveExerciceCoutGestion, _appliquerSnapshotCoutGestion, calculerCoutGestionLots, figerExerciceCoutGestion, updateLotsByProgramme, savePaiement, fcfa, fcfaXOF };\n")
 
 print("OK — %d fonctions extraites" % len(names))
