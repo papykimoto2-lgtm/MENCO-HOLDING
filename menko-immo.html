@@ -69291,34 +69291,59 @@ function _coutTypeDansProgramme(type, programmeId) {
 /* Regroupe les lots d'un programme par type de logement (nb, coût unitaire,
    sous-total) — base commune à la revue avant validation et à l'aperçu PDF. */
 function _dqeRecapProgramme(programmeId) {
-  var lots = DATA.lots.filter(function(l){ return !programmeId || l.programme_id === programmeId; });
-  var groupes = {};
-  lots.forEach(function(l){
-    var t = _typeKey(l.type_logement || l.type);
-    if (!groupes[t]) groupes[t] = { type:t, nb:0 };
-    groupes[t].nb++;
-  });
-  var lignes = Object.keys(groupes).map(function(t){
-    var g = groupes[t];
-    var isDefault = !(DATA.nomenclatures||[]).some(function(n){ return n.type_logement === t; });
-    var cout = _coutTypeDansProgramme(t, programmeId);
-    return { type:t, nb:g.nb, coutUnitaire:cout, sousTotal:cout*g.nb, isDefault:isDefault };
-  }).sort(function(a,b){ return a.type.localeCompare(b.type); });
+  /* [FIX] Un programme se compose souvent de PLUSIEURS types de logement,
+     chacun avec sa quantité PRÉVUE (fiche « Montage du programme » →
+     modèles de logement, m.nb_unites) — déclarée AVANT toute génération de
+     lots. Se baser uniquement sur DATA.lots ignorait cette réalité : un DQE
+     préparé en amont affichait 0 lot partout tant que « Générer les lots »
+     n'avait pas été cliqué, ou pire, sous-comptait un type dont seuls
+     quelques lots avaient déjà été créés sur les N prévus. Les modèles
+     font foi quand ils existent ; repli sur le comptage réel des lots
+     uniquement pour les anciens programmes sans modèle déclaré. */
+  var modeles = (DATA.modeles_logement || []).filter(function(m){ return m.programme_id === programmeId; });
+  var lignes;
+  if (modeles.length) {
+    lignes = modeles.map(function(m){
+      var t = _typeKey(m.nom);
+      var cout = _coutTypeDansProgramme(t, programmeId);
+      return { type: t, nb: m.nb_unites || 0, coutUnitaire: cout, sousTotal: cout * (m.nb_unites || 0), isDefault: !(DATA.nomenclatures||[]).some(function(n){ return n.type_logement === t; }) };
+    }).sort(function(a,b){ return a.type.localeCompare(b.type); });
+  } else {
+    var lots = DATA.lots.filter(function(l){ return !programmeId || l.programme_id === programmeId; });
+    var groupes = {};
+    lots.forEach(function(l){
+      var t = _typeKey(l.type_logement || l.type);
+      if (!groupes[t]) groupes[t] = { type:t, nb:0 };
+      groupes[t].nb++;
+    });
+    lignes = Object.keys(groupes).map(function(t){
+      var g = groupes[t];
+      var isDefault = !(DATA.nomenclatures||[]).some(function(n){ return n.type_logement === t; });
+      var cout = _coutTypeDansProgramme(t, programmeId);
+      return { type:t, nb:g.nb, coutUnitaire:cout, sousTotal:cout*g.nb, isDefault:isDefault };
+    }).sort(function(a,b){ return a.type.localeCompare(b.type); });
+  }
   var total = lignes.reduce(function(s,l){ return s+l.sousTotal; }, 0);
-  return { lignes:lignes, total:total, nbLots:lots.length };
+  var nbLotsReels = DATA.lots.filter(function(l){ return !programmeId || l.programme_id === programmeId; }).length;
+  return { lignes:lignes, total:total, nbLots: modeles.length ? nbLotsReels : nbLotsReels, nbPrevu: modeles.length ? modeles.reduce(function(s,m){ return s+(m.nb_unites||0); },0) : nbLotsReels, source: modeles.length ? 'modeles' : 'lots' };
 }
 
 async function genererDQEPourProgramme() {
   var programmeId = (document.getElementById('dqe-filter-programme')||{}).value || '';
   if (!programmeId) { toast('Sélectionnez un programme — le DQE est propre à chaque programme.', 'error'); return; }
   var lots = DATA.lots.filter(function(l){ return l.programme_id === programmeId; });
-  if (!lots.length) { toast('Aucun lot pour ce programme.','info'); return; }
+  var modeles = (DATA.modeles_logement||[]).filter(function(m){ return m.programme_id === programmeId; });
+  /* [FIX] Un DQE se prépare normalement AVANT la génération des lots, à
+     partir des quantités planifiées (modèles de logement). Exiger des lots
+     déjà créés empêchait précisément ce cas d'usage. */
+  if (!lots.length && !modeles.length) { toast('Aucun lot ni modèle de logement pour ce programme — déclarez au moins un modèle (Montage du programme) ou générez les lots.', 'info'); return; }
   var R = _dqeRecapProgramme(programmeId);
   window._dqeRevueProgramme = { programmeId:programmeId, recap:R };
 
   var prog = (DATA.programmes||[]).find(function(p){ return p.id === programmeId; });
   var nomEl = document.getElementById('dqe-revue-prog-nom');
-  if (nomEl) nomEl.textContent = 'Programme : ' + (prog ? prog.nom : programmeId) + ' — ' + R.nbLots + ' lot(s)';
+  if (nomEl) nomEl.textContent = 'Programme : ' + (prog ? prog.nom : programmeId) + ' — '
+    + (R.source === 'modeles' ? (R.nbPrevu + ' unité(s) prévue(s), ' + R.nbLots + ' lot(s) déjà généré(s)') : (R.nbLots + ' lot(s)'));
 
   var tbody = document.getElementById('dqe-revue-prog-tbody');
   if (tbody) {
