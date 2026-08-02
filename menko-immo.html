@@ -12376,6 +12376,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <button class="btn btn-secondary btn-sm" onclick="dqeOuvrirListeProgramme()" title="Tous les DQE existants, par programme — accès direct et modification">🗂️ Liste des DQE</button>
           <button class="btn btn-secondary btn-sm" onclick="exportDQE()">⬇ Export CSV</button>
           <span style="width:1px;background:var(--bord);align-self:stretch;margin:0 4px;"></span>
+          <button class="btn btn-secondary btn-sm" onclick="dqeOuvrirParametresPrix()" title="Modifier les prix par défaut de Menuiserie, Installation, Élec/Plomberie, Charpente/Couverture et Maçonnerie — sans toucher au code">⚙️ Paramètres de prix</button>
           <button class="btn btn-primary btn-sm" onclick="dqeGenererTout()" title="Enchaîne automatiquement Structure, Maçonnerie, Charpente/Couverture, Menuiserie et Élec/Plomberie pour le type sélectionné — 5 modules en un clic">🚀 Tout générer automatiquement</button>
           <button class="btn btn-secondary btn-sm" onclick="installOuvrir()" title="Étape 0 — Clôture, baraquement, branchements provisoires : coût unique pour tout le chantier, avant toute construction"><span class="flux-step">0</span>🚧 Installation de chantier</button>
           <button class="btn btn-secondary btn-sm" onclick="structOuvrir()" title="Étape 1 — Fondations et structure : tout le reste en dépend"><span class="flux-step">①</span>🏗️ Structure &amp; fondations</button>
@@ -22830,6 +22831,7 @@ function _filtrerFantomes(table, store, ids) {
 
 /* Correspondance table Supabase ↔ store local (IndexedDB / DATA) */
 var SUPA_STORE_MAP = [
+  ['pi_masse_dxf_presets', 'masse_dxf_presets'],
   ['pi_cout_gestion_exercices', 'cout_gestion_exercices'],
   ['pi_audit_log',        'audit_log'],
   ['pi_suppressions',     'suppressions_sync'],
@@ -90043,11 +90045,13 @@ function structRafraichirTypes() {
    comptée interne par défaut — hypothèse la moins coûteuse, à corriger à la
    main si besoin.
    ══════════════════════════════════════════════════════════════════════════ */
+var DQE_PRIX_TABLES = {}; /* registre des tables de prix surchargeables — doit exister avant la première table ci-dessous */
 var MENU_PRIX = {
   porte_int:  { eco:85000,  moyen:120000, haut:180000 },  /* porte intérieure posée, huisserie + quincaillerie */
   porte_ext:  { eco:250000, moyen:350000, haut:500000 },  /* porte extérieure/entrée, sécurisée */
   fenetre:    { eco:65000,  moyen:95000,  haut:130000 }   /* fenêtre alu + vitrage, taille moyenne posée */
 };
+DQE_PRIX_TABLES.menuiserie = MENU_PRIX;
 
 function menuGeometriePlan(progId) {
   var g = { nbPortesInt:0, nbPortesExt:0, nbFenetres:0, source:'saisie', ref:'' };
@@ -90103,6 +90107,7 @@ function menuRafraichirGeometrie() {
 window.menuRafraichirGeometrie = menuRafraichirGeometrie;
 
 function menuOuvrir() {
+  if (typeof _dqePrixAppliquerSurcharges === 'function') _dqePrixAppliquerSurcharges();
   var progDQEInit = (document.getElementById('dqe-filter-programme') || {}).value || '';
   var selProg = document.getElementById('menu-programme');
   if (selProg) {
@@ -90199,6 +90204,7 @@ var INSTALL_PRIX = {
   sanitaire:     { eco:35000,  moyen:45000,  haut:60000  },  /* FCFA/mois — WC chimique chantier */
   gardiennage:   { eco:120000, moyen:150000, haut:200000 }   /* FCFA/mois */
 };
+DQE_PRIX_TABLES.installation = INSTALL_PRIX;
 
 function installGeometriePlan(progId) {
   var g = { perimetre:0, source:'saisie', ref:'' };
@@ -90237,6 +90243,7 @@ function installRafraichirGeometrie() {
 window.installRafraichirGeometrie = installRafraichirGeometrie;
 
 function installOuvrir() {
+  if (typeof _dqePrixAppliquerSurcharges === 'function') _dqePrixAppliquerSurcharges();
   var progDQEInit = (document.getElementById('dqe-filter-programme') || {}).value || '';
   var selProg = document.getElementById('install-programme');
   if (selProg) {
@@ -90403,6 +90410,96 @@ async function dqeGenererTout() {
     + (nbOk < 5 ? '\n\n⚠️ signale un corps de métier qui n\'a rien injecté (souvent : programme sans plan et sans saisie manuelle suffisante). Ouvrez son module individuellement pour voir le message exact.' : ''));
 }
 window.dqeGenererTout = dqeGenererTout;
+
+/* ══════════════════════════════════════════════════════
+   SURCHARGE DES PRIX DQE — les tables MENU_PRIX/INSTALL_PRIX/EP_PRIX/
+   COUV_PRIX/MAC_PRIX étaient figées dans le code : aucun moyen de corriger
+   un prix devenu obsolète sans modifier le fichier. Ce mécanisme fusionne
+   DATA.params.prix_dqe (persisté, synchronisé Supabase — pas juste
+   localStorage) PAR-DESSUS les valeurs par défaut, EN PLACE dans les
+   tables elles-mêmes : tous les points d'appel existants (MENU_PRIX.
+   porte_int[standing], etc.) profitent de la surcharge sans qu'aucun
+   d'eux n'ait besoin d'être modifié. */
+/* Rempli juste avant, au moment de la définition de chaque table de prix ci-dessous */
+
+function _dqePrixAppliquerSurcharges() {
+  var ov = DATA.params && DATA.params.prix_dqe;
+  if (!ov) return;
+  Object.keys(DQE_PRIX_TABLES).forEach(function(cat) {
+    if (!ov[cat]) return;
+    var table = DQE_PRIX_TABLES[cat];
+    Object.keys(ov[cat]).forEach(function(key) {
+      var v = parseFloat(ov[cat][key]);
+      if (isNaN(v)) return;
+      var parts = key.split('__'); /* format "poste__standing" */
+      if (parts.length === 2 && table[parts[0]] && table[parts[0]][parts[1]] !== undefined) {
+        table[parts[0]][parts[1]] = v;
+      }
+    });
+  });
+}
+async function _dqePrixSet(categorie, cle, valeur) {
+  if (!DATA.params) DATA.params = { id: 'main' };
+  if (!DATA.params.prix_dqe) DATA.params.prix_dqe = {};
+  if (!DATA.params.prix_dqe[categorie]) DATA.params.prix_dqe[categorie] = {};
+  DATA.params.prix_dqe[categorie][cle] = parseFloat(valeur) || 0;
+  await dbPut('params', DATA.params);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_params', DATA.params);
+  _dqePrixAppliquerSurcharges();
+}
+window._dqePrixAppliquerSurcharges = _dqePrixAppliquerSurcharges;
+
+function dqeOuvrirParametresPrix() {
+  if (typeof _dqePrixAppliquerSurcharges === 'function') _dqePrixAppliquerSurcharges();
+  dqeRenderParametresPrix();
+  openModal('modal-dqe-prix');
+}
+window.dqeOuvrirParametresPrix = dqeOuvrirParametresPrix;
+
+var DQE_PRIX_LABELS = {
+  menuiserie: { titre:'🚪 Menuiserie int. & ext.', postes:{ porte_int:'Porte intérieure', porte_ext:'Porte extérieure', fenetre:'Fenêtre' } },
+  installation: { titre:'🚧 Installation de chantier', postes:{ cloture:'Clôture (FCFA/ml)', panneau:'Panneau chantier', baraquement:'Baraquement (FCFA/mois)', branch_eau:'Branchement eau', branch_elec:'Branchement électrique', sanitaire:'Sanitaires (FCFA/mois)', gardiennage:'Gardiennage (FCFA/mois)' } },
+  elec_plomberie: { titre:'⚡🚿 Élec & Plomberie', postes:null },
+  couverture: { titre:'🏠 Charpente & Couverture', postes:null },
+  maconnerie: { titre:'🧱 Maçonnerie & Enduits', postes:null }
+};
+
+function dqeRenderParametresPrix() {
+  var host = document.getElementById('dqe-prix-contenu');
+  if (!host) return;
+  var q = ((document.getElementById('dqe-prix-recherche')||{}).value || '').toLowerCase();
+  var html = '';
+  Object.keys(DQE_PRIX_LABELS).forEach(function(cat) {
+    var meta = DQE_PRIX_LABELS[cat];
+    var table = DQE_PRIX_TABLES[cat];
+    if (!table) return;
+    var postes = Object.keys(table).filter(function(p){ return !q || p.toLowerCase().indexOf(q) !== -1 || (meta.postes && meta.postes[p] && meta.postes[p].toLowerCase().indexOf(q) !== -1); });
+    if (!postes.length) return;
+    var rows = postes.map(function(poste) {
+      var lbl = (meta.postes && meta.postes[poste]) || poste;
+      var cells = ['eco','moyen','haut'].map(function(s) {
+        var val = table[poste][s];
+        if (val === undefined) return '<td>—</td>';
+        var ovKey = poste + '__' + s;
+        var estSurcharge = !!(DATA.params && DATA.params.prix_dqe && DATA.params.prix_dqe[cat] && DATA.params.prix_dqe[cat][ovKey] !== undefined);
+        return '<td><input type="number" class="form-control" style="width:100px;' + (estSurcharge ? 'border-color:var(--or);color:var(--or);font-weight:600;' : '') + '" value="' + val + '" onchange="dqeSurchargerPrix(\'' + cat + '\',\'' + ovKey + '\',this.value)" title="' + (estSurcharge ? 'Personnalisé — différent de la valeur d\'origine' : 'Valeur par défaut') + '"></td>';
+      }).join('');
+      return '<tr><td style="font-size:12px;">' + escHtml(lbl) + '</td>' + cells + '</tr>';
+    }).join('');
+    html += '<div class="form-section-title" style="margin-top:14px;">' + meta.titre + '</div>'
+      + '<table style="width:100%;"><thead><tr style="font-size:11px;color:var(--dim);"><th style="text-align:left;">Poste</th><th>Économique</th><th>Moyen</th><th>Haut</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  });
+  host.innerHTML = html || '<div style="color:var(--dim);padding:20px;text-align:center;">Aucun poste ne correspond à la recherche.</div>';
+  host.innerHTML += '<div style="font-size:11px;color:var(--dim);margin-top:14px;">🟠 Cadre orange = valeur personnalisée, différente de celle livrée par défaut. Laisser le champ à sa valeur d\'origine ne crée aucune surcharge.</div>';
+}
+window.dqeRenderParametresPrix = dqeRenderParametresPrix;
+
+async function dqeSurchargerPrix(categorie, cle, valeur) {
+  await _dqePrixSet(categorie, cle, valeur);
+  toast('✅ Prix personnalisé enregistré — appliqué immédiatement à tous les futurs calculs.', 'success');
+  dqeRenderParametresPrix();
+}
+window.dqeSurchargerPrix = dqeSurchargerPrix;
 
 function structOuvrir() {
   var progDQEInit = (document.getElementById('dqe-filter-programme') || {}).value || '';
@@ -91063,6 +91160,7 @@ var EP_PRIX = {
   chauffe_eau:      { eco:0,     moyen:145000,haut:320000},   /* absent en éco */
   robinet_ext:      { eco:12000, moyen:18000, haut:30000 }
 };
+DQE_PRIX_TABLES.elec_plomberie = EP_PRIX;
 
 var EP_STANDINGS = {
   eco:   { label:'Économique',    cle:'eco'   },
@@ -91185,6 +91283,7 @@ function epRafraichirTypes() {
 }
 
 function epOuvrir() {
+  if (typeof _dqePrixAppliquerSurcharges === 'function') _dqePrixAppliquerSurcharges();
   var progDQEInit = (document.getElementById('dqe-filter-programme') || {}).value || '';
   var pieces = epCollecterPieces(progDQEInit);
   var selProg = document.getElementById('ep-programme');
@@ -91434,6 +91533,7 @@ var COUV_PRIX = {
   forme_pente:      { eco:3500,  moyen:4200,  haut:5200  },   /* m², béton allégé */
   etancheite:       { eco:7500,  moyen:9500,  haut:13000 }    /* m², multicouche + protection */
 };
+DQE_PRIX_TABLES.couverture = COUV_PRIX;
 
 function couvPrix(article, standing) {
   var p = COUV_PRIX[article];
@@ -91553,6 +91653,7 @@ function couvRafraichirTypes() {
 }
 
 function couvOuvrir() {
+  if (typeof _dqePrixAppliquerSurcharges === 'function') _dqePrixAppliquerSurcharges();
   var progDQEInit = (document.getElementById('dqe-filter-programme') || {}).value || '';
   var geo = couvGeometriePlan(progDQEInit);
   var el = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
@@ -91695,6 +91796,7 @@ var MAC_PRIX = {
   enduit_ext:     { eco:3200,  moyen:3900,  haut:4800  },   /* m² — façade, enduit taloché/gratté */
   plafond:        { eco:9500,  moyen:14000, haut:24000 }    /* m² — lambris/placo → staff+dalle décorative */
 };
+DQE_PRIX_TABLES.maconnerie = MAC_PRIX;
 
 function macPrix(article, standing) {
   var p = MAC_PRIX[article];
@@ -91813,6 +91915,7 @@ function macRafraichirGeometrie() {
 window.macRafraichirGeometrie = macRafraichirGeometrie;
 
 function macOuvrir() {
+  if (typeof _dqePrixAppliquerSurcharges === 'function') _dqePrixAppliquerSurcharges();
   var progDQEInit = (document.getElementById('dqe-filter-programme') || {}).value || '';
   var geo = macGeometriePlan(progDQEInit);
   var el = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
@@ -107857,6 +107960,26 @@ goTo = function(page) {
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-maconnerie')">Fermer</button>
       <button class="btn btn-primary" onclick="macInjecterDQE()">↧ Injecter dans le DQE</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Paramètres de prix DQE (surcharges des tables par défaut) -->
+<div class="modal-overlay" id="modal-dqe-prix">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div>
+        <h3>⚙️ Paramètres de prix — DQE</h3>
+        <div style="font-size:11px;color:var(--dim);">Corrige les prix par défaut de tous les modules de pré-dimensionnement — enregistré et synchronisé, pas seulement sur cet appareil.</div>
+      </div>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-dqe-prix')">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="text" class="form-control" id="dqe-prix-recherche" placeholder="🔍 Filtrer un poste..." oninput="dqeRenderParametresPrix()" style="margin-bottom:10px;">
+      <div id="dqe-prix-contenu"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-dqe-prix')">Fermer</button>
     </div>
   </div>
 </div>
