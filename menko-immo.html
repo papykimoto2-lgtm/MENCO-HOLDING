@@ -68606,8 +68606,9 @@ function dqeRenderParOuvrage() {
           var libelle = res ? res.libelle : (c.libelle || '—');
           var puC = typeof edsResPU === 'function' ? edsResPU(c) : (parseFloat(c.pu) || 0);
           var totC = (parseFloat(c.qte) || 0) * puC;
+          var _badgeInd = (res && res._prix_indicatif) ? ' <span style="color:var(--or);font-size:10px;" title="Prix indicatif — à confirmer">💡 indicatif</span>' : '';
           return '<tr><td style="padding-left:24px;color:var(--dim);">' + (_CATEGORIES_COMPOSANT[c.type] || c.type) + '</td>'
-            + '<td>' + escHtml(libelle) + '</td>'
+            + '<td>' + escHtml(libelle) + _badgeInd + '</td>'
             + '<td style="text-align:right;">' + (c.qte || 0) + '</td>'
             + '<td style="text-align:right;">' + fmtF(puC) + '</td>'
             + '<td style="text-align:right;">' + fmtF(totC) + '</td></tr>';
@@ -87033,7 +87034,7 @@ function edsRenderRes() {
       + '<td>'+r.libelle+'</td>'
       + '<td>'+(EDS_TYPES[r.type]||r.type)+'</td>'
       + '<td>'+(r.unite||'')+'</td>'
-      + '<td style="text-align:right;font-weight:700;color:var(--vert,#1A6B3A);">'+fmtF(r.pu)+'</td>'
+      + '<td style="text-align:right;font-weight:700;color:var(--vert,#1A6B3A);">'+fmtF(r.pu)+(r._prix_indicatif?' <span style="color:var(--or);font-size:10px;font-weight:400;" title="Prix indicatif — à confirmer">💡</span>':'')+'</td>'
       + '<td style="text-align:center;">'+nb+'</td>'
       + '<td>'+(r.maj||'—')+'</td>'
       + '<td><button class="btn btn-secondary btn-sm" onclick="edsOpenRes(\''+r.id+'\')">✎</button> '
@@ -87061,7 +87062,9 @@ async function edsSaveRes() {
   r.code = code; r.libelle = lib;
   r.type = document.getElementById('eds-res-type').value;
   r.unite = document.getElementById('eds-res-unite').value.trim();
-  r.pu = parseFloat(document.getElementById('eds-res-pu').value) || 0;
+  var _nouveauPu = parseFloat(document.getElementById('eds-res-pu').value) || 0;
+  if (_nouveauPu !== r.pu) r._prix_indicatif = false; /* prix confirmé/modifié à la main */
+  r.pu = _nouveauPu;
   r.maj = today();
   await dbPut('eds_ressources', r);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_ressources', r);
@@ -91953,6 +91956,51 @@ function dqePU(name) {
    avec une ressource dédiée (prix à saisir une fois), et relie le poste.
    Si une ressource du même libellé existe déjà (dqeMatch), elle est
    réutilisée plutôt que dupliquée. */
+/* ══════════════════════════════════════════════════════
+   PRIX INDICATIFS — préremplit une ressource nouvellement créée avec un
+   ordre de grandeur réaliste (marché ivoirien courant, 2026) plutôt que 0,
+   pour éviter un DQE illisible tant que personne n'a validé les prix.
+   Marqué _prix_indicatif:true — badge visible tant que le prix n'a pas
+   été confirmé/modifié manuellement dans Déboursé sec → Ressources.
+   Correspondance par mot-clé (insensible à la casse), premier match retenu —
+   à enrichir au fil de l'eau, ce n'est pas un référentiel figé. */
+var PRIX_INDICATIFS_MATERIAUX = [
+  { motcle:'ciment',                 pu:5500,   unite:'sac 50kg' },
+  { motcle:'sable',                  pu:15000,  unite:'m³' },
+  { motcle:'gravier',                pu:18000,  unite:'m³' },
+  { motcle:'fer à béton|fer a beton|acier', pu:650, unite:'kg' },
+  { motcle:'parpaing.*10|agglo.*10', pu:220,    unite:'unité' },
+  { motcle:'parpaing.*15|agglo.*15', pu:250,    unite:'unité' },
+  { motcle:'parpaing.*20|agglo.*20', pu:300,    unite:'unité' },
+  { motcle:'brique',                 pu:150,    unite:'unité' },
+  { motcle:'béton banché|beton banche', pu:75000, unite:'m³' },
+  { motcle:'peinture',               pu:3500,   unite:'litre' },
+  { motcle:'carrelage',              pu:8000,   unite:'m²' },
+  { motcle:'faïence|faience',        pu:7000,   unite:'m²' },
+  { motcle:'tôle bac.*alu|bac alu',  pu:7500,   unite:'m²' },
+  { motcle:'tôle|tole',              pu:5500,   unite:'m²' },
+  { motcle:'bois.*charpente|chevron|panne', pu:2800, unite:'ml' },
+  { motcle:'porte',                  pu:65000,  unite:'unité' },
+  { motcle:'fenêtre|fenetre',        pu:45000,  unite:'unité' },
+  { motcle:'câble|cable',            pu:800,    unite:'ml' },
+  { motcle:'tube pvc|tuyau pvc',     pu:2500,   unite:'ml' },
+  { motcle:'interrupteur|prise',     pu:2500,   unite:'unité' },
+  { motcle:'wc|sanitaire',           pu:85000,  unite:'unité' },
+  { motcle:'lavabo',                 pu:45000,  unite:'unité' },
+  { motcle:'douche|receveur',        pu:65000,  unite:'unité' },
+  { motcle:'main.?d.?œuvre|main.?d.?oeuvre|pose|maçon|macon', pu:2500, unite:'jour' },
+  { motcle:'enduit',                 pu:3000,   unite:'m²' }
+];
+function _prixIndicatifPour(libelle) {
+  if (!libelle) return null;
+  var l = libelle.toLowerCase();
+  for (var i = 0; i < PRIX_INDICATIFS_MATERIAUX.length; i++) {
+    var re = new RegExp(PRIX_INDICATIFS_MATERIAUX[i].motcle, 'i');
+    if (re.test(l)) return PRIX_INDICATIFS_MATERIAUX[i];
+  }
+  return null;
+}
+
 async function dqeCreerOuvrageDepuisPoste(nomenclatureId) {
   var n = (DATA.nomenclatures || []).find(function(x) { return x.id === nomenclatureId; });
   if (!n) { toast('Poste introuvable.', 'error'); return; }
@@ -91968,10 +92016,12 @@ async function dqeCreerOuvrageDepuisPoste(nomenclatureId) {
     ressource = resExistante.id ? resExistante : null; /* prix_unitaire (ancien référentiel) n'a pas forcément d'id compatible */
   }
   if (!ressource) {
+    var _ind = _prixIndicatifPour(n.materiau);
     ressource = {
       id: 'res_' + uid(), code: 'RES-' + Date.now().toString(36).toUpperCase(),
-      libelle: n.materiau, type: 'materiau', unite: n.unite || 'unité',
-      pu: (resExistante ? parseFloat(resExistante.pu || resExistante.prix) || 0 : 0),
+      libelle: n.materiau, type: 'materiau', unite: n.unite || (_ind ? _ind.unite : 'unité'),
+      pu: (resExistante ? parseFloat(resExistante.pu || resExistante.prix) || 0 : (_ind ? _ind.pu : 0)),
+      _prix_indicatif: !resExistante && !!_ind,
       fournisseur: '', maj: today()
     };
     DATA.eds_ressources.push(ressource);
@@ -91994,7 +92044,7 @@ async function dqeCreerOuvrageDepuisPoste(nomenclatureId) {
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', n);
 
   toast(ressource.pu > 0
-    ? '✅ Ouvrage créé et relié — prix repris (' + fmtF(ressource.pu) + ' FCFA).'
+    ? '✅ Ouvrage créé et relié — prix ' + (ressource._prix_indicatif ? 'indicatif (💡 à confirmer)' : 'repris') + ' : ' + fmtF(ressource.pu) + ' FCFA.'
     : '✅ Ouvrage créé et relié — saisissez son prix dans Déboursé sec → Ressources.', 'success');
   if (typeof chargerNomenclature === 'function') chargerNomenclature();
 }
