@@ -69418,18 +69418,34 @@ function dqeRenderListeProgramme() {
   var html = '';
   programmes.forEach(function(prog){
     var R = _dqeRecapProgramme(prog.id);
-    if (!R.lignes.length) return;
-    R.lignes.forEach(function(l){
+    var typesVus = {};
+    R.lignes.forEach(function(l){ typesVus[l.type] = true; });
+    /* [FIX] _dqeRecapProgramme ne liste que les types déjà utilisés par un
+       LOT existant. Un DQE préparé avant la génération des lots — le cas
+       d'usage normal, chiffrer avant de créer — restait invisible ici bien
+       qu'il existe déjà dans DATA.nomenclatures. On complète par union. */
+    var typesSansLot = [];
+    (DATA.nomenclatures||[]).forEach(function(n){
+      if (n.programme_id !== prog.id) return;
+      if (typesVus[n.type_logement]) return;
+      typesVus[n.type_logement] = true;
+      typesSansLot.push(n.type_logement);
+    });
+    var lignesCompletes = R.lignes.concat(typesSansLot.map(function(t){
+      return { type:t, nb:0, coutUnitaire:_coutTypeDansProgramme(t, prog.id), sousTotal:0, isDefault:false, sansLot:true };
+    }));
+    if (!lignesCompletes.length) return;
+    lignesCompletes.forEach(function(l){
       html += '<tr>'
         + '<td>' + escHtml(prog.nom) + '</td>'
-        + '<td>' + escHtml(l.type) + '</td>'
-        + '<td style="text-align:right;">' + l.nb + '</td>'
+        + '<td style="cursor:pointer;color:var(--bleu,#3B82F6);text-decoration:underline;" title="Cliquer pour ouvrir ce DQE" onclick="dqeOuvrirDepuisListe(\'' + prog.id + '\',\'' + String(l.type).replace(/'/g,"\\'") + '\')">' + escHtml(l.type) + '</td>'
+        + '<td style="text-align:right;">' + (l.sansLot ? '<span style="color:var(--blanc-dim);" title="Aucun lot généré pour ce type">0 (pas encore de lot)</span>' : l.nb) + '</td>'
         + '<td style="text-align:right;">' + fmtF(l.coutUnitaire) + '</td>'
-        + '<td style="text-align:right;font-weight:700;">' + fmtF(l.sousTotal) + '</td>'
+        + '<td style="text-align:right;font-weight:700;">' + (l.sansLot ? '—' : fmtF(l.sousTotal)) + '</td>'
         + '<td>' + (l.isDefault ? '<span style="color:var(--rouge);">⚠️ par défaut</span>' : '<span style="color:var(--vert);">✔ chiffré</span>') + '</td>'
         + '<td style="white-space:nowrap;">'
           + '<button class="btn btn-secondary btn-sm btn-icon" title="Ouvrir / modifier" onclick="dqeOuvrirDepuisListe(\'' + prog.id + '\',\'' + String(l.type).replace(/'/g,"\\'") + '\')">✏️</button> '
-          + '<button class="btn btn-danger btn-sm btn-icon" title="Supprimer ce DQE" onclick="dqeSupprimerDepuisListe(\'' + prog.id + '\',\'' + String(l.type).replace(/'/g,"\\'") + '\')">🗑</button>'
+          + (l.sansLot ? '' : '<button class="btn btn-danger btn-sm btn-icon" title="Supprimer ce DQE" onclick="dqeSupprimerDepuisListe(\'' + prog.id + '\',\'' + String(l.type).replace(/'/g,"\\'") + '\')">🗑</button>')
         + '</td>'
         + '</tr>';
     });
@@ -69485,11 +69501,17 @@ function dqeOuvrirDepuisListe(programmeId, type) {
   var selProg = document.getElementById('dqe-filter-programme');
   var selType = document.getElementById('dqe-type-logement');
   if (selProg) selProg.value = programmeId;
+  /* [FIX] selProg.value = ... ne déclenche pas onchange : sans cet appel
+     explicite, la liste des types reste celle de l'ancien programme (ou
+     vide), et selType.value = type échoue silencieusement si ce type n'y
+     figure pas encore. Même défaut que les modales Structure/Élec/etc. */
+  if (typeof dqePopulateTypeLogement === 'function') dqePopulateTypeLogement();
   if (selType) selType.value = type;
   goTo('dqe');
   setTimeout(function(){
     switchTab('dqe', 'nomenclature');
     if (selProg) selProg.value = programmeId;
+    if (typeof dqePopulateTypeLogement === 'function') dqePopulateTypeLogement();
     if (selType) selType.value = type;
     chargerNomenclature();
   }, 100);
@@ -91812,6 +91834,70 @@ function _dqeOptionsTypesConception(progId) {
   return html;
 }
 
+/* ═══════════════════════════════════════════════════════
+   APERÇU — Rapprochement DQE → Déboursé sec
+   ═══════════════════════════════════════════════════════ */
+function printPreviewLiaisonDQE() {
+  var programmeId = (document.getElementById('eds-lien-programme') || {}).value || '';
+  var type = (document.getElementById('eds-lien-type') || {}).value || '';
+  if (!programmeId || !type) { toast('Sélectionnez un programme et un type avant l\'aperçu.', 'error'); return; }
+  var prog = (DATA.programmes || []).find(function(p){ return p.id === programmeId; });
+  var progLabel = prog ? prog.nom : '—';
+  var R = edsAnalyserLiaison(type, programmeId);
+  var totalGen = R.montantLie + R.montantRef;
+  var _ref = 'LIA-' + type + '-' + _ppDate();
+
+  var kpiHtml = '<table style="margin-bottom:14px;"><tr>'
+    + '<td style="background:#f1f5f9;text-align:center;padding:10px;"><div style="font-size:8pt;color:#666;">LIGNES RELIÉES</div><div style="font-size:14pt;font-weight:700;color:#B87333;">' + R.lies.length + ' / ' + R.total + '</div><div style="font-size:8pt;color:#666;">' + R.pctLie + ' % du DQE</div></td>'
+    + '<td style="background:#f1f5f9;text-align:center;padding:10px;"><div style="font-size:8pt;color:#666;">MATÉRIAUX</div><div style="font-size:12pt;font-weight:700;color:#B87333;">' + _ppFcfa(R.besoins.materiau) + '</div></td>'
+    + '<td style="background:#f1f5f9;text-align:center;padding:10px;"><div style="font-size:8pt;color:#666;">MAIN-D\'ŒUVRE</div><div style="font-size:12pt;font-weight:700;color:#B87333;">' + _ppFcfa(R.besoins.mo) + '</div></td>'
+    + '<td style="background:#f1f5f9;text-align:center;padding:10px;"><div style="font-size:8pt;color:#666;">MATÉRIEL</div><div style="font-size:12pt;font-weight:700;color:#B87333;">' + _ppFcfa(R.besoins.materiel) + '</div></td>'
+    + '</tr></table>';
+
+  var liesRows = R.lies.map(function(x) {
+    var q = parseFloat(x.ligne.quantite) || 0;
+    return '<tr><td>' + escHtml(x.ligne.materiau) + '</td>'
+      + '<td style="color:#666;">' + escHtml(x.ouvrage.code) + '</td>'
+      + '<td style="text-align:right;">' + fmtF(q) + '</td>'
+      + '<td style="text-align:right;">' + _ppFcfa((x.debourse.materiau||0)*q) + '</td>'
+      + '<td style="text-align:right;">' + _ppFcfa((x.debourse.mo||0)*q) + '</td>'
+      + '<td style="text-align:right;">' + _ppFcfa((x.debourse.materiel||0)*q) + '</td>'
+      + '<td style="text-align:right;font-weight:700;">' + _ppFcfa(x.montant) + '</td></tr>';
+  }).join('');
+  var liesHtml = R.lies.length
+    ? '<h3 style="color:#B87333;font-size:11pt;margin:14px 0 6px;">Lignes reliées — déboursé décomposé</h3>'
+      + '<table><thead><tr style="background:#B87333;color:white;">'
+      + '<th style="text-align:left;">Ligne</th><th style="text-align:left;">Ouvrage</th><th style="text-align:right;">Qté</th>'
+      + '<th style="text-align:right;">Matériau</th><th style="text-align:right;">MO</th><th style="text-align:right;">Matériel</th><th style="text-align:right;">Total</th>'
+      + '</tr></thead><tbody>' + liesRows + '</tbody></table>' : '';
+
+  var sansOuvrageHtml = R.sansOuvrage.length
+    ? '<div style="margin-top:14px;padding:10px 12px;background:#fef2f2;border-left:3px solid #dc2626;font-size:9pt;">'
+      + '<strong>' + R.sansOuvrage.length + ' ligne(s) sans ouvrage correspondant</strong> — valorisées au seul référentiel de prix, sans décomposition matériaux/MO/matériel : '
+      + escHtml(R.sansOuvrage.map(function(n){ return n.materiau; }).join(' · '))
+      + '</div>' : '';
+
+  var html = _ppLogo()
+    + '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;">'
+    +   '<div>'
+    +     '<h1 style="color:#B87333;border-bottom:2px solid #B87333;padding-bottom:6px;margin-bottom:6px;">RAPPROCHEMENT DQE → DÉBOURSÉ SEC</h1>'
+    +     '<div style="font-size:13pt;font-weight:700;">' + _ppSoc() + '</div>'
+    +     '<div style="font-size:10pt;color:#555;margin-top:3px;">Programme : ' + escHtml(progLabel) + ' &nbsp;·&nbsp; Type : ' + escHtml(type) + ' &nbsp;·&nbsp; Date : ' + _ppDate() + '</div>'
+    +     '<div style="font-size:8.5pt;color:#888;margin-top:2px;">Réf. ' + _ref + '</div>'
+    +   '</div>'
+    +   '<div style="text-align:center;">'
+    +     _ppQR(_ref + '|' + progLabel + '|' + _ppFcfa(totalGen))
+    +     '<div style="font-size:7pt;color:#999;margin-top:2px;">Vérification document</div>'
+    +   '</div>'
+    + '</div>'
+    + kpiHtml
+    + liesHtml
+    + sansOuvrageHtml
+    + '<div class="pp-footer">Document généré par <strong>ImmoSuite ERP</strong> · ' + _ppSoc() + ' · ' + _ppDate() + '</div>';
+  openPrintPreviewDQE('Rapprochement DQE → Déboursé sec — ' + progLabel, html);
+}
+window.printPreviewLiaisonDQE = printPreviewLiaisonDQE;
+
 function edsOuvrirLiaison() {
   var selProg = document.getElementById('eds-lien-programme');
   if (selProg) {
@@ -91920,12 +92006,42 @@ function edsRendreLiaison() {
       + (R.sansOuvrage.length > 6 ? ' …' : '')
       + '<br><span style="color:var(--blanc-dim);">Créez l\'ouvrage manquant dans Étude de Prix &amp; Déboursé Sec, '
       + 'puis relancez l\'analyse. Un catalogue complet est ce qui rend le chiffrage réutilisable d\'un programme à l\'autre.</span>'
-      + '<div style="margin-top:7px;"><button class="btn btn-secondary btn-sm" onclick="closeModal(\'modal-eds-liaison\');goTo(\'debourse\')">🧱 Ouvrir le déboursé sec</button></div>'
+      + '<div style="margin-top:7px;display:flex;gap:8px;">'
+      + '<button class="btn btn-primary btn-sm" onclick="edsCreerOuvragesManquants(\'' + escHtml(type) + '\',\'' + escHtml(programmeId) + '\')" title="Crée un ouvrage + ressource (prix indicatif si reconnu) pour chaque ligne, sans quitter cet écran">🔗 Créer les ' + R.sansOuvrage.length + ' ouvrage(s) manquant(s)</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="closeModal(\'modal-eds-liaison\');goTo(\'debourse\')">🧱 Ouvrir le déboursé sec</button>'
+      + '</div>'
       + '</div>';
   }
 
   host.innerHTML = h;
 }
+
+/* Crée en une fois les ouvrages manquants repérés par l'analyse de liaison,
+   sans changer d'écran — réutilise le prix indicatif et la convention de
+   code déjà en place pour la création à l'unité. */
+async function edsCreerOuvragesManquants(type, programmeId) {
+  var R = edsAnalyserLiaison(type, programmeId);
+  if (!R.sansOuvrage.length) { toast('Rien à créer — déjà tout rattaché.', 'info'); return; }
+  if (!confirm(R.sansOuvrage.length + ' ouvrage(s) vont être créés (prix indicatif si le matériau est reconnu, à confirmer ensuite dans Déboursé sec → Ressources). Continuer ?')) return;
+  var creesParLibelle = {};
+  var n = 0;
+  for (var i = 0; i < R.sansOuvrage.length; i++) {
+    var poste = R.sansOuvrage[i];
+    var key = (poste.materiau || '').trim().toLowerCase();
+    if (creesParLibelle[key]) {
+      poste.ouvrage_id = creesParLibelle[key];
+      await dbPut('nomenclatures', poste);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', poste);
+    } else {
+      await dqeCreerOuvrageDepuisPoste(poste.id);
+      creesParLibelle[key] = poste.ouvrage_id;
+    }
+    n++;
+  }
+  toast('✅ ' + n + ' ouvrage(s) créé(s) et rattaché(s).', 'success');
+  edsRendreLiaison();
+}
+window.edsCreerOuvragesManquants = edsCreerOuvragesManquants;
 
 function dqeCollecterPlans() {
   var parType = {};
@@ -107121,6 +107237,7 @@ goTo = function(page) {
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-eds-liaison')">Fermer</button>
+      <button class="btn btn-secondary" onclick="printPreviewLiaisonDQE()">🖨️ Aperçu avant impression</button>
     </div>
   </div>
 </div>
