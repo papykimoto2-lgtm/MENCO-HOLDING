@@ -12376,6 +12376,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <button class="btn btn-secondary btn-sm" onclick="dqeOuvrirListeProgramme()" title="Tous les DQE existants, par programme — accès direct et modification">🗂️ Liste des DQE</button>
           <button class="btn btn-secondary btn-sm" onclick="exportDQE()">⬇ Export CSV</button>
           <span style="width:1px;background:var(--bord);align-self:stretch;margin:0 4px;"></span>
+          <button class="btn btn-secondary btn-sm" onclick="installOuvrir()" title="Étape 0 — Clôture, baraquement, branchements provisoires : coût unique pour tout le chantier, avant toute construction"><span class="flux-step">0</span>🚧 Installation de chantier</button>
           <button class="btn btn-secondary btn-sm" onclick="structOuvrir()" title="Étape 1 — Fondations et structure : tout le reste en dépend"><span class="flux-step">①</span>🏗️ Structure &amp; fondations</button>
           <button class="btn btn-secondary btn-sm" onclick="macOuvrir()" title="Étape 2 — Élévation en agglos, enduits — ferme les volumes après la structure"><span class="flux-step">②</span>🧱 Maçonnerie &amp; Enduits</button>
           <button class="btn btn-secondary btn-sm" onclick="couvOuvrir()" title="Étape 3 — Charpente, couverture — met hors d'eau une fois les murs élevés"><span class="flux-step">③</span>🏠 Charpente &amp; Couverture</button>
@@ -68522,7 +68523,7 @@ function dqeNomenclaturesPourType(type) {
   var progActuel = (document.getElementById('dqe-filter-programme') || {}).value || '';
   var nomens = DATA.nomenclatures.filter(function(n) {
     if (n.type_logement !== type) return false;
-    if ((n._genere_struct || n._genere_fluides || n._genere_couverture || n._genere_maconnerie || n._genere_plan || n._genere_menuiserie) && n.programme_id && progActuel && n.programme_id !== progActuel) return false;
+    if ((n._genere_struct || n._genere_fluides || n._genere_couverture || n._genere_maconnerie || n._genere_plan || n._genere_menuiserie || n._genere_installation) && n.programme_id && progActuel && n.programme_id !== progActuel) return false;
     return true;
   });
   var isDefault = false;
@@ -68571,6 +68572,7 @@ var _TYPES_FINITION_LABELS = {
 function _dqeClassifierGoFinition(n) {
   if (n._genere_fluides && n._fluide_phase) return n._fluide_phase === 'go' ? 'go' : 'finition';
   if (n._genere_menuiserie) return 'finition';
+  if (n._genere_installation) return 'go';
   var p = (n.poste || '').toLowerCase();
   if (/finitions$/.test(p)) return 'finition'; /* "Électricité — finitions", "Plomberie — finitions" */
   if (n._genere_struct || n._genere_couverture) return 'go';
@@ -89966,6 +89968,159 @@ async function menuInjecterDQE() {
 }
 window.menuInjecterDQE = menuInjecterDQE;
 
+/* ══════════════════════════════════════════════════════════════════════════
+   INSTALLATION DE CHANTIER — pré-dimensionnement DQE
+   ──────────────────────────────────────────────────────────────────────────
+   Contrairement aux autres modules (Structure, Maçonnerie, Charpente,
+   Menuiserie, Élec/Plomberie), ce poste n'est PAS un coût par logement —
+   c'est un coût UNIQUE pour l'ensemble du chantier (clôture, baraquement,
+   branchements provisoires eau/électricité, sanitaires, gardiennage,
+   panneau de signalisation). L'injecter sur chaque type de logement le
+   multiplierait par le nombre de types déclarés — double, triple comptage
+   selon le programme. Il doit être injecté UNE SEULE FOIS, sur un seul
+   type de référence, l'interface le rappelle explicitement.
+   ══════════════════════════════════════════════════════════════════════════ */
+var INSTALL_PRIX = {
+  cloture:       { eco:8500,   moyen:12000,  haut:18000  },  /* FCFA/ml — bâche/tôle vs panneaux rigides */
+  panneau:       { eco:150000, moyen:250000, haut:400000 },  /* forfait signalétique chantier */
+  baraquement:   { eco:45000,  moyen:75000,  haut:120000 },  /* FCFA/mois — bureau + stockage */
+  branch_eau:    { eco:180000, moyen:220000, haut:280000 },  /* forfait raccordement provisoire */
+  branch_elec:   { eco:250000, moyen:320000, haut:420000 },  /* forfait raccordement + groupe appoint */
+  sanitaire:     { eco:35000,  moyen:45000,  haut:60000  },  /* FCFA/mois — WC chimique chantier */
+  gardiennage:   { eco:120000, moyen:150000, haut:200000 }   /* FCFA/mois */
+};
+
+function installGeometriePlan(progId) {
+  var g = { perimetre:0, source:'saisie', ref:'' };
+  try {
+    var _src = _dqeElementsSource(progId);
+    if (_src.elements.length) {
+      var pieces = _src.elements.filter(function(e){ return e.type === 'piece' && (e.niv|0) === 0; });
+      var base = pieces.length ? pieces : _src.elements.filter(function(e){ return e.type === 'piece'; });
+      var emprise = base.reduce(function(s,p){ return s + (parseFloat(p.l)||0) * (parseFloat(p.w)||0); }, 0);
+      /* Le périmètre CLÔTURÉ n'est pas celui du bâtiment mais celui du terrain :
+         estimé à 2,2x l'emprise bâtie (marge de recul, voiries, espaces
+         communs) — repère de calcul, à corriger si la superficie du
+         programme est connue précisément. */
+      if (emprise > 0) {
+        var ratio = 1.3, terrainEst = emprise * 2.2;
+        var L = Math.sqrt(terrainEst*ratio), l = Math.sqrt(terrainEst/ratio);
+        g.perimetre = Math.round(2 * (L + l));
+        g.source = 'plan'; g.ref = _src.ref;
+      }
+    }
+  } catch(e) {}
+  return g;
+}
+
+function installRafraichirGeometrie() {
+  var progId = (document.getElementById('install-programme')||{}).value || '';
+  var geo = installGeometriePlan(progId);
+  var el = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
+  if (geo.perimetre) el('install-perimetre', geo.perimetre);
+  var src = document.getElementById('install-source');
+  if (src) src.textContent = geo.source === 'plan'
+    ? ('📐 Périmètre estimé depuis le plan (emprise × 2,2 — à corriger si la superficie réelle du terrain est connue)')
+    : '✏️ Aucun plan disponible — saisissez le périmètre du terrain clôturé';
+  installCalculer();
+}
+window.installRafraichirGeometrie = installRafraichirGeometrie;
+
+function installOuvrir() {
+  var progDQEInit = (document.getElementById('dqe-filter-programme') || {}).value || '';
+  var selProg = document.getElementById('install-programme');
+  if (selProg) {
+    selProg.innerHTML = '<option value="">— Sélectionner —</option>'
+      + DATA.programmes.map(function(p){ return '<option value="' + p.id + '">' + escHtml(p.nom) + '</option>'; }).join('');
+    if (progDQEInit) selProg.value = progDQEInit;
+  }
+  installRafraichirGeometrie();
+  installRafraichirTypes();
+  openModal('modal-installation');
+}
+window.installOuvrir = installOuvrir;
+
+function installRafraichirTypes() {
+  var sel = document.getElementById('install-type-logement');
+  var selProg = document.getElementById('install-programme');
+  if (!sel) return;
+  var progId = selProg ? selProg.value : '';
+  var cur = sel.value;
+  var html = _dqeOptionsTypesConception(progId);
+  sel.innerHTML = html || '<option value="" disabled selected>' + (progId ? 'Aucune conception pour ce programme' : 'Sélectionnez un programme') + '</option>';
+  if (cur && html.indexOf('value="' + escHtml(cur) + '"') !== -1) sel.value = cur;
+  _dqeDiagnosticHint('install-type-hint', progId, html, 'modal-installation');
+}
+window.installRafraichirTypes = installRafraichirTypes;
+
+function installCalculer() {
+  var perimetre = parseFloat((document.getElementById('install-perimetre')||{}).value) || 0;
+  var duree = parseInt((document.getElementById('install-duree')||{}).value) || 6;
+  var standing = (document.getElementById('install-standing')||{}).value || 'moyen';
+  var lignes = [];
+  var L = function(materiau, unite, qte, pu) {
+    if (!(qte > 0)) return;
+    lignes.push({ poste:'Installation de chantier', materiau:materiau, unite:unite, quantite:qte, montant:Math.round(qte*pu) });
+  };
+  L('Clôture de chantier', 'ml', perimetre, INSTALL_PRIX.cloture[standing]);
+  L('Panneau de chantier', 'forfait', 1, INSTALL_PRIX.panneau[standing]);
+  L('Baraquement de chantier (bureau + stockage)', 'mois', duree, INSTALL_PRIX.baraquement[standing]);
+  L('Branchement eau provisoire', 'forfait', 1, INSTALL_PRIX.branch_eau[standing]);
+  L('Branchement électrique provisoire', 'forfait', 1, INSTALL_PRIX.branch_elec[standing]);
+  L('Sanitaires de chantier', 'mois', duree, INSTALL_PRIX.sanitaire[standing]);
+  L('Gardiennage', 'mois', duree, INSTALL_PRIX.gardiennage[standing]);
+  var total = lignes.reduce(function(s,l){ return s+l.montant; }, 0);
+  window._installDernier = { lignes:lignes, total:total, standing:standing, perimetre:perimetre, duree:duree };
+
+  var host = document.getElementById('install-resultat');
+  if (!host) return;
+  if (!lignes.length) { host.innerHTML = '<div style="color:var(--dim);padding:12px;">Renseignez un périmètre et une durée de chantier.</div>'; return; }
+  host.innerHTML = '<div style="padding:10px 12px;background:rgba(224,82,82,.09);border-left:3px solid var(--rouge);border-radius:6px;font-size:11.5px;margin-bottom:10px;">'
+    + '⚠️ <strong>Coût unique pour tout le chantier</strong> — à injecter sur UN SEUL type de logement de référence, jamais sur chacun (double comptage). Si le programme n\'a qu\'un seul type, injectez normalement.'
+    + '</div>'
+    + '<table style="width:100%;"><thead><tr style="font-size:11px;color:var(--dim);">'
+    + '<th style="text-align:left;">Poste</th><th style="text-align:right;">Qté</th><th style="text-align:right;">Montant</th></tr></thead><tbody>'
+    + lignes.map(function(l){ return '<tr><td>' + escHtml(l.materiau) + '</td><td style="text-align:right;">' + l.quantite + ' ' + l.unite + '</td><td style="text-align:right;font-weight:600;">' + fmtF(l.montant) + ' FCFA</td></tr>'; }).join('')
+    + '</tbody><tfoot><tr style="font-weight:700;border-top:1px solid var(--bord);"><td colspan="2">Total installation de chantier</td><td style="text-align:right;color:var(--or);">' + fmtF(total) + ' FCFA</td></tr></tfoot></table>';
+}
+window.installCalculer = installCalculer;
+
+async function installInjecterDQE() {
+  var R = window._installDernier;
+  if (!R || !R.lignes.length) { toast('Aucune quantité à injecter.', 'error'); return; }
+  var type = (document.getElementById('install-type-logement')||{}).value || '';
+  if (!type) { toast('Indiquez le type de logement de référence.', 'error'); return; }
+  var progId = (document.getElementById('install-programme')||{}).value || '';
+  if (!progId) { toast('Sélectionnez le programme.', 'error'); return; }
+  if (!confirm('Injecter ' + fmtF(R.total) + ' FCFA sur « ' + type + ' » uniquement ?\n\nCe montant couvre TOUT le chantier — ne l\'injectez pas aussi sur les autres types de ce programme, ça compterait ce coût plusieurs fois.')) return;
+
+  var anciennes = (DATA.nomenclatures||[]).filter(function(n){ return n.type_logement === type && n.programme_id === progId && n._genere_installation && !n._ajuste_manuel; });
+  var ajustes = (DATA.nomenclatures||[]).filter(function(n){ return n.type_logement === type && n.programme_id === progId && n._genere_installation && n._ajuste_manuel; });
+  var _ouvrageParMateriau = {};
+  anciennes.forEach(function(a){ if (a.ouvrage_id) _ouvrageParMateriau[String(a.materiau||'').trim().toLowerCase()] = a.ouvrage_id; });
+  for (var i = 0; i < anciennes.length; i++) { await deleteRecord('nomenclatures', anciennes[i].id, { skipIntegrity:true }); }
+
+  var le = new Date().toISOString();
+  var n = 0;
+  for (var j = 0; j < R.lignes.length; j++) {
+    var l = R.lignes[j];
+    if (ajustes.some(function(a){ return String(a.materiau||'') === String(l.materiau||''); })) continue;
+    var entry = {
+      id: uid(), type_logement: type, programme_id: progId, poste: l.poste, materiau: l.materiau,
+      unite: l.unite, quantite: l.quantite, prix_forfait: l.montant, ouvrage_id: (_ouvrageParMateriau[String(l.materiau||'').trim().toLowerCase()] || ''),
+      _genere_installation: true, _genere_le: le, _install_standing: R.standing, _install_unique: true
+    };
+    DATA.nomenclatures.push(entry);
+    await dbPut('nomenclatures', entry);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', entry);
+    n++;
+  }
+  toast('✅ ' + n + ' poste(s) d\'installation de chantier injecté(s) sur « ' + type + ' ».', 'success');
+  closeModal('modal-installation');
+  if (typeof chargerNomenclature === 'function') chargerNomenclature();
+}
+window.installInjecterDQE = installInjecterDQE;
+
 function structOuvrir() {
   var progDQEInit = (document.getElementById('dqe-filter-programme') || {}).value || '';
   var geo = structGeometriePlan(progDQEInit);
@@ -107419,6 +107574,54 @@ goTo = function(page) {
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-maconnerie')">Fermer</button>
       <button class="btn btn-primary" onclick="macInjecterDQE()">↧ Injecter dans le DQE</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Installation de chantier — pré-dimensionnement (coût unique) -->
+<div class="modal-overlay" id="modal-installation">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div>
+        <h3>🚧 Installation de chantier — pré-dimensionnement</h3>
+        <div style="font-size:11px;color:var(--dim);">Clôture, baraquement, branchements provisoires, gardiennage — coût unique pour l'ensemble du chantier, pas par logement.</div>
+      </div>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-installation')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid" style="margin-bottom:14px;">
+        <div class="form-group">
+          <label>Périmètre du terrain à clôturer (m)</label>
+          <input type="number" step="0.1" class="form-control" id="install-perimetre" oninput="installCalculer()">
+          <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;" id="install-source"></div>
+        </div>
+        <div class="form-group">
+          <label>Durée prévisionnelle du chantier (mois)</label>
+          <input type="number" min="1" value="6" class="form-control" id="install-duree" oninput="installCalculer()">
+        </div>
+        <div class="form-group">
+          <label>Standing / qualité</label>
+          <select class="form-control" id="install-standing" onchange="installCalculer()">
+            <option value="eco">Économique</option>
+            <option value="moyen" selected>Moyen standing</option>
+            <option value="haut">Haut standing</option>
+          </select>
+        </div>
+        <div class="form-group span-2">
+          <label>Programme (site — détermine le DQE cible) *</label>
+          <select class="form-control" id="install-programme" onchange="installRafraichirTypes();installRafraichirGeometrie();"></select>
+        </div>
+        <div class="form-group span-2">
+          <label>Type de logement de référence (DQE) — un seul, jamais tous</label>
+          <select class="form-control" id="install-type-logement"></select>
+          <div style="font-size:10px;margin-top:3px;" id="install-type-hint"></div>
+        </div>
+      </div>
+      <div id="install-resultat"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-installation')">Fermer</button>
+      <button class="btn btn-primary" onclick="installInjecterDQE()">↧ Injecter dans le DQE</button>
     </div>
   </div>
 </div>
