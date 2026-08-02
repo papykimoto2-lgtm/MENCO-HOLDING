@@ -68552,6 +68552,69 @@ function calculerCoutParType(type) {
    (matériau / main-d'œuvre / matériel / sous-traitance) au lieu d'un prix
    unitaire opaque — le sous-détail classique d'un devis de chantier. */
 var _dqeVueOuvrageActive = false;
+/* Classement Gros œuvre / Finition — utilise les marqueurs déjà posés par
+   chaque générateur plutôt qu'un texte à deviner : _fluide_phase pour
+   Élec/Plomberie (go/fin déjà distingués à la source), les autres
+   générateurs sont structurellement du gros œuvre sauf enduit/crépi
+   (traité comme une finition — c'est une couche de revêtement, pas de
+   structure) et les postes issus du plan reconnus comme des finitions
+   (sol, murs, plafond, faïence, menuiserie). */
+var _TYPES_FINITION_LABELS = {
+  'sol':'Revêtement de sol', 'murs':'Peinture murale', 'plafond':'Finition plafond',
+  'faïence':'Faïence', 'faience':'Faïence', 'menuiserie':'Menuiserie (portes/fenêtres)',
+  'enduit':'Enduit / Crépi', 'crépi':'Enduit / Crépi',
+  'carrelage':'Carrelage', 'peinture':'Peinture'
+};
+function _dqeClassifierGoFinition(n) {
+  if (n._genere_fluides && n._fluide_phase) return n._fluide_phase === 'go' ? 'go' : 'finition';
+  var p = (n.poste || '').toLowerCase();
+  if (/finitions$/.test(p)) return 'finition'; /* "Électricité — finitions", "Plomberie — finitions" */
+  if (n._genere_struct || n._genere_couverture) return 'go';
+  if (/enduit|cr[ée]pi/.test(p)) return 'finition';
+  if (n._genere_maconnerie) return 'go';
+  if (/sol|mur|plafond|fa[iï]ence|carrelage|peinture|menuiserie/.test(p)) return 'finition';
+  return 'go';
+}
+function _dqeTypeFinition(n) {
+  var p = (n.poste || '').toLowerCase();
+  for (var k in _TYPES_FINITION_LABELS) { if (p.indexOf(k) !== -1) return _TYPES_FINITION_LABELS[k]; }
+  if (/électricité|electricite/.test(p)) return 'Électricité (finitions)';
+  if (/plomberie/.test(p)) return 'Plomberie (finitions)';
+  return n.poste || 'Autre finition';
+}
+function _dqeRenderSyntheseGoFinition(nomens) {
+  var totalGO = 0, parType = {}, ordreType = [];
+  nomens.forEach(function(n) {
+    var pu = dqeLignePU(n);
+    var tot = (n.quantite * pu) + (n.prix_forfait || 0);
+    if (_dqeClassifierGoFinition(n) === 'go') { totalGO += tot; return; }
+    var t = _dqeTypeFinition(n);
+    if (!parType[t]) { parType[t] = 0; ordreType.push(t); }
+    parType[t] += tot;
+  });
+  var totalFinition = ordreType.reduce(function(s, t) { return s + parType[t]; }, 0);
+  var totalGeneral = totalGO + totalFinition;
+  var rowsFinition = ordreType.map(function(t) {
+    var pct = totalFinition ? Math.round(parType[t] / totalFinition * 100) : 0;
+    return '<tr><td style="padding-left:20px;">' + escHtml(t) + '</td>'
+      + '<td style="text-align:right;">' + fmtF(parType[t]) + ' FCFA</td>'
+      + '<td style="text-align:right;color:var(--dim);">' + pct + '%</td></tr>';
+  }).join('');
+  return '<div class="card" style="margin-bottom:16px;border:1px solid var(--or,#B8732F);">'
+    + '<div class="form-section-title">📊 Synthèse — Gros œuvre &amp; Finition</div>'
+    + '<table style="width:100%;margin-top:8px;font-size:13px;">'
+    + '<tr style="font-weight:700;background:var(--card2);"><td>🧱 GROS ŒUVRE (sous-total)</td>'
+    + '<td style="text-align:right;">' + fmtF(totalGO) + ' FCFA</td>'
+    + '<td style="text-align:right;color:var(--dim);">' + (totalGeneral ? Math.round(totalGO / totalGeneral * 100) : 0) + '%</td></tr>'
+    + '<tr style="font-weight:700;background:var(--card2);"><td>🎨 FINITION (sous-total)</td>'
+    + '<td style="text-align:right;">' + fmtF(totalFinition) + ' FCFA</td>'
+    + '<td style="text-align:right;color:var(--dim);">' + (totalGeneral ? Math.round(totalFinition / totalGeneral * 100) : 0) + '%</td></tr>'
+    + rowsFinition
+    + '<tr style="font-weight:700;border-top:2px solid var(--or,#B8732F);"><td>TOTAL GÉNÉRAL</td>'
+    + '<td style="text-align:right;color:var(--or,#B8732F);">' + fmtF(totalGeneral) + ' FCFA</td><td></td></tr>'
+    + '</table></div>';
+}
+
 function dqeToggleVueOuvrage() {
   _dqeVueOuvrageActive = !_dqeVueOuvrageActive;
   document.getElementById('dqe-card-liste').style.display = _dqeVueOuvrageActive ? 'none' : '';
@@ -68581,6 +68644,7 @@ function dqeRenderParOuvrage() {
   });
 
   var totalGeneral = 0;
+  var syntheseHtml = _dqeRenderSyntheseGoFinition(nomens);
   var html = ordre.map(function(corps) {
     var lignes = groupes[corps];
     var totalCorps = 0;
@@ -68633,7 +68697,7 @@ function dqeRenderParOuvrage() {
       + '</div>';
   }).join('');
 
-  box.innerHTML = html + '<div class="card" style="background:var(--card2);"><div style="display:flex;justify-content:space-between;font-size:15px;font-weight:700;"><span>Déboursé sec total (' + type + ')</span><span style="color:var(--or);">' + fmtF(totalGeneral) + ' FCFA</span></div></div>';
+  box.innerHTML = syntheseHtml + html + '<div class="card" style="background:var(--card2);"><div style="display:flex;justify-content:space-between;font-size:15px;font-weight:700;"><span>Déboursé sec total (' + type + ')</span><span style="color:var(--or);">' + fmtF(totalGeneral) + ' FCFA</span></div></div>';
 }
 window.dqeRenderParOuvrage = dqeRenderParOuvrage;
 
@@ -92646,6 +92710,30 @@ function _ppQR(texte, taille) {
 /* ═══════════════════════════════════════════════════════
    APERÇU DQE — Détail Quantitatif Estimatif
    ═══════════════════════════════════════════════════════ */
+function _ppSyntheseGoFinitionHtml(nomens) {
+  var totalGO = 0, parType = {}, ordreType = [];
+  nomens.forEach(function(n) {
+    var pu = dqeLignePU(n);
+    var tot = (n.quantite * pu) + (n.prix_forfait || 0);
+    if (_dqeClassifierGoFinition(n) === 'go') { totalGO += tot; return; }
+    var t = _dqeTypeFinition(n);
+    if (!parType[t]) { parType[t] = 0; ordreType.push(t); }
+    parType[t] += tot;
+  });
+  var totalFinition = ordreType.reduce(function(s, t) { return s + parType[t]; }, 0);
+  var totalGeneral = totalGO + totalFinition;
+  if (!totalGeneral) return '';
+  var rowsFinition = ordreType.map(function(t) {
+    return '<tr><td style="padding-left:18px;font-size:9pt;color:#555;">' + escHtml(t) + '</td>'
+      + '<td style="text-align:right;font-size:9pt;">' + _ppFcfa(parType[t]) + '</td></tr>';
+  }).join('');
+  return '<table style="margin-bottom:14px;">'
+    + '<tr style="background:#f1f5f9;font-weight:700;"><td>🧱 GROS ŒUVRE (sous-total)</td><td style="text-align:right;">' + _ppFcfa(totalGO) + '</td></tr>'
+    + '<tr style="background:#f1f5f9;font-weight:700;"><td>🎨 FINITION (sous-total)</td><td style="text-align:right;">' + _ppFcfa(totalFinition) + '</td></tr>'
+    + rowsFinition
+    + '</table>';
+}
+
 function printPreviewDQE() {
   /* ─ Récupération du type et des données ─ */
   var type = ((document.getElementById('dqe-type-logement') || {}).value) || 'F2';
@@ -92749,6 +92837,7 @@ function printPreviewDQE() {
     +     '<strong>Type :</strong><br><span style="color:#1A6B3A;font-weight:700;">' + escHtml(typeLabel) + '</span>'
     +   '</div>'
     + '</div>'
+    + _ppSyntheseGoFinitionHtml(nomens)
     + '<table>'
     +   '<thead><tr style="background:#1A6B3A;color:white;">'
     +     '<th style="text-align:left;">Matériau / Prestation</th>'
