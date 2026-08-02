@@ -68564,7 +68564,7 @@ function chargerNomenclature() {
       + '<td>' + escHtml(n.materiau) + '</td>'
       + '<td style="color:var(--dim);font-size:11px;">' + escHtml(n.unite) + '</td>'
       + '<td style="text-align:right;">' + n.quantite + '</td>'
-      + '<td style="text-align:right;">' + (prixUnit ? fmtF(prixUnit) : (n.prix_forfait ? '<span style="color:var(--dim);font-size:11px;">forfait</span>' : '—')) + '</td>'
+      + '<td style="text-align:right;">' + (prixUnit ? fmtF(prixUnit) : (n.prix_forfait ? '<span style="color:var(--dim);font-size:11px;">forfait</span>' : (n.ouvrage_id ? '—' : '<button class="btn btn-secondary btn-sm" style="font-size:10px;padding:2px 6px;" title="Créer un ouvrage unifié pour ce poste (Déboursé sec)" onclick="dqeCreerOuvrageDepuisPoste(\'' + n.id + '\')">🔗 Créer l\'ouvrage</button>'))) + '</td>'
       + '<td style="text-align:right;color:var(--or);font-weight:700;">' + fmtF(totalPoste) + '</td>'
       + '<td style="font-size:11px;color:var(--dim);">' + escHtml((pu ? pu.fournisseur : '') || '—') + '</td>'
       + '<td style="font-size:11px;white-space:nowrap;">' + (n._source_plan ? '<span style="color:var(--vert,#1A6B3A);">📐 Issu du plan</span>' : (isDefault ? '' : '<span style="color:var(--dim);">✍️ Manuel</span>')) + '</td>'
@@ -68576,6 +68576,7 @@ function chargerNomenclature() {
   }).join('');
   /* Récap */
   var nbIssusPlan = nomens.filter(function(n){ return n._source_plan; }).length;
+  var nbSansOuvrage = nomens.filter(function(n){ return !n.ouvrage_id && n.materiau; }).length;
   var resume = document.getElementById('resume-dqe');
   if (resume) {
     var typeLabels = { F2:'F2', F3:'F3', F4:'F4', VILLA:'Villa' };
@@ -68606,6 +68607,7 @@ function chargerNomenclature() {
       nbPostes: nomens.length, div: _div || 1 };
     resume.innerHTML = '<div class="form-section-title">Récapitulatif — ' + (typeLabels[type] || type) + '</div>'
       + (nbIssusPlan ? '<div style="font-size:11px;color:var(--vert,#1A6B3A);margin-bottom:4px;">📐 ' + nbIssusPlan + ' poste(s) sur ' + nomens.length + ' calculé(s) depuis la géométrie réelle du plan (Structure, Élec/Plomberie, Charpente/Couverture, Maçonnerie/Enduits).</div>' : '')
+      + (nbSansOuvrage ? '<div style="font-size:11px;color:var(--rouge,#E05252);margin-bottom:4px;">⚠️ ' + nbSansOuvrage + ' poste(s) sans ouvrage — prix par correspondance texte (fragile). <button class="btn btn-secondary btn-sm" style="font-size:10px;padding:2px 8px;margin-left:4px;" onclick="dqeUnifierTousLesPostes()">🔗 Unifier tous les postes</button></div>' : '')
       + coefBar
       + '<div class="kpi-grid" style="margin-top:4px;">'
       + _c('Déboursé sec (coût direct)', fmtF(debourse)+' FCFA', 'var(--or,#B8732F)')
@@ -89652,6 +89654,10 @@ async function structInjecterDQE() {
      recalcul, et n'est pas recréé en double. */
   var anciennes = (DATA.nomenclatures||[]).filter(function(n){ return n.type_logement === type && n.programme_id === progId && n._genere_struct && !n._ajuste_manuel; });
   var _ajustesStruct = (DATA.nomenclatures||[]).filter(function(n){ return n.type_logement === type && n.programme_id === progId && n._genere_struct && n._ajuste_manuel; });
+  /* Un poste unifié manuellement vers un ouvrage (§ "un seul endroit pour
+     tous les prix") ne doit pas perdre ce lien à chaque régénération. */
+  var _ouvrageParMateriau = {};
+  anciennes.forEach(function(a){ if (a.ouvrage_id) _ouvrageParMateriau[String(a.materiau||'').trim().toLowerCase()] = a.ouvrage_id; });
   for (var i = 0; i < anciennes.length; i++) {
     await deleteRecord('nomenclatures', anciennes[i].id, { skipIntegrity:true });
   }
@@ -89662,7 +89668,7 @@ async function structInjecterDQE() {
     if (_ajustesStruct.some(function(a){ return String(a.materiau||'') === String(l.materiau||''); })) continue;
     var entry = {
       id: uid(), type_logement: type, programme_id: progId, poste: l.poste, materiau: l.materiau,
-      unite: l.unite, quantite: l.quantite, prix_forfait: 0, ouvrage_id: '',
+      unite: l.unite, quantite: l.quantite, prix_forfait: 0, ouvrage_id: (_ouvrageParMateriau[String(l.materiau||'').trim().toLowerCase()] || ''),
       _genere_struct: true, _genere_le: le,
       _source_plan: R.geo.source === 'plan',
       _struct_fondation: R.type_fondation,
@@ -90492,6 +90498,8 @@ async function epInjecterDQE() {
     return n.type_logement === type && n.programme_id === progId && n._genere_fluides && !n._ajuste_manuel; });
   var ajustes = (DATA.nomenclatures||[]).filter(function(n){
     return n.type_logement === type && n.programme_id === progId && n._genere_fluides && n._ajuste_manuel; });
+  var _ouvrageParMateriau = {};
+  anciennes.forEach(function(a){ if (a.ouvrage_id) _ouvrageParMateriau[String(a.materiau||'').trim().toLowerCase()] = a.ouvrage_id; });
   for (var i = 0; i < anciennes.length; i++) {
     await deleteRecord('nomenclatures', anciennes[i].id, { skipIntegrity:true });
   }
@@ -90503,7 +90511,7 @@ async function epInjecterDQE() {
     if (ajustes.some(function(a){ return String(a.materiau||'') === String(l.materiau||''); })) continue;
     var entry = {
       id: uid(), type_logement: type, programme_id: progId, poste: l.poste, materiau: l.materiau,
-      unite: l.unite, quantite: l.quantite, prix_forfait: l.montant, ouvrage_id: '',
+      unite: l.unite, quantite: l.quantite, prix_forfait: l.montant, ouvrage_id: (_ouvrageParMateriau[String(l.materiau||'').trim().toLowerCase()] || ''),
       _genere_fluides: true, _genere_le: le,
       _source_plan: (r.pieces && r.pieces.length > 0),
       _fluide_lot: l.lot, _fluide_phase: l.phase, _fluide_standing: sel,
@@ -90748,6 +90756,8 @@ async function couvInjecterDQE() {
     return n.type_logement === type && n.programme_id === progId && n._genere_couverture && !n._ajuste_manuel; });
   var ajustes = (DATA.nomenclatures||[]).filter(function(n){
     return n.type_logement === type && n.programme_id === progId && n._genere_couverture && n._ajuste_manuel; });
+  var _ouvrageParMateriau = {};
+  anciennes.forEach(function(a){ if (a.ouvrage_id) _ouvrageParMateriau[String(a.materiau||'').trim().toLowerCase()] = a.ouvrage_id; });
   for (var i = 0; i < anciennes.length; i++) {
     await deleteRecord('nomenclatures', anciennes[i].id, { skipIntegrity:true });
   }
@@ -90759,7 +90769,7 @@ async function couvInjecterDQE() {
     if (ajustes.some(function(a){ return String(a.materiau||'') === String(l.materiau||''); })) continue;
     var entry = {
       id: uid(), type_logement: type, programme_id: progId, poste: l.poste, materiau: l.materiau,
-      unite: l.unite, quantite: l.quantite, prix_forfait: l.montant, ouvrage_id: '',
+      unite: l.unite, quantite: l.quantite, prix_forfait: l.montant, ouvrage_id: (_ouvrageParMateriau[String(l.materiau||'').trim().toLowerCase()] || ''),
       _genere_couverture: true, _genere_le: le,
       _source_plan: R.geo && R.geo.source === 'plan',
       _couv_lot: l.lot, _couv_standing: R.standing, _couv_type: R.type,
@@ -90983,6 +90993,8 @@ async function macInjecterDQE() {
     return n.type_logement === type && n.programme_id === progId && n._genere_maconnerie && !n._ajuste_manuel; });
   var ajustes = (DATA.nomenclatures||[]).filter(function(n){
     return n.type_logement === type && n.programme_id === progId && n._genere_maconnerie && n._ajuste_manuel; });
+  var _ouvrageParMateriau = {};
+  anciennes.forEach(function(a){ if (a.ouvrage_id) _ouvrageParMateriau[String(a.materiau||'').trim().toLowerCase()] = a.ouvrage_id; });
   for (var i = 0; i < anciennes.length; i++) {
     await deleteRecord('nomenclatures', anciennes[i].id, { skipIntegrity:true });
   }
@@ -90994,7 +91006,7 @@ async function macInjecterDQE() {
     if (ajustes.some(function(a){ return String(a.materiau||'') === String(l.materiau||''); })) continue;
     var entry = {
       id: uid(), type_logement: type, programme_id: progId, poste: l.poste, materiau: l.materiau,
-      unite: l.unite, quantite: l.quantite, prix_forfait: l.montant, ouvrage_id: '',
+      unite: l.unite, quantite: l.quantite, prix_forfait: l.montant, ouvrage_id: (_ouvrageParMateriau[String(l.materiau||'').trim().toLowerCase()] || ''),
       _genere_maconnerie: true, _genere_le: le,
       _source_plan: R.geo && R.geo.source === 'plan',
       _mac_lot: l.lot, _mac_standing: R.standing,
@@ -91830,6 +91842,93 @@ function dqePU(name) {
   return parseFloat(m.pu != null ? m.pu : m.prix) || 0;
 }
 /* Prix unitaire d'une ligne : ouvrage déboursé si lié, sinon référentiel */
+/* ══════════════════════════════════════════════════════
+   UNIFICATION DES PRIX — chaque poste doit passer par UN SEUL chemin :
+   l'ouvrage (Déboursé sec), jamais la correspondance texte libre. Cette
+   fonction crée l'ouvrage manquant à partir d'un poste de nomenclature,
+   avec une ressource dédiée (prix à saisir une fois), et relie le poste.
+   Si une ressource du même libellé existe déjà (dqeMatch), elle est
+   réutilisée plutôt que dupliquée. */
+async function dqeCreerOuvrageDepuisPoste(nomenclatureId) {
+  var n = (DATA.nomenclatures || []).find(function(x) { return x.id === nomenclatureId; });
+  if (!n) { toast('Poste introuvable.', 'error'); return; }
+  if (n.ouvrage_id) { toast('Ce poste est déjà relié à un ouvrage.', 'info'); return; }
+  if (!n.materiau) { toast('Ce poste n\'a pas de libellé de matériau.', 'error'); return; }
+
+  if (!DATA.eds_ressources) DATA.eds_ressources = [];
+  if (!DATA.eds_ouvrages) DATA.eds_ouvrages = [];
+
+  var resExistante = dqeMatch(n.materiau);
+  var ressource;
+  if (resExistante && resExistante.pu != null) {
+    ressource = resExistante.id ? resExistante : null; /* prix_unitaire (ancien référentiel) n'a pas forcément d'id compatible */
+  }
+  if (!ressource) {
+    ressource = {
+      id: 'res_' + uid(), code: 'RES-' + Date.now().toString(36).toUpperCase(),
+      libelle: n.materiau, type: 'materiau', unite: n.unite || 'unité',
+      pu: (resExistante ? parseFloat(resExistante.pu || resExistante.prix) || 0 : 0),
+      fournisseur: '', maj: today()
+    };
+    DATA.eds_ressources.push(ressource);
+    await dbPut('eds_ressources', ressource);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_ressources', ressource);
+  }
+
+  var ouvrage = {
+    id: 'ouv_' + uid(), code: 'OUV-' + Date.now().toString(36).toUpperCase(),
+    designation: n.materiau, unite: n.unite || 'unité', categorie: n.poste || 'Divers',
+    composants: [{ type: 'materiau', res_id: ressource.id, qte: 1 }],
+    _cree_depuis_poste: true
+  };
+  DATA.eds_ouvrages.push(ouvrage);
+  await dbPut('eds_ouvrages', ouvrage);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_ouvrages', ouvrage);
+
+  n.ouvrage_id = ouvrage.id;
+  await dbPut('nomenclatures', n);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', n);
+
+  toast(ressource.pu > 0
+    ? '✅ Ouvrage créé et relié — prix repris (' + fmtF(ressource.pu) + ' FCFA).'
+    : '✅ Ouvrage créé et relié — saisissez son prix dans Déboursé sec → Ressources.', 'success');
+  if (typeof chargerNomenclature === 'function') chargerNomenclature();
+}
+window.dqeCreerOuvrageDepuisPoste = dqeCreerOuvrageDepuisPoste;
+
+/* Version en masse : crée un ouvrage pour chaque poste sans ouvrage_id du
+   type actuellement affiché — un seul clic pour unifier tout un DQE plutôt
+   que poste par poste. Ne duplique pas : les postes qui partagent déjà le
+   même libellé de matériau et qui ont déjà été unifiés se relient au même
+   ouvrage, ils n'en créent pas un second. */
+async function dqeUnifierTousLesPostes() {
+  var type = (document.getElementById('dqe-type-logement') || {}).value || '';
+  if (!type) { toast('Sélectionnez un type de logement.', 'error'); return; }
+  var _r = dqeNomenclaturesPourType(type);
+  var sansOuvrage = _r.nomens.filter(function(n) { return !n.ouvrage_id && n.materiau; });
+  if (!sansOuvrage.length) { toast('Tous les postes de ce type sont déjà reliés à un ouvrage.', 'info'); return; }
+  if (!confirm(sansOuvrage.length + ' poste(s) sans ouvrage vont être unifiés (un ouvrage créé ou réutilisé par libellé de matériau). Continuer ?')) return;
+
+  var creesParLibelle = {}; /* libellé matériau -> ouvrage_id, pour ne pas dupliquer dans cette même passe */
+  var n = 0;
+  for (var i = 0; i < sansOuvrage.length; i++) {
+    var poste = sansOuvrage[i];
+    var key = poste.materiau.trim().toLowerCase();
+    if (creesParLibelle[key]) {
+      poste.ouvrage_id = creesParLibelle[key];
+      await dbPut('nomenclatures', poste);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', poste);
+    } else {
+      await dqeCreerOuvrageDepuisPoste(poste.id);
+      creesParLibelle[key] = poste.ouvrage_id;
+    }
+    n++;
+  }
+  toast('✅ ' + n + ' poste(s) unifié(s) vers un ouvrage.', 'success');
+  chargerNomenclature();
+}
+window.dqeUnifierTousLesPostes = dqeUnifierTousLesPostes;
+
 function dqeLignePU(n) {
   if (n && n.ouvrage_id) {
     var o = (DATA.eds_ouvrages || []).find(function(x) { return x.id === n.ouvrage_id; });
@@ -98203,6 +98302,8 @@ function qrSvgTag(text){
        n'a aucun moyen de retrouver. */
     var anciennes = (DATA.nomenclatures || []).filter(function(n) { return n.type_logement === type && n.programme_id === _progIdCourant && n._genere_plan && !n._ajuste_manuel; });
     var _ajustesConserves = (DATA.nomenclatures || []).filter(function(n) { return n.type_logement === type && n.programme_id === _progIdCourant && n._genere_plan && n._ajuste_manuel; });
+    var _ouvrageParMateriau = {};
+    anciennes.forEach(function(a){ if (a.ouvrage_id) _ouvrageParMateriau[String(a.materiau||'').trim().toLowerCase()] = a.ouvrage_id; });
     for (var i = 0; i < anciennes.length; i++) { await deleteRecord('nomenclatures', anciennes[i].id, { skipIntegrity: true }); }
 
     var lignes = [];
@@ -98308,7 +98409,7 @@ function qrSvgTag(text){
       var _dejaAjuste = _ajustesConserves.some(function(a){ return String(a.materiau||'') === String(lignes[j].materiau||''); });
       if (_dejaAjuste) continue;
       var entry = Object.assign({
-        id: uid(), type_logement: type, programme_id: _progIdCourant, prix_forfait: 0, ouvrage_id: '', _genere_plan: true,
+        id: uid(), type_logement: type, programme_id: _progIdCourant, prix_forfait: 0, ouvrage_id: (_ouvrageParMateriau[String(lignes[j].materiau||'').trim().toLowerCase()] || ''), _genere_plan: true,
         _source_plan: true,
         _genere_le: _genLe,
         _genere_surface: Math.round(_genSurf * 100) / 100,
