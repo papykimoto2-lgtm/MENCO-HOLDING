@@ -68517,7 +68517,7 @@ function dqeNomenclaturesPourType(type) {
   var progActuel = (document.getElementById('dqe-filter-programme') || {}).value || '';
   var nomens = DATA.nomenclatures.filter(function(n) {
     if (n.type_logement !== type) return false;
-    if ((n._genere_struct || n._genere_fluides) && n.programme_id && progActuel && n.programme_id !== progActuel) return false;
+    if ((n._genere_struct || n._genere_fluides || n._genere_couverture || n._genere_maconnerie || n._genere_plan) && n.programme_id && progActuel && n.programme_id !== progActuel) return false;
     return true;
   });
   var isDefault = false;
@@ -98132,7 +98132,32 @@ function qrSvgTag(text){
     if (!pieces.length && !mursPorteurs.length && !cloisons.length && !portes.length && !fenetres.length && !escaliers.length && !equipements.length) { if (window.toast) toast('Dessinez au moins une pièce ou un élément avant de générer la nomenclature.', 'error'); return; }
     var typeBrut = (document.getElementById('archi-type-lgt') || {}).value || '';
     var selType = document.getElementById('gen-nomen-type');
-    if (selType) selType.value = typeBrut ? typeBrut.toUpperCase() : 'F2';
+    if (selType) {
+      /* Repeuple depuis la fiche de conception liée — exactement la même
+         source que le sélecteur du DQE principal — pour garantir que le
+         type généré ici soit bien celui que le DQE saura retrouver.
+         Sans ça, "Villa" saisi dans la conception ne correspond jamais à
+         "VILLA" (liste figée d'origine), et les postes générés restent
+         invisibles dans le tableau du DQE. */
+      var _cId = (window._archiPlanCourant || {}).conception_id || '';
+      var _conc = _cId ? (DATA.conceptions||[]).find(function(c){ return c.id === _cId; }) : null;
+      var _progIdGen = _conc ? _conc.programme_id : '';
+      var _optsConception = _progIdGen ? _dqeOptionsTypesConception(_progIdGen) : '';
+      if (_optsConception) {
+        selType.innerHTML = _optsConception;
+      } else {
+        selType.innerHTML = '<option value="F2">F2</option><option value="F3">F3</option><option value="F4">F4</option><option value="VILLA">VILLA</option>';
+        if (!_conc) {
+          toast('⚠️ Ce plan n\'est rattaché à aucune fiche de conception — les postes générés utiliseront un type générique (F2/F3/F4/VILLA) qui peut ne pas correspondre à ce qu\'attend le DQE.', 'error');
+        } else if (!_progIdGen) {
+          toast('⚠️ La fiche de conception liée n\'a pas de programme — corrigez-la (bouton sous le sélecteur de conception) avant de générer.', 'error');
+        }
+      }
+      if (typeBrut) {
+        var _match = typeBrut.toUpperCase();
+        if (selType.querySelector('option[value="' + _match + '"]')) selType.value = _match;
+      }
+    }
     var selScope = document.getElementById('gen-nomen-scope');
     if (selScope) selScope.value = 'tous';
     /* Traçabilité : d'où vient la géométrie chiffrée ? */
@@ -98149,6 +98174,9 @@ function qrSvgTag(text){
   };
 
   window.archiConfirmerGenererNomenclature = async function() {
+    var _cIdCourant = (window._archiPlanCourant || {}).conception_id || '';
+    var _concCourante = _cIdCourant ? (DATA.conceptions||[]).find(function(c){ return c.id === _cIdCourant; }) : null;
+    var _progIdCourant = _concCourante ? (_concCourante.programme_id || '') : '';
     var _src = _dqeScope();
     var _prefOn = ED.niveaux.length > 1
       && ((document.getElementById('gen-nomen-scope') || {}).value || 'tous') === 'tous'
@@ -98173,8 +98201,8 @@ function qrSvgTag(text){
     /* Les lignes ajustées à la main sont conservées : elles portent une
        décision (métré corrigé sur site, quantité négociée) que le recalcul
        n'a aucun moyen de retrouver. */
-    var anciennes = (DATA.nomenclatures || []).filter(function(n) { return n.type_logement === type && n._genere_plan && !n._ajuste_manuel; });
-    var _ajustesConserves = (DATA.nomenclatures || []).filter(function(n) { return n.type_logement === type && n._genere_plan && n._ajuste_manuel; });
+    var anciennes = (DATA.nomenclatures || []).filter(function(n) { return n.type_logement === type && n.programme_id === _progIdCourant && n._genere_plan && !n._ajuste_manuel; });
+    var _ajustesConserves = (DATA.nomenclatures || []).filter(function(n) { return n.type_logement === type && n.programme_id === _progIdCourant && n._genere_plan && n._ajuste_manuel; });
     for (var i = 0; i < anciennes.length; i++) { await deleteRecord('nomenclatures', anciennes[i].id, { skipIntegrity: true }); }
 
     var lignes = [];
@@ -98280,7 +98308,8 @@ function qrSvgTag(text){
       var _dejaAjuste = _ajustesConserves.some(function(a){ return String(a.materiau||'') === String(lignes[j].materiau||''); });
       if (_dejaAjuste) continue;
       var entry = Object.assign({
-        id: uid(), type_logement: type, prix_forfait: 0, ouvrage_id: '', _genere_plan: true,
+        id: uid(), type_logement: type, programme_id: _progIdCourant, prix_forfait: 0, ouvrage_id: '', _genere_plan: true,
+        _source_plan: true,
         _genere_le: _genLe,
         _genere_surface: Math.round(_genSurf * 100) / 100,
         _genere_pieces: _genPieces,
