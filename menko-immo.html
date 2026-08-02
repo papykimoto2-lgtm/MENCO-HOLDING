@@ -12377,6 +12377,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <button class="btn btn-secondary btn-sm" onclick="epOuvrir()" title="Électricité et plomberie, primaire et finitions, par niveau de standing">⚡🚿 Élec &amp; Plomberie</button>
           <button class="btn btn-secondary btn-sm" onclick="couvOuvrir()" title="Charpente, couverture, faîtage, rives, gouttières, descentes EP et étanchéité toiture-terrasse">🏠 Charpente &amp; Couverture</button>
           <button class="btn btn-secondary btn-sm" onclick="macOuvrir()" title="Élévation en agglos, enduits intérieurs/extérieurs et faux plafonds">🧱 Maçonnerie &amp; Enduits</button>
+          <button class="btn btn-secondary btn-sm" onclick="menuOuvrir()" title="Portes intérieures, portes extérieures et fenêtres — chiffrées séparément selon le mur porteur le plus proche">🚪 Menuiserie int. &amp; ext.</button>
           <button class="btn btn-primary btn-sm" onclick="dqeOuvrirRevue()" title="Quels lots sont chiffrés, lesquels manquent, et ce qu'ils pèsent">🔍 Complétude</button>
           <button class="btn btn-secondary btn-sm" onclick="edsOuvrirLiaison()" title="Relier les lignes du DQE aux ouvrages du déboursé sec">🔗 Déboursé sec</button>
           <button class="btn btn-secondary btn-sm" onclick="exportDQE()">⬇ Export CSV</button>
@@ -68519,7 +68520,7 @@ function dqeNomenclaturesPourType(type) {
   var progActuel = (document.getElementById('dqe-filter-programme') || {}).value || '';
   var nomens = DATA.nomenclatures.filter(function(n) {
     if (n.type_logement !== type) return false;
-    if ((n._genere_struct || n._genere_fluides || n._genere_couverture || n._genere_maconnerie || n._genere_plan) && n.programme_id && progActuel && n.programme_id !== progActuel) return false;
+    if ((n._genere_struct || n._genere_fluides || n._genere_couverture || n._genere_maconnerie || n._genere_plan || n._genere_menuiserie) && n.programme_id && progActuel && n.programme_id !== progActuel) return false;
     return true;
   });
   var isDefault = false;
@@ -68567,6 +68568,7 @@ var _TYPES_FINITION_LABELS = {
 };
 function _dqeClassifierGoFinition(n) {
   if (n._genere_fluides && n._fluide_phase) return n._fluide_phase === 'go' ? 'go' : 'finition';
+  if (n._genere_menuiserie) return 'finition';
   var p = (n.poste || '').toLowerCase();
   if (/finitions$/.test(p)) return 'finition'; /* "Électricité — finitions", "Plomberie — finitions" */
   if (n._genere_struct || n._genere_couverture) return 'go';
@@ -89811,6 +89813,157 @@ function structRafraichirTypes() {
   _dqeDiagnosticHint('str-type-hint', progId, html, 'modal-structure');
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   MENUISERIE INTERNE & EXTERNE — pré-dimensionnement DQE
+   ──────────────────────────────────────────────────────────────────────────
+   Distingue deux familles de coût très différentes : une porte intérieure
+   (bois courant, huisserie simple) et une porte extérieure/fenêtre (alu ou
+   bois massif, quincaillerie de sécurité, vitrage) — les confondre en un
+   seul poste "Menuiserie" comme le fait la génération rapide depuis le plan
+   fausse le chiffrage d'un facteur 2 à 3 sur ce lot.
+
+   Classement interne/externe : le mur le plus proche de chaque porte
+   détermine sa nature (murs porteurs → façade → externe ; cloisons →
+   intérieur → interne). Les fenêtres sont toujours externes par nature.
+   Une porte trop isolée pour être rattachée à un mur (plan incomplet) est
+   comptée interne par défaut — hypothèse la moins coûteuse, à corriger à la
+   main si besoin.
+   ══════════════════════════════════════════════════════════════════════════ */
+var MENU_PRIX = {
+  porte_int:  { eco:85000,  moyen:120000, haut:180000 },  /* porte intérieure posée, huisserie + quincaillerie */
+  porte_ext:  { eco:250000, moyen:350000, haut:500000 },  /* porte extérieure/entrée, sécurisée */
+  fenetre:    { eco:65000,  moyen:95000,  haut:130000 }   /* fenêtre alu + vitrage, taille moyenne posée */
+};
+
+function menuGeometriePlan(progId) {
+  var g = { nbPortesInt:0, nbPortesExt:0, nbFenetres:0, source:'saisie', ref:'' };
+  try {
+    var _src = _dqeElementsSource(progId);
+    if (!_src.elements.length) return g;
+    var murs = _src.elements.filter(function(e){ return e.type === 'mur' || e.type === 'mur_courbe'; });
+    var cloisons = _src.elements.filter(function(e){ return e.type === 'cloison'; });
+    var centre = function(e){ return { x:(parseFloat(e.x)||0) + (parseFloat(e.l||e.w)||0)/2, y:(parseFloat(e.y)||0) + (parseFloat(e.h)||0)/2 }; };
+    var distMin = function(pt, liste){
+      var min = Infinity;
+      liste.forEach(function(e){ var c = centre(e); var d = Math.hypot(c.x-pt.x, c.y-pt.y); if (d < min) min = d; });
+      return min;
+    };
+    _src.elements.filter(function(e){ return e.type === 'porte'; }).forEach(function(p){
+      var pt = centre(p);
+      var dMur = murs.length ? distMin(pt, murs) : Infinity;
+      var dCloison = cloisons.length ? distMin(pt, cloisons) : Infinity;
+      if (dMur < dCloison) g.nbPortesExt++; else g.nbPortesInt++; /* égalité ou aucune référence → interne (repli le moins coûteux) */
+    });
+    g.nbFenetres = _src.elements.filter(function(e){ return e.type === 'fenetre'; }).length;
+    if (g.nbPortesInt + g.nbPortesExt + g.nbFenetres > 0) { g.source = 'plan'; g.ref = _src.ref; }
+  } catch(e) {}
+  return g;
+}
+
+function menuRafraichirTypes() {
+  var sel = document.getElementById('menu-type-logement');
+  var selProg = document.getElementById('menu-programme');
+  if (!sel) return;
+  var progId = selProg ? selProg.value : '';
+  var cur = sel.value;
+  var html = _dqeOptionsTypesConception(progId);
+  sel.innerHTML = html || '<option value="" disabled selected>' + (progId ? 'Aucune conception pour ce programme' : 'Sélectionnez un programme') + '</option>';
+  if (cur && html.indexOf('value="' + escHtml(cur) + '"') !== -1) sel.value = cur;
+  _dqeDiagnosticHint('menu-type-hint', progId, html, 'modal-menuiserie');
+}
+window.menuRafraichirTypes = menuRafraichirTypes;
+
+function menuRafraichirGeometrie() {
+  var progId = (document.getElementById('menu-programme')||{}).value || '';
+  var geo = menuGeometriePlan(progId);
+  var el = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
+  el('menu-portes-int', geo.nbPortesInt);
+  el('menu-portes-ext', geo.nbPortesExt);
+  el('menu-fenetres', geo.nbFenetres);
+  var src = document.getElementById('menu-source');
+  if (src) src.textContent = geo.source === 'plan'
+    ? ('📐 Comptage repris ' + (typeof ED !== 'undefined' && ED.elements && ED.elements.length ? 'du plan ouvert dans l\'éditeur' : ('du plan enregistré' + (geo.ref ? (' « ' + geo.ref + ' »') : ''))) + ' — interne/externe déduit du mur le plus proche')
+    : '✏️ Aucun plan disponible pour ce programme — saisissez les quantités';
+  menuCalculer();
+}
+window.menuRafraichirGeometrie = menuRafraichirGeometrie;
+
+function menuOuvrir() {
+  var progDQEInit = (document.getElementById('dqe-filter-programme') || {}).value || '';
+  var selProg = document.getElementById('menu-programme');
+  if (selProg) {
+    selProg.innerHTML = '<option value="">— Sélectionner —</option>'
+      + DATA.programmes.map(function(p){ return '<option value="' + p.id + '">' + escHtml(p.nom) + '</option>'; }).join('');
+    if (progDQEInit) selProg.value = progDQEInit;
+  }
+  menuRafraichirGeometrie();
+  menuRafraichirTypes();
+  openModal('modal-menuiserie');
+}
+window.menuOuvrir = menuOuvrir;
+
+function menuCalculer() {
+  var g = function(id){ return parseInt((document.getElementById(id)||{}).value) || 0; };
+  var nbInt = g('menu-portes-int'), nbExt = g('menu-portes-ext'), nbFen = g('menu-fenetres');
+  var standing = (document.getElementById('menu-standing')||{}).value || 'moyen';
+  var lignes = [];
+  var L = function(materiau, unite, qte, pu) {
+    if (!(qte > 0)) return;
+    lignes.push({ poste:'Menuiserie', materiau:materiau, unite:unite, quantite:qte, montant:Math.round(qte*pu) });
+  };
+  L('Porte intérieure posée (huisserie + quincaillerie)', 'unité', nbInt, MENU_PRIX.porte_int[standing]);
+  L('Porte extérieure sécurisée posée', 'unité', nbExt, MENU_PRIX.porte_ext[standing]);
+  L('Fenêtre alu + vitrage posée', 'unité', nbFen, MENU_PRIX.fenetre[standing]);
+  var total = lignes.reduce(function(s,l){ return s+l.montant; }, 0);
+  window._menuDernier = { lignes:lignes, total:total, standing:standing, nbInt:nbInt, nbExt:nbExt, nbFen:nbFen };
+
+  var host = document.getElementById('menu-resultat');
+  if (!host) return;
+  if (!lignes.length) { host.innerHTML = '<div style="color:var(--dim);padding:12px;">Aucune ouverture à chiffrer — dessinez le plan ou saisissez des quantités.</div>'; return; }
+  host.innerHTML = '<table style="width:100%;margin-top:10px;"><thead><tr style="font-size:11px;color:var(--dim);">'
+    + '<th style="text-align:left;">Poste</th><th style="text-align:right;">Qté</th><th style="text-align:right;">Montant</th></tr></thead><tbody>'
+    + lignes.map(function(l){ return '<tr><td>' + escHtml(l.materiau) + '</td><td style="text-align:right;">' + l.quantite + '</td><td style="text-align:right;font-weight:600;">' + fmtF(l.montant) + ' FCFA</td></tr>'; }).join('')
+    + '</tbody><tfoot><tr style="font-weight:700;border-top:1px solid var(--bord);"><td colspan="2">Total menuiserie</td><td style="text-align:right;color:var(--or);">' + fmtF(total) + ' FCFA</td></tr></tfoot></table>';
+}
+window.menuCalculer = menuCalculer;
+
+async function menuInjecterDQE() {
+  var R = window._menuDernier;
+  if (!R || !R.lignes.length) { toast('Aucune quantité à injecter.', 'error'); return; }
+  var type = (document.getElementById('menu-type-logement')||{}).value || '';
+  if (!type) { toast('Indiquez le type de logement de destination.', 'error'); return; }
+  var progId = (document.getElementById('menu-programme')||{}).value || '';
+  if (!progId) { toast('Sélectionnez le programme.', 'error'); return; }
+
+  var anciennes = (DATA.nomenclatures||[]).filter(function(n){ return n.type_logement === type && n.programme_id === progId && n._genere_menuiserie && !n._ajuste_manuel; });
+  var ajustes = (DATA.nomenclatures||[]).filter(function(n){ return n.type_logement === type && n.programme_id === progId && n._genere_menuiserie && n._ajuste_manuel; });
+  var _ouvrageParMateriau = {};
+  anciennes.forEach(function(a){ if (a.ouvrage_id) _ouvrageParMateriau[String(a.materiau||'').trim().toLowerCase()] = a.ouvrage_id; });
+  for (var i = 0; i < anciennes.length; i++) { await deleteRecord('nomenclatures', anciennes[i].id, { skipIntegrity:true }); }
+
+  var le = new Date().toISOString();
+  var n = 0;
+  for (var j = 0; j < R.lignes.length; j++) {
+    var l = R.lignes[j];
+    if (ajustes.some(function(a){ return String(a.materiau||'') === String(l.materiau||''); })) continue;
+    var entry = {
+      id: uid(), type_logement: type, programme_id: progId, poste: l.poste, materiau: l.materiau,
+      unite: l.unite, quantite: l.quantite, prix_forfait: l.montant, ouvrage_id: (_ouvrageParMateriau[String(l.materiau||'').trim().toLowerCase()] || ''),
+      _genere_menuiserie: true, _genere_le: le, _menu_standing: R.standing,
+      _plan_id: (window._archiPlanCourant ? window._archiPlanCourant.id : ''),
+      _plan_ref: (window._archiPlanCourant ? (window._archiPlanCourant.ref || '') : '')
+    };
+    DATA.nomenclatures.push(entry);
+    await dbPut('nomenclatures', entry);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', entry);
+    n++;
+  }
+  toast('✅ ' + n + ' poste(s) de menuiserie injecté(s) dans le DQE.', 'success');
+  closeModal('modal-menuiserie');
+  if (typeof chargerNomenclature === 'function') chargerNomenclature();
+}
+window.menuInjecterDQE = menuInjecterDQE;
+
 function structOuvrir() {
   var progDQEInit = (document.getElementById('dqe-filter-programme') || {}).value || '';
   var geo = structGeometriePlan(progDQEInit);
@@ -107264,6 +107417,58 @@ goTo = function(page) {
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-maconnerie')">Fermer</button>
       <button class="btn btn-primary" onclick="macInjecterDQE()">↧ Injecter dans le DQE</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Menuiserie interne & externe — pré-dimensionnement -->
+<div class="modal-overlay" id="modal-menuiserie">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div>
+        <h3>🚪 Menuiserie interne &amp; externe — pré-dimensionnement</h3>
+        <div style="font-size:11px;color:var(--dim);">Portes intérieures, portes extérieures et fenêtres chiffrées séparément — le mur le plus proche détermine la nature de chaque porte.</div>
+      </div>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-menuiserie')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid" style="margin-bottom:14px;">
+        <div class="form-group">
+          <label>Portes intérieures (unités)</label>
+          <input type="number" min="0" class="form-control" id="menu-portes-int" oninput="menuCalculer()">
+          <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;" id="menu-source"></div>
+        </div>
+        <div class="form-group">
+          <label>Portes extérieures (unités)</label>
+          <input type="number" min="0" class="form-control" id="menu-portes-ext" oninput="menuCalculer()">
+        </div>
+        <div class="form-group">
+          <label>Fenêtres (unités)</label>
+          <input type="number" min="0" class="form-control" id="menu-fenetres" oninput="menuCalculer()">
+        </div>
+        <div class="form-group">
+          <label>Standing / qualité</label>
+          <select class="form-control" id="menu-standing" onchange="menuCalculer()">
+            <option value="eco">Économique</option>
+            <option value="moyen" selected>Moyen standing</option>
+            <option value="haut">Haut standing</option>
+          </select>
+        </div>
+        <div class="form-group span-2">
+          <label>Programme (site — détermine le DQE cible) *</label>
+          <select class="form-control" id="menu-programme" onchange="menuRafraichirTypes();menuRafraichirGeometrie();"></select>
+        </div>
+        <div class="form-group span-2">
+          <label>Type de logement de destination (DQE)</label>
+          <select class="form-control" id="menu-type-logement"></select>
+          <div style="font-size:10px;margin-top:3px;" id="menu-type-hint"></div>
+        </div>
+      </div>
+      <div id="menu-resultat"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-menuiserie')">Fermer</button>
+      <button class="btn btn-primary" onclick="menuInjecterDQE()">↧ Injecter dans le DQE</button>
     </div>
   </div>
 </div>
