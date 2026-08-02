@@ -68807,11 +68807,24 @@ function chargerNomenclature() {
 async function dqeReporterPrixVente() {
   var D = window._DQE_COURANT;
   if (!D || !D.pvHT) { toast('Calculez d\'abord le récapitulatif du DQE.', 'error'); return; }
-  var mods = (DATA.modeles_logement || []);
+  var mods = (DATA.modeles_logement || []).filter(function(m){ return m.nom && m.nom !== 'null' && m.nom !== 'undefined'; });
+  var modsFantomes = (DATA.modeles_logement || []).filter(function(m){ return !m.nom || m.nom === 'null' || m.nom === 'undefined'; });
+  if (modsFantomes.length) toast('⚠️ ' + modsFantomes.length + ' modèle(s) sans nom valide détecté(s) et exclus de la liste — à supprimer dans Montage du programme.', 'error');
   if (!mods.length) { toast('Aucun modèle de logement enregistré — créez-le d\'abord.', 'error'); return; }
 
-  /* Rapprochement automatique sur le type de logement, sinon choix manuel */
-  var cible = mods.find(function(m){ return _rhNorm ? _rhNorm(m.nom) === _rhNorm(D.label) : m.nom === D.label; });
+  /* Rapprochement automatique sur le type de logement, sinon choix manuel.
+     [FIX] La correspondance stricte échouait dès que le libellé de la fiche
+     de conception ("6 pièces duplex") différait du nom du modèle ("6PD") —
+     même concept, texte différent. Repli sur une correspondance partielle
+     (l'un contient l'autre) avant d'abandonner au choix manuel. */
+  var normD = _rhNorm ? _rhNorm(D.label) : String(D.label||'').toLowerCase();
+  var cible = mods.find(function(m){ return _rhNorm ? _rhNorm(m.nom) === normD : m.nom === D.label; });
+  if (!cible && normD) {
+    cible = mods.find(function(m){
+      var normM = _rhNorm ? _rhNorm(m.nom) : String(m.nom||'').toLowerCase();
+      return normM && (normM.indexOf(normD) !== -1 || normD.indexOf(normM) !== -1);
+    });
+  }
   var liste = mods.map(function(m, i){ return (i + 1) + '. ' + m.nom + (m.prix_vente ? ' — actuel ' + fmtF(m.prix_vente) + ' F' : ' — sans prix'); }).join('\n');
   var def = cible ? String(mods.indexOf(cible) + 1) : '';
   var rep = prompt('Reporter ' + fmtF(Math.round(D.pvHT)) + ' FCFA HT sur quel modèle ?\n\n' + liste + '\n\nNuméro :', def);
@@ -108359,7 +108372,16 @@ async function masseCommit(){
   var nLots=0,nSkip=0,nMod=0,nSig=0;
   if(doLots){
     /* Modèles de logement par typologie */
-    var byType={}; R.lots.forEach(function(l){ (byType[l.type]=byType[l.type]||[]).push(l); });
+    /* [FIX] Un lot importé sans type détecté (l.type vide/undefined) faisait
+       apparaître un modèle fantôme nommé littéralement "null" — les clés
+       d'objet JS convertissent toujours en chaîne, byType[undefined]
+       devenait la clé "undefined"/"null" au lieu d'être ignoré. */
+    var byType={}, sansType=0;
+    R.lots.forEach(function(l){
+      if (!l.type) { sansType++; return; }
+      (byType[l.type]=byType[l.type]||[]).push(l);
+    });
+    if (sansType) toast('⚠️ ' + sansType + ' lot(s) importé(s) sans type reconnu — pas de modèle généré pour eux, à typer manuellement après import.', 'error');
     Object.keys(byType).forEach(function(t){});
     for(var ti=0;ti<Object.keys(byType).length;ti++){
       var t=Object.keys(byType)[ti], arr=byType[t];
