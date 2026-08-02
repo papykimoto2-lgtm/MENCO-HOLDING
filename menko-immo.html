@@ -68717,6 +68717,49 @@ function dqeToggleSousDetail(nomenclatureId) {
 }
 window.dqeToggleSousDetail = dqeToggleSousDetail;
 
+/* ══════════════════════════════════════════════════════
+   QUOTE-PART TERRAIN + VRD + COÛT DE GESTION RÉEL
+   Le "Frais généraux X%" du DQE est un taux saisi à la main — il ne
+   contient ni la valeur du terrain, ni les VRD, ni les charges
+   fonctionnelles réelles (celles-ci sont calculées ailleurs, dans le
+   module Marge → Coût de gestion, à partir de la vraie comptabilité).
+   Cette fonction relie ces trois sources déjà existantes dans l'app au
+   calcul du prix de vente, au prorata de la surface du type concerné par
+   rapport à la surface totale du programme (terrain/VRD) ou du
+   portefeuille (coût de gestion, cohérent avec calculerCoutGestionLots). */
+function _dqeQuotePartsProgramme(progId, typeSurface) {
+  var out = { terrain:0, vrd:0, gestion:0, surfaceProgramme:0, sourceTerrain:'', sourceVRD:'', sourceGestion:'' };
+  if (!progId || !typeSurface) return out;
+  var modeles = (DATA.modeles_logement||[]).filter(function(m){ return m.programme_id === progId; });
+  var surfaceProgramme = modeles.reduce(function(s,m){ return s + (parseFloat(m.surface)||0) * (parseInt(m.nb_unites)||0); }, 0);
+  out.surfaceProgramme = surfaceProgramme;
+  if (!surfaceProgramme) return out;
+
+  var prog = (DATA.programmes||[]).find(function(p){ return p.id === progId; });
+  if (prog && prog.operation_id) {
+    var op = (DATA.af_operations||[]).find(function(o){ return o.id === prog.operation_id; });
+    if (op && parseFloat(op.cout_total)) {
+      out.terrain = Math.round(parseFloat(op.cout_total) / surfaceProgramme * typeSurface);
+      out.sourceTerrain = 'Opération foncière « ' + (op.nom||op.operation||op.libelle||op.id) + '»';
+    }
+  }
+  var vrdTotal = (DATA.conventions_amenagement||[]).filter(function(c){ return c.programme_id === progId; })
+    .reduce(function(s,c){ return s + (parseFloat(c.montant_ht)||parseFloat(c.montant_marche)||parseFloat(c.montant_ttc)||0); }, 0);
+  if (vrdTotal) { out.vrd = Math.round(vrdTotal / surfaceProgramme * typeSurface); out.sourceVRD = (DATA.conventions_amenagement||[]).filter(function(c){ return c.programme_id === progId; }).length + ' convention(s) d\'aménagement'; }
+
+  var year = new Date().getFullYear();
+  var exo = (typeof _getExerciceCoutGestion === 'function') ? _getExerciceCoutGestion(year) : null;
+  if (exo && parseFloat(exo.total_frais_fonctionnels)) {
+    var surfacePortefeuille = (DATA.lots||[]).filter(function(l){ return ['disponible','reserve','vendu'].indexOf(l.statut)!==-1; })
+      .reduce(function(s,l){ return s+(parseFloat(l.surface)||0); }, 0);
+    if (surfacePortefeuille) {
+      out.gestion = Math.round(parseFloat(exo.total_frais_fonctionnels) / surfacePortefeuille * typeSurface);
+      out.sourceGestion = 'Exercice ' + year + (exo.fige ? ' (figé le ' + (exo.date_figeage||'').substring(0,10) + ')' : ' (brouillon)');
+    }
+  }
+  return out;
+}
+
 function chargerNomenclature() {
   if (typeof _dqeVueOuvrageActive !== 'undefined' && _dqeVueOuvrageActive && typeof dqeRenderParOuvrage === 'function') dqeRenderParOuvrage();
   var type = (document.getElementById('dqe-type-logement') || {}).value || 'F2';
@@ -68756,9 +68799,14 @@ function chargerNomenclature() {
   if (resume) {
     var typeLabels = { F2:'F2', F3:'F3', F4:'F4', VILLA:'Villa' };
     var _co = (typeof dqeCoef==='function') ? dqeCoef() : {fg:10,marge:20,tva:18};
+    var _progIdCourant = (document.getElementById('dqe-filter-programme')||{}).value || '';
+    var _modeleCourant = (DATA.modeles_logement||[]).find(function(m){ return m.programme_id === _progIdCourant && _typeKey(m.nom) === type; });
+    var _typeSurface = _modeleCourant ? (parseFloat(_modeleCourant.surface)||0) : 0;
+    var Q = _dqeQuotePartsProgramme(_progIdCourant, _typeSurface);
     var debourse = total;
     var fg = debourse * _co.fg/100;
-    var coutRevient = debourse + fg;
+    var coutConstruction = debourse + fg;
+    var coutRevient = coutConstruction + Q.terrain + Q.vrd + Q.gestion;
     var marge = coutRevient * _co.marge/100;
     var pvHT = coutRevient + marge;
     var pvTTC = pvHT * (1 + _co.tva/100);
@@ -68784,17 +68832,28 @@ function chargerNomenclature() {
       + (nbIssusPlan ? '<div style="font-size:11px;color:var(--vert,#1A6B3A);margin-bottom:4px;">📐 ' + nbIssusPlan + ' poste(s) sur ' + nomens.length + ' calculé(s) depuis la géométrie réelle du plan (Structure, Élec/Plomberie, Charpente/Couverture, Maçonnerie/Enduits).</div>' : '')
       + (nbSansOuvrage ? '<div style="font-size:11px;color:var(--rouge,#E05252);margin-bottom:4px;">⚠️ ' + nbSansOuvrage + ' poste(s) sans ouvrage — prix par correspondance texte (fragile). <button class="btn btn-secondary btn-sm" style="font-size:10px;padding:2px 8px;margin-left:4px;" onclick="dqeUnifierTousLesPostes()">🔗 Unifier tous les postes</button></div>' : '')
       + '<div style="font-size:11px;color:var(--dim);margin-bottom:4px;"><button class="btn btn-secondary btn-sm" style="font-size:10px;padding:2px 8px;" onclick="dqeAppliquerPrixIndicatifs()" title="Applique un prix indicatif aux ressources à 0 FCFA dont le libellé correspond à un matériau connu">💡 Appliquer prix indicatifs aux ressources à 0</button></div>'
+      + (!_progIdCourant ? '<div style="font-size:11px;color:var(--rouge,#E05252);margin-bottom:6px;">⚠️ Aucun programme sélectionné — terrain, VRD et coût de gestion non calculés (prix de construction seul).</div>'
+        : (!_typeSurface ? '<div style="font-size:11px;color:var(--rouge,#E05252);margin-bottom:6px;">⚠️ Surface du modèle « ' + escHtml(type) + ' » non renseignée — terrain/VRD/gestion non répartis. Complétez la fiche modèle (Montage du programme).</div>' : ''))
       + coefBar
       + '<div class="kpi-grid" style="margin-top:4px;">'
       + _c('Déboursé sec (coût direct)', fmtF(debourse)+' FCFA', 'var(--or,#B8732F)')
       + _c('+ Frais généraux ('+_co.fg+'%)', fmtF(Math.round(fg))+' FCFA', '')
-      + _c('= Coût de revient', fmtF(Math.round(coutRevient))+' FCFA', 'var(--bleu,#3B82F6)')
+      + _c('= Coût de construction', fmtF(Math.round(coutConstruction))+' FCFA', '')
+      + _c('+ Quote-part terrain', Q.terrain ? (fmtF(Q.terrain)+' FCFA') : '— (non calculé)', Q.terrain ? 'var(--or,#B8732F)' : 'var(--dim)')
+      + _c('+ Quote-part VRD', Q.vrd ? (fmtF(Q.vrd)+' FCFA') : '— (non calculé)', Q.vrd ? 'var(--or,#B8732F)' : 'var(--dim)')
+      + _c('+ Coût de gestion réel', Q.gestion ? (fmtF(Q.gestion)+' FCFA') : '— (non calculé)', Q.gestion ? 'var(--or,#B8732F)' : 'var(--dim)')
+      + _c('= Coût de revient complet', fmtF(Math.round(coutRevient))+' FCFA', 'var(--bleu,#3B82F6)')
       + _c('+ Marge ('+_co.marge+'%)', fmtF(Math.round(marge))+' FCFA', '')
       + _c('= Prix de vente HT', fmtF(Math.round(pvHT))+' FCFA', 'var(--vert,#1A6B3A)')
       + _c('Prix de vente TTC ('+_co.tva+'%)', fmtF(Math.round(pvTTC))+' FCFA', 'var(--vert,#1A6B3A)')
       + _c('Nb postes', nomens.length, '')
       + _perApptCards
       + '</div>'
+      + (Q.terrain||Q.vrd||Q.gestion ? '<div style="font-size:10px;color:var(--dim);margin-top:6px;">Sources : '
+        + (Q.sourceTerrain ? 'Terrain — ' + escHtml(Q.sourceTerrain) + '. ' : '')
+        + (Q.sourceVRD ? 'VRD — ' + escHtml(Q.sourceVRD) + '. ' : '')
+        + (Q.sourceGestion ? 'Gestion — ' + escHtml(Q.sourceGestion) + '.' : '')
+        + ' Réparti au prorata de la surface (' + fmtF(_typeSurface) + ' m² / ' + fmtF(Q.surfaceProgramme) + ' m² du programme).</div>' : '')
       + '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'
       + '<button class="btn btn-primary btn-sm" onclick="dqeReporterPrixVente()" title="Étape 5 — Valider : enregistre le prix calculé sur le modèle de logement correspondant"><span class="flux-step">⑤</span>📤 Reporter le prix de vente</button>'
       + '<span style="font-size:11px;color:var(--blanc-dim);">Le montant calculé devient le prix catalogue du modèle ; l\'ancien prix est conservé en historique.</span>'
