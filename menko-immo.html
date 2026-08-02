@@ -92401,10 +92401,30 @@ async function dqeCreerOuvrageDepuisPoste(nomenclatureId) {
     if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_ressources', ressource);
   }
 
+  /* Composant main-d'œuvre générique — sans ça, l'ouvrage ne comporte que
+     du matériau et « Main-d'œuvre » reste toujours à 0 F dans le
+     rapprochement DQE → Déboursé sec, quel que soit le nombre de lignes
+     reliées. Ratio grossier (0,15 jour), à ajuster : mieux vaut une
+     estimation visible et modifiable qu'un poste structurellement absent. */
+  var resMO = (DATA.eds_ressources || []).find(function(r){ return r.type === 'mo' && /pose.*g[eé]n[eé]rique/i.test(r.libelle||''); });
+  if (!resMO) {
+    resMO = {
+      id: 'res_' + uid(), code: _edsProchainCode('L', DATA.eds_ressources, 'code'),
+      libelle: 'Pose / mise en œuvre générique', type: 'mo', unite: 'jour', pu: 2500,
+      _prix_indicatif: true, fournisseur: '', maj: today()
+    };
+    DATA.eds_ressources.push(resMO);
+    await dbPut('eds_ressources', resMO);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_ressources', resMO);
+  }
+
   var ouvrage = {
     id: 'ouv_' + uid(), code: _edsProchainCode(_edsPrefixeOuvrage(n.materiau, n.poste), DATA.eds_ouvrages, 'code'),
     designation: n.materiau, unite: n.unite || 'unité', categorie: n.poste || 'Divers',
-    composants: [{ type: 'materiau', res_id: ressource.id, qte: 1 }],
+    composants: [
+      { type: 'materiau', res_id: ressource.id, qte: 1 },
+      { type: 'mo', res_id: resMO.id, qte: 0.15 }
+    ],
     _cree_depuis_poste: true
   };
   DATA.eds_ouvrages.push(ouvrage);
@@ -92416,8 +92436,8 @@ async function dqeCreerOuvrageDepuisPoste(nomenclatureId) {
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', n);
 
   toast(ressource.pu > 0
-    ? '✅ Ouvrage créé et relié — prix ' + (ressource._prix_indicatif ? 'indicatif (💡 à confirmer)' : 'repris') + ' : ' + fmtF(ressource.pu) + ' FCFA.'
-    : '✅ Ouvrage créé et relié — saisissez son prix dans Déboursé sec → Ressources.', 'success');
+    ? '✅ Ouvrage créé et relié — prix ' + (ressource._prix_indicatif ? 'indicatif (💡 à confirmer)' : 'repris') + ' : ' + fmtF(ressource.pu) + ' FCFA + main-d\'œuvre estimée (💡 à ajuster dans Déboursé sec → Ouvrages).'
+    : '✅ Ouvrage créé et relié — saisissez son prix matériau dans Déboursé sec → Ressources.', 'success');
   if (typeof chargerNomenclature === 'function') chargerNomenclature();
 }
 window.dqeCreerOuvrageDepuisPoste = dqeCreerOuvrageDepuisPoste;
