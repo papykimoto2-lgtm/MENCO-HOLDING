@@ -12376,6 +12376,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <button class="btn btn-secondary btn-sm" onclick="dqeOuvrirListeProgramme()" title="Tous les DQE existants, par programme — accès direct et modification">🗂️ Liste des DQE</button>
           <button class="btn btn-secondary btn-sm" onclick="exportDQE()">⬇ Export CSV</button>
           <span style="width:1px;background:var(--bord);align-self:stretch;margin:0 4px;"></span>
+          <button class="btn btn-primary btn-sm" onclick="dqeGenererTout()" title="Enchaîne automatiquement Structure, Maçonnerie, Charpente/Couverture, Menuiserie et Élec/Plomberie pour le type sélectionné — 5 modules en un clic">🚀 Tout générer automatiquement</button>
           <button class="btn btn-secondary btn-sm" onclick="installOuvrir()" title="Étape 0 — Clôture, baraquement, branchements provisoires : coût unique pour tout le chantier, avant toute construction"><span class="flux-step">0</span>🚧 Installation de chantier</button>
           <button class="btn btn-secondary btn-sm" onclick="structOuvrir()" title="Étape 1 — Fondations et structure : tout le reste en dépend"><span class="flux-step">①</span>🏗️ Structure &amp; fondations</button>
           <button class="btn btn-secondary btn-sm" onclick="macOuvrir()" title="Étape 2 — Élévation en agglos, enduits — ferme les volumes après la structure"><span class="flux-step">②</span>🧱 Maçonnerie &amp; Enduits</button>
@@ -90329,6 +90330,79 @@ async function installInjecterDQE() {
   if (typeof chargerNomenclature === 'function') chargerNomenclature();
 }
 window.installInjecterDQE = installInjecterDQE;
+
+/* ══════════════════════════════════════════════════════
+   AUTOMATISATION MAXIMALE — enchaîne Structure, Maçonnerie,
+   Charpente/Couverture, Menuiserie et Élec/Plomberie pour un couple
+   programme × type en un seul clic, au lieu de 5 allers-retours manuels
+   (ouvrir → recalculer → injecter, ×5). Réutilise intégralement les
+   fonctions déjà écrites et testées de chaque module — aucune logique de
+   calcul dupliquée ici, uniquement de l'orchestration.
+   L'Installation de chantier est volontairement EXCLUE (coût unique pour
+   tout le site, pas par type — l'injecter automatiquement à chaque
+   exécution le dupliquerait si on relance l'automatisation sur un
+   deuxième type du même programme). */
+async function dqeGenererTout() {
+  var progId = (document.getElementById('dqe-filter-programme')||{}).value || '';
+  var type = (document.getElementById('dqe-type-logement')||{}).value || '';
+  if (!progId) { toast('Sélectionnez un programme.', 'error'); return; }
+  if (!type) { toast('Sélectionnez un type de logement.', 'error'); return; }
+  var standing = prompt('Standing à appliquer à Maçonnerie, Charpente/Couverture, Menuiserie et Élec/Plomberie (Structure n\'en dépend pas) :\n\nTapez : eco, moyen ou haut', 'moyen');
+  if (standing === null) return;
+  standing = String(standing).trim().toLowerCase();
+  if (['eco','moyen','haut'].indexOf(standing) === -1) { toast('Standing invalide — tapez exactement eco, moyen ou haut.', 'error'); return; }
+  if (!confirm('Générer automatiquement Structure, Maçonnerie, Charpente/Couverture, Menuiserie et Élec/Plomberie pour « ' + type + ' » (standing ' + standing + ') ?\n\nLes quantités sont reprises du plan si un plan existe pour ce programme. Les lignes déjà générées pour ce type sont remplacées — vos ajustements manuels sont préservés.\n\nL\'Installation de chantier n\'est PAS incluse (coût unique, à injecter séparément une seule fois).')) return;
+
+  var set = function(id, v) { var e = document.getElementById(id); if (e) e.value = v; };
+  var aGenere = function(flag) { return (DATA.nomenclatures||[]).some(function(n){ return n.type_logement === type && n.programme_id === progId && n[flag]; }); };
+  var resultats = [];
+
+  set('str-programme', progId);
+  if (typeof structRafraichirTypes === 'function') structRafraichirTypes();
+  set('str-type-logement', type);
+  if (typeof structRafraichirGeometrie === 'function') structRafraichirGeometrie();
+  await structInjecterDQE();
+  resultats.push((aGenere('_genere_struct') ? '✅' : '⚠️') + ' Structure & fondations');
+
+  set('mac-programme', progId);
+  if (typeof macRafraichirTypes === 'function') macRafraichirTypes();
+  set('mac-type-logement', type);
+  set('mac-standing', standing);
+  if (typeof macRafraichirGeometrie === 'function') macRafraichirGeometrie();
+  await macInjecterDQE();
+  resultats.push((aGenere('_genere_maconnerie') ? '✅' : '⚠️') + ' Maçonnerie & Enduits');
+
+  set('couv-programme', progId);
+  if (typeof couvRafraichirTypes === 'function') couvRafraichirTypes();
+  set('couv-type-logement', type);
+  set('couv-standing', standing);
+  if (typeof couvRafraichirGeometrie === 'function') couvRafraichirGeometrie();
+  await couvInjecterDQE();
+  resultats.push((aGenere('_genere_couverture') ? '✅' : '⚠️') + ' Charpente & Couverture');
+
+  set('menu-programme', progId);
+  if (typeof menuRafraichirTypes === 'function') menuRafraichirTypes();
+  set('menu-type-logement', type);
+  set('menu-standing', standing);
+  if (typeof menuRafraichirGeometrie === 'function') menuRafraichirGeometrie();
+  await menuInjecterDQE();
+  resultats.push((aGenere('_genere_menuiserie') ? '✅' : '⚠️') + ' Menuiserie int. & ext.');
+
+  set('ep-programme', progId);
+  if (typeof epRafraichirTypes === 'function') epRafraichirTypes();
+  set('ep-type-logement', type);
+  set('ep-standing', standing);
+  if (typeof epRecalculer === 'function') epRecalculer();
+  await epInjecterDQE();
+  resultats.push((aGenere('_genere_fluides') ? '✅' : '⚠️') + ' Élec & Plomberie');
+
+  closeModal('modal-structure'); closeModal('modal-maconnerie'); closeModal('modal-couverture'); closeModal('modal-menuiserie'); closeModal('modal-elec-plomb');
+  chargerNomenclature();
+  var nbOk = resultats.filter(function(r){ return r.indexOf('✅')===0; }).length;
+  alert('Génération automatique terminée — ' + nbOk + '/5 corps de métier injectés :\n\n' + resultats.join('\n')
+    + (nbOk < 5 ? '\n\n⚠️ signale un corps de métier qui n\'a rien injecté (souvent : programme sans plan et sans saisie manuelle suffisante). Ouvrez son module individuellement pour voir le message exact.' : ''));
+}
+window.dqeGenererTout = dqeGenererTout;
 
 function structOuvrir() {
   var progDQEInit = (document.getElementById('dqe-filter-programme') || {}).value || '';
