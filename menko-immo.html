@@ -89310,11 +89310,43 @@ function structHypotheses() {
 }
 
 /* Géométrie extraite du plan ouvert dans l'éditeur, ou saisie à la main. */
-function structGeometriePlan() {
+/* ══════════════════════════════════════════════════════
+   SOURCE DES ÉLÉMENTS DU PLAN — jusqu'ici, le pré-dimensionnement ne
+   reprenait la géométrie que si l'éditeur était OUVERT en direct dans le
+   même onglet. Dès qu'on arrivait sur Structure/Élec/Charpente/Maçonnerie
+   depuis ailleurs (rechargement de page, autre module), tout redevenait
+   vide malgré un plan bel et bien enregistré. Cette fonction relit le plan
+   sauvegardé (DATA.plans_arch, via la fiche de conception du programme)
+   quand l'éditeur n'est pas chargé — même format d'éléments dans les deux cas. */
+function _dqeElementsSource(progId) {
+  if (typeof ED !== 'undefined' && ED.elements && ED.elements.length) {
+    var planCourant = window._archiPlanCourant;
+    var concCourante = (planCourant && planCourant.conception_id)
+      ? (DATA.conceptions || []).find(function(c){ return c.id === planCourant.conception_id; }) : null;
+    if (!progId || !concCourante || concCourante.programme_id === progId) {
+      return { elements: ED.elements, niveaux: ED.niveaux || [], source: 'plan', ref: planCourant ? planCourant.ref : '' };
+    }
+  }
+  if (progId) {
+    var conc = (DATA.conceptions || []).find(function(c){ return c.programme_id === progId; });
+    if (conc) {
+      var plans = (DATA.plans_arch || []).filter(function(p){ return p.conception_id === conc.id && p.dessin && p.dessin.elements && p.dessin.elements.length; });
+      if (plans.length) {
+        var plan = plans.sort(function(a,b){ return (parseInt(b.version)||0) - (parseInt(a.version)||0); })[0];
+        return { elements: plan.dessin.elements, niveaux: plan.dessin.niveaux || [], source: 'plan', ref: plan.ref };
+      }
+    }
+  }
+  return { elements: [], niveaux: [], source: 'saisie', ref: '' };
+}
+
+function structGeometriePlan(progId) {
   var g = { emprise:0, pieces:0, niveaux:1, lineaire_murs:0, poteaux:0, lineaire_poutres:0, surface_pieces:0, surface_humide:0, source:'saisie' };
   try {
-    if (typeof ED !== 'undefined' && ED.elements && ED.elements.length) {
-      var pieces = ED.elements.filter(function(e){ return e.type === 'piece'; });
+    var _src = _dqeElementsSource(progId);
+    if (_src.elements.length) {
+      var _els = _src.elements, _nivs = _src.niveaux;
+      var pieces = _els.filter(function(e){ return e.type === 'piece'; });
       /* Emprise au sol : les pièces du niveau 0 seulement. Additionner tous les
          niveaux donnerait une surface de plancher, pas une emprise — et
          multiplierait les fondations par le nombre d'étages. */
@@ -89322,22 +89354,23 @@ function structGeometriePlan() {
       var base = niv0.length ? niv0 : pieces;
       g.emprise = base.reduce(function(s,p){ return s + (parseFloat(p.l)||0) * (parseFloat(p.w)||0); }, 0);
       g.pieces = pieces.length;
-      g.niveaux = (ED.niveaux && ED.niveaux.length) ? ED.niveaux.length : 1;
-      ED.elements.filter(function(e){ return e.type === 'mur' || e.type === 'cloison' || e.type === 'mur_courbe'; })
+      g.niveaux = (_nivs && _nivs.length) ? _nivs.length : 1;
+      _els.filter(function(e){ return e.type === 'mur' || e.type === 'cloison' || e.type === 'mur_courbe'; })
         .forEach(function(m){ g.lineaire_murs += parseFloat(m.longueur || m.l) || 0; });
       /* [FIX] Les poteaux dessinés (outil « ▣ Poteau / Colonne ») étaient
          ignorés : le module estimait leur nombre par une trame de 4 m. Un plan
          où l'on a placé 18 poteaux se voyait chiffré sur 12 ou 25, sans que
          rien ne le signale. On compte ceux du niveau de base — ils se
          répètent à l'identique aux étages. */
-      var colonnes = ED.elements.filter(function(e){ return e.type === 'colonne'; });
+      var colonnes = _els.filter(function(e){ return e.type === 'colonne'; });
       var colNiv0 = colonnes.filter(function(c){ return (c.niv | 0) === 0; });
       g.poteaux = (colNiv0.length ? colNiv0 : colonnes).length;
       g.source = 'plan';
+      g.ref = _src.ref;
       /* Poutres dessinées : leur linéaire réel remplace l'estimation par le
          périmètre. Une poutre de franchissement de 6 m ne se devine pas depuis
          la longueur des murs. */
-      var poutres = ED.elements.filter(function(e){ return e.type === 'poutre'; });
+      var poutres = _els.filter(function(e){ return e.type === 'poutre'; });
       g.lineaire_poutres = poutres.reduce(function(s,p){
         var L = parseFloat(p.l) || 0, W = parseFloat(p.w) || 0;
         return s + Math.max(L, W);   /* la plus grande dimension = la portée */
@@ -89346,7 +89379,7 @@ function structGeometriePlan() {
          pièce sèche se tire de niveau, celle d'une pièce humide se tire EN
          PENTE vers le siphon et reçoit une étanchéité sous carrelage. Deux
          ouvrages différents, deux prix différents. */
-      var pcs = ED.elements.filter(function(e){ return e.type === 'piece'; });
+      var pcs = _els.filter(function(e){ return e.type === 'piece'; });
       g.surface_pieces = 0; g.surface_humide = 0;
       pcs.forEach(function(p){
         var s = (parseFloat(p.l)||0) * (parseFloat(p.w)||0);
@@ -89625,6 +89658,23 @@ function _dqeDiagnosticHint(hintElId, progId, html, closeModalId) {
   }
 }
 
+/* Recharge l'emprise/murs/poteaux/poutres si le programme change dans le
+   modal — sans ça, la géométrie reste celle du premier programme ouvert. */
+function structRafraichirGeometrie() {
+  var progId = (document.getElementById('str-programme')||{}).value || '';
+  var geo = structGeometriePlan(progId);
+  var el = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
+  el('str-emprise', geo.emprise ? geo.emprise.toFixed(1) : '');
+  el('str-niveaux', geo.niveaux || 1);
+  el('str-murs', geo.lineaire_murs ? geo.lineaire_murs.toFixed(1) : '');
+  var src = document.getElementById('str-source');
+  if (src) src.textContent = geo.source === 'plan'
+    ? ('📐 Géométrie reprise ' + (typeof ED !== 'undefined' && ED.elements && ED.elements.length ? 'du plan ouvert dans l\'éditeur' : ('du plan enregistré' + (geo.ref ? (' « ' + geo.ref + ' »') : ''))))
+    : '✏️ Aucun plan disponible pour ce programme — saisissez les valeurs';
+  structRecalculer();
+}
+window.structRafraichirGeometrie = structRafraichirGeometrie;
+
 function structRafraichirTypes() {
   var sel = document.getElementById('str-type-logement');
   var selProg = document.getElementById('str-programme');
@@ -89638,7 +89688,8 @@ function structRafraichirTypes() {
 }
 
 function structOuvrir() {
-  var geo = structGeometriePlan();
+  var progDQEInit = (document.getElementById('dqe-filter-programme') || {}).value || '';
+  var geo = structGeometriePlan(progDQEInit);
   var el = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
   el('str-emprise', geo.emprise ? geo.emprise.toFixed(1) : '');
   el('str-niveaux', geo.niveaux || 1);
@@ -89658,8 +89709,8 @@ function structOuvrir() {
   if (toitSel && window._couvDernier && window._couvDernier.type) toitSel.value = window._couvDernier.type;
   var src = document.getElementById('str-source');
   if (src) src.textContent = geo.source === 'plan'
-    ? '📐 Géométrie reprise du plan ouvert dans l\'éditeur'
-    : '✏️ Aucun plan ouvert — saisissez les valeurs';
+    ? ('📐 Géométrie reprise ' + (typeof ED !== 'undefined' && ED.elements && ED.elements.length ? 'du plan ouvert dans l\'éditeur' : ('du plan enregistré' + (geo.ref ? (' « ' + geo.ref + ' »') : ''))))
+    : '✏️ Aucun plan disponible pour ce programme — saisissez les valeurs';
   var srcQ = document.getElementById('str-source-qadm');
   if (srcQ) srcQ.textContent = qadm
     ? '🪨 σ repris de l\'étude géotechnique'
@@ -90308,17 +90359,16 @@ function epPrix(article, standing) {
 }
 
 /* Recense les pièces, depuis le plan ouvert ou depuis une saisie. */
-function epCollecterPieces() {
+function epCollecterPieces(progId) {
   var out = [];
   try {
-    if (typeof ED !== 'undefined' && ED.elements) {
-      ED.elements.filter(function(e){ return e.type === 'piece'; }).forEach(function(p){
-        out.push({ nom: p.nom || p.label || 'Pièce',
-                   type: epTypePiece(p.nom || p.label),
-                   surface: (parseFloat(p.l)||0) * (parseFloat(p.w)||0),
-                   niv: p.niv | 0 });
-      });
-    }
+    var _src = _dqeElementsSource(progId);
+    _src.elements.filter(function(e){ return e.type === 'piece'; }).forEach(function(p){
+      out.push({ nom: p.nom || p.label || 'Pièce',
+                 type: epTypePiece(p.nom || p.label),
+                 surface: (parseFloat(p.l)||0) * (parseFloat(p.w)||0),
+                 niv: p.niv | 0 });
+    });
   } catch(e) {}
   return out;
 }
@@ -90418,7 +90468,8 @@ function epRafraichirTypes() {
 }
 
 function epOuvrir() {
-  var pieces = epCollecterPieces();
+  var progDQEInit = (document.getElementById('dqe-filter-programme') || {}).value || '';
+  var pieces = epCollecterPieces(progDQEInit);
   var selProg = document.getElementById('ep-programme');
   if (selProg) {
     var progDQE = (document.getElementById('dqe-filter-programme') || {}).value || '';
@@ -90466,7 +90517,8 @@ function epComposantsDepuisType(label) {
    laisse la composition courante intacte plutôt que de la vider. */
 function epAppliquerTypeManuel() {
   var type = (document.getElementById('ep-type-logement')||{}).value || '';
-  if (epCollecterPieces().length) { epRecalculer(); return; }
+  var progIdCourant = (document.getElementById('ep-programme')||{}).value || '';
+  if (epCollecterPieces(progIdCourant).length) { epRecalculer(); return; }
   var comp = epComposantsDepuisType(type);
   if (comp) {
     var set = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
@@ -90506,7 +90558,8 @@ function epPiecesManuelles() {
 }
 
 function epRecalculer() {
-  var pieces = epCollecterPieces();
+  var progIdCourant = (document.getElementById('ep-programme')||{}).value || '';
+  var pieces = epCollecterPieces(progIdCourant);
   if (!pieces.length) pieces = epPiecesManuelles();
   var host = document.getElementById('ep-resultat');
   if (!host) return;
@@ -90673,20 +90726,23 @@ function couvPrix(article, standing) {
 /* Emprise de toiture = footprint du DERNIER niveau dessiné, pas du rez-de-
    chaussée : un bâtiment en retrait d'étage n'a pas la même toiture que son
    emprise au sol (contrairement aux fondations, qui suivent le niveau 0). */
-function couvGeometriePlan() {
+function couvGeometriePlan(progId) {
   var g = { emprise:0, niveaux:1, lineaire_murs:0, source:'saisie' };
   try {
-    if (typeof ED !== 'undefined' && ED.elements && ED.elements.length) {
-      var pieces = ED.elements.filter(function(e){ return e.type === 'piece'; });
+    var _src = _dqeElementsSource(progId);
+    if (_src.elements.length) {
+      var _els = _src.elements;
+      var pieces = _els.filter(function(e){ return e.type === 'piece'; });
       var nivMax = 0;
       pieces.forEach(function(p){ if ((p.niv|0) > nivMax) nivMax = p.niv|0; });
       var top = pieces.filter(function(p){ return (p.niv|0) === nivMax; });
       var base = top.length ? top : pieces;
       g.emprise = base.reduce(function(s,p){ return s + (parseFloat(p.l)||0) * (parseFloat(p.w)||0); }, 0);
-      g.niveaux = (ED.niveaux && ED.niveaux.length) ? ED.niveaux.length : 1;
-      ED.elements.filter(function(e){ return (e.type==='mur'||e.type==='cloison'||e.type==='mur_courbe') && (e.niv|0) === nivMax; })
+      g.niveaux = (_src.niveaux && _src.niveaux.length) ? _src.niveaux.length : 1;
+      _els.filter(function(e){ return (e.type==='mur'||e.type==='cloison'||e.type==='mur_courbe') && (e.niv|0) === nivMax; })
         .forEach(function(m){ g.lineaire_murs += parseFloat(m.longueur || m.l) || 0; });
       g.source = 'plan';
+      g.ref = _src.ref;
     }
   } catch(e) {}
   return g;
@@ -90757,6 +90813,16 @@ function couvCalculer(geo, type, pente, standing, opts) {
 
 /* Recharge le sélecteur de type de logement d'après le programme choisi —
    même source que Structure & fondations et Élec & Plomberie. */
+function couvRafraichirGeometrie() {
+  var progId = (document.getElementById('couv-programme')||{}).value || '';
+  var geo = couvGeometriePlan(progId);
+  var el = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
+  el('couv-emprise', geo.emprise ? geo.emprise.toFixed(1) : '');
+  el('couv-perimetre', geo.lineaire_murs ? geo.lineaire_murs.toFixed(1) : '');
+  if (typeof couvRecalculer === 'function') couvRecalculer();
+}
+window.couvRafraichirGeometrie = couvRafraichirGeometrie;
+
 function couvRafraichirTypes() {
   var sel = document.getElementById('couv-type-logement');
   var selProg = document.getElementById('couv-programme');
@@ -90770,7 +90836,8 @@ function couvRafraichirTypes() {
 }
 
 function couvOuvrir() {
-  var geo = couvGeometriePlan();
+  var progDQEInit = (document.getElementById('dqe-filter-programme') || {}).value || '';
+  var geo = couvGeometriePlan(progDQEInit);
   var el = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
   el('couv-emprise', geo.emprise ? geo.emprise.toFixed(1) : '');
   el('couv-perimetre', geo.lineaire_murs ? geo.lineaire_murs.toFixed(1) : '');
@@ -90920,16 +90987,18 @@ function macPrix(article, standing) {
 /* Reprend TOUT le plan (tous niveaux confondus, contrairement à la toiture
    qui ne coiffe que le dernier) : l'élévation, les enduits et les plafonds
    concernent chaque étage. */
-function macGeometriePlan() {
+function macGeometriePlan(progId) {
   var g = { lineaire_murs:0, lineaire_cloisons:0, niveaux:1, surface_pieces:0, perimetre_ext:0, source:'saisie' };
   try {
-    if (typeof ED !== 'undefined' && ED.elements && ED.elements.length) {
-      g.niveaux = (ED.niveaux && ED.niveaux.length) ? ED.niveaux.length : 1;
-      ED.elements.filter(function(e){ return e.type === 'mur' || e.type === 'mur_courbe'; })
+    var _src = _dqeElementsSource(progId);
+    if (_src.elements.length) {
+      var _els = _src.elements;
+      g.niveaux = (_src.niveaux && _src.niveaux.length) ? _src.niveaux.length : 1;
+      _els.filter(function(e){ return e.type === 'mur' || e.type === 'mur_courbe'; })
         .forEach(function(m){ g.lineaire_murs += parseFloat(m.longueur || m.l) || 0; });
-      ED.elements.filter(function(e){ return e.type === 'cloison'; })
+      _els.filter(function(e){ return e.type === 'cloison'; })
         .forEach(function(c){ g.lineaire_cloisons += parseFloat(c.longueur || c.l) || 0; });
-      var pieces = ED.elements.filter(function(e){ return e.type === 'piece'; });
+      var pieces = _els.filter(function(e){ return e.type === 'piece'; });
       g.surface_pieces = pieces.reduce(function(s,p){ return s + (parseFloat(p.l)||0) * (parseFloat(p.w)||0); }, 0);
       /* Périmètre extérieur (pour l'enduit de façade) : celui du niveau 0,
          une villa courante gardant la même emprise à chaque étage. Estimé
@@ -90940,6 +91009,7 @@ function macGeometriePlan() {
       var ratio = 1.3, L = Math.sqrt(emprise0*ratio), l = Math.sqrt(emprise0/ratio);
       g.perimetre_ext = 2 * (L + l);
       g.source = 'plan';
+      g.ref = _src.ref;
     }
   } catch(e) {}
   return g;
@@ -91008,8 +91078,9 @@ function macRafraichirTypes() {
   _dqeDiagnosticHint('mac-type-hint', progId, html, 'modal-maconnerie');
 }
 
-function macOuvrir() {
-  var geo = macGeometriePlan();
+function macRafraichirGeometrie() {
+  var progId = (document.getElementById('mac-programme')||{}).value || '';
+  var geo = macGeometriePlan(progId);
   var el = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
   el('mac-murs', geo.lineaire_murs ? geo.lineaire_murs.toFixed(1) : '');
   el('mac-cloisons', geo.lineaire_cloisons ? geo.lineaire_cloisons.toFixed(1) : '');
@@ -91018,8 +91089,25 @@ function macOuvrir() {
   el('mac-niveaux', geo.niveaux || 1);
   var src = document.getElementById('mac-source');
   if (src) src.textContent = geo.source === 'plan'
-    ? '📐 Géométrie reprise du plan ouvert (tous niveaux)'
-    : '✏️ Aucun plan ouvert — saisissez les valeurs';
+    ? ('📐 Géométrie reprise ' + (typeof ED !== 'undefined' && ED.elements && ED.elements.length ? 'du plan ouvert (tous niveaux)' : ('du plan enregistré' + (geo.ref ? (' « ' + geo.ref + ' »') : ''))))
+    : '✏️ Aucun plan disponible pour ce programme — saisissez les valeurs';
+  if (typeof macRecalculer === 'function') macRecalculer();
+}
+window.macRafraichirGeometrie = macRafraichirGeometrie;
+
+function macOuvrir() {
+  var progDQEInit = (document.getElementById('dqe-filter-programme') || {}).value || '';
+  var geo = macGeometriePlan(progDQEInit);
+  var el = function(id, v){ var e = document.getElementById(id); if (e) e.value = v; };
+  el('mac-murs', geo.lineaire_murs ? geo.lineaire_murs.toFixed(1) : '');
+  el('mac-cloisons', geo.lineaire_cloisons ? geo.lineaire_cloisons.toFixed(1) : '');
+  el('mac-perimetre', geo.perimetre_ext ? geo.perimetre_ext.toFixed(1) : '');
+  el('mac-surface-pieces', geo.surface_pieces ? geo.surface_pieces.toFixed(1) : '');
+  el('mac-niveaux', geo.niveaux || 1);
+  var src = document.getElementById('mac-source');
+  if (src) src.textContent = geo.source === 'plan'
+    ? ('📐 Géométrie reprise ' + (typeof ED !== 'undefined' && ED.elements && ED.elements.length ? 'du plan ouvert (tous niveaux)' : ('du plan enregistré' + (geo.ref ? (' « ' + geo.ref + ' »') : ''))))
+    : '✏️ Aucun plan disponible pour ce programme — saisissez les valeurs';
   var selProg = document.getElementById('mac-programme');
   if (selProg) {
     var progDQE = (document.getElementById('dqe-filter-programme') || {}).value || '';
@@ -106740,7 +106828,7 @@ goTo = function(page) {
         </div>
         <div class="form-group">
           <label>Programme (site) *</label>
-          <select class="form-control" id="ep-programme" onchange="epRafraichirTypes()"></select>
+          <select class="form-control" id="ep-programme" onchange="epRafraichirTypes();epRecalculer();"></select>
         </div>
         <div class="form-group" style="display:flex;align-items:flex-end;">
           <label style="display:flex;align-items:center;gap:6px;font-weight:400;">
@@ -106807,7 +106895,7 @@ goTo = function(page) {
         </div>
         <div class="form-group span-2">
           <label>Programme (site — détermine le DQE cible) *</label>
-          <select class="form-control" id="couv-programme" onchange="couvRafraichirTypes()"></select>
+          <select class="form-control" id="couv-programme" onchange="couvRafraichirTypes();couvRafraichirGeometrie();"></select>
         </div>
         <div class="form-group span-2">
           <label>Type de logement de destination (DQE)</label>
@@ -106873,7 +106961,7 @@ goTo = function(page) {
         </div>
         <div class="form-group span-2">
           <label>Programme (site — détermine le DQE cible) *</label>
-          <select class="form-control" id="mac-programme" onchange="macRafraichirTypes()"></select>
+          <select class="form-control" id="mac-programme" onchange="macRafraichirTypes();macRafraichirGeometrie();"></select>
         </div>
         <div class="form-group span-2">
           <label>Type de logement de destination (DQE)</label>
@@ -107105,7 +107193,7 @@ goTo = function(page) {
         </div>
         <div class="form-group span-2">
           <label>Programme (site — détermine le DQE cible) *</label>
-          <select class="form-control" id="str-programme" onchange="structRafraichirTypes()"></select>
+          <select class="form-control" id="str-programme" onchange="structRafraichirTypes();structRafraichirGeometrie();"></select>
           <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;">La fondation dépend du sol du site : injecter sans programme risquerait d'écraser le DQE d'un autre programme utilisant le même type de logement.</div>
         </div>
         <div class="form-group span-2">
