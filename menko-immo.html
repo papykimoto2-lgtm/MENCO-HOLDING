@@ -68713,6 +68713,7 @@ function chargerNomenclature() {
     resume.innerHTML = '<div class="form-section-title">Récapitulatif — ' + (typeLabels[type] || type) + '</div>'
       + (nbIssusPlan ? '<div style="font-size:11px;color:var(--vert,#1A6B3A);margin-bottom:4px;">📐 ' + nbIssusPlan + ' poste(s) sur ' + nomens.length + ' calculé(s) depuis la géométrie réelle du plan (Structure, Élec/Plomberie, Charpente/Couverture, Maçonnerie/Enduits).</div>' : '')
       + (nbSansOuvrage ? '<div style="font-size:11px;color:var(--rouge,#E05252);margin-bottom:4px;">⚠️ ' + nbSansOuvrage + ' poste(s) sans ouvrage — prix par correspondance texte (fragile). <button class="btn btn-secondary btn-sm" style="font-size:10px;padding:2px 8px;margin-left:4px;" onclick="dqeUnifierTousLesPostes()">🔗 Unifier tous les postes</button></div>' : '')
+      + '<div style="font-size:11px;color:var(--dim);margin-bottom:4px;"><button class="btn btn-secondary btn-sm" style="font-size:10px;padding:2px 8px;" onclick="dqeAppliquerPrixIndicatifs()" title="Applique un prix indicatif aux ressources à 0 FCFA dont le libellé correspond à un matériau connu">💡 Appliquer prix indicatifs aux ressources à 0</button></div>'
       + coefBar
       + '<div class="kpi-grid" style="margin-top:4px;">'
       + _c('Déboursé sec (coût direct)', fmtF(debourse)+' FCFA', 'var(--or,#B8732F)')
@@ -91974,9 +91975,10 @@ var PRIX_INDICATIFS_MATERIAUX = [
   { motcle:'parpaing.*20|agglo.*20', pu:300,    unite:'unité' },
   { motcle:'brique',                 pu:150,    unite:'unité' },
   { motcle:'béton banché|beton banche', pu:75000, unite:'m³' },
-  { motcle:'peinture',               pu:3500,   unite:'litre' },
-  { motcle:'carrelage',              pu:8000,   unite:'m²' },
+  { motcle:'revêtement.*sol|revetement.*sol|carrelage', pu:8000, unite:'m²' },
   { motcle:'faïence|faience',        pu:7000,   unite:'m²' },
+  { motcle:'peinture.*mur|peinture murale|^peinture',    pu:3500, unite:'litre' },
+  { motcle:'finition.*plafond|peinture.*plafond',        pu:3000, unite:'m²' },
   { motcle:'tôle bac.*alu|bac alu',  pu:7500,   unite:'m²' },
   { motcle:'tôle|tole',              pu:5500,   unite:'m²' },
   { motcle:'bois.*charpente|chevron|panne', pu:2800, unite:'ml' },
@@ -92001,6 +92003,69 @@ function _prixIndicatifPour(libelle) {
   return null;
 }
 
+/* ══════════════════════════════════════════════════════
+   HARMONISATION DES CODES — la bibliothèque d'ouvrages utilise la
+   convention [2 lettres du corps d'état][3 chiffres] (MA001, BE001,
+   DA001...) et les ressources [1 lettre du type][3 chiffres] (M001
+   matériau, L001 main-d'œuvre, E001 matériel). Toute création à la volée
+   (bouton "Créer l'ouvrage") doit suivre la même règle, jamais un format
+   ad hoc — sinon la bibliothèque devient illisible au fil du temps. */
+var _EDS_PREFIXES_OUVRAGE = [
+  { motcle:'ma\\u00e7onnerie|maconnerie|agglo|parpaing|brique', prefixe:'MA' },
+  { motcle:'b\\u00e9ton|beton',                                  prefixe:'BE' },
+  { motcle:'dalle',                                              prefixe:'DA' },
+  { motcle:'enduit',                                             prefixe:'EN' },
+  { motcle:'peinture',                                           prefixe:'PE' },
+  { motcle:'carrelage|fa\\u00efence|faience',                    prefixe:'CA' },
+  { motcle:'fondation|semelle',                                  prefixe:'FO' },
+  { motcle:'toiture|couverture|charpente|t\\u00f4le|tole|chevron|panne', prefixe:'TO' },
+  { motcle:'menuiserie|porte|fen\\u00eatre|fenetre',              prefixe:'ME' },
+  { motcle:'\\u00e9lectri|electri|c\\u00e2ble|cable|prise|interrupteur', prefixe:'EL' },
+  { motcle:'plomberie|sanitaire|\\bwc\\b|lavabo|douche|tuyau|pvc', prefixe:'PL' }
+];
+function _edsPrefixeOuvrage(designation, categorie) {
+  var texte = ((designation || '') + ' ' + (categorie || '')).toLowerCase();
+  for (var i = 0; i < _EDS_PREFIXES_OUVRAGE.length; i++) {
+    if (new RegExp(_EDS_PREFIXES_OUVRAGE[i].motcle, 'i').test(texte)) return _EDS_PREFIXES_OUVRAGE[i].prefixe;
+  }
+  return 'OU'; /* corps d'état non reconnu — générique plutôt qu'un format cassant la convention */
+}
+function _edsProchainCode(prefixe, liste, champCode) {
+  var max = 0;
+  (liste || []).forEach(function(x) {
+    var m = new RegExp('^' + prefixe + '(\\d+)$').exec(x[champCode] || '');
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  });
+  return prefixe + String(max + 1).padStart(3, '0');
+}
+function _edsPrefixeRessource(type) { return type === 'mo' ? 'L' : (type === 'materiel' ? 'E' : 'M'); }
+
+/* Rattrapage : les ressources créées avant l'élargissement des mots-clés
+   (ou dont le libellé ne correspondait à aucun mot-clé au moment de la
+   création) sont restées à 0. Cette fonction les rescanne sans jamais
+   toucher une ressource dont le prix a déjà été saisi/confirmé. */
+async function dqeAppliquerPrixIndicatifs() {
+  var cibles = (DATA.eds_ressources || []).filter(function(r) { return (!r.pu || r.pu === 0) && !r._prix_indicatif; });
+  if (!cibles.length) { toast('Aucune ressource à 0 FCFA à corriger.', 'info'); return; }
+  var n = 0;
+  for (var i = 0; i < cibles.length; i++) {
+    var r = cibles[i];
+    var ind = _prixIndicatifPour(r.libelle);
+    if (!ind) continue;
+    r.pu = ind.pu;
+    r._prix_indicatif = true;
+    r.maj = today();
+    await dbPut('eds_ressources', r);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_ressources', r);
+    n++;
+  }
+  toast(n ? ('✅ ' + n + ' ressource(s) mise(s) à jour avec un prix indicatif (💡 à confirmer).') : 'Aucune correspondance trouvée pour les ressources restantes.', n ? 'success' : 'info');
+  if (typeof edsRenderRes === 'function') edsRenderRes();
+  if (typeof chargerNomenclature === 'function') chargerNomenclature();
+  if (typeof _dqeVueOuvrageActive !== 'undefined' && _dqeVueOuvrageActive) dqeRenderParOuvrage();
+}
+window.dqeAppliquerPrixIndicatifs = dqeAppliquerPrixIndicatifs;
+
 async function dqeCreerOuvrageDepuisPoste(nomenclatureId) {
   var n = (DATA.nomenclatures || []).find(function(x) { return x.id === nomenclatureId; });
   if (!n) { toast('Poste introuvable.', 'error'); return; }
@@ -92017,8 +92082,9 @@ async function dqeCreerOuvrageDepuisPoste(nomenclatureId) {
   }
   if (!ressource) {
     var _ind = _prixIndicatifPour(n.materiau);
+    var _prefRes = _edsPrefixeRessource('materiau');
     ressource = {
-      id: 'res_' + uid(), code: 'RES-' + Date.now().toString(36).toUpperCase(),
+      id: 'res_' + uid(), code: _edsProchainCode(_prefRes, DATA.eds_ressources, 'code'),
       libelle: n.materiau, type: 'materiau', unite: n.unite || (_ind ? _ind.unite : 'unité'),
       pu: (resExistante ? parseFloat(resExistante.pu || resExistante.prix) || 0 : (_ind ? _ind.pu : 0)),
       _prix_indicatif: !resExistante && !!_ind,
@@ -92030,7 +92096,7 @@ async function dqeCreerOuvrageDepuisPoste(nomenclatureId) {
   }
 
   var ouvrage = {
-    id: 'ouv_' + uid(), code: 'OUV-' + Date.now().toString(36).toUpperCase(),
+    id: 'ouv_' + uid(), code: _edsProchainCode(_edsPrefixeOuvrage(n.materiau, n.poste), DATA.eds_ouvrages, 'code'),
     designation: n.materiau, unite: n.unite || 'unité', categorie: n.poste || 'Divers',
     composants: [{ type: 'materiau', res_id: ressource.id, qte: 1 }],
     _cree_depuis_poste: true
@@ -92103,11 +92169,12 @@ async function dqeUnifierPrix() {
     var p = src[i];
     var key = (p.libelle || '').trim().toLowerCase();
     if (!key || have[key]) continue;
+    var _type = catType[p.categorie] || 'materiau';
     var r = {
       id: 'res_mig_' + (p.id || uid()),
-      code: p.code || ('PU' + (i + 1)),
+      code: _edsProchainCode(_edsPrefixeRessource(_type), DATA.eds_ressources, 'code'),
       libelle: p.libelle,
-      type: catType[p.categorie] || 'materiau',
+      type: _type,
       unite: p.unite || '',
       pu: parseFloat(p.prix) || 0,
       fournisseur: p.fournisseur || '',
