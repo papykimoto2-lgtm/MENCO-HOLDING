@@ -13359,6 +13359,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <option value="">— Choisir une étude —</option>
             </select>
             <button class="btn btn-secondary btn-sm" onclick="edsOpenRealisation()">+ Saisir un réalisé</button>
+            <button class="btn btn-secondary btn-sm" onclick="edsImporterDepensesReelles()" title="Reprend les dépenses déjà saisies dans Constructeurs & Conventions → Coûts de chantier — évite de les retaper ici">📥 Importer les dépenses chantier</button>
           </div>
           <div id="eds-suivi-zone" class="card"></div>
         </div>
@@ -13459,7 +13460,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="modal-body">
             <div class="form-grid">
               <div class="form-group span-2"><label>Intitulé de l'étude *</label><input type="text" id="eds-e-nom" class="form-control" placeholder="Ex : Cité Exemple — Villa F2"></div>
-              <div class="form-group"><label>Programme</label><select id="eds-e-programme" class="form-control"><option value="">—</option></select></div>
+              <div class="form-group"><label>Programme</label><select id="eds-e-programme" class="form-control" onchange="edsPeuplerTypesImport()"><option value="">—</option></select></div>
               <div class="form-group"><label>Date</label><input type="date" id="eds-e-date" class="form-control"></div>
               <div class="form-group"><label>Frais généraux (%)</label><input type="number" id="eds-e-fg" class="form-control" value="12" min="0" step="0.1" oninput="edsRecalcEtude()"></div>
               <div class="form-group"><label>Aléas (%)</label><input type="number" id="eds-e-aleas" class="form-control" value="3" min="0" step="0.1" oninput="edsRecalcEtude()"></div>
@@ -13470,6 +13471,8 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <div style="display:flex;gap:8px;">
                 <input type="number" id="eds-e-surface" class="filter-select" style="width:120px;" placeholder="Surface m²" title="Surface de référence pour le métré auto">
                 <button class="btn btn-secondary btn-sm" onclick="edsGenererMetreAuto()">⚙️ Métré auto</button>
+                <select id="eds-e-import-type" class="filter-select" style="width:160px;"></select>
+                <button class="btn btn-secondary btn-sm" onclick="edsImporterDepuisDQE()" title="Reprend les postes déjà chiffrés dans le DQE (Structure, Maçonnerie, Élec/Plomberie...) pour ce type de logement — évite de rechiffrer ce qui existe déjà">📥 Importer depuis le DQE</button>
                 <select id="eds-e-ouvrage-pick" class="filter-select"></select>
                 <button class="btn btn-secondary btn-sm" onclick="edsAddLigne()">+ Ajouter</button>
               </div>
@@ -68830,6 +68833,7 @@ function chargerNomenclature() {
       nbPostes: nomens.length, div: _div || 1 };
     resume.innerHTML = '<div class="form-section-title">Récapitulatif — ' + (typeLabels[type] || type) + '</div>'
       + (nbIssusPlan ? '<div style="font-size:11px;color:var(--vert,#1A6B3A);margin-bottom:4px;">📐 ' + nbIssusPlan + ' poste(s) sur ' + nomens.length + ' calculé(s) depuis la géométrie réelle du plan (Structure, Élec/Plomberie, Charpente/Couverture, Maçonnerie/Enduits).</div>' : '')
+      + (_progIdCourant && (DATA.eds_etudes||[]).some(function(e){ return e.programme_id === _progIdCourant; }) ? '<div style="font-size:11px;color:var(--dim);margin-bottom:4px;">ℹ️ Une étude de prix existe pour ce programme (Étude de Prix &amp; Déboursé Sec) — vérifiez qu\'elle n\'a pas déjà chiffré la même chose, sous peine de deux chiffres différents pour le même bien.</div>' : '')
       + (nbSansOuvrage ? '<div style="font-size:11px;color:var(--rouge,#E05252);margin-bottom:4px;">⚠️ ' + nbSansOuvrage + ' poste(s) sans ouvrage — prix par correspondance texte (fragile). <button class="btn btn-secondary btn-sm" style="font-size:10px;padding:2px 8px;margin-left:4px;" onclick="dqeUnifierTousLesPostes()">🔗 Unifier tous les postes</button></div>' : '')
       + '<div style="font-size:11px;color:var(--dim);margin-bottom:4px;"><button class="btn btn-secondary btn-sm" style="font-size:10px;padding:2px 8px;" onclick="dqeAppliquerPrixIndicatifs()" title="Applique un prix indicatif aux ressources à 0 FCFA dont le libellé correspond à un matériau connu">💡 Appliquer prix indicatifs aux ressources à 0</button></div>'
       + (!_progIdCourant ? '<div style="font-size:11px;color:var(--rouge,#E05252);margin-bottom:6px;">⚠️ Aucun programme sélectionné — terrain, VRD et coût de gestion non calculés (prix de construction seul).</div>'
@@ -82221,6 +82225,7 @@ function edsOpenEtude(id) {
   edsFillEtudeSelects();
   var prefProg = e ? (e.programme_id || '') : ((document.getElementById('eds-etude-programme') || {}).value || '');
   var ep = document.getElementById('eds-e-programme'); if (ep) ep.value = prefProg;
+  if (typeof edsPeuplerTypesImport === 'function') edsPeuplerTypesImport();
   /* pick ouvrage */
   var pick = document.getElementById('eds-e-ouvrage-pick');
   if (pick) pick.innerHTML = DATA.eds_ouvrages.map(function(o) { return '<option value="' + o.id + '">' + o.code + ' — ' + o.designation + '</option>'; }).join('');
@@ -82347,6 +82352,86 @@ function edsExportPDF(id) {
 }
 
 /* ════════════ ONGLET 3 — SUIVI BUDGÉTAIRE ════════════ */
+/* ══════════════════════════════════════════════════════
+   PASSERELLE DQE → ÉTUDE DE PRIX — évite la double saisie entre les deux
+   systèmes de chiffrage (DATA.nomenclatures par type de logement, et
+   DATA.eds_etudes par programme). Reprend les postes DQE déjà reliés à un
+   ouvrage (seuls exploitables ici, une étude de prix ne travaille qu'en
+   ouvrages/déboursé) plutôt que de les rechiffrer à la main. Les postes
+   sans ouvrage sont signalés, pas importés silencieusement à 0. */
+function edsPeuplerTypesImport() {
+  var sel = document.getElementById('eds-e-import-type');
+  if (!sel) return;
+  var progId = (document.getElementById('eds-e-programme')||{}).value || '';
+  var html = _dqeOptionsTypesConception(progId);
+  sel.innerHTML = html || '<option value="" disabled selected>Aucun DQE pour ce programme</option>';
+}
+window.edsPeuplerTypesImport = edsPeuplerTypesImport;
+
+function edsImporterDepuisDQE() {
+  var progId = (document.getElementById('eds-e-programme')||{}).value || '';
+  var type = (document.getElementById('eds-e-import-type')||{}).value || '';
+  if (!progId) { toast('Sélectionnez d\'abord le programme de l\'étude.', 'error'); return; }
+  if (!type) { toast('Aucun type de logement disponible à importer pour ce programme.', 'error'); return; }
+  var postes = (DATA.nomenclatures||[]).filter(function(n){ return n.type_logement === type && (n.programme_id === progId || !n.programme_id); });
+  if (!postes.length) { toast('Aucun poste DQE trouvé pour « ' + type + ' ».', 'info'); return; }
+  var avecOuvrage = postes.filter(function(n){ return n.ouvrage_id; });
+  var sansOuvrage = postes.filter(function(n){ return !n.ouvrage_id; });
+  if (!avecOuvrage.length) {
+    toast('⚠️ Aucun poste de ce DQE n\'est relié à un ouvrage — rien d\'importable. Utilisez « Créer l\'ouvrage »/« Unifier tous les postes » dans le DQE d\'abord.', 'error');
+    return;
+  }
+  var n = 0;
+  avecOuvrage.forEach(function(p){
+    var ex = _edsLignes.find(function(l){ return l.ouvrage_id === p.ouvrage_id; });
+    if (ex) { ex.qte = (parseFloat(ex.qte)||0) + (parseFloat(p.quantite)||0); }
+    else { _edsLignes.push({ id: uid(), ouvrage_id: p.ouvrage_id, qte: parseFloat(p.quantite)||0 }); }
+    n++;
+  });
+  edsRenderLignes();
+  toast('✅ ' + n + ' poste(s) importé(s) depuis le DQE « ' + type + ' »'
+    + (sansOuvrage.length ? ' — ' + sansOuvrage.length + ' poste(s) sans ouvrage ignoré(s) (non importables).' : '.'), 'success');
+}
+window.edsImporterDepuisDQE = edsImporterDepuisDQE;
+
+/* ══════════════════════════════════════════════════════
+   PASSERELLE SUIVI CHANTIER → SUIVI BUDGÉTAIRE — les dépenses réelles de
+   chantier sont déjà saisies dans Constructeurs & Conventions → Coûts de
+   chantier (DATA.chantier_couts, relié au programme via la convention).
+   Les reprendre ici évite la ressaisie manuelle qui rendait le "Suivi
+   budgétaire" inutilisable en pratique. Idempotent : un coût déjà importé
+   (marqué _source_chantier_id) n'est jamais dupliqué au réimport. */
+async function edsImporterDepensesReelles() {
+  var id = (document.getElementById('eds-suivi-etude') || {}).value;
+  var e = id ? DATA.eds_etudes.find(function(x){ return x.id === id; }) : null;
+  if (!e) { toast('Choisissez d\'abord une étude (menu déroulant ci-dessus).', 'error'); return; }
+  var progId = e.programme_id;
+  if (!progId) { toast('Cette étude n\'a pas de programme défini — impossible de retrouver ses dépenses de chantier.', 'error'); return; }
+  var conventionsProg = (DATA.conventions||[]).filter(function(c){ return c.programme_id === progId; }).map(function(c){ return c.id; });
+  var couts = (DATA.chantier_couts||[]).filter(function(c){ return conventionsProg.indexOf(c.convention_id) !== -1; });
+  if (!couts.length) { toast('Aucune dépense de chantier saisie pour ce programme (Constructeurs & Conventions → Coûts).', 'info'); return; }
+
+  if (!e.realisations) e.realisations = [];
+  var dejaImportes = {};
+  e.realisations.forEach(function(r){ if (r._source_chantier_id) dejaImportes[r._source_chantier_id] = true; });
+  var n = 0;
+  couts.forEach(function(c){
+    if (dejaImportes[c.id]) return;
+    e.realisations.push({
+      id: uid(),
+      poste: c.type === 'main_oeuvre' ? "Main-d'œuvre (chantier)" : 'Matériaux / Autres (chantier)',
+      libelle: c.libelle || '', montant: parseFloat(c.montant) || 0, date: c.date || today(),
+      _source_chantier_id: c.id
+    });
+    n++;
+  });
+  await dbPut('eds_etudes', e);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_etudes', e);
+  edsRenderSuivi();
+  toast(n ? ('✅ ' + n + ' dépense(s) réelle(s) importée(s) depuis le suivi chantier.') : 'Rien de nouveau — toutes les dépenses de chantier étaient déjà importées.', n ? 'success' : 'info');
+}
+window.edsImporterDepensesReelles = edsImporterDepensesReelles;
+
 function edsRenderSuivi() {
   var zone = document.getElementById('eds-suivi-zone');
   if (!zone) return;
@@ -82419,6 +82504,64 @@ async function edsDeleteRealisation(eid, rid) {
 }
 
 /* ════════════ ONGLET 4 — IMPUTATIONS SYSCOHADA ════════════ */
+/* ══════════════════════════════════════════════════════
+   COMPTABILISATION RÉELLE DES IMPUTATIONS — jusqu'ici, cet onglet montrait
+   une écriture-type SANS jamais la poser dans DATA.ecritures ("prévisionnelles"
+   au sens littéral : rien de réel n'en sortait). Idempotent par construction
+   (id fixe 'ecr_eds_<etude>') : reposer met à jour la même écriture au lieu
+   d'en créer une seconde, mais avertit si elle avait déjà été posée. */
+async function edsComptabiliserImputation() {
+  var id = (document.getElementById('eds-sys-etude') || {}).value;
+  var e = DATA.eds_etudes.find(function(x) { return x.id === id; });
+  if (!e) { toast('Choisissez une étude.', 'error'); return; }
+  var ecrId = 'ecr_eds_' + e.id;
+  var dejaPostee = (DATA.ecritures||[]).find(function(x){ return x.id === ecrId; });
+  if (dejaPostee && !confirm('Cette étude a déjà été comptabilisée le ' + (dejaPostee.date||'') + ' (' + fmtF(dejaPostee.lignes ? dejaPostee.lignes.reduce(function(s,l){return s+(l.sens==='D'?l.montant:0);},0) : 0) + ' FCFA).\n\nReposer l\'écriture avec les montants actuels de l\'étude (ceux-ci ont pu changer depuis) ?')) return;
+
+  var c = edsCalcEtude(e);
+  var vent = { materiau: 0, mo: 0, materiel: 0, st: 0 };
+  (e.lignes || []).forEach(function(l) {
+    var o = DATA.eds_ouvrages.find(function(x) { return x.id === l.ouvrage_id; });
+    if (!o) return;
+    var d = edsDebourse(o);
+    vent.materiau += d.materiau * (l.qte || 0);
+    vent.mo += d.mo * (l.qte || 0);
+    vent.materiel += d.materiel * (l.qte || 0);
+    vent.st += d.st * (l.qte || 0);
+  });
+  var lignesEcr = [
+    { compte: requireCompteDefaut('chantier_immo_encours'), libelle: 'Bâtiments en cours — ' + e.nom, sens:'D', montant: Math.round(c.debSec) },
+    { compte: requireCompteDefaut('chantier_materiaux'), libelle: 'Achats matériaux — ' + e.nom, sens:'D', montant: Math.round(vent.materiau) },
+    { compte: requireCompteDefaut('chantier_sous_traitance'), libelle: 'Sous-traitance / matériel — ' + e.nom, sens:'D', montant: Math.round(vent.materiel + vent.st) },
+    { compte: requireCompteDefaut('paie_charge'), libelle: 'Charges de personnel chantier — ' + e.nom, sens:'D', montant: Math.round(vent.mo) },
+    { compte: requireCompteDefaut('fournisseur'), libelle: 'Fournisseurs — ' + e.nom, sens:'C', montant: Math.round(c.debSec) }
+  ].filter(function(l){ return l.montant > 0; });
+
+  var totalD = lignesEcr.filter(function(l){return l.sens==='D';}).reduce(function(s,l){return s+l.montant;},0);
+  var totalC = lignesEcr.filter(function(l){return l.sens==='C';}).reduce(function(s,l){return s+l.montant;},0);
+  if (Math.abs(totalD - totalC) > 1) { toast('⚠️ Écriture déséquilibrée (Débit ' + fmtF(totalD) + ' ≠ Crédit ' + fmtF(totalC) + ') — vérifiez la configuration des comptes par défaut avant de comptabiliser.', 'error'); return; }
+  if (!lignesEcr.length || !totalD) { toast('Rien à comptabiliser — déboursé sec nul.', 'error'); return; }
+
+  var ecr = {
+    id: ecrId, date: today(), journal: 'OD', type: 'od',
+    piece: 'EDS-' + e.id.slice(-6).toUpperCase(),
+    libelle: 'Incorporation déboursé sec — ' + e.nom,
+    lignes: lignesEcr,
+    programme_id: e.programme_id || '',
+    _source_etude_id: e.id,
+    created_at: new Date().toISOString()
+  };
+  var idx = DATA.ecritures.findIndex(function(x){ return x.id === ecrId; });
+  if (idx >= 0) DATA.ecritures[idx] = ecr; else DATA.ecritures.push(ecr);
+  await dbPut('ecritures', ecr);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecr);
+  if (typeof buildBalance === 'function') buildBalance();
+  if (typeof buildGrandLivre === 'function') buildGrandLivre();
+  toast('✅ Écriture comptabilisée — ' + fmtF(totalD) + ' FCFA (pièce ' + ecr.piece + ').', 'success');
+  edsRenderSyscohada();
+}
+window.edsComptabiliserImputation = edsComptabiliserImputation;
+
 function edsRenderSyscohada() {
   var zone = document.getElementById('eds-sys-zone');
   if (!zone) return;
@@ -82457,6 +82600,13 @@ function edsRenderSyscohada() {
   zone.innerHTML =
     '<h3 style="margin:0 0 6px;">Imputations prévisionnelles — ' + e.nom + '</h3>' +
     '<p style="color:var(--muted);font-size:12px;">Écriture-type d\u2019incorporation du déboursé sec au coût du programme (SYSCOHADA révisé).</p>' +
+    (function(){
+      var deja = (DATA.ecritures||[]).find(function(x){ return x.id === 'ecr_eds_' + e.id; });
+      return deja
+        ? '<div style="padding:8px 12px;background:rgba(26,107,58,.09);border-left:3px solid #1A6B3A;border-radius:6px;font-size:12px;margin-bottom:10px;">✅ Comptabilisée le ' + (deja.date||'') + ' — pièce ' + (deja.piece||'') + '.</div>'
+        : '<div style="padding:8px 12px;background:rgba(224,82,82,.09);border-left:3px solid var(--rouge,#c0392b);border-radius:6px;font-size:12px;margin-bottom:10px;">⚠️ Jamais comptabilisée — cet aperçu ne devient une écriture réelle qu\'après clic sur « Comptabiliser ».</div>';
+    })() +
+    '<button class="btn btn-primary btn-sm" onclick="edsComptabiliserImputation()" style="margin-bottom:12px;">📒 Comptabiliser cette étude</button>' +
     '<table style="width:100%;border-collapse:collapse;"><thead><tr><th>Compte</th><th>Libellé</th><th style="text-align:right;">Débit</th><th style="text-align:right;">Crédit</th></tr></thead><tbody>' + rows +
     '<tr style="border-top:2px solid #333;font-weight:700;"><td colspan="2">TOTAUX</td><td style="text-align:right;">' + fmtF(vent.materiau + vent.mo + vent.materiel + vent.st) + '</td><td style="text-align:right;">' + fmtF(c.debSec) + '</td></tr>' +
     '</tbody></table>' +
