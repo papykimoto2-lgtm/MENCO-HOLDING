@@ -17700,7 +17700,19 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             </select>
           </div>
           <div class="form-group"><label>Nombre d'enfants (pour abattement)</label><input type="number" class="form-control" id="emp-enfants" value="0" min="0"></div>
-          <div class="form-group"><label>N° CNPS</label><input type="text" class="form-control" id="emp-cnps-num" placeholder="N° immatriculation CNPS"></div>
+          <div class="form-group">
+            <label>N° CNPS</label>
+            <input type="text" class="form-control" id="emp-cnps-num" placeholder="N° immatriculation CNPS">
+          </div>
+          <div class="form-group">
+            <label>Statut CNPS</label>
+            <select class="form-control" id="emp-cnps-statut" onchange="empCnpsStatutHint()">
+              <option value="declare">Déclaré — cotisations calculées normalement</option>
+              <option value="en_cours">Déclaration en cours — cotisations calculées, régularisation à suivre</option>
+              <option value="non_declare">Non déclaré — CNPS exclu du bulletin</option>
+            </select>
+            <div style="font-size:10px;margin-top:3px;" id="emp-cnps-statut-hint"></div>
+          </div>
           <div class="form-group"><label>Téléphone</label><input type="tel" class="form-control" id="emp-tel"></div>
           <div class="form-group"><label>Email</label><input type="email" class="form-control" id="emp-email"></div>
           <div class="form-group span-2"><label>Adresse</label><input type="text" class="form-control" id="emp-adresse"></div>
@@ -41049,6 +41061,26 @@ function buildGrilleOptions(secteur, selected) {
 /* Recharge la grille catégorielle quand le secteur change dans la fiche employé */
 /* Avertit visuellement lorsque le contrat "Consultant" est sélectionné : ces
    employés sont des prestataires indépendants, non déclarés à la CNPS. */
+/* Avertissement visible dès que "non déclaré" est choisi — le bypass est
+   réel (voir calculerPaieEmploye), mais jamais silencieux : ce message,
+   le badge sur le bulletin, et le filtre du tableau de bord RH signalent
+   la situation à chaque étape plutôt que de la masquer. */
+function empCnpsStatutHint() {
+  var sel = document.getElementById('emp-cnps-statut');
+  var hint = document.getElementById('emp-cnps-statut-hint');
+  if (!sel || !hint) return;
+  if (sel.value === 'non_declare') {
+    hint.innerHTML = '🔴 Aucune cotisation CNPS calculée sur le bulletin de cet employé.';
+    hint.style.color = 'var(--rouge)';
+  } else if (sel.value === 'en_cours') {
+    hint.innerHTML = '🟠 Cotisations calculées normalement en attendant la régularisation.';
+    hint.style.color = 'var(--or)';
+  } else {
+    hint.innerHTML = '';
+  }
+}
+window.empCnpsStatutHint = empCnpsStatutHint;
+
 function onChangeContratEmploye() {
   var contrat = (document.getElementById('emp-contrat')||{}).value;
   var champCnps = document.getElementById('emp-cnps-num');
@@ -41343,9 +41375,10 @@ function paieInputFromEmploye(e, moisArg) {
     _joursPayables: joursPayes,
     _absences: abs,
     _mode: mode,
-    /* Consultants (prestataires indépendants) : non déclarés à la CNPS */
+    /* Consultants (prestataires indépendants) et employés au statut CNPS
+       "non_declare" (bypass explicite, voir fiche employé) : exonérés. */
     contrat: e.contrat || '',
-    exoCnps: e.contrat === 'consultant'
+    exoCnps: e.contrat === 'consultant' || e.cnps_statut === 'non_declare'
   };
 }
 
@@ -41390,7 +41423,7 @@ function openEmployeModal(id) {
   var _eSecteur = _eDoc ? (_eDoc.secteur || 'btp') : ((DATA.divisions.find(function(d){return d.id===(_eDoc?_eDoc.division:'');})||{}).secteur || 'btp');
   document.getElementById('emp-secteur').value = _eSecteur;
   document.getElementById('emp-categorie').innerHTML = buildGrilleOptions(_eSecteur, _eCat || '');
-  var fields = ['matricule','nom','prenoms','ddn','genre','matrimonial','enfants','cnps-num','tel','email','adresse',
+  var fields = ['matricule','nom','prenoms','ddn','genre','matrimonial','enfants','cnps-num','cnps-statut','tel','email','adresse',
     'poste','dept','division','contrat','date-embauche','date-fin','categorie','salaire-base','primes','transport','logement',
     'mode-paiement','statut','banque','compte-banque','wallet','rib',
     'date-depart','motif-depart','solde-tout-compte','preavis','obs-depart',
@@ -41408,6 +41441,7 @@ function openEmployeModal(id) {
         var el = document.getElementById('emp-' + f);
         if (el) el.checked = !!e[f.replace(/-/g,'_')];
       });
+      if (typeof empCnpsStatutHint === 'function') empCnpsStatutHint();
       /* Aller-retour robuste du statut : si la valeur enregistrée (ex: 'resilie',
          ou tout statut hérité/importé) n'existe pas comme <option>, l'ajouter à
          la volée. Sans cela, l'affectation el.value échoue silencieusement, le
@@ -41507,6 +41541,7 @@ async function saveEmploye() {
     matrimonial: document.getElementById('emp-matrimonial').value,
     enfants: parseInt(document.getElementById('emp-enfants').value) || 0,
     cnps_num: document.getElementById('emp-cnps-num').value.trim(),
+    cnps_statut: (document.getElementById('emp-cnps-statut')||{}).value || 'declare',
     tel: document.getElementById('emp-tel').value.trim(),
     email: document.getElementById('emp-email').value.trim(),
     adresse: document.getElementById('emp-adresse').value.trim(),
@@ -44349,7 +44384,10 @@ function printBulletinData(d) {
     + (cnpsEmployeur ? 'N°CNPS '+cnpsEmployeur : 'N°CNPS —')
     + (idsLegales ? '<br>'+idsLegales : '')+'</div>');
   var sourceTag = d.source_pointage ? '<div style="display:inline-block;background:#dbeafe;color:#1e40af;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:700;margin-top:4px;">&#x23F1; Généré depuis le Pointage</div>' : '';
-  var consultantTag = r.exoCnps ? '<div style="display:inline-block;background:#fef3c7;color:#92400e;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:700;margin-top:4px;margin-left:4px;">⚠ Consultant — non déclaré CNPS</div>' : '';
+  var consultantTag = r.exoCnps
+    ? ('<div style="display:inline-block;background:#fef3c7;color:#92400e;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:700;margin-top:4px;margin-left:4px;">⚠ '
+       + (r.contrat === 'consultant' ? 'Consultant — non déclaré CNPS' : 'Statut CNPS : non déclaré') + '</div>')
+    : '';
   win.document.write('<div><h1>BULLETIN DE PAIE</h1><div class="sub">'+moisLib+'</div>'+sourceTag+consultantTag+'</div></div>');
   /* Identité */
   win.document.write('<div class="ident"><div class="col">'
@@ -54047,7 +54085,7 @@ function buildImpactPaie() {
     // transport (non imposable), barème appliqué directement dessus — comme
     // calcPaieEmploye. Ancien calcul utilisait un taux CNPS 3,2% et un ITS
     // forfaitaire 4,25% factices, décorrélés du vrai barème.
-    var cnpsSal=(e.contrat==='consultant')?0:calcCNPSSalarie(brutImposable);
+    var cnpsSal=(e.contrat==='consultant' || e.cnps_statut==='non_declare')?0:calcCNPSSalarie(brutImposable);
     var its=calcITS(brutImposable);
     var net=Math.max(0,brutAjuste-cnpsSal-its);
     var diff=brutAjuste-(e.salaire_base+transportInd);
@@ -56120,7 +56158,7 @@ function buildTiers422() {
     var brutImp=e.salaire_base||0;
     var transportInd=e.transport||PAIE_CI.transportDefaut;
     var brut=brutImp+transportInd;
-    var cnps=(e.contrat==='consultant')?0:calcCNPSSalarie(brutImp);
+    var cnps=(e.contrat==='consultant' || e.cnps_statut==='non_declare')?0:calcCNPSSalarie(brutImp);
     var its=calcITS(brutImp);
     var net=Math.max(0,brut-cnps-its);
     var acompte=0;
@@ -56184,7 +56222,7 @@ function buildTiersEtat() {
     var brutImp=e.salaire_base||0;
     var transportInd=e.transport||PAIE_CI.transportDefaut;
     var brut=brutImp+transportInd;
-    var estConsultant=(e.contrat==='consultant');
+    var estConsultant=(e.contrat==='consultant' || e.cnps_statut==='non_declare');
     var cnpsSal=estConsultant?0:calcCNPSSalarie(brutImp);
     masse+=brut;
     cnpsSalTotal+=cnpsSal;
