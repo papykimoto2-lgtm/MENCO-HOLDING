@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.65 · 2026-08-02 — anti-doublons Conception/Plans/DQE/Déboursé sec';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.64 · 2026-08-01 — correctif anti-double-réservation';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -3721,6 +3721,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <button class="tab-btn" onclick="switchTiersTab('personnel422')">422 Personnel</button>
             <button class="tab-btn" onclick="switchTiersTab('etat441')">44x État & Fisc</button>
             <button class="tab-btn" onclick="switchTiersTab('autres461')">461/462 Divers</button>
+            <button class="tab-btn" onclick="switchTiersTab('echeances')" title="Vue chronologique consolidée, tous tiers confondus">📅 Échéances</button>
           </div>
 
           <!-- 411 — Clients Souscripteurs -->
@@ -3890,6 +3891,43 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                     <th>Compte</th><th>Libellé tiers</th><th>Date</th><th>Débit</th><th>Crédit</th><th>Solde</th>
                   </tr></thead>
                   <tbody id="tbody-tiers461"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Échéances — vue chronologique consolidée -->
+          <div id="tiers-pane-echeances" style="display:none;">
+            <div class="filters-bar">
+              <select class="filter-select" id="filter-echeances-statut" onchange="buildTiersEcheances()">
+                <option value="">Toutes</option>
+                <option value="retard">En retard</option>
+                <option value="avenir">À venir</option>
+              </select>
+              <button class="btn btn-secondary btn-sm" onclick="exportTiersEcheancesCSV()">⬇ Export</button>
+            </div>
+            <div class="card" style="margin-bottom:12px;">
+              <div class="card-title">📅 Échéances clients (411) — dates précises, calculées depuis le contrat</div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr>
+                    <th>Échéance</th><th>Souscripteur</th><th>Dossier</th><th>Programme</th>
+                    <th>Montant attendu</th><th>Statut</th><th>Actions</th>
+                  </tr></thead>
+                  <tbody id="tbody-echeances-411"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-title">📅 Échéances fournisseurs (401) — par ancienneté
+                <span title="Aucune date de facture/échéance précise enregistrée par fournisseur — regroupement par ancienneté de la dette, pas une date exacte. Se raffine dès que les factures fournisseurs sont saisies avec leur échéance." style="cursor:help;font-size:12px;color:var(--dim);margin-left:4px;">ⓘ estimé</span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr>
+                    <th>Fournisseur</th><th>Ancienneté</th><th>Solde 401 à payer</th><th>Statut</th>
+                  </tr></thead>
+                  <tbody id="tbody-echeances-401"></tbody>
                 </table>
               </div>
             </div>
@@ -54500,13 +54538,13 @@ goTo = function(page) {
 
 /* ─── Navigation sub-onglets Tiers ─────────────────── */
 function switchTiersTab(tab) {
-  ['clients411','acquereurs4111','fournisseurs401','personnel422','etat441','autres461'].forEach(function(t) {
+  ['clients411','acquereurs4111','fournisseurs401','personnel422','etat441','autres461','echeances'].forEach(function(t) {
     var el = document.getElementById('tiers-pane-'+t);
     if (el) el.style.display = t===tab ? 'block' : 'none';
   });
   // Update sub-tab buttons
   var btns = document.querySelectorAll('#tab-compta-tiers .tab-nav .tab-btn');
-  var tabs = ['clients411','acquereurs4111','fournisseurs401','personnel422','etat441','autres461'];
+  var tabs = ['clients411','acquereurs4111','fournisseurs401','personnel422','etat441','autres461','echeances'];
   btns.forEach(function(b,i){ b.classList.toggle('active', tabs[i]===tab); });
   // Load content
   if (tab==='clients411') buildTiers411();
@@ -54515,6 +54553,7 @@ function switchTiersTab(tab) {
   else if (tab==='personnel422') buildTiers422();
   else if (tab==='etat441') buildTiersEtat();
   else if (tab==='autres461') buildTiers461();
+  else if (tab==='echeances') buildTiersEcheances();
 }
 
 /* ══════════════════════════════════════════════
@@ -54522,6 +54561,101 @@ function switchTiersTab(tab) {
    (matériel, véhicules, mobilier — distinct des biens
    immobiliers acquis par le promoteur, cf. DATA.biens_amort)
    ══════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════
+   ÉCHÉANCES CONSOLIDÉES — vue chronologique unique, tous tiers confondus.
+   Les balances 411/401 affichent déjà l'échéance/le retard, mais NOYÉS
+   dans un tableau par tiers, sans tri par date ni vue d'ensemble « qu'est-ce
+   qui tombe cette semaine ». Réutilise le même calcul que buildTiers411
+   (échéance client = date de début + mensualités déjà écoulées) et
+   buildTiers401 (fournisseurs — ancienneté seule, pas de date précise,
+   faute de facture datée en base — repli honnête, pas une approximation
+   cachée). */
+function buildTiersEcheances() {
+  var filtStatut = (document.getElementById('filter-echeances-statut')||{}).value || '';
+  var today = new Date();
+
+  /* ── 411 — Clients : date d'échéance précise ── */
+  var lignes411 = [];
+  DATA.clients.forEach(function(c) {
+    var mensualite = c.mensualite || 0;
+    if (!mensualite) return; /* pas de plan d'échéancier — rien à dater précisément */
+    var versements = DATA.versements.filter(function(v){ return v.client_id===c.id; });
+    var totalVerse = versements.reduce(function(s,v){return s+(v.montant||0);},0);
+    var solde = (c.montant_total||0) - totalVerse;
+    if (solde <= 0) return; /* soldé */
+    var dateDebut = c.date_debut ? new Date(c.date_debut) : new Date('2023-01-01');
+    var moisEcoules = Math.floor((today - dateDebut) / (1000*60*60*24*30.5));
+    var nbMensualitesAttendues = moisEcoules + 1; /* la prochaine échéance à venir */
+    var prochaine = new Date(dateDebut); prochaine.setMonth(prochaine.getMonth() + nbMensualitesAttendues);
+    var enRetard = prochaine < today;
+    var prog = DATA.programmes.find(function(p){return p.id===c.programme_id;})||{nom:'—'};
+    lignes411.push({ date: prochaine, client: c, prog: prog, montant: Math.min(mensualite, solde), enRetard: enRetard });
+  });
+  lignes411.sort(function(a,b){ return a.date - b.date; });
+
+  var tb411 = document.getElementById('tbody-echeances-411');
+  if (tb411) {
+    var f411 = lignes411.filter(function(l){ return !filtStatut || (filtStatut==='retard' ? l.enRetard : !l.enRetard); });
+    tb411.innerHTML = f411.length ? f411.map(function(l){
+      return '<tr' + (l.enRetard ? ' style="background:rgba(224,82,82,.07);"' : '') + '>'
+        + '<td style="white-space:nowrap;' + (l.enRetard ? 'color:var(--rouge);font-weight:700;' : '') + '">' + l.date.toISOString().slice(0,10) + '</td>'
+        + '<td>' + escHtml((l.client.prenoms||'') + ' ' + (l.client.nom||'')) + '</td>'
+        + '<td style="font-family:monospace;">' + escHtml(l.client.dossier||'') + '</td>'
+        + '<td>' + escHtml(l.prog.nom) + '</td>'
+        + '<td style="text-align:right;font-weight:600;">' + fmtF(l.montant) + ' FCFA</td>'
+        + '<td>' + (l.enRetard ? '<span style="color:var(--rouge);">⚠️ En retard</span>' : '<span style="color:var(--vert);">À venir</span>') + '</td>'
+        + '<td><button class="btn btn-secondary btn-sm btn-icon" onclick="openClientModal(\'' + l.client.id + '\')" title="Ouvrir le dossier">✏️</button></td>'
+        + '</tr>';
+    }).join('') : '<tr><td colspan="7" style="text-align:center;color:var(--dim);padding:16px;">Aucune échéance client à afficher.</td></tr>';
+  }
+
+  /* ── 401 — Fournisseurs : ancienneté seule (pas de date précise) ── */
+  var lignes401 = [];
+  DATA.constructeurs.forEach(function(constr) {
+    var convs = DATA.conventions.filter(function(cv){return cv.constructeur_id===constr.id;});
+    if (!convs.length) return;
+    var totalTTC = convs.reduce(function(s,cv){return s+(cv.montant_ttc||0);},0);
+    var avances = convs.reduce(function(s,cv){return s+(cv.avance_montant||0);},0);
+    var situ = DATA.situations ? DATA.situations.filter(function(si){ return convs.some(function(cv){return cv.id===si.convention_id;}); }).reduce(function(s,si){return s+(si.montant_valide||0);},0) : 0;
+    var solde401 = Math.max(0, totalTTC - avances - situ);
+    if (solde401 <= 0) return;
+    var anc = calcAncienneteFournisseur401(convs);
+    lignes401.push({ constr: constr, moisAnc: anc.moisAnc, solde: solde401 });
+  });
+  lignes401.sort(function(a,b){ return b.moisAnc - a.moisAnc; }); /* le plus ancien en premier */
+
+  var tb401 = document.getElementById('tbody-echeances-401');
+  if (tb401) {
+    var f401 = lignes401.filter(function(l){ var retard = l.moisAnc > 1; return !filtStatut || (filtStatut==='retard' ? retard : !retard); });
+    tb401.innerHTML = f401.length ? f401.map(function(l){
+      var retard = l.moisAnc > 1;
+      return '<tr' + (retard ? ' style="background:rgba(224,82,82,.07);"' : '') + '>'
+        + '<td>' + escHtml(l.constr.raison_sociale) + '</td>'
+        + '<td>' + Math.round(l.moisAnc) + ' mois</td>'
+        + '<td style="text-align:right;font-weight:600;">' + fmtF(l.solde) + ' FCFA</td>'
+        + '<td>' + (retard ? '<span style="color:var(--rouge);">⚠️ En retard</span>' : '<span style="color:var(--vert);">Courant</span>') + '</td>'
+        + '</tr>';
+    }).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--dim);padding:16px;">Aucune échéance fournisseur à afficher.</td></tr>';
+  }
+}
+window.buildTiersEcheances = buildTiersEcheances;
+
+function exportTiersEcheancesCSV() {
+  var rows = [['Type','Date/Ancienneté','Tiers','Montant','Statut']];
+  (document.querySelectorAll('#tbody-echeances-411 tr')||[]).forEach(function(tr){
+    var tds = tr.querySelectorAll('td');
+    if (tds.length >= 6) rows.push(['Client', tds[0].textContent, tds[1].textContent, tds[4].textContent, tds[5].textContent]);
+  });
+  (document.querySelectorAll('#tbody-echeances-401 tr')||[]).forEach(function(tr){
+    var tds = tr.querySelectorAll('td');
+    if (tds.length >= 4) rows.push(['Fournisseur', tds[1].textContent, tds[0].textContent, tds[2].textContent, tds[3].textContent]);
+  });
+  var csv = rows.map(function(r){ return r.map(function(c){ return '"' + String(c).replace(/"/g,'""') + '"'; }).join(';'); }).join('\n');
+  var blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+  var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'echeances-tiers-' + today() + '.csv'; a.click();
+}
+window.exportTiersEcheancesCSV = exportTiersEcheancesCSV;
+
 function immoSocCalc(im, year) {
   var dateAcq = new Date(im.date_acquisition);
   var anneeAcq = dateAcq.getFullYear();
@@ -59813,23 +59947,13 @@ function concReprendreDQE() {
   if (el) { el.value = total; concMajDQE(); toast('Coût repris du DQE : ' + fmtF(total) + ' F.', 'success'); }
 }
 
-/* ── Anti-doublon générique ────────────────────────────────────────────
-   Compare une valeur candidate à celles d'une liste existante (trim +
-   insensible à la casse) en excluant l'enregistrement en cours d'édition.
-   Retourne l'enregistrement en double s'il existe, sinon null. */
-function _trouverDoublon(liste, excludeId, matchFn){
-  return (liste||[]).find(function(x){ return x.id!==excludeId && matchFn(x); }) || null;
-}
 async function saveConception(){
   if(APP._savingConception)return; /* anti double-clic / double-tap mobile */
   APP._savingConception=true;
   try{
   var ref=document.getElementById('conc-ref').value.trim();var types=document.getElementById('conc-type-logements').value.trim();if(!ref||!types){toast('Référence et type obligatoires.','error');return;}
-  var progIdConc=document.getElementById('conc-programme').value;
-  var doublonConc=_trouverDoublon(DATA.conceptions, APP.editingId, function(x){ return x.programme_id===progIdConc && String(x.ref||'').trim().toLowerCase()===ref.toLowerCase(); });
-  if(doublonConc){ toast('Un projet de conception avec la référence « '+ref+' » existe déjà pour ce programme. Modifiez-le au lieu d\'en créer un doublon.','error'); return; }
   var phases=collectPhasesConception();var av=phases.length?Math.round(phases.reduce(function(s,p){return s+(p.pct||0);},0)/phases.length):0;
-  var c={id:APP.editingId||uid(),ref:ref,type_logements:types,nature:(document.getElementById('conc-nature')||{}).value||'villa',programme_id:progIdConc,architecte:document.getElementById('conc-architecte').value.trim(),surface:parseFloat(document.getElementById('conc-surface').value)||0,nb_unites:parseInt(document.getElementById('conc-nb-unites').value)||0,cout:parseFloat(document.getElementById('conc-cout').value)||0,phase:document.getElementById('conc-phase').value,statut:document.getElementById('conc-statut').value,date_debut:document.getElementById('conc-date-debut').value,date_fin:document.getElementById('conc-date-fin').value,description:document.getElementById('conc-description').value.trim(),phases:phases,avancement:av,created_at:APP.editingId?undefined:today()};
+  var c={id:APP.editingId||uid(),ref:ref,type_logements:types,nature:(document.getElementById('conc-nature')||{}).value||'villa',programme_id:document.getElementById('conc-programme').value,architecte:document.getElementById('conc-architecte').value.trim(),surface:parseFloat(document.getElementById('conc-surface').value)||0,nb_unites:parseInt(document.getElementById('conc-nb-unites').value)||0,cout:parseFloat(document.getElementById('conc-cout').value)||0,phase:document.getElementById('conc-phase').value,statut:document.getElementById('conc-statut').value,date_debut:document.getElementById('conc-date-debut').value,date_fin:document.getElementById('conc-date-fin').value,description:document.getElementById('conc-description').value.trim(),phases:phases,avancement:av,created_at:APP.editingId?undefined:today()};
   if(APP.editingId){var idx=DATA.conceptions.findIndex(function(x){return x.id===APP.editingId;});if(idx>=0)DATA.conceptions[idx]=c;}else{DATA.conceptions.push(c);APP.editingId=c.id;}
   await dbPut('conceptions',c);
   if (typeof syncToSupabase==='function') syncToSupabase('pi_conceptions', c);
@@ -59860,7 +59984,7 @@ function openPermis(id){
   document.getElementById('permis-modal-title').textContent=id?'Modifier permis':'Nouveau permis';
   document.getElementById('modal-permis').classList.add('open');
 }
-async function savePermis(){var num=document.getElementById('perm-numero').value.trim();if(!num){toast('N° permis obligatoire.','error');return;}var doublonPermis=_trouverDoublon(DATA.permis, APP.editingId, function(x){ return String(x.numero||'').trim().toLowerCase()===num.toLowerCase(); });if(doublonPermis){toast('Un permis portant le n° « '+num+' » existe déjà. Modifiez-le au lieu d\'en créer un doublon.','error');return;}var p={id:APP.editingId||uid(),numero:num,programme_id:document.getElementById('perm-programme').value,type_logement:document.getElementById('perm-type-logement').value.trim(),mairie:document.getElementById('perm-mairie').value.trim(),date_depot:document.getElementById('perm-date-depot').value,date_obtention:document.getElementById('perm-date-obtention').value,validite:parseInt(document.getElementById('perm-validite').value)||24,taxes:parseFloat(document.getElementById('perm-taxes').value)||0,surface:parseFloat(document.getElementById('perm-surface').value)||0,niveaux:parseInt(document.getElementById('perm-niveaux').value)||2,statut:document.getElementById('perm-statut').value,architecte:document.getElementById('perm-architecte').value.trim(),notes:document.getElementById('perm-notes').value.trim(),created_at:APP.editingId?undefined:today()};if(APP.editingId){var idx=DATA.permis.findIndex(function(x){return x.id===APP.editingId;});if(idx>=0)DATA.permis[idx]=p;}else DATA.permis.push(p);await dbPut('permis',p);closeModal('modal-permis');renderPermis();toast('Permis enregistré.','success');}
+async function savePermis(){var num=document.getElementById('perm-numero').value.trim();if(!num){toast('N° permis obligatoire.','error');return;}var p={id:APP.editingId||uid(),numero:num,programme_id:document.getElementById('perm-programme').value,type_logement:document.getElementById('perm-type-logement').value.trim(),mairie:document.getElementById('perm-mairie').value.trim(),date_depot:document.getElementById('perm-date-depot').value,date_obtention:document.getElementById('perm-date-obtention').value,validite:parseInt(document.getElementById('perm-validite').value)||24,taxes:parseFloat(document.getElementById('perm-taxes').value)||0,surface:parseFloat(document.getElementById('perm-surface').value)||0,niveaux:parseInt(document.getElementById('perm-niveaux').value)||2,statut:document.getElementById('perm-statut').value,architecte:document.getElementById('perm-architecte').value.trim(),notes:document.getElementById('perm-notes').value.trim(),created_at:APP.editingId?undefined:today()};if(APP.editingId){var idx=DATA.permis.findIndex(function(x){return x.id===APP.editingId;});if(idx>=0)DATA.permis[idx]=p;}else DATA.permis.push(p);await dbPut('permis',p);closeModal('modal-permis');renderPermis();toast('Permis enregistré.','success');}
 async function deletePermis(id){if(!confirm('Supprimer ce permis ?'))return;if(await deleteRecord('permis',id)===false)return;renderPermis();toast('Supprimé.','info');}
 
 /* ─── Plans architecturaux ─────────────────────────── */
@@ -69045,38 +69169,14 @@ async function sauvegarderPosteNomenclature() {
       ? ' Ajustement conservé lors des prochaines régénérations (métré calculé : ' + fmtF(updated._quantite_calculee) + ').'
       : ''), 'success');
   } else {
-    /* ── MODE CRÉATION (ou copie d'un poste par défaut) ──
-       Anti-doublon : une ligne portant déjà le même matériau/prestation pour
-       ce type de logement (et le même ouvrage lié, s'il y en a un) existe
-       peut-être déjà — on propose de cumuler la quantité dessus plutôt que
-       de créer une deuxième ligne identique. */
-    var existante = (DATA.nomenclatures||[]).find(function(n){
-      return n.type_logement === type
-          && String(n.materiau||'').trim().toLowerCase() === materiau.toLowerCase()
-          && String(n.poste||'').trim().toLowerCase() === (poste||'Divers').toLowerCase()
-          && (n.ouvrage_id || '') === (ouvrageId || '');
-    });
-    if (existante) {
-      if (!confirm('Une ligne « '+existante.materiau+' » existe déjà pour ce type de logement (quantité actuelle : '+existante.quantite+').\n\nCumuler la quantité saisie ('+quantite+') sur cette ligne au lieu de créer un doublon ?')) {
-        toast('Ajout annulé pour éviter un doublon.', 'info');
-      } else {
-        existante.quantite = (parseFloat(existante.quantite)||0) + quantite;
-        existante.prix_forfait = (parseFloat(existante.prix_forfait)||0) + forfait;
-        if (unite) existante.unite = unite;
-        if (ouvrageId) existante.ouvrage_id = ouvrageId;
-        await dbPut('nomenclatures', existante);
-        if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', existante);
-        toast('Quantité cumulée sur la ligne existante.','success');
-      }
-    } else {
-      var entry = { id: uid(), type_logement: type, poste: poste || 'Divers',
-                    materiau: materiau, unite: unite, quantite: quantite,
-                    prix_forfait: forfait, ouvrage_id: ouvrageId };
-      DATA.nomenclatures.push(entry);
-      await dbPut('nomenclatures', entry);
-      if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', entry);
-      toast('Poste ajouté.','success');
-    }
+    /* ── MODE CRÉATION (ou copie d'un poste par défaut) ── */
+    var entry = { id: uid(), type_logement: type, poste: poste || 'Divers',
+                  materiau: materiau, unite: unite, quantite: quantite,
+                  prix_forfait: forfait, ouvrage_id: ouvrageId };
+    DATA.nomenclatures.push(entry);
+    await dbPut('nomenclatures', entry);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', entry);
+    toast('Poste ajouté.','success');
   }
 
   APP._nomEditId = null;
@@ -69850,34 +69950,18 @@ function calcMatViderPanier() {
 async function calcMatEnvoyerNomenclature() {
   if (!CALC_PANIER.length) { toast('Le panier est vide.', 'info'); return; }
   var type = (document.getElementById('calc-type-logement') || {}).value || 'F2';
-  var n = 0, nCumules = 0;
+  var n = 0;
   for (var i = 0; i < CALC_PANIER.length; i++) {
     var l = CALC_PANIER[i];
-    /* Anti-doublon : si ce matériau est déjà dans la nomenclature de ce type,
-       on cumule la quantité au lieu de renvoyer une ligne en double — le
-       panier peut être envoyé plusieurs fois par erreur (double-tap, retour
-       en arrière puis renvoi). */
-    var existante = (DATA.nomenclatures||[]).find(function(n0){
-      return n0.type_logement === type
-          && String(n0.materiau||'').trim().toLowerCase() === String(l.materiau||'').trim().toLowerCase()
-          && String(n0.poste||'').trim().toLowerCase() === String(l.poste||'').trim().toLowerCase();
-    });
-    if (existante) {
-      existante.quantite = (parseFloat(existante.quantite)||0) + (parseFloat(l.quantite)||0);
-      await dbPut('nomenclatures', existante);
-      if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', existante);
-      nCumules++;
-    } else {
-      var entry = { id: uid(), type_logement: type, poste: l.poste, materiau: l.materiau, unite: l.unite, quantite: l.quantite, prix_forfait: 0 };
-      DATA.nomenclatures.push(entry);
-      await dbPut('nomenclatures', entry);
-      if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', entry);
-      n++;
-    }
+    var entry = { id: uid(), type_logement: type, poste: l.poste, materiau: l.materiau, unite: l.unite, quantite: l.quantite, prix_forfait: 0 };
+    DATA.nomenclatures.push(entry);
+    await dbPut('nomenclatures', entry);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_nomenclatures', entry);
+    n++;
   }
   CALC_PANIER = [];
   calcMatRenderPanier();
-  toast('✅ ' + n + ' poste(s) ajouté(s)' + (nCumules ? ' et ' + nCumules + ' cumulé(s) sur des lignes existantes' : '') + ' vers la nomenclature (' + type + ').', 'success');
+  toast('✅ ' + n + ' poste(s) envoyé(s) vers la nomenclature (' + type + ').', 'success');
   var selType = document.getElementById('dqe-type-logement');
   if (selType) selType.value = type;
   switchTab('dqe', 'nomenclature');
@@ -77378,23 +77462,15 @@ function openPlanModal(id) {
 async function savePlan() {
   var ref = document.getElementById('plan-ref').value.trim();
   if (!ref) { toast('Référence obligatoire.','error'); return; }
-  var progIdPlan = document.getElementById('plan-programme').value;
-  var versionPlan = document.getElementById('plan-version').value.trim()||'V1';
-  var doublonPlan = _trouverDoublon(DATA.plans_arch, APP.editingId, function(x){
-    return x.programme_id===progIdPlan
-        && String(x.ref||'').trim().toLowerCase()===ref.toLowerCase()
-        && String(x.version||'').trim().toLowerCase()===versionPlan.toLowerCase();
-  });
-  if (doublonPlan) { toast('Un plan « '+ref+' » en version « '+versionPlan+' » existe déjà pour ce programme. Modifiez-le, ou changez la version, au lieu d\'en créer un doublon.','error'); return; }
 
   var p = {
     id: APP.editingId || uid(),
     ref: ref,
-    programme_id: progIdPlan,
+    programme_id: document.getElementById('plan-programme').value,
     type: document.getElementById('plan-type').value,
     niveau: document.getElementById('plan-niveau').value,
     surface: parseFloat(document.getElementById('plan-surface').value)||0,
-    version: versionPlan,
+    version: document.getElementById('plan-version').value.trim()||'V1',
     architecte: document.getElementById('plan-architecte').value.trim(),
     date: document.getElementById('plan-date').value,
     statut: document.getElementById('plan-statut').value,
@@ -81932,25 +82008,28 @@ function edsRenderComp() {
 }
 
 async function edsSaveOuvrage() {
+  if (APP._savingOuvrage) return;
   var code = document.getElementById('eds-o-code').value.trim();
   var des = document.getElementById('eds-o-designation').value.trim();
   if (!code || !des) { toast('Code et désignation obligatoires', 'error'); return; }
-  var doublonOuvrage = _trouverDoublon(DATA.eds_ouvrages, _edsOuvrageId, function(x){ return String(x.code||'').trim().toLowerCase()===code.toLowerCase(); });
-  if (doublonOuvrage) { toast('Un ouvrage avec le code « '+code+' » existe déjà (« '+(doublonOuvrage.designation||'')+' »). Modifiez-le au lieu d\'en créer un doublon.', 'error'); return; }
-  var o = _edsOuvrageId ? DATA.eds_ouvrages.find(function(x) { return x.id === _edsOuvrageId; }) : null;
-  if (!o) { o = { id: 'ouv_' + uid() }; DATA.eds_ouvrages.push(o); }
-  o.code = code; o.designation = des;
-  o.unite = document.getElementById('eds-o-unite').value.trim();
-  o.categorie = document.getElementById('eds-o-categorie').value.trim();
-  o.ratio_base = (document.getElementById('eds-o-ratio-base')||{}).value || 'manuel';
-  o.ratio = parseFloat((document.getElementById('eds-o-ratio')||{}).value)||0;
-  o.composants = JSON.parse(JSON.stringify(_edsComp));
-  await dbPut('eds_ouvrages', o);
-  if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_ouvrages', o);
-  closeModal('modal-eds-ouvrage');
-  edsFillCatFilter(); edsRenderBib();
-  etudesLiveRefresh('eds_ouvrages');
-  toast('Ouvrage enregistré', 'success');
+  APP._savingOuvrage = true;
+  try {
+    var o = _edsOuvrageId ? DATA.eds_ouvrages.find(function(x) { return x.id === _edsOuvrageId; }) : null;
+    if (!o) { o = { id: 'ouv_' + uid() }; DATA.eds_ouvrages.push(o); }
+    _edsOuvrageId = o.id; /* [FIX] sans ça, un second clic sur un NOUVEL ouvrage en créait un second identique */
+    o.code = code; o.designation = des;
+    o.unite = document.getElementById('eds-o-unite').value.trim();
+    o.categorie = document.getElementById('eds-o-categorie').value.trim();
+    o.ratio_base = (document.getElementById('eds-o-ratio-base')||{}).value || 'manuel';
+    o.ratio = parseFloat((document.getElementById('eds-o-ratio')||{}).value)||0;
+    o.composants = JSON.parse(JSON.stringify(_edsComp));
+    await dbPut('eds_ouvrages', o);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_ouvrages', o);
+    closeModal('modal-eds-ouvrage');
+    edsFillCatFilter(); edsRenderBib();
+    etudesLiveRefresh('eds_ouvrages');
+    toast('Ouvrage enregistré', 'success');
+  } finally { APP._savingOuvrage = false; }
 }
 
 async function edsDeleteOuvrage(id) {
@@ -82358,25 +82437,29 @@ function edsRecalcEtude() {
 }
 
 async function edsSaveEtude() {
+  if (APP._savingEtude) return; /* anti-double-clic — sans ça, deux clics rapides sur une NOUVELLE étude en créaient deux */
   var nom = document.getElementById('eds-e-nom').value.trim();
   if (!nom) { toast('Intitulé obligatoire', 'error'); return; }
-  var progIdEtude = (document.getElementById('eds-e-programme') || {}).value || '';
-  var doublonEtude = _trouverDoublon(DATA.eds_etudes, _edsEtudeId, function(x){ return x.programme_id===progIdEtude && String(x.nom||'').trim().toLowerCase()===nom.toLowerCase(); });
-  if (doublonEtude) { toast('Une étude de prix « '+nom+' » existe déjà pour ce programme. Modifiez-la au lieu d\'en créer un doublon.', 'error'); return; }
-  var e = _edsEtudeId ? DATA.eds_etudes.find(function(x) { return x.id === _edsEtudeId; }) : null;
-  if (!e) { e = { id: 'eds_' + uid(), realisations: [] }; DATA.eds_etudes.push(e); }
-  e.nom = nom;
-  e.programme_id = progIdEtude;
-  e.date = document.getElementById('eds-e-date').value || today();
-  e.coef = edsCurrentCoef();
-  e.lignes = JSON.parse(JSON.stringify(_edsLignes));
-  if (!e.realisations) e.realisations = [];
-  await dbPut('eds_etudes', e);
-  if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_etudes', e);
-  closeModal('modal-eds-etude');
-  edsFillEtudeSelects(); edsRenderEtudes();
-  etudesLiveRefresh('eds_etudes');
-  toast('Étude enregistrée', 'success');
+  APP._savingEtude = true;
+  try {
+    var e = _edsEtudeId ? DATA.eds_etudes.find(function(x) { return x.id === _edsEtudeId; }) : null;
+    if (!e) { e = { id: 'eds_' + uid(), realisations: [] }; DATA.eds_etudes.push(e); }
+    _edsEtudeId = e.id; /* [FIX] sans cette ligne, un second clic sur "Enregistrer" avant fermeture du modal
+                            ne trouvait jamais l'étude tout juste créée (_edsEtudeId restait null) et en
+                            créait une seconde, identique — doublon silencieux. */
+    e.nom = nom;
+    e.programme_id = (document.getElementById('eds-e-programme') || {}).value || '';
+    e.date = document.getElementById('eds-e-date').value || today();
+    e.coef = edsCurrentCoef();
+    e.lignes = JSON.parse(JSON.stringify(_edsLignes));
+    if (!e.realisations) e.realisations = [];
+    await dbPut('eds_etudes', e);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_etudes', e);
+    closeModal('modal-eds-etude');
+    edsFillEtudeSelects(); edsRenderEtudes();
+    etudesLiveRefresh('eds_etudes');
+    toast('Étude enregistrée', 'success');
+  } finally { APP._savingEtude = false; }
 }
 
 async function edsDeleteEtude(id) {
@@ -87460,23 +87543,28 @@ function edsOpenRes(id) {
   openModal('modal-eds-res');
 }
 async function edsSaveRes() {
+  if (APP._savingRes) return;
   var code = document.getElementById('eds-res-code').value.trim();
   var lib = document.getElementById('eds-res-libelle').value.trim();
   if (!code || !lib) { toast('Code et libellé obligatoires', 'error'); return; }
-  var r = _edsResId ? DATA.eds_ressources.find(function(x){return x.id===_edsResId;}) : null;
-  if (!r) { r = { id:'res_'+uid() }; DATA.eds_ressources.push(r); }
-  r.code = code; r.libelle = lib;
-  r.type = document.getElementById('eds-res-type').value;
-  r.unite = document.getElementById('eds-res-unite').value.trim();
-  var _nouveauPu = parseFloat(document.getElementById('eds-res-pu').value) || 0;
-  if (_nouveauPu !== r.pu) r._prix_indicatif = false; /* prix confirmé/modifié à la main */
-  r.pu = _nouveauPu;
-  r.maj = today();
-  await dbPut('eds_ressources', r);
-  if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_ressources', r);
-  closeModal('modal-eds-res');
-  edsRenderRes(); edsRenderBib(); if(typeof chargerPrix==='function') chargerPrix();
-  toast('Ressource enregistrée — ouvrages recalculés', 'success');
+  APP._savingRes = true;
+  try {
+    var r = _edsResId ? DATA.eds_ressources.find(function(x){return x.id===_edsResId;}) : null;
+    if (!r) { r = { id:'res_'+uid() }; DATA.eds_ressources.push(r); }
+    _edsResId = r.id; /* [FIX] sans ça, un second clic sur une NOUVELLE ressource en créait une seconde identique */
+    r.code = code; r.libelle = lib;
+    r.type = document.getElementById('eds-res-type').value;
+    r.unite = document.getElementById('eds-res-unite').value.trim();
+    var _nouveauPu = parseFloat(document.getElementById('eds-res-pu').value) || 0;
+    if (_nouveauPu !== r.pu) r._prix_indicatif = false; /* prix confirmé/modifié à la main */
+    r.pu = _nouveauPu;
+    r.maj = today();
+    await dbPut('eds_ressources', r);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_ressources', r);
+    closeModal('modal-eds-res');
+    edsRenderRes(); edsRenderBib(); if(typeof chargerPrix==='function') chargerPrix();
+    toast('Ressource enregistrée — ouvrages recalculés', 'success');
+  } finally { APP._savingRes = false; }
 }
 async function edsDeleteRes(id) {
   var used = (DATA.eds_ouvrages||[]).some(function(o){ return (o.composants||[]).some(function(c){return c.res_id===id;}); });
@@ -90210,6 +90298,9 @@ function menuCalculer() {
 window.menuCalculer = menuCalculer;
 
 async function menuInjecterDQE() {
+  if (APP._injectionDQEEnCours) { toast('Une injection est déjà en cours — patientez.', 'info'); return; }
+  APP._injectionDQEEnCours = true;
+  try {
   var R = window._menuDernier;
   if (!R || !R.lignes.length) { toast('Aucune quantité à injecter.', 'error'); return; }
   var type = (document.getElementById('menu-type-logement')||{}).value || '';
@@ -90243,6 +90334,7 @@ async function menuInjecterDQE() {
   toast('✅ ' + n + ' poste(s) de menuiserie injecté(s) dans le DQE.', 'success');
   closeModal('modal-menuiserie');
   if (typeof chargerNomenclature === 'function') chargerNomenclature();
+  } finally { APP._injectionDQEEnCours = false; }
 }
 window.menuInjecterDQE = menuInjecterDQE;
 
@@ -90366,6 +90458,9 @@ function installCalculer() {
 window.installCalculer = installCalculer;
 
 async function installInjecterDQE() {
+  if (APP._injectionDQEEnCours) { toast('Une injection est déjà en cours — patientez.', 'info'); return; }
+  APP._injectionDQEEnCours = true;
+  try {
   var R = window._installDernier;
   if (!R || !R.lignes.length) { toast('Aucune quantité à injecter.', 'error'); return; }
   var type = (document.getElementById('install-type-logement')||{}).value || '';
@@ -90398,6 +90493,7 @@ async function installInjecterDQE() {
   toast('✅ ' + n + ' poste(s) d\'installation de chantier injecté(s) sur « ' + type + ' ».', 'success');
   closeModal('modal-installation');
   if (typeof chargerNomenclature === 'function') chargerNomenclature();
+  } finally { APP._injectionDQEEnCours = false; }
 }
 window.installInjecterDQE = installInjecterDQE;
 
@@ -90675,6 +90771,9 @@ function structRecalculer() {
 }
 
 async function structInjecterDQE() {
+  if (APP._injectionDQEEnCours) { toast('Une injection est déjà en cours — patientez.', 'info'); return; }
+  APP._injectionDQEEnCours = true;
+  try {
   var R = window._structDernier;
   if (!R || !R.lignes.length) { toast('Aucune quantité à injecter.', 'error'); return; }
   var type = (document.getElementById('str-type-logement')||{}).value || '';
@@ -90724,6 +90823,7 @@ async function structInjecterDQE() {
   var nomProg = ((DATA.programmes||[]).find(function(p){ return p.id === progId; }) || {}).nom || progId;
   toast(R.lignes.length + ' poste(s) structure injecté(s) dans le DQE « ' + type + ' » du programme « ' + nomProg + ' » — '
     + R.volume_beton + ' m³ de béton, ' + fmtF(R.poids_acier) + ' kg d\'acier.', 'success');
+  } finally { APP._injectionDQEEnCours = false; }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -91525,6 +91625,9 @@ function epRecalculer() {
 }
 
 async function epInjecterDQE() {
+  if (APP._injectionDQEEnCours) { toast('Une injection est déjà en cours — patientez.', 'info'); return; }
+  APP._injectionDQEEnCours = true;
+  try {
   var res = window._epDernier;
   var sel = (document.getElementById('ep-standing')||{}).value || 'eco';
   var type = (document.getElementById('ep-type-logement')||{}).value || '';
@@ -91567,6 +91670,7 @@ async function epInjecterDQE() {
   if (typeof chargerNomenclature === 'function') chargerNomenclature();
   toast(n + ' poste(s) électricité/plomberie injecté(s) — ' + EP_STANDINGS[sel].label + ' · '
     + fmtF(r.total) + ' F (dont ' + fmtF(r.totalGO) + ' F au gros œuvre).', 'success');
+  } finally { APP._injectionDQEEnCours = false; }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -91798,6 +91902,9 @@ function couvRecalculer() {
 }
 
 async function couvInjecterDQE() {
+  if (APP._injectionDQEEnCours) { toast('Une injection est déjà en cours — patientez.', 'info'); return; }
+  APP._injectionDQEEnCours = true;
+  try {
   var R = window._couvDernier;
   if (!R || !R.lignes.length) { toast('Aucune quantité à injecter.', 'error'); return; }
   var type = (document.getElementById('couv-type-logement')||{}).value || '';
@@ -91840,6 +91947,7 @@ async function couvInjecterDQE() {
   closeModal('modal-couverture');
   if (typeof chargerNomenclature === 'function') chargerNomenclature();
   toast(n + ' poste(s) charpente/couverture injecté(s) — ' + fmtF(R.total) + ' F.', 'success');
+  } finally { APP._injectionDQEEnCours = false; }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -92061,6 +92169,9 @@ function macRecalculer() {
 }
 
 async function macInjecterDQE() {
+  if (APP._injectionDQEEnCours) { toast('Une injection est déjà en cours — patientez.', 'info'); return; }
+  APP._injectionDQEEnCours = true;
+  try {
   var R = window._macDernier;
   if (!R || !R.lignes.length) { toast('Aucune quantité à injecter.', 'error'); return; }
   var type = (document.getElementById('mac-type-logement')||{}).value || '';
@@ -92100,6 +92211,7 @@ async function macInjecterDQE() {
   closeModal('modal-maconnerie');
   if (typeof chargerNomenclature === 'function') chargerNomenclature();
   toast(n + ' poste(s) maçonnerie/enduits/plafonds injecté(s) — ' + fmtF(R.total) + ' F.', 'success');
+  } finally { APP._injectionDQEEnCours = false; }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
