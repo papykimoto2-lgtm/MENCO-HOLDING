@@ -3722,6 +3722,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <button class="tab-btn" onclick="switchTiersTab('etat441')">44x État & Fisc</button>
             <button class="tab-btn" onclick="switchTiersTab('autres461')">461/462 Divers</button>
             <button class="tab-btn" onclick="switchTiersTab('echeances')" title="Vue chronologique consolidée, tous tiers confondus">📅 Échéances</button>
+            <button class="tab-btn" id="tiers-tab-btn-ventilation" onclick="switchTiersTab('ventilation')" title="Factures fournisseurs saisies par la caisse, en attente d'imputation comptable">🧾 Factures à ventiler</button>
           </div>
 
           <!-- 411 — Clients Souscripteurs -->
@@ -3896,7 +3897,22 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             </div>
           </div>
 
-          <!-- Échéances — vue chronologique consolidée -->
+          <!-- Factures fournisseurs à ventiler (saisies par la caisse) -->
+          <div id="tiers-pane-ventilation" style="display:none;">
+            <div class="card">
+              <div class="card-title">🧾 Factures fournisseurs en attente de ventilation</div>
+              <div style="font-size:11px;color:var(--dim);margin-bottom:10px;">Saisies rapidement par la caisse, sans compte comptable — à imputer ici.</div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr>
+                    <th>Facture</th><th>Fournisseur</th><th>Date</th><th>Échéance</th>
+                    <th>BC / Proforma</th><th>Montant</th><th>Pièces</th><th>Saisie par</th><th>Actions</th>
+                  </tr></thead>
+                  <tbody id="tbody-factures-ventiler"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
           <div id="tiers-pane-echeances" style="display:none;">
             <div class="filters-bar">
               <select class="filter-select" id="filter-echeances-statut" onchange="buildTiersEcheances()">
@@ -11183,6 +11199,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <div class="card-title" style="margin-bottom:2px;">💰 Comptabilité tiers</div>
               <div style="font-size:11px;color:var(--dim);">Balance auxiliaire · balance âgée · échéances</div>
             </div>
+            <button class="btn btn-primary btn-sm" onclick="facAttenteOuvrir()" title="Capture rapide — sans ventilation comptable, le comptable s'en chargera">🧾 Enregistrer une facture fournisseur</button>
             <input type="text" class="filter-select" id="caisse-tiers-recherche" placeholder="🔍 Rechercher..." style="width:180px;" oninput="caisseRenderBalanceAgee()">
             <select class="filter-select" id="caisse-tiers-division" style="display:none;" onchange="caisseRenderBalanceAgee()">
               <option value="">🏢 Toutes divisions</option>
@@ -21007,6 +21024,7 @@ var DATA = {
   bons_commande: [],
   receptions: [],
   factures_fournisseur: [],
+  factures_fournisseur_attente: [],
   validations: [],
   receptions_travaux: [],
   livraisons: [],
@@ -21027,7 +21045,7 @@ var DATA = {
    INDEXEDDB
 ────────────────────────────────────────────────────── */
 var DB_NAME = 'ImmoSuiteDB';
-var DB_VERSION = 143; /* v143: store 'masse_dxf_presets' (préréglages de mapping de calques DXF — import plan de masse multi-conventions) */
+var DB_VERSION = 144; /* v144: store 'factures_fournisseur_attente' (capture caissière, ventilation comptable différée) */
 var db = null;
 
 /* Liste COMPLÈTE et définitive de tous les stores */
@@ -21136,7 +21154,9 @@ var ALL_STORES = [
   /* v58 — Candidatures de financiers reçues par le portail */
   'af_manifestations',
   /* v143 — Préréglages de mapping de calques DXF (import plan de masse, multi-conventions) */
-  'masse_dxf_presets'
+  'masse_dxf_presets',
+  /* v144 — Factures fournisseurs en attente de ventilation (capture caissière) */
+  'factures_fournisseur_attente'
 ];
 
 function initDB() {
@@ -21523,7 +21543,7 @@ async function loadAllData() {
   'conges_rh','candidats_rh','postes_ouverts','formations_rh','paiements_online','baux',
   'quittances','loc_relances','diaspo_dossiers','diaspo_preuves','diaspo_jalons','diaspo_parts',
   'diaspo_ancrages','signalements','artisans','ordres_travaux','kyc_fiches','lbc_declarations',
-  'lbc_alertes','candidatures_loc','biens_locatifs','af_manifestations','masse_dxf_presets'
+  'lbc_alertes','candidatures_loc','biens_locatifs','af_manifestations','masse_dxf_presets','factures_fournisseur_attente'
   ];
   /* Chargement en PARALLÈLE plutôt que séquentiel : chaque dbGetAll() ouvre
      sa propre transaction IndexedDB 'readonly' indépendante (voir dbGetAll
@@ -22915,6 +22935,7 @@ function _filtrerFantomes(table, store, ids) {
 /* Correspondance table Supabase ↔ store local (IndexedDB / DATA) */
 var SUPA_STORE_MAP = [
   ['pi_masse_dxf_presets', 'masse_dxf_presets'],
+  ['pi_factures_fournisseur_attente', 'factures_fournisseur_attente'],
   ['pi_cout_gestion_exercices', 'cout_gestion_exercices'],
   ['pi_audit_log',        'audit_log'],
   ['pi_suppressions',     'suppressions_sync'],
@@ -32798,6 +32819,8 @@ function loadComptabilite() {
       if (btn) btn.style.display = 'none';
     });
     switchTab('compta', 'tiers');
+    var btnVentil = document.getElementById('tiers-tab-btn-ventilation');
+    if (btnVentil) btnVentil.style.display = 'none';
     return;
   }
   var yearEl = document.getElementById('filter-annee-compta');
@@ -54630,14 +54653,117 @@ goTo = function(page) {
 ══════════════════════════════════════════════════════ */
 
 /* ─── Navigation sub-onglets Tiers ─────────────────── */
+/* ══════════════════════════════════════════════════════
+   VENTILATION COMPTABLE — le comptable attribue les comptes débit/crédit
+   à chaque facture saisie par la caisse. À la validation, une écriture
+   réelle est créée (DATA.ecritures) et la facture bascule en "ventilee",
+   entrant alors dans la vraie balance 401. */
+function buildFacturesAVentiler() {
+  var tbody = document.getElementById('tbody-factures-ventiler');
+  if (!tbody) return;
+  var liste = (DATA.factures_fournisseur_attente||[]).filter(function(f){ return f.statut === 'en_attente_ventilation'; })
+    .sort(function(a,b){ return new Date(a.echeance) - new Date(b.echeance); });
+  tbody.innerHTML = liste.length ? liste.map(function(f){
+    var enRetard = new Date(f.echeance) < new Date();
+    return '<tr' + (enRetard ? ' style="background:rgba(224,82,82,.07);"' : '') + '>'
+      + '<td style="font-family:monospace;">' + escHtml(f.numero) + '</td>'
+      + '<td>' + escHtml(f.fournisseur) + '</td>'
+      + '<td>' + f.date + '</td>'
+      + '<td style="' + (enRetard ? 'color:var(--rouge);font-weight:700;' : '') + '">' + f.echeance + '</td>'
+      + '<td style="font-size:11px;color:var(--dim);">' + escHtml([f.bc,f.proforma].filter(Boolean).join(' · ') || '—') + '</td>'
+      + '<td style="text-align:right;font-weight:600;">' + fmtF(f.montant) + ' FCFA</td>'
+      + '<td>' + (f.documents && f.documents.length ? f.documents.map(function(d,i){ return '<a href="#" onclick="event.preventDefault();_faVoirDocument(\'' + f.id + '\',' + i + ')" title="' + escHtml(d.nom) + '">📎</a>'; }).join(' ') : '—') + '</td>'
+      + '<td style="font-size:11px;">' + escHtml(f.saisi_par||'') + '</td>'
+      + '<td><button class="btn btn-primary btn-sm" onclick="facVentilerOuvrir(\'' + f.id + '\')">📊 Ventiler</button></td>'
+      + '</tr>';
+  }).join('') : '<tr><td colspan="9" style="text-align:center;color:var(--dim);padding:20px;">Aucune facture en attente — la caisse est à jour.</td></tr>';
+}
+window.buildFacturesAVentiler = buildFacturesAVentiler;
+
+function _faVoirDocument(factureId, idx) {
+  var f = (DATA.factures_fournisseur_attente||[]).find(function(x){ return x.id===factureId; });
+  if (!f || !f.documents[idx]) return;
+  var d = f.documents[idx];
+  var win = window.open('');
+  if (d.mime.indexOf('image') === 0) win.document.write('<img src="' + d.data + '" style="max-width:100%;">');
+  else win.document.write('<iframe src="' + d.data + '" style="width:100%;height:100vh;border:none;"></iframe>');
+}
+window._faVoirDocument = _faVoirDocument;
+
+var _faVentilId = null;
+function facVentilerOuvrir(id) {
+  if (typeof initPlanComptable === 'function' && !(APP.planComptable && APP.planComptable.length)) initPlanComptable();
+  var f = (DATA.factures_fournisseur_attente||[]).find(function(x){ return x.id===id; });
+  if (!f) return;
+  _faVentilId = id;
+  var host = document.getElementById('fv-contenu');
+  if (!host) return;
+  host.innerHTML = '<div class="card" style="background:var(--card2);margin-bottom:14px;">'
+    + '<div><strong>' + escHtml(f.fournisseur) + '</strong> — Facture ' + escHtml(f.numero) + '</div>'
+    + '<div style="font-size:12px;color:var(--dim);">Date ' + f.date + ' · Échéance ' + f.echeance + (f.bc ? ' · BC ' + escHtml(f.bc) : '') + (f.proforma ? ' · Proforma ' + escHtml(f.proforma) : '') + '</div>'
+    + (f.note ? '<div style="font-size:12px;margin-top:4px;font-style:italic;">' + escHtml(f.note) + '</div>' : '')
+    + '<div style="font-size:16px;font-weight:700;margin-top:6px;color:var(--or);">' + fmtF(f.montant) + ' FCFA TTC</div>'
+    + '</div>'
+    + '<div class="form-grid">'
+    + '<div class="form-group"><label>Compte à débiter (charge)</label><input type="text" class="form-control" id="fv-compte-debit" list="fv-plan-comptable" placeholder="ex. 605, 622, 624..."></div>'
+    + '<div class="form-group"><label>Compte à créditer (fournisseur)</label><input type="text" class="form-control" id="fv-compte-credit" value="401" list="fv-plan-comptable"></div>'
+    + '<div class="form-group"><label>Montant HT</label><input type="number" class="form-control" id="fv-montant-ht" value="' + Math.round(f.montant/1.18) + '"></div>'
+    + '<div class="form-group"><label>TVA (18%)</label><input type="number" class="form-control" id="fv-tva" value="' + Math.round(f.montant - f.montant/1.18) + '"></div>'
+    + '<div class="form-group"><label>Compte TVA déductible</label><input type="text" class="form-control" id="fv-compte-tva" value="4452" list="fv-plan-comptable"></div>'
+    + '<div class="form-group"><label>Division</label><select class="form-control" id="fv-division"><option value="">—</option>' + (DATA.divisions||[]).map(function(d){return '<option value="'+d.id+'">'+escHtml(d.nom)+'</option>';}).join('') + '</select></div>'
+    + '</div>'
+    + '<datalist id="fv-plan-comptable">' + ((APP.planComptable)||[]).map(function(c){ return '<option value="' + escHtml(c.code) + '">' + escHtml(c.label||'') + '</option>'; }).join('') + '</datalist>';
+  openModal('modal-fac-ventilation');
+}
+window.facVentilerOuvrir = facVentilerOuvrir;
+
+async function facVentilerValider() {
+  var f = (DATA.factures_fournisseur_attente||[]).find(function(x){ return x.id === _faVentilId; });
+  if (!f) return;
+  var compteDebit = document.getElementById('fv-compte-debit').value.trim();
+  var compteCredit = document.getElementById('fv-compte-credit').value.trim() || '401';
+  var montantHT = parseFloat(document.getElementById('fv-montant-ht').value) || 0;
+  var tva = parseFloat(document.getElementById('fv-tva').value) || 0;
+  var compteTva = document.getElementById('fv-compte-tva').value.trim();
+  var division = document.getElementById('fv-division').value;
+  if (!compteDebit) { toast('Indiquez le compte de charge à débiter.', 'error'); return; }
+  if (Math.round(montantHT + tva) !== Math.round(f.montant)) {
+    if (!confirm('HT + TVA (' + fmtF(montantHT+tva) + ') ne correspond pas au montant TTC de la facture (' + fmtF(f.montant) + ').\n\nContinuer quand même ?')) return;
+  }
+
+  var lignes = [{ compte: compteDebit, libelle: 'Facture ' + f.numero + ' — ' + f.fournisseur, sens:'D', montant: Math.round(montantHT) }];
+  if (tva > 0 && compteTva) lignes.push({ compte: compteTva, libelle: 'TVA déductible s/ facture ' + f.numero, sens:'D', montant: Math.round(tva) });
+  lignes.push({ compte: compteCredit, libelle: 'Fournisseur ' + f.fournisseur + ' — facture ' + f.numero, sens:'C', montant: Math.round(montantHT + tva) });
+
+  var ecr = {
+    id: 'ecr_faa_' + f.id, date: f.date, journal: 'AC', type: 'od',
+    piece: f.numero, libelle: 'Facture fournisseur ' + f.numero + ' — ' + f.fournisseur,
+    lignes: lignes, division: division || '', date_echeance: f.echeance,
+    _source_facture_attente_id: f.id, created_at: new Date().toISOString()
+  };
+  DATA.ecritures.push(ecr);
+  await dbPut('ecritures', ecr);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecr);
+
+  f.statut = 'ventilee'; f.ecriture_id = ecr.id; f.ventile_par = (APP.currentUser && APP.currentUser.nom) || ''; f.ventile_le = new Date().toISOString();
+  await dbPut('factures_fournisseur_attente', f);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_factures_fournisseur_attente', f);
+
+  closeModal('modal-fac-ventilation');
+  toast('✅ Facture ventilée et comptabilisée.', 'success');
+  buildFacturesAVentiler();
+  if (typeof buildBalance === 'function') buildBalance();
+}
+window.facVentilerValider = facVentilerValider;
+
 function switchTiersTab(tab) {
-  ['clients411','acquereurs4111','fournisseurs401','personnel422','etat441','autres461','echeances'].forEach(function(t) {
+  ['clients411','acquereurs4111','fournisseurs401','personnel422','etat441','autres461','echeances','ventilation'].forEach(function(t) {
     var el = document.getElementById('tiers-pane-'+t);
     if (el) el.style.display = t===tab ? 'block' : 'none';
   });
   // Update sub-tab buttons
   var btns = document.querySelectorAll('#tab-compta-tiers .tab-nav .tab-btn');
-  var tabs = ['clients411','acquereurs4111','fournisseurs401','personnel422','etat441','autres461','echeances'];
+  var tabs = ['clients411','acquereurs4111','fournisseurs401','personnel422','etat441','autres461','echeances','ventilation'];
   btns.forEach(function(b,i){ b.classList.toggle('active', tabs[i]===tab); });
   // Load content
   if (tab==='clients411') buildTiers411();
@@ -54647,6 +54773,7 @@ function switchTiersTab(tab) {
   else if (tab==='etat441') buildTiersEtat();
   else if (tab==='autres461') buildTiers461();
   else if (tab==='echeances') buildTiersEcheances();
+  else if (tab==='ventilation') buildFacturesAVentiler();
 }
 
 /* ══════════════════════════════════════════════
@@ -102769,6 +102896,86 @@ function caisseRenderSyncBanner() {
 var _caisseTiersVue = 'agee';
 var _caisseTiersType = 'clients';
 
+/* ══════════════════════════════════════════════════════
+   FACTURES FOURNISSEURS — CAPTURE SANS VENTILATION
+   La caissière saisit rapidement (fournisseur, montant, dates, pièces
+   jointes) sans jamais choisir de compte comptable — le comptable
+   ventile ensuite dans un écran dédié (facVentilationOuvrirListe). Table
+   séparée de DATA.factures_fournisseur (module achats/stock, qui exige
+   une réception liée à un bon de commande — inadapté à une facture
+   ponctuelle comme un loyer ou une prestation). */
+var _faDocuments = [];
+
+function facAttenteOuvrir() {
+  _faDocuments = [];
+  ['fa-fournisseur','fa-numero','fa-montant','fa-bc','fa-proforma','fa-note'].forEach(function(id){ var e=document.getElementById(id); if(e) e.value=''; });
+  document.getElementById('fa-date').value = today();
+  document.getElementById('fa-echeance').value = '';
+  document.getElementById('fa-documents-liste').innerHTML = '';
+  var dl = document.getElementById('fa-fournisseurs-liste');
+  if (dl) dl.innerHTML = (DATA.constructeurs||[]).map(function(c){ return '<option value="'+escHtml(c.raison_sociale)+'">'; }).join('')
+    + (DATA.fournisseurs||[]).map(function(f){ return '<option value="'+escHtml(f.nom||f.raison_sociale||'')+'">'; }).join('');
+  openModal('modal-fac-attente');
+}
+window.facAttenteOuvrir = facAttenteOuvrir;
+
+async function facAttenteAjouterDocument(input) {
+  var fichiers = Array.from(input.files || []);
+  for (var i = 0; i < fichiers.length; i++) {
+    var f = fichiers[i];
+    if (f.size > 5*1024*1024) { toast('❌ « ' + f.name + ' » dépasse 5 Mo — ignoré.', 'error'); continue; }
+    var dataUrl = await new Promise(function(res){ var r = new FileReader(); r.onload = function(e){ res(e.target.result); }; r.readAsDataURL(f); });
+    _faDocuments.push({ id: uid(), nom: f.name, mime: f.type || 'application/octet-stream', taille: f.size, data: dataUrl });
+  }
+  input.value = '';
+  _facAttenteRenderDocuments();
+}
+window.facAttenteAjouterDocument = facAttenteAjouterDocument;
+
+function _facAttenteRenderDocuments() {
+  var host = document.getElementById('fa-documents-liste');
+  if (!host) return;
+  host.innerHTML = _faDocuments.map(function(d, i) {
+    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:var(--card2);border-radius:5px;margin-bottom:4px;font-size:11.5px;">'
+      + '<span>📎 ' + escHtml(d.nom) + ' <span style="color:var(--dim);">(' + Math.round(d.taille/1024) + ' Ko)</span></span>'
+      + '<button class="btn btn-danger btn-sm btn-icon" style="padding:1px 6px;" onclick="_faRetirerDocument(' + i + ')">✕</button></div>';
+  }).join('');
+}
+
+function _faRetirerDocument(i) { _faDocuments.splice(i, 1); _facAttenteRenderDocuments(); }
+window._faRetirerDocument = _faRetirerDocument;
+
+async function facAttenteSauver() {
+  var fournisseur = document.getElementById('fa-fournisseur').value.trim();
+  var numero = document.getElementById('fa-numero').value.trim();
+  var montant = parseFloat(document.getElementById('fa-montant').value) || 0;
+  var date = document.getElementById('fa-date').value;
+  var echeance = document.getElementById('fa-echeance').value;
+  if (!fournisseur || !numero || !montant || !date || !echeance) { toast('Fournisseur, N° facture, montant, date et échéance sont obligatoires.', 'error'); return; }
+  if (new Date(echeance) < new Date(date)) { toast('La date d\'échéance ne peut pas être antérieure à la date de la facture.', 'error'); return; }
+
+  var fa = {
+    id: 'faa_' + uid(),
+    fournisseur: fournisseur, numero: numero, montant: montant,
+    date: date, echeance: echeance,
+    bc: document.getElementById('fa-bc').value.trim(),
+    proforma: document.getElementById('fa-proforma').value.trim(),
+    note: document.getElementById('fa-note').value.trim(),
+    documents: _faDocuments,
+    statut: 'en_attente_ventilation',
+    saisi_par: (APP.currentUser && APP.currentUser.nom) || '',
+    saisi_le: new Date().toISOString(),
+    ecriture_id: null
+  };
+  DATA.factures_fournisseur_attente.push(fa);
+  await dbPut('factures_fournisseur_attente', fa);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_factures_fournisseur_attente', fa);
+  closeModal('modal-fac-attente');
+  toast('✅ Facture enregistrée — en attente de ventilation par le comptable.', 'success');
+  if (typeof caisseRenderBalanceAgee === 'function') caisseRenderBalanceAgee();
+}
+window.facAttenteSauver = facAttenteSauver;
+
 function caisseTiersSetVue(v) {
   _caisseTiersVue = v;
   var bAux = document.getElementById('caisse-tiers-btn-aux'), bAgee = document.getElementById('caisse-tiers-btn-agee');
@@ -102828,6 +103035,14 @@ function _caisseCollecterFournisseurs401() {
       if (convs[i].programme_id) divisionConv = (typeof _divisionDeProgramme === 'function') ? _divisionDeProgramme(convs[i].programme_id) : '';
     }
     out.push({ compte:'401', tiers: constr.raison_sociale, solde: solde, joursRetard: Math.round((anc.moisAnc||0) * 30.5), division: divisionConv });
+  });
+  /* Factures saisies par la caisse, pas encore ventilées par le comptable —
+     visibles ici avec l'échéance réelle qu'a tapée la caissière, pour que
+     la planification des paiements ne dépende pas du délai de ventilation. */
+  var today = new Date();
+  (DATA.factures_fournisseur_attente||[]).filter(function(f){ return f.statut === 'en_attente_ventilation'; }).forEach(function(f) {
+    var joursRetard = Math.round((today - new Date(f.echeance)) / (1000*60*60*24));
+    out.push({ compte:'401*', tiers: f.fournisseur + ' ⏳', solde: f.montant, joursRetard: joursRetard, division: '', nonVentilee: true });
   });
   return out;
 }
@@ -102891,7 +103106,7 @@ function caisseRenderBalanceAgee() {
       var row = { nonEchu:0, j0_30:0, j31_60:0, j61_90:0, plus90:0 };
       row[bucket] = l.solde;
       t[bucket] += l.solde; t.total += l.solde;
-      return '<tr><td style="font-family:monospace;">' + l.compte + '</td><td>' + escHtml(l.tiers) + '</td>'
+      return '<tr><td style="font-family:monospace;">' + l.compte + (l.nonVentilee ? ' <span title="Facture saisie par la caisse, en attente de ventilation comptable" style="color:var(--or);">⏳</span>' : '') + '</td><td>' + escHtml(l.tiers) + '</td>'
         + '<td style="font-size:11px;color:var(--dim);">' + (l.division ? escHtml(_nomDivision(l.division)) : '—') + '</td>'
         + '<td style="text-align:right;">' + (row.nonEchu ? fmtF(row.nonEchu) : '—') + '</td>'
         + '<td style="text-align:right;' + (bucket==='j0_30'?'color:var(--or);font-weight:600;':'') + '">' + (row.j0_30 ? fmtF(row.j0_30) : '—') + '</td>'
@@ -108408,6 +108623,60 @@ goTo = function(page) {
 </div>
 
 <!-- Modal : Installation de chantier — pré-dimensionnement (coût unique) -->
+<div class="modal-overlay" id="modal-fac-attente">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div>
+        <h3>🧾 Facture fournisseur — capture rapide</h3>
+        <div style="font-size:11px;color:var(--dim);">Sans ventilation comptable — le comptable attribuera les comptes débit/crédit ensuite.</div>
+      </div>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-fac-attente')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="form-group span-2">
+          <label>Fournisseur *</label>
+          <input type="text" class="form-control" id="fa-fournisseur" placeholder="Raison sociale du fournisseur" list="fa-fournisseurs-liste">
+          <datalist id="fa-fournisseurs-liste"></datalist>
+        </div>
+        <div class="form-group"><label>N° de facture *</label><input type="text" class="form-control" id="fa-numero"></div>
+        <div class="form-group"><label>Montant TTC (FCFA) *</label><input type="number" min="0" class="form-control" id="fa-montant"></div>
+        <div class="form-group"><label>Date de la facture *</label><input type="date" class="form-control" id="fa-date"></div>
+        <div class="form-group"><label>Date d'échéance *</label><input type="date" class="form-control" id="fa-echeance"></div>
+        <div class="form-group"><label>N° bon de commande</label><input type="text" class="form-control" id="fa-bc" placeholder="Si la facture répond à un BC"></div>
+        <div class="form-group"><label>N° proforma client</label><input type="text" class="form-control" id="fa-proforma" placeholder="Si générée par un proforma client"></div>
+        <div class="form-group span-2"><label>Note</label><textarea class="form-control" id="fa-note" rows="2" placeholder="Précisions utiles au comptable"></textarea></div>
+        <div class="form-group span-2">
+          <label>Documents joints (facture scannée, BC, proforma...)</label>
+          <input type="file" id="fa-fichier" accept=".pdf,.jpg,.jpeg,.png" onchange="facAttenteAjouterDocument(this)" multiple>
+          <div style="font-size:10px;color:var(--blanc-dim);margin-top:3px;">5 Mo max par fichier — PDF ou image.</div>
+          <div id="fa-documents-liste" style="margin-top:8px;"></div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-fac-attente')">Annuler</button>
+      <button class="btn btn-primary" onclick="facAttenteSauver()">💾 Enregistrer — à ventiler par le comptable</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Installation de chantier — pré-dimensionnement (coût unique) -->
+<!-- Modal : Ventilation comptable d'une facture fournisseur -->
+<div class="modal-overlay" id="modal-fac-ventilation">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3>📊 Ventilation comptable — Facture fournisseur</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-fac-ventilation')">✕</button>
+    </div>
+    <div class="modal-body" id="fv-contenu"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-fac-ventilation')">Annuler</button>
+      <button class="btn btn-primary" onclick="facVentilerValider()">✅ Valider et comptabiliser</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-installation">
   <div class="modal modal-lg">
     <div class="modal-header">
