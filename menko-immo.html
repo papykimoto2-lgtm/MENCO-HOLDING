@@ -11175,6 +11175,36 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         <div id="caisse-ecarts-box" style="margin-top:24px;"></div>
 
         <div id="caisse-ventilation-box" style="margin-top:24px;"></div>
+
+        <!-- ══ Balance auxiliaire · balance âgée · échéances (pour planifier les paiements depuis la caisse) ══ -->
+        <div class="card" style="margin-top:24px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:4px;">
+            <div>
+              <div class="card-title" style="margin-bottom:2px;">💰 Comptabilité tiers</div>
+              <div style="font-size:11px;color:var(--dim);">Balance auxiliaire · balance âgée · échéances</div>
+            </div>
+            <input type="text" class="filter-select" id="caisse-tiers-recherche" placeholder="🔍 Rechercher..." style="width:180px;" oninput="caisseRenderBalanceAgee()">
+            <button class="btn btn-secondary btn-sm" onclick="window.print()">🖨️ Imprimer</button>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;justify-content:space-between;">
+            <div style="display:flex;gap:6px;">
+              <button class="btn btn-sm" id="caisse-tiers-btn-aux" onclick="caisseTiersSetVue('aux')" style="border:1px solid var(--or);">Balance auxiliaire</button>
+              <button class="btn btn-sm" id="caisse-tiers-btn-agee" onclick="caisseTiersSetVue('agee')" style="border:1px solid var(--or);background:var(--or);color:#fff;">Balance âgée</button>
+            </div>
+            <div style="display:flex;gap:6px;">
+              <button class="btn btn-sm" id="caisse-tiers-btn-clients" onclick="caisseTiersSetType('clients')" style="border:1px solid var(--or);background:var(--or);color:#fff;">Clients</button>
+              <button class="btn btn-sm" id="caisse-tiers-btn-fourn" onclick="caisseTiersSetType('fournisseurs')" style="border:1px solid var(--or);">Fournisseurs</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="caisse-tiers-table">
+              <thead id="caisse-tiers-thead"></thead>
+              <tbody id="caisse-tiers-tbody"></tbody>
+              <tfoot id="caisse-tiers-tfoot"></tfoot>
+            </table>
+          </div>
+          <div style="font-size:10.5px;color:var(--dim);margin-top:8px;">Échéance = date de contrat + délai de règlement du tiers. Postes soldés exclus.</div>
+        </div>
       </div>
 
       <!-- ══ PRÉVISIONNEL / BUSINESS PLAN BANCAIRE ══════════ -->
@@ -32733,6 +32763,28 @@ function _comptaDivisionFilter() {
 }
 
 function loadComptabilite() {
+  /* La caissière a accès au module Comptabilite (uniquement pour consulter
+     les comptes tiers — balance auxiliaire, balance âgée, échéances) mais
+     ne doit voir ni saisir d'écritures, ni consulter le bilan/la TVA/le
+     grand livre. Le système de permissions ne descend qu'au niveau du
+     module, pas de l'onglet — restriction posée ici pour ne pas exposer
+     tout le reste de la comptabilité à un rôle de caisse. */
+  if (APP.currentUser && APP.currentUser.role === 'caissiere') {
+    var tabs = document.getElementById('compta-tabs');
+    if (tabs) {
+      tabs.querySelectorAll('.tab-btn').forEach(function(b) {
+        var estTiers = b.getAttribute('onclick') && b.getAttribute('onclick').indexOf("'tiers'") !== -1;
+        b.style.display = estTiers ? '' : 'none';
+      });
+    }
+    /* Actions de saisie/validation comptable — hors périmètre d'un rôle caisse */
+    ['openEcritureModal()','ouvrirVisaEcritures()','openAuditIACompta()','exportJournalCSV()','etatJournal()',"openFlux('finance')"].forEach(function(onclickVal) {
+      var btn = document.querySelector('.page-header button[onclick="' + onclickVal + '"]');
+      if (btn) btn.style.display = 'none';
+    });
+    switchTab('compta', 'tiers');
+    return;
+  }
   var yearEl = document.getElementById('filter-annee-compta');
   if (!yearEl.options.length) {
     var currentYear = new Date().getFullYear();
@@ -38906,7 +38958,7 @@ var SYSTEM_ROLES = {
   caissiere:  { id:'caissiere',  label:'Caissière',      icon:'💰', level:1, system:true,
     peut_supprimer: false,
     permissions: Object.fromEntries(ALL_MODULES.map(function(m){
-      return [m, ['Caisse','Messagerie'].includes(m)]; })) },
+      return [m, ['Caisse','Messagerie','Comptabilite'].includes(m)]; })) },
 };
 
 /* Instantané des rôles système AVANT toute surcharge. loadCustomRoles() mutait
@@ -102667,6 +102719,123 @@ function caisseRenderSyncBanner() {
 }
 
 /* ── Entrée sur la page ──────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════
+   BALANCE AUXILIAIRE · BALANCE ÂGÉE · ÉCHÉANCES — depuis la Caisse
+   Format aligné sur SANIX ComptaPro (colonnes Non échu/0-30/31-60/61-90/+90j)
+   pour que la caissière planifie ses paiements sans quitter son module.
+   Réutilise les mêmes sources que Comptabilité → Comptes tiers (411/401),
+   pas une seconde logique de calcul parallèle. */
+var _caisseTiersVue = 'agee';
+var _caisseTiersType = 'clients';
+
+function caisseTiersSetVue(v) {
+  _caisseTiersVue = v;
+  var bAux = document.getElementById('caisse-tiers-btn-aux'), bAgee = document.getElementById('caisse-tiers-btn-agee');
+  if (bAux) { bAux.style.background = v==='aux' ? 'var(--or)' : ''; bAux.style.color = v==='aux' ? '#fff' : ''; }
+  if (bAgee) { bAgee.style.background = v==='agee' ? 'var(--or)' : ''; bAgee.style.color = v==='agee' ? '#fff' : ''; }
+  caisseRenderBalanceAgee();
+}
+window.caisseTiersSetVue = caisseTiersSetVue;
+
+function caisseTiersSetType(t) {
+  _caisseTiersType = t;
+  var bC = document.getElementById('caisse-tiers-btn-clients'), bF = document.getElementById('caisse-tiers-btn-fourn');
+  if (bC) { bC.style.background = t==='clients' ? 'var(--or)' : ''; bC.style.color = t==='clients' ? '#fff' : ''; }
+  if (bF) { bF.style.background = t==='fournisseurs' ? 'var(--or)' : ''; bF.style.color = t==='fournisseurs' ? '#fff' : ''; }
+  caisseRenderBalanceAgee();
+}
+window.caisseTiersSetType = caisseTiersSetType;
+
+function _caisseCollecterClients411() {
+  var today = new Date();
+  var out = [];
+  (DATA.clients||[]).forEach(function(c) {
+    var versements = (DATA.versements||[]).filter(function(v){ return v.client_id===c.id; });
+    var totalVerse = versements.reduce(function(s,v){return s+(v.montant||0);},0);
+    var solde = (c.montant_total||0) - totalVerse;
+    if (solde <= 0) return;
+    var mensualite = c.mensualite || 0;
+    var joursRetard = 0;
+    if (mensualite > 0) {
+      var dateDebut = c.date_debut ? new Date(c.date_debut) : new Date('2023-01-01');
+      var moisEcoules = Math.floor((today - dateDebut) / (1000*60*60*24*30.5));
+      var attendu = Math.min(c.montant_total||0, (c.apport||0) + mensualite*moisEcoules);
+      joursRetard = Math.max(0, Math.round((attendu - totalVerse) / Math.max(mensualite,1) * 30.5));
+    }
+    out.push({ compte:'411', tiers: ((c.prenoms||'')+' '+(c.nom||'')).trim() || c.dossier || c.id, solde: solde, joursRetard: joursRetard });
+  });
+  return out;
+}
+
+function _caisseCollecterFournisseurs401() {
+  var out = [];
+  (DATA.constructeurs||[]).forEach(function(constr) {
+    var convs = (DATA.conventions||[]).filter(function(cv){ return cv.constructeur_id===constr.id; });
+    if (!convs.length) return;
+    var totalTTC = convs.reduce(function(s,cv){return s+(cv.montant_ttc||0);},0);
+    var avances = convs.reduce(function(s,cv){return s+(cv.avance_montant||0);},0);
+    var situ = (DATA.situations||[]).filter(function(si){ return convs.some(function(cv){return cv.id===si.convention_id;}); }).reduce(function(s,si){return s+(si.montant_valide||0);},0);
+    var solde = Math.max(0, totalTTC - avances - situ);
+    if (solde <= 0) return;
+    var anc = (typeof calcAncienneteFournisseur401 === 'function') ? calcAncienneteFournisseur401(convs) : { moisAnc: 0 };
+    out.push({ compte:'401', tiers: constr.raison_sociale, solde: solde, joursRetard: Math.round((anc.moisAnc||0) * 30.5) });
+  });
+  return out;
+}
+
+function _caisseBucketAge(joursRetard) {
+  if (joursRetard <= 0) return 'nonEchu';
+  if (joursRetard <= 30) return 'j0_30';
+  if (joursRetard <= 60) return 'j31_60';
+  if (joursRetard <= 90) return 'j61_90';
+  return 'plus90';
+}
+
+function caisseRenderBalanceAgee() {
+  var thead = document.getElementById('caisse-tiers-thead');
+  var tbody = document.getElementById('caisse-tiers-tbody');
+  var tfoot = document.getElementById('caisse-tiers-tfoot');
+  if (!thead || !tbody || !tfoot) return;
+
+  var recherche = ((document.getElementById('caisse-tiers-recherche')||{}).value || '').toLowerCase();
+  var lignes = (_caisseTiersType === 'clients' ? _caisseCollecterClients411() : _caisseCollecterFournisseurs401())
+    .filter(function(l){ return !recherche || l.tiers.toLowerCase().indexOf(recherche) !== -1; })
+    .sort(function(a,b){ return b.joursRetard - a.joursRetard; });
+
+  if (_caisseTiersVue === 'aux') {
+    thead.innerHTML = '<tr><th>Compte</th><th>Tiers</th><th style="text-align:right;">Solde</th></tr>';
+    var total = 0;
+    tbody.innerHTML = lignes.length ? lignes.map(function(l){
+      total += l.solde;
+      return '<tr><td style="font-family:monospace;">' + l.compte + '</td><td>' + escHtml(l.tiers) + '</td>'
+        + '<td style="text-align:right;font-weight:600;">' + fmtF(l.solde) + ' FCFA</td></tr>';
+    }).join('') : '<tr><td colspan="3" style="text-align:center;color:var(--dim);padding:20px;">Aucun encours</td></tr>';
+    tfoot.innerHTML = '<tr style="font-weight:700;background:var(--card2);"><td colspan="2">TOTAL</td><td style="text-align:right;">' + fmtF(total) + ' FCFA</td></tr>';
+  } else {
+    thead.innerHTML = '<tr><th>Compte</th><th>Tiers</th><th style="text-align:right;">Non échu</th><th style="text-align:right;">0-30 j</th>'
+      + '<th style="text-align:right;">31-60 j</th><th style="text-align:right;">61-90 j</th><th style="text-align:right;">+90 j</th><th style="text-align:right;">Total</th></tr>';
+    var t = { nonEchu:0, j0_30:0, j31_60:0, j61_90:0, plus90:0, total:0 };
+    tbody.innerHTML = lignes.length ? lignes.map(function(l){
+      var bucket = _caisseBucketAge(l.joursRetard);
+      var row = { nonEchu:0, j0_30:0, j31_60:0, j61_90:0, plus90:0 };
+      row[bucket] = l.solde;
+      t[bucket] += l.solde; t.total += l.solde;
+      return '<tr><td style="font-family:monospace;">' + l.compte + '</td><td>' + escHtml(l.tiers) + '</td>'
+        + '<td style="text-align:right;">' + (row.nonEchu ? fmtF(row.nonEchu) : '—') + '</td>'
+        + '<td style="text-align:right;' + (bucket==='j0_30'?'color:var(--or);font-weight:600;':'') + '">' + (row.j0_30 ? fmtF(row.j0_30) : '—') + '</td>'
+        + '<td style="text-align:right;' + (bucket==='j31_60'?'color:var(--or);font-weight:600;':'') + '">' + (row.j31_60 ? fmtF(row.j31_60) : '—') + '</td>'
+        + '<td style="text-align:right;' + (bucket==='j61_90'?'color:var(--rouge);font-weight:600;':'') + '">' + (row.j61_90 ? fmtF(row.j61_90) : '—') + '</td>'
+        + '<td style="text-align:right;' + (bucket==='plus90'?'color:var(--rouge);font-weight:700;':'') + '">' + (row.plus90 ? fmtF(row.plus90) : '—') + '</td>'
+        + '<td style="text-align:right;font-weight:700;">' + fmtF(l.solde) + '</td></tr>';
+    }).join('') : '<tr><td colspan="8" style="text-align:center;color:var(--dim);padding:20px;">Aucun encours</td></tr>';
+    tfoot.innerHTML = '<tr style="font-weight:700;background:var(--card2);"><td colspan="2">TOTAL</td>'
+      + '<td style="text-align:right;">' + fmtF(t.nonEchu) + '</td><td style="text-align:right;">' + fmtF(t.j0_30) + '</td>'
+      + '<td style="text-align:right;">' + fmtF(t.j31_60) + '</td><td style="text-align:right;">' + fmtF(t.j61_90) + '</td>'
+      + '<td style="text-align:right;">' + fmtF(t.plus90) + '</td><td style="text-align:right;">' + fmtF(t.total) + '</td></tr>';
+  }
+}
+window.caisseRenderBalanceAgee = caisseRenderBalanceAgee;
+
 async function caisseEnter() {
   var btnNew = document.getElementById('btn-caisse-nouvelle');
   if (btnNew) btnNew.style.display = caisseRoleAdminLike() ? '' : 'none';
@@ -102675,6 +102844,7 @@ async function caisseEnter() {
   document.getElementById('caisse-brouillard-box').innerHTML = '';
   caisseRenderEcarts();
   caisseRenderValidations();
+  caisseRenderBalanceAgee();
   await caisseLoadDocIndex();
   caisseRenderVentilation();
   try { await caisseSyncPreflight(); } catch(e){}
