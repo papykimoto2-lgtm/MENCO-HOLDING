@@ -11184,6 +11184,9 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <div style="font-size:11px;color:var(--dim);">Balance auxiliaire · balance âgée · échéances</div>
             </div>
             <input type="text" class="filter-select" id="caisse-tiers-recherche" placeholder="🔍 Rechercher..." style="width:180px;" oninput="caisseRenderBalanceAgee()">
+            <select class="filter-select" id="caisse-tiers-division" style="display:none;" onchange="caisseRenderBalanceAgee()">
+              <option value="">🏢 Toutes divisions</option>
+            </select>
             <button class="btn btn-secondary btn-sm" onclick="window.print()">🖨️ Imprimer</button>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;justify-content:space-between;">
@@ -102762,7 +102765,8 @@ function _caisseCollecterClients411() {
       var attendu = Math.min(c.montant_total||0, (c.apport||0) + mensualite*moisEcoules);
       joursRetard = Math.max(0, Math.round((attendu - totalVerse) / Math.max(mensualite,1) * 30.5));
     }
-    out.push({ compte:'411', tiers: ((c.prenoms||'')+' '+(c.nom||'')).trim() || c.dossier || c.id, solde: solde, joursRetard: joursRetard });
+    out.push({ compte:'411', tiers: ((c.prenoms||'')+' '+(c.nom||'')).trim() || c.dossier || c.id, solde: solde, joursRetard: joursRetard,
+               division: (typeof _divisionDeProgramme === 'function') ? _divisionDeProgramme(c.programme_id) : '' });
   });
   return out;
 }
@@ -102778,7 +102782,14 @@ function _caisseCollecterFournisseurs401() {
     var solde = Math.max(0, totalTTC - avances - situ);
     if (solde <= 0) return;
     var anc = (typeof calcAncienneteFournisseur401 === 'function') ? calcAncienneteFournisseur401(convs) : { moisAnc: 0 };
-    out.push({ compte:'401', tiers: constr.raison_sociale, solde: solde, joursRetard: Math.round((anc.moisAnc||0) * 30.5) });
+    /* Une convention peut viser plusieurs programmes — division de la première
+       convention avec un programme renseigné, repli raisonnable pour un
+       fournisseur qui n'interviendrait normalement pas sur deux entités à la fois. */
+    var divisionConv = '';
+    for (var i = 0; i < convs.length && !divisionConv; i++) {
+      if (convs[i].programme_id) divisionConv = (typeof _divisionDeProgramme === 'function') ? _divisionDeProgramme(convs[i].programme_id) : '';
+    }
+    out.push({ compte:'401', tiers: constr.raison_sociale, solde: solde, joursRetard: Math.round((anc.moisAnc||0) * 30.5), division: divisionConv });
   });
   return out;
 }
@@ -102797,22 +102808,44 @@ function caisseRenderBalanceAgee() {
   var tfoot = document.getElementById('caisse-tiers-tfoot');
   if (!thead || !tbody || !tfoot) return;
 
+  /* Filtre division — même convention que Comptabilité → division imposée
+     si le rôle de l'utilisateur en restreint une, sinon libre. */
+  var divEl = document.getElementById('caisse-tiers-division');
+  if (divEl) {
+    if ((DATA.divisions || []).length > 1) {
+      divEl.style.display = '';
+      if (divEl.options.length !== DATA.divisions.length + 1) {
+        var curVal = divEl.value;
+        divEl.innerHTML = '<option value="">🏢 Toutes divisions</option>'
+          + DATA.divisions.map(function(d){ return '<option value="' + d.id + '">' + escHtml(d.nom) + '</option>'; }).join('');
+        divEl.value = curVal;
+      }
+    } else {
+      divEl.style.display = 'none'; divEl.value = '';
+    }
+  }
+  var _scopeImpose = (typeof userScopeDivision === 'function') ? userScopeDivision() : '';
+  var divisionF = _scopeImpose || (divEl ? divEl.value : '');
+  if (_scopeImpose && divEl) { divEl.value = _scopeImpose; divEl.disabled = true; }
+
   var recherche = ((document.getElementById('caisse-tiers-recherche')||{}).value || '').toLowerCase();
   var lignes = (_caisseTiersType === 'clients' ? _caisseCollecterClients411() : _caisseCollecterFournisseurs401())
     .filter(function(l){ return !recherche || l.tiers.toLowerCase().indexOf(recherche) !== -1; })
+    .filter(function(l){ return !divisionF || l.division === divisionF; })
     .sort(function(a,b){ return b.joursRetard - a.joursRetard; });
 
   if (_caisseTiersVue === 'aux') {
-    thead.innerHTML = '<tr><th>Compte</th><th>Tiers</th><th style="text-align:right;">Solde</th></tr>';
+    thead.innerHTML = '<tr><th>Compte</th><th>Tiers</th><th>Division</th><th style="text-align:right;">Solde</th></tr>';
     var total = 0;
     tbody.innerHTML = lignes.length ? lignes.map(function(l){
       total += l.solde;
       return '<tr><td style="font-family:monospace;">' + l.compte + '</td><td>' + escHtml(l.tiers) + '</td>'
+        + '<td style="font-size:11px;color:var(--dim);">' + (l.division ? escHtml(_nomDivision(l.division)) : '—') + '</td>'
         + '<td style="text-align:right;font-weight:600;">' + fmtF(l.solde) + ' FCFA</td></tr>';
-    }).join('') : '<tr><td colspan="3" style="text-align:center;color:var(--dim);padding:20px;">Aucun encours</td></tr>';
-    tfoot.innerHTML = '<tr style="font-weight:700;background:var(--card2);"><td colspan="2">TOTAL</td><td style="text-align:right;">' + fmtF(total) + ' FCFA</td></tr>';
+    }).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--dim);padding:20px;">Aucun encours</td></tr>';
+    tfoot.innerHTML = '<tr style="font-weight:700;background:var(--card2);"><td colspan="3">TOTAL</td><td style="text-align:right;">' + fmtF(total) + ' FCFA</td></tr>';
   } else {
-    thead.innerHTML = '<tr><th>Compte</th><th>Tiers</th><th style="text-align:right;">Non échu</th><th style="text-align:right;">0-30 j</th>'
+    thead.innerHTML = '<tr><th>Compte</th><th>Tiers</th><th>Division</th><th style="text-align:right;">Non échu</th><th style="text-align:right;">0-30 j</th>'
       + '<th style="text-align:right;">31-60 j</th><th style="text-align:right;">61-90 j</th><th style="text-align:right;">+90 j</th><th style="text-align:right;">Total</th></tr>';
     var t = { nonEchu:0, j0_30:0, j31_60:0, j61_90:0, plus90:0, total:0 };
     tbody.innerHTML = lignes.length ? lignes.map(function(l){
@@ -102821,14 +102854,15 @@ function caisseRenderBalanceAgee() {
       row[bucket] = l.solde;
       t[bucket] += l.solde; t.total += l.solde;
       return '<tr><td style="font-family:monospace;">' + l.compte + '</td><td>' + escHtml(l.tiers) + '</td>'
+        + '<td style="font-size:11px;color:var(--dim);">' + (l.division ? escHtml(_nomDivision(l.division)) : '—') + '</td>'
         + '<td style="text-align:right;">' + (row.nonEchu ? fmtF(row.nonEchu) : '—') + '</td>'
         + '<td style="text-align:right;' + (bucket==='j0_30'?'color:var(--or);font-weight:600;':'') + '">' + (row.j0_30 ? fmtF(row.j0_30) : '—') + '</td>'
         + '<td style="text-align:right;' + (bucket==='j31_60'?'color:var(--or);font-weight:600;':'') + '">' + (row.j31_60 ? fmtF(row.j31_60) : '—') + '</td>'
         + '<td style="text-align:right;' + (bucket==='j61_90'?'color:var(--rouge);font-weight:600;':'') + '">' + (row.j61_90 ? fmtF(row.j61_90) : '—') + '</td>'
         + '<td style="text-align:right;' + (bucket==='plus90'?'color:var(--rouge);font-weight:700;':'') + '">' + (row.plus90 ? fmtF(row.plus90) : '—') + '</td>'
         + '<td style="text-align:right;font-weight:700;">' + fmtF(l.solde) + '</td></tr>';
-    }).join('') : '<tr><td colspan="8" style="text-align:center;color:var(--dim);padding:20px;">Aucun encours</td></tr>';
-    tfoot.innerHTML = '<tr style="font-weight:700;background:var(--card2);"><td colspan="2">TOTAL</td>'
+    }).join('') : '<tr><td colspan="9" style="text-align:center;color:var(--dim);padding:20px;">Aucun encours</td></tr>';
+    tfoot.innerHTML = '<tr style="font-weight:700;background:var(--card2);"><td colspan="3">TOTAL</td>'
       + '<td style="text-align:right;">' + fmtF(t.nonEchu) + '</td><td style="text-align:right;">' + fmtF(t.j0_30) + '</td>'
       + '<td style="text-align:right;">' + fmtF(t.j31_60) + '</td><td style="text-align:right;">' + fmtF(t.j61_90) + '</td>'
       + '<td style="text-align:right;">' + fmtF(t.plus90) + '</td><td style="text-align:right;">' + fmtF(t.total) + '</td></tr>';
