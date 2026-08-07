@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.64 · 2026-08-01 — correctif anti-double-réservation';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.65 · 2026-08-07 — fournisseurs entreprise/personne physique';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -4898,9 +4898,11 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="modal-header"><div class="modal-title">🏢 Fournisseurs (matériaux)</div><button class="modal-close" onclick="closeModal('modal-fournisseurs')">✕</button></div>
           <div class="modal-body">
             <div class="form-grid" style="grid-template-columns:1fr 1fr;">
-              <div class="form-group span-2"><label>Raison sociale *</label><input class="form-control" id="fo-nom"></div>
-              <div class="form-group"><label>RCCM</label><input class="form-control" id="fo-rccm"></div>
-              <div class="form-group"><label>NCC</label><input class="form-control" id="fo-ncc"></div>
+              <div class="form-group span-2"><label>Type</label><select class="form-control" id="fo-typetiers" onchange="fournisseurTypeToggle()"><option value="entreprise">🏢 Entreprise</option><option value="physique">👤 Personne physique</option></select></div>
+              <div class="form-group span-2"><label id="fo-nom-label">Raison sociale *</label><input class="form-control" id="fo-nom"></div>
+              <div class="form-group" id="fo-wrap-rccm"><label>RCCM</label><input class="form-control" id="fo-rccm"></div>
+              <div class="form-group" id="fo-wrap-ncc"><label>NCC</label><input class="form-control" id="fo-ncc"></div>
+              <div class="form-group" id="fo-wrap-cni" style="display:none;"><label>N° CNI / Pièce</label><input class="form-control" id="fo-cni"></div>
               <div class="form-group"><label>Contact / Tél</label><input class="form-control" id="fo-contact"></div>
               <div class="form-group"><label>Compte (401x)</label><input class="form-control" id="fo-compte" placeholder="401"></div>
               <div class="form-group span-2"><label style="font-weight:normal;font-size:12px;"><input type="checkbox" id="fo-airsi" style="margin-right:6px;"> Soumis à l'AIRSI (retenue à la source)</label></div>
@@ -87416,9 +87418,19 @@ function stockEntreeModeToggle(){
   var mode=document.getElementById('se-mode').value;
   document.getElementById('se-tresorerie-wrap').style.display=(mode==='comptant')?'block':'none';
 }
+function fournisseurTypeToggle(){
+  var t=document.getElementById('fo-typetiers').value;
+  var phys=(t==='physique');
+  document.getElementById('fo-nom-label').textContent=phys?'Nom et prénoms *':'Raison sociale *';
+  document.getElementById('fo-wrap-rccm').style.display=phys?'none':'';
+  document.getElementById('fo-wrap-ncc').style.display=phys?'none':'';
+  document.getElementById('fo-wrap-cni').style.display=phys?'':'none';
+}
 function openFournisseurs(){
-  ['fo-nom','fo-rccm','fo-ncc','fo-contact'].forEach(function(id){document.getElementById(id).value='';});
+  ['fo-nom','fo-rccm','fo-ncc','fo-contact','fo-cni'].forEach(function(id){document.getElementById(id).value='';});
   document.getElementById('fo-compte').value='';
+  document.getElementById('fo-typetiers').value='entreprise';
+  fournisseurTypeToggle();
   var _fa=document.getElementById('fo-airsi'); if(_fa)_fa.checked=false;
   renderFournisseursListe();
   document.getElementById('modal-fournisseurs').classList.add('open');
@@ -87427,15 +87439,23 @@ function renderFournisseursListe(){
   var z=document.getElementById('fo-liste'); if(!z) return;
   var l=DATA.fournisseurs||[];
   if(!l.length){ z.innerHTML='<div style="font-size:11px;color:var(--blanc-dim);">Aucun fournisseur.</div>'; return; }
-  z.innerHTML=l.map(function(fr){ return '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;border-bottom:1px solid var(--bord);padding:5px 0;"><span><strong>'+fr.nom+'</strong>'+(fr.ncc?(' · NCC '+fr.ncc):'')+(fr.compte?(' · '+fr.compte):'')+(fr.airsi?' <span class="badge badge-or" style="font-size:9px;">AIRSI</span>':'')+'</span><button class="btn btn-danger btn-sm btn-icon" onclick="deleteFournisseur(\''+fr.id+'\')">🗑</button></div>'; }).join('');
+  z.innerHTML=l.map(function(fr){ var phys=fr.type_tiers==='physique'; return '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;border-bottom:1px solid var(--bord);padding:5px 0;"><span>'+(phys?'👤':'🏢')+' <strong>'+fr.nom+'</strong>'+(phys?(fr.cni?(' · '+fr.cni):''):(fr.ncc?(' · NCC '+fr.ncc):''))+(fr.compte?(' · '+fr.compte):'')+(fr.airsi?' <span class="badge badge-or" style="font-size:9px;">AIRSI</span>':'')+'</span><button class="btn btn-danger btn-sm btn-icon" onclick="deleteFournisseur(\''+fr.id+'\')">🗑</button></div>'; }).join('');
 }
 async function saveFournisseur(){
+  var typeTiers=document.getElementById('fo-typetiers').value;
+  var phys=(typeTiers==='physique');
   var nom=document.getElementById('fo-nom').value.trim();
-  if(!nom){ toast('Raison sociale requise.','error'); return; }
-  var fr={ id:uid(), nom:nom, rccm:document.getElementById('fo-rccm').value.trim(), ncc:document.getElementById('fo-ncc').value.trim(), contact:document.getElementById('fo-contact').value.trim(), compte:(document.getElementById('fo-compte').value.trim()||requireCompteDefaut('fournisseur')), airsi:(document.getElementById('fo-airsi')||{}).checked||false, created_at:today() };
+  if(!nom){ toast(phys?'Nom et prénoms requis.':'Raison sociale requise.','error'); return; }
+  var fr={ id:uid(), type_tiers:typeTiers, nom:nom,
+    rccm: phys?'':document.getElementById('fo-rccm').value.trim(),
+    ncc: phys?'':document.getElementById('fo-ncc').value.trim(),
+    cni: phys?document.getElementById('fo-cni').value.trim():'',
+    contact:document.getElementById('fo-contact').value.trim(),
+    compte:(document.getElementById('fo-compte').value.trim()||requireCompteDefaut('fournisseur')),
+    airsi:(document.getElementById('fo-airsi')||{}).checked||false, created_at:today() };
   if(!DATA.fournisseurs) DATA.fournisseurs=[];
   DATA.fournisseurs.push(fr); await dbPut('fournisseurs',fr); if(typeof syncToSupabase==='function')syncToSupabase('pi_fournisseurs',fr);
-  ['fo-nom','fo-rccm','fo-ncc','fo-contact'].forEach(function(id){document.getElementById(id).value='';}); document.getElementById('fo-compte').value=''; var _fa2=document.getElementById('fo-airsi'); if(_fa2)_fa2.checked=false;
+  ['fo-nom','fo-rccm','fo-ncc','fo-contact','fo-cni'].forEach(function(id){document.getElementById(id).value='';}); document.getElementById('fo-compte').value=''; var _fa2=document.getElementById('fo-airsi'); if(_fa2)_fa2.checked=false;
   renderFournisseursListe();
   var selF=document.getElementById('se-fournisseur'); if(selF) selF.innerHTML=fournisseurOptions(fr.id);
   toast('Fournisseur ajouté.','success');
