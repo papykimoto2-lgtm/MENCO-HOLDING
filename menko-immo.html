@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.84 · 2026-08-08 — Fix Trésorerie : Décaissements sous-évalués de 87M FCFA (mouvements non ventilés)';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.85 · 2026-08-08 — Paramétrage : déconnecter tous les autres postes (epoch de session)';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -6819,6 +6819,10 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                   <label>Inactivité avant déconnexion (min)</label>
                   <input type="number" class="form-control" id="param-inactivite-min" value="30" min="5" max="480">
                 </div>
+              </div>
+              <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--bord);">
+                <div style="font-size:13px;color:var(--blanc-dim);margin-bottom:8px;">Force la déconnexion de tous les postes/onglets connectés (utile après un incident de cache local périmé — sync qui réinjecte d'anciennes données). Votre session actuelle n'est pas affectée.</div>
+                <button class="btn btn-danger btn-sm" onclick="deconnecterAutresPostes()">🔒 Déconnecter tous les autres postes</button>
               </div>
             </div>
             <div class="card">
@@ -24087,6 +24091,9 @@ function demarrerSyncAuto() {
     if (_tickAutoSync % 2 === 0 && navigator.onLine) {
       try { if (typeof pullFromCloudSilent === 'function') pullFromCloudSilent(); } catch(e){}
     }
+    /* Vérifie si cette session a été invalidée à distance (Paramétrage →
+       Sécurité → Déconnecter tous les autres postes). */
+    try { if (typeof _verifierSessionEncoreValide === 'function') _verifierSessionEncoreValide(); } catch(e){}
   }, 30000);
 }
 
@@ -24824,6 +24831,7 @@ async function startSession(user) {
   var payload = {
     id: user.id, login: user.login, role: user.role, nom: user.nom,
     ph: (user.password_hash || '').slice(0, 16),   /* lie le token au hash courant */
+    iat: Date.now(),                                /* horodatage d'émission — permet l'invalidation globale */
     exp: Date.now() + 8 * 3600000
   };
   var body = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
@@ -24843,6 +24851,14 @@ async function checkSession() {
     if (parts[1] !== expected) throw 0;                       /* signature invalide → rejet */
     var payload = JSON.parse(decodeURIComponent(escape(atob(parts[0]))));
     if (!payload.exp || payload.exp < Date.now()) throw 0;
+    /* [Déconnexion forcée à distance] Un admin peut invalider TOUTES les
+       sessions ouvertes (autres postes/onglets restés connectés avec un cache
+       local périmé) depuis Paramétrage → Sécurité. Toute session émise avant
+       cet horodatage est rejetée, même si son token est par ailleurs valide.
+       payload.iat absent (anciens tokens émis avant cette version) = traité
+       comme antérieur à toute epoch, donc invalidé dès la première purge. */
+    var epoch = (DATA.params || {}).force_logout_epoch || 0;
+    if (epoch && (!payload.iat || payload.iat < epoch)) throw 0;
     var u = DATA.users.find(function(x){ return x.id === payload.id; });
     if (!u) throw 0;
     if ((u.password_hash || '').slice(0, 16) !== (payload.ph || '')) throw 0; /* hash changé → invalidé */
@@ -24855,6 +24871,36 @@ function hasRole(requiredRole) {
   if (!APP.currentUser) return false;
   var h = { admin: 3, comptable: 2, commercial: 1 };
   return (h[APP.currentUser.role] || 0) >= (h[requiredRole] || 0);
+}
+
+/** Déconnecte tous les autres postes/onglets ouverts (Paramétrage → Sécurité).
+   Purge le cache local avant de recharger AFIN QUE la session courante ne se
+   ré-invalide pas elle-même au prochain contrôle périodique (30s) — on
+   redémarre donc une session fraîche immédiatement après avoir posé l'epoch. */
+async function deconnecterAutresPostes() {
+  if (!hasRole('admin')) { toast('Réservé à l\'administrateur.', 'error'); return; }
+  if (!confirm('⚠️ Déconnecter TOUS les autres postes/onglets connectés à cette application ?\n\nCeci force une reconnexion partout ailleurs (utile après un incident de cache périmé). Votre session actuelle sera automatiquement renouvelée et ne sera pas affectée.')) return;
+  var epoch = Date.now();
+  DATA.params = DATA.params || {};
+  DATA.params.force_logout_epoch = epoch;
+  await dbPut('params', DATA.params);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_params', DATA.params);
+  /* Renouvelle IMMÉDIATEMENT la session courante avec un iat postérieur à
+     l'epoch posée, pour ne pas se déconnecter soi-même au prochain contrôle. */
+  if (APP.currentUser) await startSession(APP.currentUser);
+  toast('🔒 Tous les autres postes seront déconnectés dans les 60 secondes (prochaine synchronisation).', 'success');
+}
+
+/** Contrôle périodique (appelé depuis le tick de sync auto, ~30s) : si la
+   session courante a été invalidée par une purge posée depuis un autre
+   poste, déconnecte proprement et recharge vers l'écran de connexion. */
+async function _verifierSessionEncoreValide() {
+  if (!APP.currentUser) return;
+  var u = await checkSession();
+  if (!u) {
+    try { if (typeof toast === 'function') toast('🔒 Session terminée à distance par un administrateur.', 'info'); } catch(e){}
+    setTimeout(function(){ location.reload(); }, 1500);
+  }
 }
 
 /** Journalise une tentative de connexion dans IndexedDB */
