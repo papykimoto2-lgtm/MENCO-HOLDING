@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.73 · 2026-08-08 — Fix accès refusé page Fournisseurs (PAGE_MODULE_MAP)';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.75 · 2026-08-08 — Filet de sécurité : pull cloud silencieux toutes les 60s (indépendant du Realtime)';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -2539,6 +2539,9 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="nav-item" onclick="goTo('paiements')" data-page="paiements">
         <span class="nav-icon">💳</span><span>Paiements</span>
       </div>
+          <div class="nav-item" onclick="goTo('facturation')" data-page="facturation">
+        <span class="nav-icon">🧾</span><span>Factures FNE</span>
+      </div>
           <div class="nav-item" onclick="goTo('relances')" data-page="relances">
         <span class="nav-icon">🔔</span><span>Relances</span>
         <span class="nav-badge" id="badge-relance" style="display:none;">0</span>
@@ -3297,6 +3300,35 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div id="pol-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:10px 0;"></div>
             <div class="table-wrap"><div id="pol-table"></div></div>
           </div>
+        </div>
+      </div>
+
+      <!-- ══ FACTURES FNE (facturation normalisée DGI) ══════════════ -->
+      <div class="page" id="page-facturation">
+        <div class="page-header">
+          <div>
+            <div class="step-badge">⑥ Recouvrement</div>
+            <div class="page-title">🧾 Factures FNE</div>
+            <div class="page-subtitle">Historique des factures normalisées — certification, relance et avoirs DGI</div>
+          </div>
+        </div>
+        <div class="kpi-grid" id="kpi-facturation" style="margin-bottom:16px;"></div>
+        <div class="card">
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+            <input type="text" class="search-input" placeholder="🔍 N°, client, désignation..." id="fac-search" oninput="_debInput('renderFacturesClient')" style="flex:1;min-width:200px;">
+            <select class="filter-select" id="fac-filter-statut" onchange="renderFacturesClient()">
+              <option value="">Tous statuts</option>
+              <option value="certifiee">✓ Certifiée DGI</option>
+              <option value="a_certifier">⏳ En attente</option>
+              <option value="erreur">✗ Erreur</option>
+              <option value="hors_fne">Hors FNE</option>
+              <option value="non_applicable">Facture simple</option>
+            </select>
+          </div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>N°</th><th>Date</th><th>Client</th><th>Désignation</th><th style="text-align:right;">TTC</th><th>Statut DGI</th><th></th></tr></thead>
+            <tbody id="tbody-facturation"></tbody>
+          </table></div>
         </div>
       </div>
 
@@ -24045,6 +24077,15 @@ function demarrerSyncAuto() {
     if (_tickAutoSync % 4 === 0) {
       try { if (typeof _pullPlanComptableCloud === 'function') _pullPlanComptableCloud(); } catch(e){}
     }
+    /* Filet de secours général : si le canal Realtime est tombé silencieusement
+       (mobile en arrière-plan, veille, reconnexion ratée) sans que _RT le
+       détecte, aucune donnée entrante (session caisse ouverte par un collègue,
+       nouveau mouvement, etc.) ne remonterait plus jamais sans rechargement
+       manuel de la page. Un pull silencieux toutes les 60 s (2 passes)
+       garantit la fraîcheur même canal Realtime mort. */
+    if (_tickAutoSync % 2 === 0 && navigator.onLine) {
+      try { if (typeof pullFromCloudSilent === 'function') pullFromCloudSilent(); } catch(e){}
+    }
   }, 30000);
 }
 
@@ -25282,6 +25323,7 @@ function goTo(page) {
   if (page === 'clients') renderClients();
   if (page === 'fournisseurs') { renderDlFournisseurs(); renderFournisseursPageListe(); }
   if (page === 'paiements') { renderVersements(); populateClientSelects(); }
+  if (page === 'facturation') { renderFacturesClient(); }
   if (page === 'programmes') renderProgrammes();
   if (page === 'lots') { populateFilterProgrammes(); renderLots(); renderTerrains(); }
   if (page === 'commercialisation') { renderCommercialisation(); }
@@ -79538,6 +79580,7 @@ var PAGE_MODULE_MAP = {
   'portail-stats':      'Parametres',
   'clients':            'Souscripteurs',
   'paiements':          'Paiements',
+  'facturation':        'Paiements',
   'relances':           'Relances',
   'comptabilite':       'Comptabilite',
   'tresorerie-page':    'Tresorerie',
@@ -102675,6 +102718,7 @@ async function fneCertifierFacture(f) {
     f.fne_reference = data && data.reference;
     f.fne_token = data && data.token;
     f.fne_invoice_id = data && data.invoice && data.invoice.id;
+    f.fne_items = (data && data.invoice && data.invoice.items) ? data.invoice.items.map(function(it){ return it.id; }) : [];
     f.fne_balance_sticker = data && data.balance_sticker;
     f.fne_warning = !!(data && data.warning);
     f.fne_certifie_le = new Date().toISOString();
@@ -102703,6 +102747,106 @@ async function fneRecertifier(facId) {
   else toast('❌ Certification échouée : ' + f.fne_erreur, 'error');
   if (typeof renderFacturesClient === 'function') renderFacturesClient();
   imprimerFactureFNE(f.id);
+}
+
+/* ── Page « Factures FNE » — liste, filtres, KPIs, relance, avoir ── */
+function renderFacturesClient() {
+  var tbody = document.getElementById('tbody-facturation');
+  if (!tbody) return;
+  var q = (document.getElementById('fac-search') && document.getElementById('fac-search').value || '').toLowerCase();
+  var filtStatut = (document.getElementById('fac-filter-statut') || {}).value || '';
+  var all = DATA.factures_client || [];
+  var l = all.filter(function(f) {
+    if (filtStatut && f.statut_fne !== filtStatut) return false;
+    if (!q) return true;
+    var hay = ((f.numero||'') + ' ' + (f.client||'') + ' ' + (f.designation||'')).toLowerCase();
+    return hay.includes(q);
+  }).sort(function(a,b){ return (b.created_at||'').localeCompare(a.created_at||''); });
+
+  var kpiZ = document.getElementById('kpi-facturation');
+  if (kpiZ) {
+    var nbCert = all.filter(function(f){ return f.statut_fne==='certifiee' && f.type!=='avoir'; }).length;
+    var nbAttente = all.filter(function(f){ return f.statut_fne==='a_certifier'; }).length;
+    var nbErreur = all.filter(function(f){ return f.statut_fne==='erreur'; }).length;
+    var totalTTC = all.filter(function(f){ return f.statut_fne==='certifiee'; }).reduce(function(s,f){ return s+(f.ttc||0); },0);
+    kpiZ.innerHTML =
+      '<div class="kpi-card"><div class="kpi-label">Certifiées DGI</div><div class="kpi-value" style="color:var(--vert);">'+nbCert+'</div></div>'
+      + '<div class="kpi-card"><div class="kpi-label">En attente</div><div class="kpi-value" style="color:var(--or);">'+nbAttente+'</div></div>'
+      + '<div class="kpi-card"><div class="kpi-label">En erreur</div><div class="kpi-value" style="color:var(--rouge);">'+nbErreur+'</div></div>'
+      + '<div class="kpi-card"><div class="kpi-label">Total TTC facturé</div><div class="kpi-value">'+fmtF(totalTTC)+' FCFA</div></div>';
+  }
+
+  if (!l.length) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--blanc-dim);padding:24px;">Aucune facture.</td></tr>'; return; }
+  var statutBadge = { certifiee:'<span class="badge badge-vert">✓ Certifiée</span>', a_certifier:'<span class="badge badge-or">⏳ En attente</span>', erreur:'<span class="badge badge-rouge">✗ Erreur</span>', hors_fne:'<span class="badge badge-neutre">Hors FNE</span>', non_applicable:'<span class="badge badge-neutre">Simple</span>' };
+  tbody.innerHTML = l.map(function(f) {
+    var isAvoir = f.type === 'avoir';
+    return '<tr>'
+      + '<td><strong>' + escHtml(f.numero) + '</strong>' + (isAvoir ? ' <span class="badge badge-violet" style="font-size:9px;">AVOIR</span>' : '') + '</td>'
+      + '<td style="font-size:12px;">' + escHtml(f.date || '') + '</td>'
+      + '<td style="font-size:12px;">' + escHtml(f.client || '') + '</td>'
+      + '<td style="font-size:12px;">' + escHtml(f.designation || '') + '</td>'
+      + '<td style="text-align:right;font-weight:600;' + (isAvoir?'color:var(--rouge);':'') + '">' + fmtF(f.ttc) + ' FCFA</td>'
+      + '<td>' + (statutBadge[f.statut_fne] || f.statut_fne || '—') + '</td>'
+      + '<td style="white-space:nowrap;">'
+      + '<button class="btn btn-secondary btn-sm btn-icon" title="Imprimer" onclick="imprimerFactureFNE(\'' + f.id + '\')">🖨️</button> '
+      + (f.statut_fne === 'erreur' ? '<button class="btn btn-secondary btn-sm btn-icon" title="Relancer la certification DGI" onclick="fneRecertifier(\'' + f.id + '\')">🔁</button> ' : '')
+      + (f.statut_fne === 'certifiee' && !isAvoir && !f.avoir_id ? '<button class="btn btn-danger btn-sm btn-icon" title="Générer un avoir DGI" onclick="fneGenererAvoir(\'' + f.id + '\')">↩️</button>' : '')
+      + (f.avoir_id ? '<span class="badge badge-neutre" style="font-size:9px;">Avoir émis</span>' : '')
+      + '</td></tr>';
+  }).join('');
+}
+
+/* Numérotation avoirs, série annuelle dédiée (AV-AAAA-NNNNN) */
+function _fneNumeroAvoir() {
+  var annee = new Date().getFullYear();
+  var n = (DATA.factures_client || []).filter(function(f){ return (f.numero||'').indexOf('AV-' + annee) === 0; }).length + 1;
+  return 'AV-' + annee + '-' + String(n).padStart(5, '0');
+}
+
+/* Avoir DGI intégral sur une facture certifiée — POST /external/invoices/{id}/refund
+   (Réf. « PROCEDURE D'INTERFACAGE DES ENTREPRISES PAR API », DGI mai 2025).
+   Un avoir ne peut être émis qu'une fois par facture (annulation totale). */
+async function fneGenererAvoir(facId) {
+  var f = (DATA.factures_client || []).find(function(x){ return x.id === facId; });
+  if (!f) { toast('Facture introuvable.', 'error'); return; }
+  if (f.statut_fne !== 'certifiee') { toast('Seule une facture certifiée DGI peut faire l\'objet d\'un avoir.', 'error'); return; }
+  if (f.avoir_id) { toast('Un avoir a déjà été émis pour cette facture.', 'error'); return; }
+  if (!f.fne_invoice_id || !(f.fne_items || []).length) {
+    toast('Identifiants DGI des lignes introuvables sur cette facture (émise avant mise à jour du logiciel) — avoir impossible via API. Contactez support.fne@dgi.gouv.ci.', 'error');
+    return;
+  }
+  if (!confirm('Générer un avoir DGI annulant intégralement la facture ' + f.numero + ' (' + fmtF(f.ttc) + ' FCFA) ?\n\nCette action est certifiée et transmise à la DGI, irréversible.')) return;
+
+  var p = DATA.params || {};
+  var items = f.fne_items.map(function(id){ return { id: id, quantity: 1 }; });
+  try {
+    var res = await fneEndpointFetch('/external/invoices/' + f.fne_invoice_id + '/refund', p.fne_api_key, { items: items }, p.fne_proxy, fneBaseUrl(), p.fne_environnement);
+    var data = null; try { data = await res.json(); } catch (eJson) {}
+    if (!res.ok) {
+      toast('❌ Avoir refusé par la DGI : ' + ((data && data.message) ? data.message : ('HTTP ' + res.status)), 'error');
+      return;
+    }
+    var avoir = {
+      id: 'av_' + Date.now(), numero: _fneNumeroAvoir(), mode_facture: 'fne', type: 'avoir', ref_id: f.id,
+      client: f.client, client_tel: f.client_tel, client_email: f.client_email, ncc_client: f.ncc_client,
+      designation: 'Avoir sur facture ' + f.numero + ' — ' + f.designation,
+      ht: -f.ht, taux_tva: f.taux_tva, tva: -f.tva, ttc: -f.ttc, date: today(),
+      statut_fne: 'certifiee', fne_reference: data && data.reference, fne_token: data && data.token,
+      fne_invoice_id: data && data.invoice && data.invoice.id, fne_ncc: data && data.ncc,
+      fne_certifie_le: new Date().toISOString(), fne_environnement_utilise: p.fne_environnement || 'test',
+      facture_origine: f.numero, created_at: new Date().toISOString()
+    };
+    f.avoir_id = avoir.id;
+    DATA.factures_client.push(avoir);
+    await dbPut('factures_client', f);
+    await dbPut('factures_client', avoir);
+    if (typeof syncToSupabase === 'function') { syncToSupabase('pi_factures_client', f); syncToSupabase('pi_factures_client', avoir); }
+    toast('✅ Avoir ' + avoir.numero + ' certifié par la DGI (réf. ' + avoir.fne_reference + ').', 'success');
+    renderFacturesClient();
+    imprimerFactureFNE(avoir.id);
+  } catch (eNet) {
+    toast('❌ Requête avoir bloquée (réseau/CORS) : ' + (eNet && eNet.message ? eNet.message : eNet), 'error');
+  }
 }
 
 /* Test de connectivité simple (Paramètres → Société), pour diagnostiquer
@@ -102872,9 +103016,9 @@ function imprimerFactureFNE(facId) {
       qrSvg = '<img src="' + q.createDataURL(4, 4) + '" style="width:90px;height:90px;">';
     } catch (eQr) { qrSvg = ''; }
   }
-  var typeLabel = f.type === 'cession' ? 'Cession foncière' : 'Vente immobilière';
+  var typeLabel = f.type === 'cession' ? 'Cession foncière' : f.type === 'avoir' ? 'Avoir' : 'Vente immobilière';
   var dateLbl = new Date(f.date).toLocaleDateString('fr-FR', { year:'numeric', month:'long', day:'numeric' });
-  var docTitre = 'FACTURE';
+  var docTitre = f.type === 'avoir' ? 'AVOIR' : 'FACTURE';
   var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Facture ' + f.numero + '</title>'
     + '<style>body{font-family:Arial,sans-serif;font-size:12px;color:#1C1C2E;padding:24px;line-height:1.55;}'
     + '.header{display:flex;justify-content:space-between;border-bottom:3px solid #B87333;padding-bottom:14px;margin-bottom:18px;}'
@@ -102907,6 +103051,7 @@ function imprimerFactureFNE(facId) {
     + '<div class="parties">'
     + '<div class="party"><h4>Vendeur</h4>' + escHtml(p.societe || '') + '<br>NCC : ' + escHtml(p.dgi || '—') + '<br>' + escHtml(p.tel || '') + '</div>'
     + '<div class="party"><h4>Client</h4>' + escHtml(f.client) + (f.ncc_client ? '<br>NCC : ' + escHtml(f.ncc_client) : '') + (f.client_tel?'<br>Tél : '+escHtml(f.client_tel):'') + (f.client_email?'<br>'+escHtml(f.client_email):'') + '</div></div>'
+    + (f.type === 'avoir' ? '<div style="font-size:11px;background:#FFF3E0;border-left:3px solid #B87333;padding:8px 12px;border-radius:0 6px 6px 0;margin-bottom:12px;">↩️ Avoir annulant intégralement la facture <strong>' + escHtml(f.facture_origine||'') + '</strong>.</div>' : '')
     + '<table><thead><tr><th>Désignation</th><th style="text-align:center;">Nature</th><th style="text-align:right;">Montant HT</th></tr></thead>'
     + '<tbody><tr><td>' + escHtml(f.designation) + '</td><td style="text-align:center;">' + typeLabel + '</td><td style="text-align:right;">' + fmtF(f.ht) + ' FCFA</td></tr></tbody></table>'
     + '<table class="totaux"><tr><td>Total HT</td><td style="text-align:right;">' + fmtF(f.ht) + ' FCFA</td></tr>'
