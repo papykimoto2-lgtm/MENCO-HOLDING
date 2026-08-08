@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.87 · 2026-08-08 — Objectifs : CA mensuel encaissé inclut la Caisse (cohérence avec Trésorerie)';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.88 · 2026-08-08 — Anti-réinjection serveur : purge 42,1M FCFA de données test ressuscitées';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -24607,6 +24607,27 @@ async function flushSyncOutbox() {
       if (ok) { q.splice(i,1); _outboxWrite(q); continue; }
 
       var err = String(window._lastSupaError || '');
+      /* [FIX] REFUS TOMBSTONE SERVEUR : la base refuse cet enregistrement car il
+         a été supprimé (garde trg_guard_tombstone). Ce poste détient donc un
+         ZOMBIE dans son cache local — vestige d'une suppression faite ailleurs
+         qu'il n'a jamais reçue. Le mettre en quarantaine serait faux : il ne
+         doit pas être « réessayé plus tard », il doit DISPARAÎTRE d'ici, sinon
+         il continue de polluer l'affichage local (journal des tiers, balance…)
+         alors qu'il n'existe plus nulle part ailleurs. On purge donc RAM +
+         IndexedDB et on pose le tombstone local pour clore le sujet.
+         Incident du 08/08 : 42,1M FCFA d'écritures de test ressuscitées par un
+         poste au cache périmé, faussant intégralement les comptes 521 et 4651. */
+      if (/TOMBSTONE_ACTIF/i.test(err)) {
+        var _st = null;
+        try { var _m = SUPA_STORE_MAP.find(function(x){ return x[0] === e.table; }); if (_m) _st = _m[1]; } catch(_e){}
+        if (_st) {
+          try { if (Array.isArray(DATA[_st])) DATA[_st] = DATA[_st].filter(function(x){ return !x || String(x.id) !== String(e.id); }); } catch(_e){}
+          try { if (typeof dbDelete === 'function') dbDelete(_st, e.id); } catch(_e){}
+          try { if (typeof tombAdd === 'function') tombAdd(_st, e.id); } catch(_e){}
+          console.warn('[SYNC] Zombie local purgé (supprimé côté serveur) :', _st, e.id);
+        }
+        q.splice(i,1); _outboxWrite(q); continue;
+      }
       /* ERREUR PERMANENTE DE DONNÉES (400/409/422, contrainte, id null…) :
          cet enregistrement ne passera JAMAIS → quarantaine, la file continue.
          C'est ce qui empêchait 280+ éléments de se vider à cause d'un seul. */
