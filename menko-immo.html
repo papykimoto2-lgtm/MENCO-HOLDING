@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.69 · 2026-08-07 — Historique visites : réenregistrer/modifier/supprimer';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.70 · 2026-08-08 — Fix CMU/CNPS prélevés à tort sur employés non déclarés';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -41220,7 +41220,7 @@ function calcPaieCI(d) {
   var ricf    = calcRICF(parts);
   var itsNet  = Math.max(0, itsBrut - ricf);
   var nbPers  = d.cmuPersonnes || 1;
-  var cmuSal  = PAIE_CI.cmuSalarial * nbPers;
+  var cmuSal  = exoCnps ? 0 : PAIE_CI.cmuSalarial * nbPers;
   var retenuesDiv = R(d.retenuesDiverses || d.retenues || 0);
   var avances     = R(d.avances || 0);
   var totalRetenuesSal = cnpsRetraiteSal + itsNet + cmuSal + retenuesDiv + avances;
@@ -41234,7 +41234,7 @@ function calcPaieCI(d) {
   var fdfpTA          = R(brutImposable * PAIE_CI.fdfp.taxeApprentissage);
   var fdfpFC          = R(brutImposable * PAIE_CI.fdfp.formationContinue);
   var fdfpRegul       = R(brutImposable * PAIE_CI.fdfp.fcRegul);
-  var cmuPat          = PAIE_CI.cmuPatronal * nbPers;
+  var cmuPat          = exoCnps ? 0 : PAIE_CI.cmuPatronal * nbPers;
   var totalPatronal   = cnpsRetraitePat + cnpsAT + cnpsPF + itsPat + fdfpTA + fdfpFC + fdfpRegul + cmuPat;
 
   var net       = Math.max(0, brutTotal - totalRetenuesSal);
@@ -44241,6 +44241,8 @@ function prefillBulletin() {
 
 function _bulletinInputs() {
   var v = function(id){ return parseFloat(document.getElementById(id).value) || 0; };
+  var empId = (document.getElementById('b-employe')||{}).value;
+  var emp = empId ? (DATA.employes||[]).find(function(x){ return x.id===empId; }) : null;
   return {
     salaireCategoriel: v('b-categoriel'),
     sursalaire: v('b-sursalaire'),
@@ -44253,7 +44255,9 @@ function _bulletinInputs() {
     cmuPersonnes: parseInt(document.getElementById('b-cmu-pers').value) || 1,
     retenuesDiverses: v('b-retenues'),
     avances: v('b-avances'),
-    jours: parseInt(document.getElementById('b-jours').value) || 30
+    jours: parseInt(document.getElementById('b-jours').value) || 30,
+    contrat: emp ? (emp.contrat || '') : '',
+    exoCnps: !!(emp && (emp.contrat === 'consultant' || emp.cnps_statut === 'non_declare'))
   };
 }
 
@@ -44268,6 +44272,29 @@ function calcBulletin() {
   document.getElementById('calc-cnps-pat').textContent   = fmtF(r.totalPatronal) + ' FCFA';
   document.getElementById('calc-cout').textContent       = fmtF(r.coutTotal) + ' FCFA';
   document.getElementById('calc-net').textContent        = fmtF(r.net) + ' FCFA';
+}
+
+/* ── Correction rétroactive : bulletins déjà enregistrés dont le flag
+   exoCnps n'existait pas (bug antérieur, CMU/CNPS prélevés à tort sur
+   employés non déclarés / consultants). Recalcule exoCnps depuis la
+   fiche employé et rejoue calcPaieCI si le statut a changé. ── */
+async function repairBulletinsExoCnps() {
+  var touched = false;
+  for (var i = 0; i < (DATA.bulletins || []).length; i++) {
+    var b = DATA.bulletins[i];
+    var emp = (DATA.employes || []).find(function (x) { return x.id === b.employe_id; });
+    if (!emp) continue;
+    var shouldExo = (emp.contrat === 'consultant' || emp.cnps_statut === 'non_declare');
+    if (!!b.exoCnps !== shouldExo) {
+      b.exoCnps = shouldExo;
+      b.contrat = emp.contrat || '';
+      DATA.bulletins[i] = b;
+      await dbPut('bulletins', b);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_bulletins', b);
+      touched = true;
+    }
+  }
+  if (touched) console.log('[Paie] Correction CMU/CNPS appliquée sur bulletins non déclarés.');
 }
 
 async function saveBulletin() {
@@ -65935,6 +65962,10 @@ async function startApp() {
 
   // ── Migration silencieuse des mots de passe en clair ───────────────
   await migratePasswords();
+
+  // ── Correction silencieuse CMU/CNPS sur bulletins déjà enregistrés
+  //    (employés non déclarés / consultants facturés à tort avant fix) ──
+  try { await repairBulletinsExoCnps(); } catch(e){}
 
   // ── Vérification de session persistante ──────────────────────────────
   var sessionUser = await checkSession();
