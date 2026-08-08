@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.80 · 2026-08-08 — Config stock terrain (compte 332) : acquisitions désormais capitalisées';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.82 · 2026-08-08 — Cascade suppression : stock matériaux + immobilisations société';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -55241,7 +55241,21 @@ async function saveImmoSociete() {
 }
 
 async function deleteImmoSociete(id) {
-  if (!confirm('Supprimer cette immobilisation ?')) return;
+  var im = (DATA.immobilisations||[]).find(function(x){ return x.id===id; });
+  var nbDot = (im && im.ecritures_dotation_ids) ? im.ecritures_dotation_ids.length : 0;
+  if (!confirm('Supprimer cette immobilisation ?' + (nbDot ? '\n' + nbDot + ' écriture(s) de dotation liée(s) seront aussi supprimées.' : ''))) return;
+  /* [FIX] Cascade sur les écritures de dotation tracées (ids aléatoires,
+     retrouvables uniquement via ecritures_dotation_ids — voir generation
+     ci-dessus). Sans cela, supprimer une immobilisation laissait ses
+     dotations d'amortissement orphelines dans le grand livre. */
+  if (nbDot) {
+    for (var i=0;i<im.ecritures_dotation_ids.length;i++) {
+      var ecrId = im.ecritures_dotation_ids[i];
+      if (DATA.ecritures.some(function(e){ return e.id === ecrId; })) {
+        if (await deleteRecord('ecritures', ecrId) === false) { toast('🔒 Exercice clôturé — suppression bloquée (une dotation est verrouillée).','error'); return; }
+      }
+    }
+  }
   if (await deleteRecord('immobilisations', id) === false) return;
   renderImmoSociete();
 }
@@ -55275,6 +55289,12 @@ async function genererDotationsAnnuelles() {
     DATA.ecritures.push(ec); await dbPut('ecritures', ec);
     if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ec);
     im.dotations_generees = im.dotations_generees || []; im.dotations_generees.push(year);
+    /* [FIX] Ces écritures de dotation ont un id ALÉATOIRE (uid()), pas
+       déterministe comme les autres modules — impossible de les retrouver par
+       motif de nommage à la suppression de l'immobilisation. On trace donc
+       explicitement leurs ids sur la fiche pour permettre une cascade fiable
+       (cf. deleteImmoSociete ci-dessous). */
+    im.ecritures_dotation_ids = im.ecritures_dotation_ids || []; im.ecritures_dotation_ids.push(ec.id);
     await dbPut('immobilisations', im);
     if (typeof syncToSupabase === 'function') syncToSupabase('pi_immobilisations', im);
   }
@@ -88044,8 +88064,21 @@ async function deleteDepot(id){
 }
 async function deleteStockMvt(id){
   if(!confirm('Supprimer ce mouvement de stock ?')) return;
+  /* [FIX] Même classe de bug que la caisse (v13.81) : ce mouvement peut avoir
+     généré jusqu'à plusieurs écritures comptables déterministes (achat, TVA,
+     AIRSI, entrée stock, retour, sortie/consommation, écart d'inventaire —
+     toutes indexées sur l'id du mouvement). Sans cascade, la suppression du
+     mouvement laissait ces écritures orphelines dans le grand livre. */
+  var mvt = (DATA.stock_mouvements||[]).find(function(x){ return x.id===id; });
+  var prefixesEcr = ['ecr_stk_','ecr_tva_','ecr_airsi_','ecr_stkperm_','ecr_ret_','ecr_rettva_','ecr_retperm_','ecr_sort_','ecr_inv_'];
+  for (var i=0;i<prefixesEcr.length;i++){
+    var ecrId = prefixesEcr[i] + id;
+    if (DATA.ecritures.some(function(e){ return e.id === ecrId; })) {
+      if (await deleteRecord('ecritures', ecrId) === false) { toast('🔒 Exercice clôturé — suppression bloquée (écriture liée verrouillée).','error'); return; }
+    }
+  }
   var ok=await deleteRecord('stock_mouvements',id); if(ok===false)return;
-  renderStock(); etudesLiveRefresh('stock_mouvements'); toast('Mouvement supprimé.','info');
+  renderStock(); etudesLiveRefresh('stock_mouvements'); toast('Mouvement supprimé (écriture(s) liée(s) incluse(s)).','info');
 }
 
 /* ── Marge par chantier interne ── */
@@ -103688,8 +103721,15 @@ async function caisseEnter() {
    d'un mouvement ventilé sur un exercice comptable clôturé. */
 
 async function _caisseDelMvt(mvt) {
-  if (mvt.ecriture_id) {
-    if (await deleteRecord('ecritures', mvt.ecriture_id) === false) return false; // exercice clos
+  /* [FIX] Filet de sécurité : certains mouvements (import historique) n'ont
+     jamais eu leur champ ecriture_id renseigné, alors qu'une écriture liée
+     existe bel et bien sous l'id déterministe ecr_cse_<mouvementId>. Sans ce
+     repli, la suppression du mouvement laissait une écriture fantôme dans le
+     grand livre (incident du 08/08 : 33 écritures orphelines détectées par
+     le contrôle d'intégrité). */
+  var ecrIdCible = mvt.ecriture_id || ('ecr_cse_' + mvt.id);
+  if (DATA.ecritures.some(function(e){ return e.id === ecrIdCible; })) {
+    if (await deleteRecord('ecritures', ecrIdCible) === false) return false; // exercice clos
   }
   await deleteRecord('caisse_mouvements', mvt.id);
   return true;
