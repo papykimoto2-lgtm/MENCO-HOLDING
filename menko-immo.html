@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.71 · 2026-08-08 — Employés : filtre/état non déclarés + déclaration rapide CNPS';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.72 · 2026-08-08 — Onglet Fournisseurs dédié (sidebar, entreprise/personne physique)';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -2470,6 +2470,9 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
       </div>
           <div class="nav-item" onclick="goTo('achats')" data-page="achats">
         <span class="nav-icon">🛒</span><span>Achats &amp; Commandes</span>
+      </div>
+          <div class="nav-item" onclick="goTo('fournisseurs')" data-page="fournisseurs">
+        <span class="nav-icon">🏢</span><span>Fournisseurs</span>
       </div>
           <div class="nav-item" onclick="goTo('stock')" data-page="stock">
         <span class="nav-icon">📦</span><span>Stock Materiaux</span>
@@ -5074,6 +5077,43 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div id="fac-rappro" style="font-size:11.5px;margin-top:10px;padding:8px 10px;border-radius:8px;background:var(--card2);"></div>
           </div>
           <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('modal-facture')">Annuler</button><button class="btn btn-primary" onclick="saveFactureFournisseur()">Comptabiliser la facture</button></div>
+        </div>
+      </div>
+
+      <!-- ══ FOURNISSEURS (fiche complète : entreprise / personne physique) ══ -->
+      <div class="page" id="page-fournisseurs">
+        <div class="page-header">
+          <div>
+            <div class="step-badge">③ Études &amp; Chantier</div>
+            <div class="page-title">🏢 Fournisseurs</div>
+            <div class="page-subtitle">Répertoire fournisseurs matériaux &amp; prestataires — entreprises et personnes physiques</div>
+          </div>
+          <button class="btn btn-primary" onclick="document.getElementById('fpg-nom').focus();fournisseurTypeToggle();">➕ Nouveau fournisseur</button>
+        </div>
+        <div class="card" style="margin-bottom:16px;">
+          <div class="form-grid" style="grid-template-columns:1fr 1fr;">
+            <div class="form-group span-2"><label>Type</label>
+              <select class="form-control" id="fpg-typetiers" onchange="fournisseurTypeToggle()">
+                <option value="entreprise">🏢 Entreprise</option>
+                <option value="physique">👤 Personne physique</option>
+              </select>
+            </div>
+            <div class="form-group span-2"><label id="fpg-nom-label">Raison sociale *</label><input class="form-control" id="fpg-nom"></div>
+            <div class="form-group" id="fpg-wrap-rccm"><label>RCCM</label><input class="form-control" id="fpg-rccm"></div>
+            <div class="form-group" id="fpg-wrap-ncc"><label>NCC</label><input class="form-control" id="fpg-ncc"></div>
+            <div class="form-group" id="fpg-wrap-cni" style="display:none;"><label>N° CNI / Pièce</label><input class="form-control" id="fpg-cni"></div>
+            <div class="form-group"><label>Contact / Tél</label><input class="form-control" id="fpg-contact"></div>
+            <div class="form-group"><label>Compte (401x)</label><input class="form-control" id="fpg-compte" placeholder="401"></div>
+            <div class="form-group span-2"><label style="font-weight:normal;font-size:12px;"><input type="checkbox" id="fpg-airsi" style="margin-right:6px;"> Soumis à l'AIRSI (retenue à la source)</label></div>
+          </div>
+          <div style="margin-top:10px;text-align:right;"><button class="btn btn-primary" onclick="saveFournisseurPage()">💾 Enregistrer</button></div>
+        </div>
+        <div class="card">
+          <input type="text" class="search-input" placeholder="🔍 Nom, RCCM, NCC, CNI, contact..." id="fpg-search" oninput="_debInput('renderFournisseursPageListe')" style="margin-bottom:12px;">
+          <div class="table-wrap"><table>
+            <thead><tr><th>Type</th><th>Nom</th><th>RCCM / NCC / CNI</th><th>Contact</th><th>Compte</th><th>AIRSI</th><th></th></tr></thead>
+            <tbody id="tbody-fournisseurs-page"></tbody>
+          </table></div>
         </div>
       </div>
 
@@ -25240,6 +25280,7 @@ function goTo(page) {
   if (typeof crmStopPolling === 'function') crmStopPolling();
   if (page === 'dashboard') refreshDashboard();
   if (page === 'clients') renderClients();
+  if (page === 'fournisseurs') { renderDlFournisseurs(); renderFournisseursPageListe(); }
   if (page === 'paiements') { renderVersements(); populateClientSelects(); }
   if (page === 'programmes') renderProgrammes();
   if (page === 'lots') { populateFilterProgrammes(); renderLots(); renderTerrains(); }
@@ -87570,13 +87611,68 @@ function stockEntreeModeToggle(){
   document.getElementById('se-tresorerie-wrap').style.display=(mode==='comptant')?'block':'none';
 }
 function fournisseurTypeToggle(){
-  var t=document.getElementById('fo-typetiers').value;
-  var phys=(t==='physique');
-  document.getElementById('fo-nom-label').textContent=phys?'Nom et prénoms *':'Raison sociale *';
-  document.getElementById('fo-wrap-rccm').style.display=phys?'none':'';
-  document.getElementById('fo-wrap-ncc').style.display=phys?'none':'';
-  document.getElementById('fo-wrap-cni').style.display=phys?'':'none';
+  ['fo','fpg'].forEach(function(pfx){
+    var sel=document.getElementById(pfx+'-typetiers'); if(!sel) return;
+    var phys=(sel.value==='physique');
+    var lbl=document.getElementById(pfx+'-nom-label'); if(lbl) lbl.textContent=phys?'Nom et prénoms *':'Raison sociale *';
+    var wr=document.getElementById(pfx+'-wrap-rccm'); if(wr) wr.style.display=phys?'none':'';
+    var wn=document.getElementById(pfx+'-wrap-ncc'); if(wn) wn.style.display=phys?'none':'';
+    var wc=document.getElementById(pfx+'-wrap-cni'); if(wc) wc.style.display=phys?'':'none';
+  });
 }
+function renderFournisseursPageListe() {
+  var tbody = document.getElementById('tbody-fournisseurs-page');
+  if (!tbody) return;
+  var q = (document.getElementById('fpg-search') && document.getElementById('fpg-search').value || '').toLowerCase();
+  var l = (DATA.fournisseurs || []).filter(function(fr) {
+    if (!q) return true;
+    var hay = ((fr.nom||'') + ' ' + (fr.rccm||'') + ' ' + (fr.ncc||'') + ' ' + (fr.cni||'') + ' ' + (fr.contact||'')).toLowerCase();
+    return hay.includes(q);
+  });
+  if (!l.length) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--blanc-dim);padding:20px;">Aucun fournisseur.</td></tr>'; return; }
+  tbody.innerHTML = l.map(function(fr) {
+    var phys = fr.type_tiers === 'physique';
+    var idNum = phys ? (fr.cni || '—') : ([fr.rccm, fr.ncc].filter(Boolean).join(' / ') || '—');
+    return '<tr>'
+      + '<td>' + (phys ? '👤 Personne physique' : '🏢 Entreprise') + '</td>'
+      + '<td><strong>' + escHtml(fr.nom) + '</strong></td>'
+      + '<td style="font-size:12px;">' + escHtml(idNum) + '</td>'
+      + '<td style="font-size:12px;">' + escHtml(fr.contact || '—') + '</td>'
+      + '<td style="font-size:12px;">' + escHtml(fr.compte || '—') + '</td>'
+      + '<td>' + (fr.airsi ? '<span class="badge badge-or" style="font-size:9px;">AIRSI</span>' : '—') + '</td>'
+      + '<td><button class="btn btn-danger btn-sm btn-icon" onclick="deleteFournisseur(\'' + fr.id + '\')">🗑</button></td>'
+      + '</tr>';
+  }).join('');
+}
+
+async function saveFournisseurPage() {
+  var typeTiers = document.getElementById('fpg-typetiers').value;
+  var phys = (typeTiers === 'physique');
+  var nom = document.getElementById('fpg-nom').value.trim();
+  if (!nom) { toast(phys ? 'Nom et prénoms requis.' : 'Raison sociale requise.', 'error'); return; }
+  var fr = {
+    id: uid(), type_tiers: typeTiers, nom: nom,
+    rccm: phys ? '' : document.getElementById('fpg-rccm').value.trim(),
+    ncc: phys ? '' : document.getElementById('fpg-ncc').value.trim(),
+    cni: phys ? document.getElementById('fpg-cni').value.trim() : '',
+    contact: document.getElementById('fpg-contact').value.trim(),
+    compte: (document.getElementById('fpg-compte').value.trim() || requireCompteDefaut('fournisseur')),
+    airsi: (document.getElementById('fpg-airsi') || {}).checked || false, created_at: today()
+  };
+  if (!DATA.fournisseurs) DATA.fournisseurs = [];
+  DATA.fournisseurs.push(fr);
+  await dbPut('fournisseurs', fr);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_fournisseurs', fr);
+  ['fpg-nom', 'fpg-rccm', 'fpg-ncc', 'fpg-cni', 'fpg-contact', 'fpg-compte'].forEach(function(id) { document.getElementById(id).value = ''; });
+  var _fa = document.getElementById('fpg-airsi'); if (_fa) _fa.checked = false;
+  document.getElementById('fpg-typetiers').value = 'entreprise';
+  fournisseurTypeToggle();
+  renderFournisseursPageListe();
+  renderDlFournisseurs();
+  var selF = document.getElementById('se-fournisseur'); if (selF) selF.innerHTML = fournisseurOptions(fr.id);
+  toast('Fournisseur enregistré.', 'success');
+}
+
 function openFournisseurs(){
   ['fo-nom','fo-rccm','fo-ncc','fo-contact','fo-cni'].forEach(function(id){document.getElementById(id).value='';});
   document.getElementById('fo-compte').value='';
@@ -87617,6 +87713,7 @@ async function deleteFournisseur(id){
   if(!confirm('Supprimer ce fournisseur ?')) return;
   var ok=await deleteRecord('fournisseurs',id); if(ok===false)return;
   renderFournisseursListe();
+  renderFournisseursPageListe();
   renderDlFournisseurs();
   var selF=document.getElementById('se-fournisseur'); if(selF) selF.innerHTML=fournisseurOptions('');
   toast('Fournisseur supprimé.','info');
