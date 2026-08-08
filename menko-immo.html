@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.85 · 2026-08-08 — Paramétrage : déconnecter tous les autres postes (epoch de session)';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.86 · 2026-08-08 — Paramétrage : liste des postes potentiellement connectés (Sécurité)';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -5426,7 +5426,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div class="etape-hd"><span class="etape-num">2</span>Accès</div>
             <div class="etape-btns">
               <button class="tab-btn" onclick="switchTab('params','users')" title="Comptes, rôles et audit des accès"><i>👤</i>Utilisateurs</button>
-              <button class="tab-btn" onclick="switchTab('params','securite')" title="Politique de mots de passe et journalisation"><i>🔒</i>Sécurité</button>
+              <button class="tab-btn" onclick="switchTab('params','securite');renderPostesConnectes()" title="Politique de mots de passe et journalisation"><i>🔒</i>Sécurité</button>
               <button class="tab-btn" onclick="switchTab('params','api');renderApiKeysAdmin()" title="Clés API pour partenaires externes (comparateurs, agences, banques)"><i>🔌</i>API partenaires</button>
             </div>
           </div>
@@ -6819,6 +6819,14 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                   <label>Inactivité avant déconnexion (min)</label>
                   <input type="number" class="form-control" id="param-inactivite-min" value="30" min="5" max="480">
                 </div>
+              </div>
+              <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--bord);">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                  <div style="font-size:13px;font-weight:600;">💻 Postes potentiellement connectés</div>
+                  <button class="btn btn-secondary btn-sm" onclick="renderPostesConnectes()">🔄 Actualiser</button>
+                </div>
+                <div style="font-size:11px;color:var(--blanc-dim);margin-bottom:8px;">Estimation à partir des connexions des dernières 8h (aucun registre de session temps réel — un poste resté inactif sans reconnexion peut ne pas apparaître, ou un poste fermé peut encore y figurer).</div>
+                <div id="postes-connectes-liste" style="font-size:12px;"></div>
               </div>
               <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--bord);">
                 <div style="font-size:13px;color:var(--blanc-dim);margin-bottom:8px;">Force la déconnexion de tous les postes/onglets connectés (utile après un incident de cache local périmé — sync qui réinjecte d'anciennes données). Votre session actuelle n'est pas affectée.</div>
@@ -24871,6 +24879,48 @@ function hasRole(requiredRole) {
   if (!APP.currentUser) return false;
   var h = { admin: 3, comptable: 2, commercial: 1 };
   return (h[APP.currentUser.role] || 0) >= (h[requiredRole] || 0);
+}
+
+/** Devine un libellé humain (OS + navigateur + type d'appareil) depuis un userAgent. */
+function _labelUserAgent(ua) {
+  ua = ua || '';
+  var os = /Android/i.test(ua) ? 'Android' : /iPhone|iPad/i.test(ua) ? 'iOS' : /Windows/i.test(ua) ? 'Windows' : /Macintosh/i.test(ua) ? 'Mac' : /Linux/i.test(ua) ? 'Linux' : 'Appareil';
+  var mobile = /Mobile/i.test(ua) ? '📱' : '💻';
+  var nav = /Edg\//i.test(ua) ? 'Edge' : /Chrome\//i.test(ua) ? 'Chrome' : /Firefox\//i.test(ua) ? 'Firefox' : /Safari\//i.test(ua) ? 'Safari' : 'Navigateur';
+  return mobile + ' ' + os + ' · ' + nav;
+}
+
+/** Estime les postes potentiellement connectés à partir des logs de connexion
+   récents (aucun registre de session temps réel côté serveur — voir note UI).
+   Regroupe par (login + empreinte appareil), garde la dernière activité de
+   chaque groupe, ne retient que ce qui tombe dans la fenêtre de durée de
+   session paramétrée (8h par défaut). */
+function renderPostesConnectes() {
+  var zone = document.getElementById('postes-connectes-liste');
+  if (!zone) return;
+  var dureeMin = parseInt((document.getElementById('param-session-duree')||{}).value) || 480;
+  var seuil = Date.now() - dureeMin * 60000;
+  var groupes = {};
+  (DATA.logs_connexion || []).forEach(function(l) {
+    if (!l.success || !l.date) return;
+    var t = new Date(l.date).getTime();
+    if (isNaN(t) || t < seuil) return;
+    var appareil = _labelUserAgent(l.userAgent);
+    var key = (l.login||'?') + '::' + appareil;
+    if (!groupes[key] || new Date(groupes[key].date).getTime() < t) {
+      groupes[key] = { login: l.login, appareil: appareil, date: l.date };
+    }
+  });
+  var liste = Object.keys(groupes).map(function(k){ return groupes[k]; })
+    .sort(function(a,b){ return new Date(b.date) - new Date(a.date); });
+  if (!liste.length) { zone.innerHTML = '<div style="color:var(--blanc-dim);">Aucune activité récente détectée.</div>'; return; }
+  zone.innerHTML = '<table style="width:100%;"><tbody>' + liste.map(function(p) {
+    var mins = Math.round((Date.now() - new Date(p.date).getTime()) / 60000);
+    var recence = mins < 2 ? 'à l\'instant' : mins < 60 ? ('il y a ' + mins + ' min') : ('il y a ' + Math.round(mins/60) + ' h');
+    return '<tr><td style="padding:4px 8px 4px 0;font-weight:600;">' + escHtml(p.login||'?') + '</td>'
+      + '<td style="padding:4px 8px;">' + p.appareil + '</td>'
+      + '<td style="padding:4px 0;color:var(--blanc-dim);text-align:right;">' + recence + '</td></tr>';
+  }).join('') + '</tbody></table>';
 }
 
 /** Déconnecte tous les autres postes/onglets ouverts (Paramétrage → Sécurité).
