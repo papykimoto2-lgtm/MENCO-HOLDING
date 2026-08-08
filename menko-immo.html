@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.75 · 2026-08-08 — Filet de sécurité : pull cloud silencieux toutes les 60s (indépendant du Realtime)';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.79 · 2026-08-08 — Saisie intuitive des comptes (autocomplétion) : écritures + bilan ouverture';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -7117,6 +7117,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               Tapez pour rechercher dans le plan comptable (saisie prédictive) ou cliquez sur la flèche du champ pour dérouler la liste. Un code inexistant sera <strong>créé automatiquement</strong> dans le plan comptable à l'enregistrement.
             </div>
             <datalist id="dl-plan-comptable"></datalist>
+            <datalist id="dl-plan-comptable-bilan"></datalist>
             <datalist id="dl-fournisseurs"></datalist>
             <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;">
               <div class="form-group"><label>Trésorerie — Banque</label><input class="form-control" id="cd-treso-banque" list="dl-plan-comptable" placeholder="521"></div>
@@ -24739,6 +24740,61 @@ async function confirmReinitMotsDePasse() {
   if (n) alert('✅ ' + n + ' mot(s) de passe réinitialisé(s).\n\nNouveau mot de passe : ' + mdp + '\n\nCommunique-le aux utilisateurs ; ils devront le changer.');
 }
 
+/** Modal de changement de mot de passe forcé (must_change=true) — bloque
+   l'accès à l'application tant qu'un nouveau mot de passe conforme n'est
+   pas défini. Injecté dynamiquement (pas de démarrage de session complète
+   avant validation). */
+function ouvrirChangementMotDePasseForce(user) {
+  var old = document.getElementById('modal-mdp-force');
+  if (old) old.remove();
+  var div = document.createElement('div');
+  div.id = 'modal-mdp-force';
+  div.className = 'modal-overlay open';
+  div.style.zIndex = '99999';
+  div.innerHTML =
+    '<div class="modal" style="max-width:420px;">'
+    + '<div class="modal-header"><h3>🔐 Changement de mot de passe requis</h3></div>'
+    + '<div class="modal-body">'
+    + '<p style="font-size:12px;color:var(--blanc-dim);margin-bottom:12px;">Votre compte « ' + escHtml(user.login||user.nom||'') + ' » exige la définition d\'un nouveau mot de passe avant de continuer.</p>'
+    + '<div class="form-group"><label>Nouveau mot de passe</label><input type="password" id="mdpf-new" class="form-control" autocomplete="new-password" placeholder="Min. 8 car., 1 MAJ, 1 chiffre, 1 spécial"></div>'
+    + '<div class="form-group"><label>Confirmer le mot de passe</label><input type="password" id="mdpf-confirm" class="form-control" autocomplete="new-password"></div>'
+    + '<div id="mdpf-erreur" style="color:var(--rouge);font-size:12px;margin-top:6px;"></div>'
+    + '</div>'
+    + '<div class="modal-footer"><button class="btn btn-primary" id="mdpf-btn" onclick="_validerChangementMotDePasseForce()">Valider et continuer</button></div>'
+    + '</div>';
+  document.body.appendChild(div);
+  APP._mdpForceUser = user;
+  setTimeout(function(){ var e = document.getElementById('mdpf-new'); if (e) e.focus(); }, 50);
+}
+
+async function _validerChangementMotDePasseForce() {
+  var user = APP._mdpForceUser;
+  var errEl = document.getElementById('mdpf-erreur');
+  if (!user) return;
+  var pwd = (document.getElementById('mdpf-new')||{}).value || '';
+  var confirmPwd = (document.getElementById('mdpf-confirm')||{}).value || '';
+  var err = validatePasswordPolicy(pwd);
+  if (err) { if (errEl) errEl.textContent = err; return; }
+  if (pwd !== confirmPwd) { if (errEl) errEl.textContent = 'Les deux mots de passe ne correspondent pas.'; return; }
+  var btn = document.getElementById('mdpf-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Enregistrement…'; }
+  try {
+    user.salt = generateSalt();
+    user.password_hash = await hashPassword(pwd, user.salt);
+    delete user.password;
+    user.must_change = false;
+    await dbPut('users', user);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_users', user);
+    var m = document.getElementById('modal-mdp-force'); if (m) m.remove();
+    APP._mdpForceUser = null;
+    toast('✅ Mot de passe mis à jour.', 'success');
+    await startSession(user);
+  } catch (e) {
+    if (errEl) errEl.textContent = 'Erreur lors de l\'enregistrement : ' + (e && e.message ? e.message : e);
+    if (btn) { btn.disabled = false; btn.textContent = 'Valider et continuer'; }
+  }
+}
+
 /** Politique de mot de passe fort : 8 car., 1 maj, 1 chiffre, 1 spécial */
 function validatePasswordPolicy(pwd) {
   if (!pwd || pwd.length < 8) return 'Minimum 8 caractères requis.';
@@ -25354,7 +25410,15 @@ function goTo(page) {
   if (page === 'avancement') { renderChantiersDashboard(); }
   if (page === 'portail') { if (typeof pmRender === 'function') pmRender(); if (typeof pmsgRenderSelect === 'function') pmsgRenderSelect(); }
   if (page === 'accueil-visites') { if (typeof loadAccueil === 'function') loadAccueil(); }
-  if (page === 'portail-apporteur') { if (!SESSION_APPORTEUR) { ouvrirLoginApporteur(); return; } chargerPortailApporteur(); }
+  if (page === 'portail-apporteur') {
+    if (!SESSION_APPORTEUR) {
+      if (typeof ouvrirLoginApporteur === 'function') { ouvrirLoginApporteur(); }
+      else { toast('⛔ Portail Apporteur : module non disponible sur cette version.', 'error'); _lastGoTo('dashboard'); applyRoleToSidebar(); }
+      return;
+    }
+    if (typeof chargerPortailApporteur === 'function') chargerPortailApporteur();
+    else { toast('⛔ Portail Apporteur : module non disponible sur cette version.', 'error'); _lastGoTo('dashboard'); applyRoleToSidebar(); }
+  }
   if (page === 'leads') { renderPipeline(); if (typeof crmStartPolling === 'function') crmStartPolling(); }
   if (page === 'crm-carte') { setTimeout(function(){ if(!_geoMap) initLeafletMap(); else { renderCarteGeo(); _refreshGeoMap(false); } }, 80); }
   if (page === 'sig') { sigRenderParcelles(); setTimeout(function(){ if(window.L){ _sigBuild(); } else { _sigLoadLeaflet(); } }, 80); }
@@ -31684,6 +31748,11 @@ function populateDatalistPlanComptable(){
   var liste=(APP.planComptable||[]).filter(function(c){ return !c._horsPlan; })
     .slice().sort(function(a,b){ return String(a.code).localeCompare(String(b.code), undefined, {numeric:true}); });
   dl.innerHTML = liste.map(function(c){ return '<option value="'+escHtml(String(c.code))+'" label="'+escHtml(c.code+' — '+c.label)+'"></option>'; }).join('');
+  var dlBilan = document.getElementById('dl-plan-comptable-bilan');
+  if (dlBilan) {
+    var listeBilan = liste.filter(function(c){ return ['1','2','3','4','5'].indexOf(String(c.classe)) >= 0; });
+    dlBilan.innerHTML = listeBilan.map(function(c){ return '<option value="'+escHtml(String(c.code))+'" label="'+escHtml(c.code+' — '+c.label)+'"></option>'; }).join('');
+  }
 }
 
 /* Auto-création d'un compte du plan comptable à partir d'un champ « Comptes par
@@ -32483,9 +32552,10 @@ function ecrUpdateLigne(i, field, val) {
 function ecrRenderLignes() {
   var wrap = document.getElementById('ecr-lignes-wrap');
   if (!wrap) return;
+  if (typeof populateDatalistPlanComptable === 'function') populateDatalistPlanComptable();
   wrap.innerHTML = _ecrLignes.map(function(l, i){
     return '<div style="display:grid;grid-template-columns:2fr 90px 140px 1.3fr 34px;gap:6px;margin-bottom:6px;align-items:center;">'
-      + '<select class="form-control" onchange="ecrUpdateLigne(' + i + ',\'compte\',this.value);ecrDetectType();" style="font-size:12px;">' + ecrCompteOptionsHtml(l.compte) + '</select>'
+      + '<input type="text" class="form-control" list="dl-plan-comptable" value="' + escHtml(l.compte||'') + '" placeholder="Code ou libellé du compte…" onchange="ecrUpdateLigne(' + i + ',\'compte\',this.value);ecrDetectType();" style="font-size:12px;">'
       + '<select class="form-control" onchange="ecrUpdateLigne(' + i + ',\'sens\',this.value);ecrDetectType();" style="font-size:12px;font-weight:700;color:' + (l.sens==='D'?'var(--rouge)':'var(--vert)') + ';">'
       + '<option value="D"' + (l.sens==='D'?' selected':'') + '>Débit</option>'
       + '<option value="C"' + (l.sens==='C'?' selected':'') + '>Crédit</option></select>'
@@ -33635,6 +33705,24 @@ async function saveEcriture() {
 
   var lignesValides = _ecrLignes.filter(function(l){ return l.compte && parseFloat(l.montant) > 0; });
   if (lignesValides.length < 2) { toast('Minimum 2 lignes valides (compte + montant).', 'error'); return; }
+
+  /* [FIX] La saisie du compte est désormais un champ texte libre avec
+     autocomplétion (dl-plan-comptable) au lieu d'un <select> strict — plus
+     lisible sur un plan à ~1850 comptes, mais cela permet en théorie de
+     taper un code qui n'existe dans aucun plan (faute de frappe, code non
+     créé). Sans ce contrôle, l'écriture serait enregistrée avec un compte
+     fantôme, reproduisant exactement le problème « comptes hors plan » déjà
+     corrigé ailleurs. On exige donc un code réellement présent au plan. */
+  var codesConnus = {};
+  (APP.planComptable || []).forEach(function(c){ if (c && c.code) codesConnus[c.code] = true; });
+  var codesInconnus = lignesValides.map(function(l){ return l.compte; })
+    .filter(function(c,i,a){ return a.indexOf(c)===i; })
+    .filter(function(c){ return !codesConnus[c]; });
+  if (codesInconnus.length) {
+    toast('⛔ Compte(s) inconnu(s) du plan comptable : ' + codesInconnus.join(', ') + '. Sélectionnez une suggestion de la liste, ou créez d\'abord le compte au Paramétrage → Plan comptable.', 'error');
+    return;
+  }
+
   var hasD = lignesValides.some(function(l){ return l.sens==='D'; });
   var hasC = lignesValides.some(function(l){ return l.sens==='C'; });
   if (!hasD || !hasC) { toast('Au moins 1 ligne débit et 1 ligne crédit requis.', 'error'); return; }
@@ -53428,6 +53516,16 @@ async function _importPlanComptable(rows, strategy, mod) {
   DATA.params.plan_comptable_modifs = DATA.params.plan_comptable_modifs || {};
   DATA.params.plan_comptable_supprimes = DATA.params.plan_comptable_supprimes || [];
 
+  /* [FIX] Garantir un APP.planComptable frais AVANT de construire l'index de
+     détection des comptes existants (idxPlanComplet ci-dessous). Sans cet
+     appel, un import déclenché alors qu'APP.planComptable est encore vide/
+     périmé (ex. juste après le chargement de page, ou pendant un cycle de
+     sync) faisait apparaître TOUS les comptes importés — y compris ceux déjà
+     présents dans le socle — comme « nouveaux », et les dupliquait en masse
+     dans plan_comptable_custom (incident du 08/08 : 24 → 1731 comptes
+     personnalisés, 1705 doublons exacts du socle). */
+  if (typeof rebuildPlanComptable === 'function') { try { rebuildPlanComptable(); } catch(e){} }
+
   var NATURES_VALIDES = ['actif','passif','actif_contra','charge','produit','tresorerie','variable'];
   var nbNew=0, nbUpdated=0, nbSkipped=0, nbErr=0, nbSupprimes=0, warns=[];
 
@@ -53495,6 +53593,14 @@ async function _importPlanComptable(rows, strategy, mod) {
     comptesValides.forEach(function(p) {
       var code = p.code;
       var existant = idxPlanComplet[code];
+      /* [FIX] Double vérification contre le socle brut (_BASE_PLAN_COMPTABLE)
+         indépendamment de l'état d'idxPlanComplet — filet de sécurité si
+         rebuildPlanComptable() n'a pas pu s'exécuter (ex. fonction non encore
+         chargée) : empêche qu'un compte du socle soit malgré tout traité
+         comme « nouveau » et dupliqué dans plan_comptable_custom. */
+      if (!existant && _BASE_PLAN_COMPTABLE) {
+        existant = _BASE_PLAN_COMPTABLE.find(function(c){ return c && c.code === code; });
+      }
       var idxDansCustom = idxCustom.hasOwnProperty(code) ? idxCustom[code] : -1;
       if (!existant) {
         DATA.params.plan_comptable_custom.push(p);
@@ -55652,9 +55758,10 @@ function boUpdateLigne(i, field, val) {
 function boRenderLignes() {
   var wrap = document.getElementById('bo-lignes-wrap');
   if (!wrap) return;
+  if (typeof populateDatalistPlanComptable === 'function') populateDatalistPlanComptable();
   wrap.innerHTML = _boLignes.map(function(l, i) {
     return '<div style="display:grid;grid-template-columns:2.3fr 110px 160px 34px;gap:6px;margin-bottom:6px;align-items:center;">'
-      + '<select class="form-control" onchange="boUpdateLigne(' + i + ',\'compte\',this.value)" style="font-size:12px;">' + _boCompteOptionsHtml(l.compte) + '</select>'
+      + '<input type="text" class="form-control" list="dl-plan-comptable-bilan" value="' + escHtml(l.compte||'') + '" placeholder="Code ou libellé du compte (classes 1 à 5)…" onchange="boUpdateLigne(' + i + ',\'compte\',this.value)" style="font-size:12px;">'
       + '<select class="form-control" onchange="boUpdateLigne(' + i + ',\'sens\',this.value)" style="font-size:12px;font-weight:700;color:' + (l.sens==='D'?'var(--rouge)':'var(--vert)') + ';">'
       + '<option value="D"' + (l.sens==='D'?' selected':'') + '>Débiteur</option>'
       + '<option value="C"' + (l.sens==='C'?' selected':'') + '>Créditeur</option></select>'
@@ -55738,6 +55845,19 @@ async function saveBilanOuverture() {
 
   var lignesValides = _boLignes.filter(function(l){ return l.compte && parseFloat(l.montant) > 0; });
   if (!lignesValides.length) { toast('Saisissez au moins un compte avec un solde.', 'error'); return; }
+
+  /* [FIX] Même garde-fou que sur les écritures : la saisie du compte est un
+     champ texte libre avec autocomplétion, il faut donc vérifier que chaque
+     code existe réellement au plan comptable avant d'enregistrer. */
+  var codesConnusBO = {};
+  (APP.planComptable || []).forEach(function(c){ if (c && c.code) codesConnusBO[c.code] = true; });
+  var codesInconnusBO = lignesValides.map(function(l){ return l.compte; })
+    .filter(function(c,i,a){ return a.indexOf(c)===i; })
+    .filter(function(c){ return !codesConnusBO[c]; });
+  if (codesInconnusBO.length) {
+    toast('⛔ Compte(s) inconnu(s) du plan comptable : ' + codesInconnusBO.join(', ') + '. Sélectionnez une suggestion de la liste, ou créez d\'abord le compte au Paramétrage → Plan comptable.', 'error');
+    return;
+  }
 
   /* Fusionner les doublons de compte (même compte saisi 2x) */
   var fusion = {};
@@ -74763,7 +74883,7 @@ function renderConvAgrement() {
         html += '<span style="font-weight:600;">' + c.cabinet + '</span>';
         if (c.numero) html += ' <span style="color:var(--dim);">n&deg;' + c.numero + '</span>';
         html += ' <span style="' + convAgrStatutStyle(c.statut) + '">' + convAgrStatutText(c.statut) + '</span>';
-        if (c.date_expiration) html += '<span style="color:var(--dim);margin-left:6px;">exp.' + formatDate(c.date_expiration) + '</span>' + expTag;
+        if (c.date_expiration) html += '<span style="color:var(--dim);margin-left:6px;">exp.' + escHtml(c.date_expiration) + '</span>' + expTag;
         html += '</div>';
         html += '<div style="display:flex;gap:5px;">';
         html += '<button class="btn btn-secondary btn-sm" onclick="openConvAgrModal(\'' + c.id + '\')">Modifier</button>';
@@ -104866,7 +104986,26 @@ async function caisseCloturer() {
   var fondReel = parseFloat(document.getElementById('ccl-fond-reel').value) || 0;
   var ecart = fondReel - soldeTheorique;
 
-  if (ecart !== 0 && !confirm('Écart de ' + fmtF(ecart) + ' FCFA entre le solde théorique (' + fmtF(soldeTheorique) + ') et le comptage réel (' + fmtF(fondReel) + ').\n\nConfirmer la clôture malgré l\'écart ?')) return;
+  /* [FIX] Le comptage physique d'une caisse ne peut JAMAIS être négatif — on
+     ne compte pas des billets négatifs. Avant ce garde-fou, un solde
+     théorique négatif (import incomplet ou déficit réel) était simplement
+     validé tel quel comme « fond réel » préempli, avec écart forcé à 0 : la
+     clôture masquait silencieusement un problème financier au lieu de le
+     signaler. Le déficit se propageait ensuite comme fond d'ouverture négatif
+     de la session suivante, sans qu'aucun utilisateur ne comprenne pourquoi
+     (cf. incident caisse principale, solde ouverture -7 143 945 FCFA). */
+  if (fondReel < 0) {
+    toast('⛔ Le comptage physique ne peut pas être négatif. Saisissez le montant réellement compté dans le tiroir (0 ou plus).', 'error');
+    return;
+  }
+  if (soldeTheorique < 0) {
+    if (!confirm('⚠️ ALERTE — Solde théorique NÉGATIF : ' + fmtF(soldeTheorique) + ' FCFA.\n\n'
+      + 'Cela signifie que les sorties enregistrées dépassent les entrées + fond d\'ouverture de cette session : soit des encaissements n\'ont pas été saisis, soit il existe un déficit réel à documenter.\n\n'
+      + 'Comptage physique déclaré : ' + fmtF(fondReel) + ' FCFA.\n'
+      + 'Écart apparent : ' + fmtF(ecart) + ' FCFA.\n\n'
+      + 'Ce déficit sera reporté comme fond d\'ouverture négatif de la prochaine session tant qu\'il n\'est pas corrigé (entrée manquante à saisir, ou régularisation comptable).\n\n'
+      + 'Confirmer la clôture EN L\'ÉTAT malgré ce signal ?')) return;
+  } else if (ecart !== 0 && !confirm('Écart de ' + fmtF(ecart) + ' FCFA entre le solde théorique (' + fmtF(soldeTheorique) + ') et le comptage réel (' + fmtF(fondReel) + ').\n\nConfirmer la clôture malgré l\'écart ?')) return;
 
   session.statut = 'cloturee';
   session.fond_cloture_theorique = soldeTheorique;
