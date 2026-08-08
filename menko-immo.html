@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.70 · 2026-08-08 — Fix CMU/CNPS prélevés à tort sur employés non déclarés';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.71 · 2026-08-08 — Employés : filtre/état non déclarés + déclaration rapide CNPS';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -7295,6 +7295,12 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <select class="filter-select" id="filter-division" onchange="filterEmployes()">
             <option value="">Toutes divisions</option>
           </select>
+          <select class="filter-select" id="filter-cnps-statut" onchange="filterEmployes()">
+            <option value="">Tous statuts CNPS</option>
+            <option value="declare">Déclaré</option>
+            <option value="en_cours">Déclaration en cours</option>
+            <option value="non_declare">🚫 Non déclaré</option>
+          </select>
         </div>
         <div id="emp-grid-container" class="emp-grid" style="display:none;"></div>
         <div class="card" id="emp-table-container">
@@ -7308,6 +7314,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                   <th>Département</th>
                   <th>Division</th>
                   <th>Contrat</th>
+                  <th>Statut CNPS</th>
                   <th>Date embauche</th>
                   <th>Salaire brut</th>
                   <th>Catégorie CNPS</th>
@@ -41693,13 +41700,15 @@ function _empFiltres() {
   var dept = document.getElementById('filter-dept').value;
   var contrat = document.getElementById('filter-contrat').value;
   var divisionF = (document.getElementById('filter-division')||{}).value || '';
+  var cnpsF = (document.getElementById('filter-cnps-statut')||{}).value || '';
   return scopeFiltrer(DATA.employes, 'division').filter(function(e) {
     var match = !q || (e.nom + ' ' + e.prenoms + ' ' + e.matricule + ' ' + e.poste).toLowerCase().includes(q);
     var matchDept = !dept || e.dept === dept;
     var matchContrat = !contrat || e.contrat === contrat;
     var matchDivision = !divisionF || e.division === divisionF;
+    var matchCnps = !cnpsF || (e.cnps_statut || 'declare') === cnpsF;
     var matchSortie = _modeExEmployes ? empEstSorti(e) : !empEstSorti(e);
-    return match && matchDept && matchContrat && matchDivision && matchSortie;
+    return match && matchDept && matchContrat && matchDivision && matchCnps && matchSortie;
   });
 }
 
@@ -41715,6 +41724,26 @@ var EMP_ACCENT_DEPT   = {
 function _empInitiales(e) {
   var n = (e.nom || '').trim().charAt(0), p = (e.prenoms || '').trim().charAt(0);
   return ((n + p) || (e.matricule || '?').charAt(0)).toUpperCase();
+}
+
+function _empCnpsStatutBadge(e) {
+  var st = e.cnps_statut || 'declare';
+  var map = { declare: ['badge-vert','Déclaré'], en_cours: ['badge-or','En cours'], non_declare: ['badge-rouge','🚫 Non déclaré'] };
+  var m = map[st] || map.declare;
+  return '<span class="badge ' + m[0] + '">' + m[1] + '</span>';
+}
+
+async function declarerEmployeCNPS(id) {
+  var e = (DATA.employes||[]).find(function(x){ return x.id===id; });
+  if (!e) return;
+  if (!confirm('Déclarer ' + (e.nom||'') + ' ' + (e.prenoms||'') + ' à la CNPS ?\n\nLe statut CNPS passera à « Déclaration en cours » et les cotisations (CNPS + CMU) seront recalculées normalement dès le prochain bulletin. Complétez ensuite le N° CNPS dès réception de l\'immatriculation.')) return;
+  e.cnps_statut = 'en_cours';
+  DATA.employes = DATA.employes.map(function(x){ return x.id===id ? e : x; });
+  await dbPut('employes', e);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_employes', e);
+  renderEmployes();
+  updateRHKPIs();
+  toast('📝 Employé passé en déclaration CNPS en cours.', 'success');
 }
 
 function renderEmployes() {
@@ -41735,7 +41764,7 @@ function renderEmployes() {
   }
 
   if (!list.length) {
-    tbody.innerHTML = '<tr><td colspan="' + (_modeExEmployes ? 12 : 11) + '" style="text-align:center;color:var(--blanc-dim);padding:24px;">' + (_modeExEmployes ? 'Aucun ex-employé' : 'Aucun employé enregistré') + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="' + (_modeExEmployes ? 13 : 12) + '" style="text-align:center;color:var(--blanc-dim);padding:24px;">' + (_modeExEmployes ? 'Aucun ex-employé' : 'Aucun employé enregistré') + '</td></tr>';
     if (gridC) gridC.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--blanc-dim);padding:40px 20px;">' + (_modeExEmployes ? '👥 Aucun ex-employé' : '👤 Aucun employé enregistré') + '</div>';
     return;
   }
@@ -41749,6 +41778,7 @@ function renderEmployes() {
       + '<td>' + escHtml(e.dept || '—') + '</td>'
       + '<td>' + (e.division ? escHtml(_nomDivision(e.division)) : '—') + '</td>'
       + '<td><span class="badge ' + (EMP_BADGE_CONTRAT[e.contrat] || 'badge-bleu') + '">' + escHtml(e.contrat||'') + '</span></td>'
+      + '<td>' + _empCnpsStatutBadge(e) + '</td>'
       + '<td>' + (e.date_embauche ? escHtml(e.date_embauche) : '—') + '</td>'
       + '<td style="color:var(--or);font-weight:600;">' + fmtF(e.salaire_base) + ' FCFA</td>'
       + '<td style="font-size:11px;">' + escHtml(e.categorie || '—') + '</td>'
@@ -41756,6 +41786,7 @@ function renderEmployes() {
       + (_modeExEmployes ? '<td>' + (e.date_depart ? escHtml(e.date_depart) : '—') + '</td>' : '')
       + '<td>'
       + '<button class="btn btn-secondary btn-sm btn-icon" onclick="openEmployeModal(\'' + e.id + '\')">✏️</button> '
+      + (e.cnps_statut === 'non_declare' ? '<button class="btn btn-secondary btn-sm btn-icon" title="Déclarer à la CNPS" style="border-color:var(--rouge);color:var(--rouge);" onclick="declarerEmployeCNPS(\'' + e.id + '\')">📝</button> ' : '')
       + '<button class="btn btn-secondary btn-sm btn-icon" onclick="imprimerContratTravail(\'' + e.id + '\')" title="Imprimer le contrat">🖨️</button> '
       + '<button class="btn btn-secondary btn-sm btn-icon" onclick="voirBulletinEmploye(\'' + e.id + '\')">📋</button> '
       + '<button class="btn btn-secondary btn-sm btn-icon" onclick="imprimerBadgeEmploye(\'' + e.id + '\')" title="Badge employé">🎫</button> '
@@ -41773,6 +41804,7 @@ function renderEmployes() {
       return '<div class="emp-card" style="' + style + '">'
         + '<div class="emp-card-actions">'
         +   '<button onclick="openEmployeModal(\'' + e.id + '\')" title="Modifier">✏️</button>'
+        +   (e.cnps_statut === 'non_declare' ? '<button onclick="declarerEmployeCNPS(\'' + e.id + '\')" title="Déclarer à la CNPS" style="color:var(--rouge);">📝</button>' : '')
         +   '<button onclick="imprimerContratTravail(\'' + e.id + '\')" title="Contrat">🖨️</button>'
         +   '<button onclick="voirBulletinEmploye(\'' + e.id + '\')" title="Bulletin">📋</button>'
         +   '<button onclick="imprimerBadgeEmploye(\'' + e.id + '\')" title="Badge">🎫</button>'
@@ -41789,6 +41821,7 @@ function renderEmployes() {
         + '</div>'
         + '<div class="emp-card-tags">'
         +   '<span class="badge ' + (EMP_BADGE_CONTRAT[e.contrat] || 'badge-bleu') + ' emp-chip">' + escHtml(e.contrat||'—') + '</span>'
+        +   (e.cnps_statut === 'non_declare' ? '<span class="badge badge-rouge emp-chip">🚫 Non déclaré</span>' : '')
         +   '<span class="badge ' + (EMP_BADGE_STAT[e.statut] || 'badge-bleu') + ' emp-chip">' + escHtml(EMP_LABEL_STAT[e.statut] || e.statut || '') + '</span>'
         +   (e.division ? '<span class="badge badge-neutre emp-chip">🏢 ' + escHtml(_nomDivision(e.division)) + '</span>' : '')
         +   (e.dept ? '<span class="badge badge-neutre emp-chip">' + escHtml(e.dept) + '</span>' : '')
