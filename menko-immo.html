@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.65 · 2026-08-07 — fournisseurs entreprise/personne physique';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.67 · 2026-08-07 — Comptabilité tiers 401 : intègre fournisseurs matériaux';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -3838,8 +3838,8 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <div class="table-wrap">
                 <table>
                   <thead><tr>
-                    <th>Fournisseur</th><th>Spécialité</th><th>Convention</th>
-                    <th>Montant TTC</th><th>Acompte versé</th><th>Situations payées</th>
+                    <th>Type</th><th>Fournisseur</th><th>Spécialité</th><th>Convention</th>
+                    <th>Montant TTC</th><th>Réglé</th><th>Situations payées</th>
                     <th>Retenue garantie (10%)</th>
                     <th style="color:var(--rouge);">Solde 401 à payer</th>
                     <th>Ancienneté</th>
@@ -7045,6 +7045,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               Tapez pour rechercher dans le plan comptable (saisie prédictive) ou cliquez sur la flèche du champ pour dérouler la liste. Un code inexistant sera <strong>créé automatiquement</strong> dans le plan comptable à l'enregistrement.
             </div>
             <datalist id="dl-plan-comptable"></datalist>
+            <datalist id="dl-fournisseurs"></datalist>
             <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;">
               <div class="form-group"><label>Trésorerie — Banque</label><input class="form-control" id="cd-treso-banque" list="dl-plan-comptable" placeholder="521"></div>
               <div class="form-group"><label>Trésorerie — Caisse (espèces)</label><input class="form-control" id="cd-treso-caisse" list="dl-plan-comptable" placeholder="571"></div>
@@ -12926,7 +12927,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               </div>
               <div class="form-group">
                 <label>Fournisseur</label>
-                <input type="text" id="px-fournisseur" class="form-control" placeholder="CDIM, Sococé, Etrusco...">
+                <input type="text" id="px-fournisseur" class="form-control" placeholder="CDIM, Sococé, Etrusco..." list="dl-fournisseurs">
               </div>
               <div class="form-group">
                 <label>Date de validité</label>
@@ -12952,7 +12953,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div class="form-grid">
               <div class="form-group">
                 <label>Fournisseur *</label>
-                <input type="text" id="dv-fournisseur" class="form-control" placeholder="CDIM, Sococé...">
+                <input type="text" id="dv-fournisseur" class="form-control" placeholder="CDIM, Sococé..." list="dl-fournisseurs">
               </div>
               <div class="form-group">
                 <label>Référence devis</label>
@@ -56149,6 +56150,18 @@ function calcAncienneteFournisseur401(convs) {
   };
 }
 
+function calcTiersFournisseurMateriaux(fr) {
+  var ecrs = (DATA.ecritures||[]).filter(function(e){ return e.compte_credit===fr.compte || e.compte_debit===fr.compte; });
+  var totalCredit = ecrs.filter(function(e){return e.compte_credit===fr.compte;}).reduce(function(s,e){return s+(e.montant||0);},0);
+  var totalDebit  = ecrs.filter(function(e){return e.compte_debit===fr.compte;}).reduce(function(s,e){return s+(e.montant||0);},0);
+  var solde = Math.max(0, totalCredit-totalDebit);
+  var creditDates = ecrs.filter(function(e){return e.compte_credit===fr.compte && e.date;}).map(function(e){return new Date(e.date);}).sort(function(a,b){return a-b;});
+  var oldest = creditDates.length?creditDates[0]:null;
+  var today = new Date();
+  var moisAnc = (solde>0 && oldest) ? Math.max(0, Math.round((today-oldest)/(1000*60*60*24*30.5))) : 0;
+  return {totalCredit:totalCredit, totalDebit:totalDebit, solde:solde, moisAnc:moisAnc};
+}
+
 function buildTiers401() {
   var search = (document.getElementById('search-tiers401')||{}).value||'';
   var filtStatut = (document.getElementById('filter-tiers401-statut')||{}).value||'';
@@ -56189,8 +56202,27 @@ function buildTiers401() {
       else anteriorite.plus12 += solde401;
     }
 
-    return {constr:constr, convs:convs, totalTTC:totalTTC, avances:avances, situ:situ, retenues:retenues, solde401:solde401, statut:statut, moisAnc:moisAnc, ancEstimee:ancEstimee};
+    return {constr:constr, convs:convs, totalTTC:totalTTC, avances:avances, situ:situ, retenues:retenues, solde401:solde401, statut:statut, moisAnc:moisAnc, ancEstimee:ancEstimee, typeTiers:'chantier'};
   }).filter(Boolean);
+
+  /* Fournisseurs matériaux (compte 401x, hors constructeurs/conventions) */
+  var rowsMat = (DATA.fournisseurs||[]).map(function(fr){
+    if (!fr.compte) return null;
+    var calc = calcTiersFournisseurMateriaux(fr);
+    var statut = calc.solde <= 0 ? 'solde' : 'crediteur';
+    if (filtStatut && filtStatut !== statut) return null;
+    if (search && !(fr.nom||'').toLowerCase().includes(search.toLowerCase())) return null;
+    if (calc.solde > 0) {
+      totalSolde += calc.solde;
+      if (calc.moisAnc <= 1) anteriorite.courant += calc.solde;
+      else if (calc.moisAnc <= 3) anteriorite.m1_3 += calc.solde;
+      else if (calc.moisAnc <= 6) anteriorite.m3_6 += calc.solde;
+      else if (calc.moisAnc <= 12) anteriorite.m6_12 += calc.solde;
+      else anteriorite.plus12 += calc.solde;
+    }
+    return {fr:fr, totalTTC:calc.totalCredit, reglé:calc.totalDebit, solde401:calc.solde, statut:statut, moisAnc:calc.moisAnc, ancEstimee:false, typeTiers:'materiaux'};
+  }).filter(Boolean);
+  rows = rows.concat(rowsMat);
 
   var antEl = document.getElementById('tiers401-anteriorite');
   if (antEl) {
@@ -56224,8 +56256,28 @@ function buildTiers401() {
     }
   }
 
-  if (!rows.length) { tbody.innerHTML='<tr><td colspan="11" style="text-align:center;padding:20px;color:var(--dim);">Aucun fournisseur.</td></tr>'; return; }
+  if (!rows.length) { tbody.innerHTML='<tr><td colspan="12" style="text-align:center;padding:20px;color:var(--dim);">Aucun fournisseur.</td></tr>'; return; }
   tbody.innerHTML = rows.map(function(r){
+    if (r.typeTiers === 'materiaux') {
+      var fr = r.fr;
+      var phys = fr.type_tiers==='physique';
+      var ancLabelM = r.solde401>0 ? (r.moisAnc<=1?'Courant':r.moisAnc+' mois') : '—';
+      var ancColorM = r.moisAnc<=1?'var(--vert)':r.moisAnc<=3?'var(--or)':r.moisAnc<=6?'#E0A052':'var(--rouge)';
+      return '<tr>'
+        +'<td>'+(phys?'👤 Personne physique':'🏢 Matériaux')+'</td>'
+        +'<td><strong>'+fr.nom+'</strong></td>'
+        +'<td style="font-size:12px;color:var(--dim);">'+(fr.airsi?'AIRSI':'—')+'</td>'
+        +'<td style="font-size:11px;color:var(--dim);">'+(fr.compte||'—')+'</td>'
+        +'<td>'+fmtF(r.totalTTC)+' FCFA</td>'
+        +'<td style="color:var(--vert);">'+fmtF(r.reglé)+' FCFA</td>'
+        +'<td>—</td>'
+        +'<td>—</td>'
+        +'<td style="font-weight:700;color:'+(r.solde401>0?'var(--rouge)':'var(--vert)')+';">'+(r.solde401>0?fmtF(r.solde401)+' FCFA':'Soldé')+'</td>'
+        +'<td style="color:'+(r.solde401>0?ancColorM:'var(--dim)')+';" title="Calculée depuis la date des écritures 401 (facture/paiement)">'+ancLabelM+'</td>'
+        +'<td><span class="badge '+(r.statut==='solde'?'badge-vert':'badge-rouge')+'">'+(r.statut==='solde'?'Soldé':'À payer')+'</span></td>'
+        +'<td><button class="btn btn-secondary btn-sm btn-icon" onclick="openFournisseurs()">🏢</button></td>'
+        +'</tr>';
+    }
     var convNums = r.convs.map(function(cv){return cv.numero;}).join(', ');
     var ancLabel = r.solde401>0 ? (r.moisAnc<=1?'Courant':r.moisAnc+' mois') : '—';
     var ancColor = r.moisAnc<=1?'var(--vert)':r.moisAnc<=3?'var(--or)':r.moisAnc<=6?'#E0A052':'var(--rouge)';
@@ -56234,6 +56286,7 @@ function buildTiers401() {
       : 'Calculée depuis la date d\'échéance/facture fournisseur';
     var ancTag = (r.solde401>0 && r.ancEstimee) ? ' ≈' : '';
     return '<tr>'
+      +'<td>🏗️ Chantier</td>'
       +'<td><strong>'+r.constr.raison_sociale+'</strong></td>'
       +'<td style="font-size:12px;">'+r.constr.specialite+'</td>'
       +'<td style="font-size:11px;color:var(--dim);">'+convNums+'</td>'
@@ -56252,14 +56305,19 @@ function buildTiers401() {
 function exportTiers401CSV() {
   // Colonne "Méthode ancienneté" : 'echeance' = date réelle de facture/échéance,
   // 'signature' = repli sur la date de signature de convention (cf. calcAncienneteFournisseur401).
-  var rows=['Fournisseur,Spécialité,Montant TTC,Avances,Situations,Retenues,Solde 401,Ancienneté (mois),Méthode ancienneté'];
+  var rows=['Type,Fournisseur,Spécialité,Montant TTC,Réglé,Situations,Retenues,Solde 401,Ancienneté (mois),Méthode ancienneté'];
   DATA.constructeurs.forEach(function(c){
     var convs=DATA.conventions.filter(function(cv){return cv.constructeur_id===c.id;});
     var ttc=convs.reduce(function(s,cv){return s+(cv.montant_ttc||0);},0);
     var av=convs.reduce(function(s,cv){return s+(cv.avance_montant||0);},0);
     var ret=convs.reduce(function(s,cv){return s+(cv.retenue_montant||0);},0);
     var anc=calcAncienneteFournisseur401(convs);
-    rows.push([c.raison_sociale,c.specialite,ttc,av,0,ret,Math.max(0,ttc-av),anc.moisAnc,anc.methode].join(','));
+    rows.push(['Chantier',c.raison_sociale,c.specialite,ttc,av,0,ret,Math.max(0,ttc-av),anc.moisAnc,anc.methode].join(','));
+  });
+  (DATA.fournisseurs||[]).forEach(function(fr){
+    if(!fr.compte) return;
+    var calc=calcTiersFournisseurMateriaux(fr);
+    rows.push([(fr.type_tiers==='physique'?'Personne physique':'Matériaux'),fr.nom,'',calc.totalCredit,calc.totalDebit,0,0,calc.solde,calc.moisAnc,'ecritures'].join(','));
   });
   var blob=new Blob([rows.join('\n')],{type:'text/csv'});
   var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='tiers401.csv'; a.click();
@@ -69465,6 +69523,7 @@ function ouvrirPrixModalDQE(id) {
     }
   }
   openModal('modal-prix-dqe');
+  renderDlFournisseurs();
 }
 
 function modifierPrix(id) { ouvrirPrixModal(id); }
@@ -69566,6 +69625,7 @@ function ouvrirDevisModal(id) {
     }
   }
   openModal('modal-devis-dqe');
+  renderDlFournisseurs();
 }
 
 function modifierDevis(id) { ouvrirDevisModal(id); }
@@ -87407,6 +87467,10 @@ function fournisseurOptions(sel){
   (DATA.fournisseurs||[]).forEach(function(fr){ html+='<option value="'+fr.id+'"'+(sel===fr.id?' selected':'')+'>'+fr.nom+'</option>'; });
   return html;
 }
+function renderDlFournisseurs(){
+  var dl=document.getElementById('dl-fournisseurs'); if(!dl) return;
+  dl.innerHTML=(DATA.fournisseurs||[]).map(function(f){ return '<option value="'+escHtml(f.nom||'')+'">'; }).join('');
+}
 function tresorerieOptions(sel){
   var list=(APP.planComptable||[]).filter(function(c){ return String(c.code).charAt(0)==='5' && !c._horsPlan; })
     .slice().sort(function(a,b){ return String(a.code).localeCompare(String(b.code), undefined, {numeric:true}); });
@@ -87433,6 +87497,7 @@ function openFournisseurs(){
   fournisseurTypeToggle();
   var _fa=document.getElementById('fo-airsi'); if(_fa)_fa.checked=false;
   renderFournisseursListe();
+  renderDlFournisseurs();
   document.getElementById('modal-fournisseurs').classList.add('open');
 }
 function renderFournisseursListe(){
@@ -87457,6 +87522,7 @@ async function saveFournisseur(){
   DATA.fournisseurs.push(fr); await dbPut('fournisseurs',fr); if(typeof syncToSupabase==='function')syncToSupabase('pi_fournisseurs',fr);
   ['fo-nom','fo-rccm','fo-ncc','fo-contact','fo-cni'].forEach(function(id){document.getElementById(id).value='';}); document.getElementById('fo-compte').value=''; var _fa2=document.getElementById('fo-airsi'); if(_fa2)_fa2.checked=false;
   renderFournisseursListe();
+  renderDlFournisseurs();
   var selF=document.getElementById('se-fournisseur'); if(selF) selF.innerHTML=fournisseurOptions(fr.id);
   toast('Fournisseur ajouté.','success');
 }
@@ -87464,6 +87530,7 @@ async function deleteFournisseur(id){
   if(!confirm('Supprimer ce fournisseur ?')) return;
   var ok=await deleteRecord('fournisseurs',id); if(ok===false)return;
   renderFournisseursListe();
+  renderDlFournisseurs();
   var selF=document.getElementById('se-fournisseur'); if(selF) selF.innerHTML=fournisseurOptions('');
   toast('Fournisseur supprimé.','info');
 }
