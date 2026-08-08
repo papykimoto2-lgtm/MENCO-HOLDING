@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.83 · 2026-08-08 — Fix Trésorerie : Encaissements incluait pas la Caisse (114,8M FCFA invisibles)';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.84 · 2026-08-08 — Fix Trésorerie : Décaissements sous-évalués de 87M FCFA (mouvements non ventilés)';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -37301,6 +37301,17 @@ function buildTresorerie() {
          source d'encaissement réelle pour ce tenant (pi_versements vide). */
       + (DATA.caisse_mouvements||[]).filter(function(m){ return m.type==='entree' && m.date && m.date.startsWith(mStr) && !m.versement_id && !m.cession_id; }).reduce(function(a,m){ return a+(parseFloat(m.montant)||0); }, 0);
     var decaissements = dashDecaissements(function(e){ return (e.date||'').startsWith(mStr); });
+    /* [FIX] cf. buildTresorerieDetaille — même complément caisse brute pour
+       couvrir les sorties non-classe-6 (fournisseurs, immobilisations) et les
+       mouvements pas encore ventilés comptablement. */
+    var decCaisseNonClasse6b = (DATA.caisse_mouvements||[]).filter(function(m){
+      if (m.type !== 'sortie' || !m.date || !m.date.startsWith(mStr)) return false;
+      var ecrLiee = (DATA.ecritures||[]).find(function(e){ return e.id === 'ecr_cse_' + m.id; });
+      if (!ecrLiee) return true;
+      var dejaClasse6 = ecrLignes(ecrLiee).some(function(l){ return l.sens==='D' && (l.compte||'').charAt(0)==='6'; });
+      return !dejaClasse6;
+    }).reduce(function(a,m){ return a+(parseFloat(m.montant)||0); }, 0);
+    decaissements += decCaisseNonClasse6b;
     months.push({ label: label, encaissements: encaissements, decaissements: decaissements, solde: encaissements - decaissements });
   }
 
@@ -68752,6 +68763,24 @@ function buildTresorerieDetaille() {
     }).reduce(function(a,m){return a+(parseFloat(m.montant)||0);},0);
     var enc = encVte + encCes + encCaisse;
     var dec = dashDecaissements(function(e){ return (e.date||'').startsWith(mStr); });
+    /* [FIX] Même raison que pour les encaissements : dashDecaissements() ne
+       compte que les débits de classe 6 (charges comptabilisées) — cohérent
+       pour un calcul de résultat, mais très incomplet pour une vue trésorerie
+       (cash réel), qui doit aussi inclure les paiements fournisseurs (classe
+       4), achats d'immobilisations (classe 2), etc. Plutôt que d'élargir
+       dashDecaissements() (utilisée ailleurs pour le résultat net — ne pas
+       casser), on ajoute directement les sorties de caisse brutes, y compris
+       celles pas encore ventilées comptablement (525 mouvements / 87,2M FCFA
+       identifiés le 08/08, en attente de validation). Garde anti-doublon :
+       une sortie déjà comptée via une écriture classe 6 n'est pas réinjectée. */
+    var decCaisseNonClasse6 = (DATA.caisse_mouvements||[]).filter(function(m){
+      if (m.type !== 'sortie' || !m.date || !m.date.startsWith(mStr)) return false;
+      var ecrLiee = (DATA.ecritures||[]).find(function(e){ return e.id === 'ecr_cse_' + m.id; });
+      if (!ecrLiee) return true; // pas encore ventilée : à inclure telle quelle
+      var dejaClasse6 = ecrLignes(ecrLiee).some(function(l){ return l.sens==='D' && (l.compte||'').charAt(0)==='6'; });
+      return !dejaClasse6; // ventilée mais sur un compte non-classe-6 (401, 2xx...) : pas encore comptée par dashDecaissements
+    }).reduce(function(a,m){ return a+(parseFloat(m.montant)||0); }, 0);
+    dec += decCaisseNonClasse6;
     var soldeM = enc - dec; soldeCumul += soldeM;
     months.push({label:label,enc:enc,dec:dec,solde:soldeM,cumul:soldeCumul});
   }
