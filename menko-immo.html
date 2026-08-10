@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.91 · 2026-08-08 — Paie : onglet Non déclarés & Consultants (régimes particuliers)';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.92 · 2026-08-08 — Paie : contrôle et validation avant génération des bulletins';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -18055,6 +18055,46 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
 </div>
 
 <!-- Modal Bulletin de salaire -->
+<!-- ══ CONTRÔLE AVANT GÉNÉRATION DES BULLETINS ══════════════════ -->
+<div class="modal-overlay" id="modal-preview-paie">
+  <div class="modal" style="max-width:1100px;">
+    <div class="modal-header">
+      <h3>🧾 Contrôle avant génération — <span id="pvp-mois-lib"></span></h3>
+      <button class="modal-close" onclick="closeModal('modal-preview-paie')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="pvp-alertes" style="margin-bottom:12px;"></div>
+      <div class="kpi-grid" id="pvp-kpis" style="margin-bottom:14px;"></div>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+        <label style="font-size:12px;font-weight:normal;display:flex;align-items:center;gap:6px;">
+          <input type="checkbox" id="pvp-only-anomalies" onchange="renderPreviewPaie()"> Afficher uniquement les anomalies
+        </label>
+        <span style="flex:1;"></span>
+        <button class="btn btn-secondary btn-sm" onclick="exportPreviewPaieCSV()">📥 Export du contrôle (CSV)</button>
+      </div>
+      <div class="table-wrap" style="max-height:420px;overflow:auto;">
+        <table>
+          <thead><tr>
+            <th>Matricule</th><th>Nom &amp; Prénoms</th><th>Régime</th>
+            <th style="text-align:right;">Brut</th><th style="text-align:right;">CNPS</th>
+            <th style="text-align:right;">CMU</th><th style="text-align:right;">ITS</th>
+            <th style="text-align:right;">Net à payer</th><th>État</th>
+          </tr></thead>
+          <tbody id="pvp-tbody"></tbody>
+          <tfoot id="pvp-tfoot" style="font-weight:700;border-top:2px solid var(--bord);"></tfoot>
+        </table>
+      </div>
+      <div style="margin-top:12px;font-size:11px;color:var(--blanc-dim);">
+        Les bulletins déjà établis pour ce mois ne sont jamais écrasés : ils apparaissent en « déjà généré » et sont ignorés.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-preview-paie')">Annuler</button>
+      <button class="btn btn-primary" id="pvp-btn-valider" onclick="confirmerGenerationBulletins()">✅ Valider et générer</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-bulletin">
   <div class="modal modal-lg">
     <div class="modal-header">
@@ -44551,13 +44591,164 @@ function exportVirements() {
   toast('Fichier de virements exporté.', 'success');
 }
 
-async function genererTousBulletins() {
+/* ══════════════════════════════════════════════════════════════════
+   GÉNÉRATION DES BULLETINS EN DEUX TEMPS : CONTRÔLE PUIS VALIDATION
+   La génération créait directement les bulletins de tout le personnel
+   actif, sans aucun état préalable : impossible de vérifier une assiette,
+   de repérer un salaire à zéro ou un régime particulier avant que les
+   bulletins n'existent — et donc avant qu'ils n'alimentent le livre de
+   paie, les déclarations sociales et la comptabilité.
+   On affiche désormais l'état complet (par salarié + totaux + anomalies),
+   et rien n'est écrit tant que l'utilisateur n'a pas validé.
+════════════════════════════════════════════════════════════════════ */
+var _PVP = null;   /* état calculé, figé entre l'aperçu et la validation */
+
+function genererTousBulletins() {
   var mois = document.getElementById('paie-mois').value;
   if (!mois) { toast('Sélectionnez un mois.', 'error'); return; }
   var actifs = DATA.employes.filter(function(e) { return empEstActif(e); });
   if (!actifs.length) { toast('Aucun employé actif.', 'error'); return; }
-  for (var i = 0; i < actifs.length; i++) {
-    var e = actifs[i];
+
+  var lignes = actifs.map(function(e) {
+    var deja = DATA.bulletins.find(function(b) { return b.employe_id === e.id && b.mois === mois; });
+    var r = calcPaieCI(paieInputFromEmploye(e));
+    var reg = (typeof _ndRegime === 'function') ? _ndRegime(e) : null;
+    var anomalies = [];
+    if (!deja) {
+      if (!(parseFloat(e.salaire_base) > 0)) anomalies.push('Salaire de base non renseigné');
+      if (reg && reg.code === 'consultant') anomalies.push('Consultant — une facture d\'honoraires est attendue, pas un bulletin');
+      if (reg && reg.code === 'non_declare') anomalies.push('Non déclaré CNPS — ITS retenu, cotisations sociales exclues');
+      if (reg && reg.code === 'stage') anomalies.push('Stagiaire — régime de cotisation à confirmer');
+      if (!e.cnps_statut && !reg) anomalies.push('Statut CNPS non renseigné sur la fiche');
+      if ((r.net || 0) <= 0) anomalies.push('Net à payer nul ou négatif');
+    }
+    return { emp: e, deja: !!deja, r: r, regime: reg, anomalies: anomalies };
+  });
+
+  _PVP = { mois: mois, lignes: lignes };
+  document.getElementById('pvp-mois-lib').textContent = mois;
+  var chk = document.getElementById('pvp-only-anomalies'); if (chk) chk.checked = false;
+  renderPreviewPaie();
+  openModal('modal-preview-paie');
+}
+
+function renderPreviewPaie() {
+  if (!_PVP) return;
+  var tbody = document.getElementById('pvp-tbody');
+  var tfoot = document.getElementById('pvp-tfoot');
+  var onlyAno = (document.getElementById('pvp-only-anomalies') || {}).checked;
+
+  var aGenerer = _PVP.lignes.filter(function(l){ return !l.deja; });
+  var avecAno  = aGenerer.filter(function(l){ return l.anomalies.length; });
+  var vue = onlyAno ? avecAno : _PVP.lignes;
+
+  var totBrut = 0, totCnps = 0, totCmu = 0, totIts = 0, totNet = 0;
+  aGenerer.forEach(function(l) {
+    totBrut += l.r.brutTotal || 0; totCnps += l.r.cnpsRetraiteSal || 0;
+    totCmu  += l.r.cmuSal || 0;    totIts  += l.r.itsNet || 0;
+    totNet  += l.r.net || 0;
+  });
+
+  var kz = document.getElementById('pvp-kpis');
+  if (kz) kz.innerHTML =
+      '<div class="kpi-card" data-icon="👥"><div class="kpi-label">À générer</div><div class="kpi-value" style="color:var(--vert);">'+aGenerer.length+'</div></div>'
+    + '<div class="kpi-card" data-icon="✔"><div class="kpi-label">Déjà générés</div><div class="kpi-value" style="color:var(--blanc-dim);">'+(_PVP.lignes.length-aGenerer.length)+'</div></div>'
+    + '<div class="kpi-card" data-icon="⚠"><div class="kpi-label">Points à vérifier</div><div class="kpi-value" style="color:'+(avecAno.length?'var(--or)':'var(--vert)')+';">'+avecAno.length+'</div></div>'
+    + '<div class="kpi-card" data-icon="💰"><div class="kpi-label">Masse brute</div><div class="kpi-value">'+fmtF(totBrut)+'</div></div>'
+    + '<div class="kpi-card" data-icon="🏦"><div class="kpi-label">Net à payer</div><div class="kpi-value" style="color:var(--vert);">'+fmtF(totNet)+'</div></div>';
+
+  var az = document.getElementById('pvp-alertes');
+  if (az) {
+    if (!aGenerer.length) {
+      az.innerHTML = '<div class="alert alert-info">Tous les bulletins de ce mois sont déjà établis — il n\'y a rien à générer.</div>';
+    } else if (avecAno.length) {
+      az.innerHTML = '<div class="alert alert-warning"><strong>'+avecAno.length+' bulletin(s) appellent une vérification.</strong> '
+        + 'La génération reste possible : ces signalements n\'empêchent rien, ils évitent seulement de découvrir un écart une fois les bulletins comptabilisés.</div>';
+    } else {
+      az.innerHTML = '<div class="alert alert-success">Aucun point de vigilance détecté sur les '+aGenerer.length+' bulletin(s) à générer.</div>';
+    }
+  }
+
+  if (!vue.length) {
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--blanc-dim);padding:20px;">Aucune ligne.</td></tr>';
+  } else {
+    tbody.innerHTML = vue.map(function(l) {
+      var e = l.emp, r = l.r;
+      var etat = l.deja
+        ? '<span class="badge badge-neutre" style="font-size:9px;">déjà généré</span>'
+        : (l.anomalies.length
+            ? '<span class="badge badge-or" style="font-size:9px;" title="'+escHtml(l.anomalies.join(' · '))+'">⚠ à vérifier</span>'
+            : '<span class="badge badge-vert" style="font-size:9px;">prêt</span>');
+      var regLbl = l.regime ? '<span class="badge '+l.regime.badge+'" style="font-size:9px;">'+l.regime.label+'</span>' : '<span style="color:var(--blanc-dim);font-size:11px;">Standard</span>';
+      return '<tr style="'+(l.deja?'opacity:.5;':'')+'">'
+        + '<td style="font-size:12px;">'+escHtml(e.matricule||'—')+'</td>'
+        + '<td style="font-size:12px;"><strong>'+escHtml((e.nom||'')+' '+(e.prenoms||''))+'</strong>'
+        +   (l.anomalies.length ? '<div style="font-size:10px;color:var(--or);margin-top:2px;">'+escHtml(l.anomalies.join(' · '))+'</div>' : '')
+        + '</td>'
+        + '<td>'+regLbl+'</td>'
+        + '<td style="text-align:right;">'+fmtF(r.brutTotal||0)+'</td>'
+        + '<td style="text-align:right;color:var(--blanc-dim);">'+fmtF(r.cnpsRetraiteSal||0)+'</td>'
+        + '<td style="text-align:right;color:var(--blanc-dim);">'+fmtF(r.cmuSal||0)+'</td>'
+        + '<td style="text-align:right;color:var(--blanc-dim);">'+fmtF(r.itsNet||0)+'</td>'
+        + '<td style="text-align:right;font-weight:600;color:var(--vert);">'+fmtF(r.net||0)+'</td>'
+        + '<td>'+etat+'</td></tr>';
+    }).join('');
+  }
+
+  if (tfoot) tfoot.innerHTML = '<tr>'
+    + '<td colspan="3" style="text-align:right;">TOTAUX à générer ('+aGenerer.length+') :</td>'
+    + '<td style="text-align:right;">'+fmtF(totBrut)+'</td>'
+    + '<td style="text-align:right;">'+fmtF(totCnps)+'</td>'
+    + '<td style="text-align:right;">'+fmtF(totCmu)+'</td>'
+    + '<td style="text-align:right;">'+fmtF(totIts)+'</td>'
+    + '<td style="text-align:right;color:var(--vert);">'+fmtF(totNet)+'</td>'
+    + '<td></td></tr>';
+
+  var btn = document.getElementById('pvp-btn-valider');
+  if (btn) {
+    btn.disabled = !aGenerer.length;
+    btn.textContent = aGenerer.length ? ('✅ Valider et générer ('+aGenerer.length+')') : 'Rien à générer';
+  }
+}
+
+function exportPreviewPaieCSV() {
+  if (!_PVP) return;
+  var rows = ['Matricule,Nom,Prenoms,Regime,Brut,CNPS,CMU,ITS,Net,Etat,Points de vigilance'];
+  _PVP.lignes.forEach(function(l) {
+    var e = l.emp, r = l.r;
+    rows.push([
+      e.matricule||'', (e.nom||'').replace(/,/g,' '), (e.prenoms||'').replace(/,/g,' '),
+      l.regime ? l.regime.label : 'Standard',
+      Math.round(r.brutTotal||0), Math.round(r.cnpsRetraiteSal||0), Math.round(r.cmuSal||0),
+      Math.round(r.itsNet||0), Math.round(r.net||0),
+      l.deja ? 'Deja genere' : (l.anomalies.length ? 'A verifier' : 'Pret'),
+      l.anomalies.join(' ; ').replace(/,/g,';')
+    ].join(','));
+  });
+  var blob = new Blob(['\ufeff'+rows.join('\n')], {type:'text/csv;charset=utf-8'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'controle-paie-' + _PVP.mois + '.csv';
+  a.click();
+  toast('Contrôle exporté.', 'success');
+}
+
+async function confirmerGenerationBulletins() {
+  if (!_PVP) return;
+  var mois = _PVP.mois;
+  var aGenerer = _PVP.lignes.filter(function(l){ return !l.deja; });
+  if (!aGenerer.length) { toast('Aucun bulletin à générer.', 'error'); return; }
+  var avecAno = aGenerer.filter(function(l){ return l.anomalies.length; });
+  if (avecAno.length && !confirm(avecAno.length + ' bulletin(s) portent un point de vigilance.\n\nGénérer quand même les ' + aGenerer.length + ' bulletin(s) de ' + mois + ' ?')) return;
+
+  var btn = document.getElementById('pvp-btn-valider');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Génération…'; }
+
+  var n = 0;
+  for (var i = 0; i < aGenerer.length; i++) {
+    var e = aGenerer[i].emp;
+    /* Re-contrôle de l'existence au moment de l'écriture : un bulletin a pu
+       être créé depuis un autre poste pendant que l'aperçu était ouvert. */
     var exists = DATA.bulletins.find(function(b) { return b.employe_id === e.id && b.mois === mois; });
     if (!exists) {
       var bull = Object.assign({
@@ -44568,12 +44759,16 @@ async function genererTousBulletins() {
       }, paieInputFromEmploye(e));
       DATA.bulletins.push(bull);
       await dbPut('bulletins', bull);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_bulletins', bull);
+      n++;
     }
   }
+  closeModal('modal-preview-paie');
+  _PVP = null;
   renderPayslips(mois);
   buildPaieRecap(mois);
   buildVirements(mois);
-  toast(actifs.length + ' bulletins générés pour ' + mois + '.', 'success');
+  toast(n + ' bulletin(s) généré(s) pour ' + mois + '.', 'success');
 }
 
 function openBulletinModal(bullId, empId) {
