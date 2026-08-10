@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.88 · 2026-08-08 — Anti-réinjection serveur : purge 42,1M FCFA de données test ressuscitées';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.90 · 2026-08-08 — Paie : bandeau diagnostic exonération CNPS/CMU dans le bulletin';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -41574,10 +41574,27 @@ function calcPaieCI(d) {
 }
 
 /* ── Wrapper rétrocompatible : accepte ancien format {base,primes,...} ── */
-function calcNetAPayer(b) {
+function calcNetAPayer(b, emp) {
+  /* [FIX] EXONÉRATION CNPS/CMU — résolue depuis la FICHE EMPLOYÉ, jamais
+     depuis le bulletin seul. Avant ce correctif, calcNetAPayer() reconstruisait
+     ses données sans jamais transmettre exoCnps : dès qu'un bulletin existait,
+     l'exonération était perdue et les retenues sociales réapparaissaient sur
+     les consultants et les employés non déclarés — visible sur l'aperçu du
+     bulletin, le livre de paie ET les déclarations sociales (risque de
+     déclarer à la CNPS des salariés qui n'y sont pas immatriculés).
+     La fiche employé est la source de vérité : le champ exoCnps est absent des
+     bulletins anciens et devient faux dès qu'un statut CNPS change. */
+  var _emp = emp;
+  if (!_emp && b && b.employe_id) {
+    _emp = (DATA.employes || []).find(function(x){ return x.id === b.employe_id; });
+  }
+  var _exo = _emp
+    ? (_emp.contrat === 'consultant' || _emp.cnps_statut === 'non_declare')
+    : !!(b && b.exoCnps);
+
   var d;
   if (b.salaireCategoriel != null || b.sursalaire != null) {
-    d = b;
+    d = Object.assign({}, b);
   } else {
     /* ancien format : base = salaire principal, primes = sursalaire/primes imposables */
     d = {
@@ -41595,6 +41612,8 @@ function calcNetAPayer(b) {
       cmuPersonnes: b.cmuPersonnes || 1
     };
   }
+  d.exoCnps = _exo;
+  d.contrat = (_emp && _emp.contrat) || b.contrat || '';
   return calcPaieCI(d);
 }
 
@@ -41727,7 +41746,7 @@ function paieInputFromEmploye(e, moisArg) {
 
 /* Paie d'un employé : bulletin du mois si présent, sinon reconstruction depuis la fiche */
 function calcPaieEmploye(e, bull) {
-  return bull ? calcNetAPayer(bull) : calcPaieCI(paieInputFromEmploye(e));
+  return bull ? calcNetAPayer(bull, e) : calcPaieCI(paieInputFromEmploye(e));
 }
 
 /* Masse salariale du mois (bulletins si présents, sinon estimation fiche) */
@@ -41854,10 +41873,17 @@ function calcSalaireNet() {
   var mat = (document.getElementById('emp-matrimonial')||{}).value || '';
   var enf = (document.getElementById('emp-enfants')||{}).value || 0;
   var dEmb = (document.getElementById('emp-date-embauche')||{}).value || '';
+  /* [FIX] L'aperçu temps réel de la fiche employé ignorait l'exonération :
+     un consultant ou un employé « non déclaré » y affichait des retenues
+     CNPS/CMU dès la saisie, avant même la création du bulletin. On lit donc
+     le contrat et le statut CNPS directement dans le formulaire en cours. */
+  var _ctr = (document.getElementById('emp-contrat')||{}).value || '';
+  var _cst = (document.getElementById('emp-cnps-statut')||{}).value || '';
   var r = calcPaieCI({
     salaireCategoriel: base, primesImpos: primes, transport: transport, logement: logement,
     parts: calcPartsFiscales(mat, enf), tauxAnciennete: calcTauxAnciennete(dEmb),
-    cmuPersonnes: 1 + (parseInt(enf)||0) + (mat === 'marie' ? 1 : 0), jours: PAIE_CI.joursMois
+    cmuPersonnes: 1 + (parseInt(enf)||0) + (mat === 'marie' ? 1 : 0), jours: PAIE_CI.joursMois,
+    contrat: _ctr, exoCnps: (_ctr === 'consultant' || _cst === 'non_declare')
   });
   document.getElementById('emp-net-estime').value = fmtF(r.net) + ' FCFA (estimation)';
 }
@@ -44605,7 +44631,33 @@ function _bulletinInputs() {
 }
 
 function calcBulletin() {
-  var r = calcPaieCI(_bulletinInputs());
+  var _in = _bulletinInputs();
+  var r = calcPaieCI(_in);
+  /* [DIAGNOSTIC] Bandeau d'exonération visible dès la saisie. Sans repère
+     explicite, impossible de distinguer « le logiciel calcule mal » de
+     « la fiche employé n'a pas le bon statut CNPS » — c'est pourtant la
+     seule chose qui pilote l'exonération. Le bandeau dit lequel des deux. */
+  (function(){
+    var host = document.getElementById('calc-cnps-sal');
+    if (!host) return;
+    var zone = document.getElementById('calc-exo-badge');
+    if (!zone) {
+      zone = document.createElement('div');
+      zone.id = 'calc-exo-badge';
+      zone.style.cssText = 'margin:6px 0 10px;font-size:11px;font-weight:600;padding:5px 9px;border-radius:5px;';
+      var box = host.closest('.card') || host.parentElement.parentElement;
+      if (box && box.parentElement) box.parentElement.insertBefore(zone, box);
+      else host.parentElement.insertBefore(zone, host);
+    }
+    if (r.exoCnps) {
+      zone.style.background = 'rgba(74,196,122,0.15)'; zone.style.color = 'var(--vert)';
+      zone.textContent = '✓ Exonération active — aucune cotisation CNPS ni CMU sur ce bulletin'
+        + (_in.contrat === 'consultant' ? ' (contrat : consultant)' : ' (statut CNPS : non déclaré)');
+    } else {
+      zone.style.background = 'rgba(184,115,51,0.12)'; zone.style.color = 'var(--or)';
+      zone.textContent = 'ℹ Cotisations CNPS + CMU appliquées. Pour exonérer : fiche employé → contrat « Consultant » ou statut CNPS « Non déclaré ».';
+    }
+  })();
   document.getElementById('calc-brut-imp').textContent   = fmtF(r.brutImposable) + ' FCFA';
   document.getElementById('calc-brut').textContent       = fmtF(r.brutTotal) + ' FCFA';
   document.getElementById('calc-cnps-sal').textContent   = fmtF(r.cnpsRetraiteSal) + ' FCFA';
@@ -44688,8 +44740,21 @@ function imprimerBulletinId(bullId) {
 
 /* ── BULLETIN DE PAIE A4 — modèle officiel CI (numéroté, parts patronale/salariale) ── */
 function printBulletinData(d) {
-  var r = calcPaieCI(d);
   var e = d.employe;
+  /* [FIX] Sécurité centrale : l'exonération CNPS/CMU est TOUJOURS réévaluée
+     depuis la fiche employé avant impression. imprimerBulletinId() transmettait
+     le bulletin enregistré tel quel : les bulletins créés avant l'ajout du champ
+     exoCnps (ou ceux d'un employé dont le statut CNPS a changé depuis) faisaient
+     réapparaître les retenues sociales sur les consultants et les non-déclarés.
+     Placé ici plutôt que chez chaque appelant : tout futur point d'impression
+     hérite automatiquement de la protection. */
+  if (e) {
+    d = Object.assign({}, d, {
+      exoCnps: (e.contrat === 'consultant' || e.cnps_statut === 'non_declare'),
+      contrat: e.contrat || d.contrat || ''
+    });
+  }
+  var r = calcPaieCI(d);
   var P = DATA.params || {};
   /* ── En-tête lié à la division de l'employé ──────────────────────────
      Chaque division est enregistrée comme une entreprise à part entière
@@ -49025,7 +49090,7 @@ function genererDeclarationCNPS() {
   var A = { brut:0, sal:0, pat:0, at:0, pf:0, cmuS:0, cmuP:0 };
   actifs.forEach(function(e) {
     var b = DATA.bulletins.find(function(x){ return x.employe_id===e.id && x.mois===mois; });
-    var r = b ? calcNetAPayer(b) : calcPaieEmploye(e);
+    var r = b ? calcNetAPayer(b, e) : calcPaieEmploye(e);
     A.brut += r.brutSocial; A.sal += r.cnpsRetraiteSal; A.pat += r.cnpsRetraitePat;
     A.at += r.cnpsAT; A.pf += r.cnpsPF; A.cmuS += r.cmuSal; A.cmuP += r.cmuPat;
   });
@@ -49054,7 +49119,7 @@ function genererDeclarationITS() {
   var totITS = 0, totBrutImp = 0;
   actifs.forEach(function(e) {
     var b = DATA.bulletins.find(function(x){ return x.employe_id===e.id && x.mois===mois; });
-    var r = calcNetAPayer(b || { base:e.salaire_base, primes:e.primes, transport:e.transport, logement:e.logement });
+    var r = calcNetAPayer(b || { base:e.salaire_base, primes:e.primes, transport:e.transport, logement:e.logement }, e);
     totITS += r.its;
     totBrutImp += r.brut || 0;
   });
@@ -49126,11 +49191,11 @@ function loadDAS() {
     var brutAnnuel=0, itsAnnuel=0, cnpsSalAnnuel=0, netAnnuel=0;
     if (moisAnnee.length) {
       moisAnnee.forEach(function(b) {
-        var r = calcNetAPayer(b);
+        var r = calcNetAPayer(b, e);
         brutAnnuel += r.brut; itsAnnuel += r.its; cnpsSalAnnuel += r.cnpsSal; netAnnuel += r.net;
       });
     } else {
-      var r = calcNetAPayer({ base:e.salaire_base, primes:e.primes, transport:e.transport, logement:e.logement });
+      var r = calcNetAPayer({ base:e.salaire_base, primes:e.primes, transport:e.transport, logement:e.logement }, e);
       brutAnnuel = r.brut * 12; itsAnnuel = r.its * 12; cnpsSalAnnuel = r.cnpsSal * 12; netAnnuel = r.net * 12;
     }
     return '<tr>'
@@ -49170,7 +49235,7 @@ function exportDAS() {
     if(!moisAnnee.length) return;
     var a={brutSoc:0,brutImp:0,its:0,cnpsSal:0,cmuSal:0,net:0,cnpsPat:0,at:0,pf:0,itsPat:0,fdfp:0,cout:0};
     moisAnnee.forEach(function(b) {
-      var r = calcNetAPayer(b);
+      var r = calcNetAPayer(b, e);
       a.brutSoc+=r.brutSocial; a.brutImp+=r.brutImposable; a.its+=r.itsNet; a.cnpsSal+=r.cnpsRetraiteSal;
       a.cmuSal+=r.cmuSal; a.net+=r.net; a.cnpsPat+=r.cnpsRetraitePat; a.at+=r.cnpsAT; a.pf+=r.cnpsPF;
       a.itsPat+=r.itsPat; a.fdfp+=(r.fdfpTA+r.fdfpFC+r.fdfpRegul); a.cout+=r.coutTotal;
@@ -49216,7 +49281,7 @@ function exportBordereauCNPS(mois){
   var actifs=(DATA.employes||[]).filter(function(e){return empEstActif(e) && (!divId || e.division===divId);});
   actifs.forEach(function(e){
     var b=(DATA.bulletins||[]).find(function(x){return x.employe_id===e.id && x.mois===mois;});
-    var r=b?calcNetAPayer(b):calcPaieEmploye(e);
+    var r=b?calcNetAPayer(b, e):calcPaieEmploye(e);
     var basePlaf=Math.min(r.brutSocial, PAIE_CI.cnps.plafondRetraite);
     var totLigne=r.cnpsRetraiteSal+r.cnpsRetraitePat+r.cnpsAT+r.cnpsPF+r.cmuSal+r.cmuPat;
     T.brut+=r.brutSocial;T.base+=basePlaf;T.rs+=r.cnpsRetraiteSal;T.rp+=r.cnpsRetraitePat;T.at+=r.cnpsAT;T.pf+=r.cnpsPF;T.cs+=r.cmuSal;T.cp+=r.cmuPat;T.tot+=totLigne;
