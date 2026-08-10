@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.90 · 2026-08-08 — Paie : bandeau diagnostic exonération CNPS/CMU dans le bulletin';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.91 · 2026-08-08 — Paie : onglet Non déclarés & Consultants (régimes particuliers)';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -7575,6 +7575,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <button class="tab-btn active" onclick="switchTab('paie','bulletins')"><i>📋</i>Bulletins du mois</button>
               <button class="tab-btn" onclick="switchTab('paie','journaliers');quinzInit()" style="color:#d97706;font-weight:700;"><i>🗓️</i>Journaliers &amp; Temporaires</button>
               <button class="tab-btn" onclick="switchTab('paie','simulateur');simNBInit()" style="color:#8A52E0;font-weight:700;"><i>🔄</i>Simulateur Net→Brut</button>
+              <button class="tab-btn" onclick="switchTab('paie','nondeclares');renderPaieNonDeclares()" style="color:var(--rouge);font-weight:700;"><i>🚫</i>Non déclarés &amp; Consultants</button>
             </div>
           </div>
           <div class="etape">
@@ -7697,6 +7698,41 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               </div>
             </div>
             <div id="quinz-historique"></div>
+          </div>
+        </div>
+
+        <div class="tab-pane" id="tab-paie-nondeclares">
+          <div class="card" style="margin-bottom:14px;">
+            <div style="font-size:12px;color:var(--blanc-dim);line-height:1.6;">
+              Personnel dont la paie ne suit pas le régime salarié standard. Chaque régime ci-dessous a des conséquences fiscales et sociales distinctes&nbsp;:
+              <div style="margin-top:8px;display:grid;gap:5px;">
+                <div><span class="badge badge-rouge">Non déclaré CNPS</span> Salarié de fait — <strong>ITS dû</strong> (retenue à la source), CNPS et CMU exclues.</div>
+                <div><span class="badge badge-violet">Consultant</span> Prestataire indépendant — devrait facturer des <strong>honoraires</strong> (AIRSI / retenue art. 92 CGI), et non recevoir un bulletin.</div>
+                <div><span class="badge badge-or">Stagiaire</span> Gratification de stage — régime à confirmer selon le type de convention (stage-école ou stage de qualification).</div>
+              </div>
+            </div>
+          </div>
+          <div class="kpi-grid" id="nd-kpis" style="margin-bottom:14px;"></div>
+          <div class="card">
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;align-items:center;">
+              <input type="text" class="search-input" id="nd-search" placeholder="🔍 Nom, matricule, poste..." oninput="_debInput('renderPaieNonDeclares')" style="flex:1;min-width:200px;">
+              <select class="filter-select" id="nd-filtre-regime" onchange="renderPaieNonDeclares()">
+                <option value="">Tous les régimes</option>
+                <option value="non_declare">🚫 Non déclarés CNPS</option>
+                <option value="consultant">👔 Consultants</option>
+                <option value="stage">🎓 Stagiaires</option>
+              </select>
+              <button class="btn btn-secondary btn-sm" onclick="exportNonDeclaresCSV()">📥 Export CSV</button>
+            </div>
+            <div class="table-wrap"><table>
+              <thead><tr>
+                <th>Matricule</th><th>Nom &amp; Prénoms</th><th>Poste</th><th>Régime</th>
+                <th style="text-align:right;">Brut mensuel</th>
+                <th style="text-align:center;">CNPS</th><th style="text-align:center;">CMU</th><th style="text-align:center;">ITS</th>
+                <th style="text-align:right;">Net estimé</th><th></th>
+              </tr></thead>
+              <tbody id="tbody-nondeclares"></tbody>
+            </table></div>
           </div>
         </div>
 
@@ -44628,6 +44664,124 @@ function _bulletinInputs() {
     contrat: emp ? (emp.contrat || '') : '',
     exoCnps: !!(emp && (emp.contrat === 'consultant' || emp.cnps_statut === 'non_declare'))
   };
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   PAIE — ONGLET « NON DÉCLARÉS & CONSULTANTS »
+   Regroupe le personnel dont la paie ne suit pas le régime salarié
+   standard, pour le traiter à part au lieu de le noyer dans la liste
+   générale. Trois régimes aux conséquences très différentes :
+     • non déclaré CNPS : salarié de fait — ITS DÛ, CNPS/CMU exclues ;
+     • consultant        : prestataire — ni ITS ni charges, honoraires ;
+     • stagiaire         : gratification, régime selon type de convention.
+   Le tableau affiche ce qui est réellement prélevé (✓/—) pour rendre
+   visible tout écart entre le régime attendu et le calcul appliqué.
+════════════════════════════════════════════════════════════════════ */
+function _ndRegime(e) {
+  if (e.contrat === 'consultant') return { code:'consultant', label:'Consultant', badge:'badge-violet',
+    attendu:{ cnps:false, cmu:false, its:false }, note:'Prestataire — facture d\'honoraires attendue (AIRSI / art. 92 CGI)' };
+  if (e.cnps_statut === 'non_declare') return { code:'non_declare', label:'Non déclaré CNPS', badge:'badge-rouge',
+    attendu:{ cnps:false, cmu:false, its:true }, note:'Salarié de fait — ITS dû par retenue à la source' };
+  if (e.contrat === 'stage') return { code:'stage', label:'Stagiaire', badge:'badge-or',
+    attendu:{ cnps:null, cmu:null, its:null }, note:'Régime à confirmer : stage-école (exonéré) ou stage de qualification' };
+  return null;
+}
+
+function _ndListe() {
+  var q = ((document.getElementById('nd-search')||{}).value || '').toLowerCase();
+  var filtre = (document.getElementById('nd-filtre-regime')||{}).value || '';
+  return (DATA.employes || []).filter(function(e) {
+    if (typeof empEstSorti === 'function' && empEstSorti(e)) return false;
+    var reg = _ndRegime(e);
+    if (!reg) return false;
+    if (filtre && reg.code !== filtre) return false;
+    if (q) {
+      var hay = ((e.nom||'')+' '+(e.prenoms||'')+' '+(e.matricule||'')+' '+(e.poste||'')).toLowerCase();
+      if (hay.indexOf(q) === -1) return false;
+    }
+    return true;
+  });
+}
+
+function renderPaieNonDeclares() {
+  var tbody = document.getElementById('tbody-nondeclares');
+  if (!tbody) return;
+  var liste = _ndListe();
+
+  var kz = document.getElementById('nd-kpis');
+  if (kz) {
+    var tous = (DATA.employes||[]).filter(function(e){ return !(typeof empEstSorti==='function' && empEstSorti(e)) && _ndRegime(e); });
+    var nbC = tous.filter(function(e){ return _ndRegime(e).code==='consultant'; }).length;
+    var nbN = tous.filter(function(e){ return _ndRegime(e).code==='non_declare'; }).length;
+    var nbS = tous.filter(function(e){ return _ndRegime(e).code==='stage'; }).length;
+    var masse = tous.reduce(function(a,e){
+      var r = (typeof calcPaieEmploye==='function') ? calcPaieEmploye(e) : null;
+      return a + ((r && r.brutTotal) || parseFloat(e.salaire_base) || 0);
+    }, 0);
+    kz.innerHTML =
+      '<div class="kpi-card" data-icon="🚫"><div class="kpi-label">Non déclarés CNPS</div><div class="kpi-value" style="color:var(--rouge);">'+nbN+'</div></div>'
+      + '<div class="kpi-card" data-icon="👔"><div class="kpi-label">Consultants</div><div class="kpi-value" style="color:var(--violet);">'+nbC+'</div></div>'
+      + '<div class="kpi-card" data-icon="🎓"><div class="kpi-label">Stagiaires</div><div class="kpi-value" style="color:var(--or);">'+nbS+'</div></div>'
+      + '<div class="kpi-card" data-icon="💰"><div class="kpi-label">Masse brute concernée</div><div class="kpi-value">'+fmtF(masse)+' FCFA</div></div>';
+  }
+
+  if (!liste.length) {
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--blanc-dim);padding:24px;">Aucun personnel dans ces régimes particuliers.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = liste.map(function(e) {
+    var reg = _ndRegime(e);
+    var r = (typeof calcPaieEmploye === 'function') ? calcPaieEmploye(e) : {};
+    var cnpsPreleve = (r.cnpsRetraiteSal || 0) > 0;
+    var cmuPreleve  = (r.cmuSal || 0) > 0;
+    var itsPreleve  = (r.itsNet || 0) > 0;
+    /* Marque en rouge tout prélèvement contraire au régime attendu */
+    function cell(preleve, attendu) {
+      if (attendu === null) return '<td style="text-align:center;color:var(--blanc-dim);">'+(preleve?'✓':'—')+'</td>';
+      var conforme = (preleve === attendu);
+      var col = conforme ? 'var(--blanc-dim)' : 'var(--rouge)';
+      var mark = preleve ? '✓' : '—';
+      var titre = conforme ? '' : ' title="Écart avec le régime attendu pour ce statut"';
+      return '<td style="text-align:center;color:'+col+';font-weight:'+(conforme?'400':'700')+';"'+titre+'>'+mark+(conforme?'':' ⚠')+'</td>';
+    }
+    return '<tr>'
+      + '<td style="font-size:12px;">'+escHtml(e.matricule||'—')+'</td>'
+      + '<td><strong>'+escHtml((e.nom||'')+' '+(e.prenoms||''))+'</strong></td>'
+      + '<td style="font-size:12px;">'+escHtml(e.poste||'—')+'</td>'
+      + '<td><span class="badge '+reg.badge+'" title="'+escHtml(reg.note)+'">'+reg.label+'</span></td>'
+      + '<td style="text-align:right;">'+fmtF(r.brutTotal || parseFloat(e.salaire_base) || 0)+'</td>'
+      + cell(cnpsPreleve, reg.attendu.cnps)
+      + cell(cmuPreleve,  reg.attendu.cmu)
+      + cell(itsPreleve,  reg.attendu.its)
+      + '<td style="text-align:right;font-weight:600;color:var(--vert);">'+fmtF(r.net || 0)+'</td>'
+      + '<td style="white-space:nowrap;">'
+      +   '<button class="btn btn-secondary btn-sm btn-icon" title="Modifier la fiche (contrat / statut CNPS)" onclick="openEmployeModal(\''+e.id+'\')">✏️</button> '
+      +   '<button class="btn btn-secondary btn-sm btn-icon" title="Établir le bulletin" onclick="switchTab(\'paie\',\'bulletins\');setTimeout(function(){var s=document.getElementById(\'b-employe\');if(s){s.value=\''+e.id+'\';if(typeof prefillBulletin===\'function\')prefillBulletin();}},80);">📋</button>'
+      + '</td></tr>';
+  }).join('');
+}
+
+function exportNonDeclaresCSV() {
+  var liste = _ndListe();
+  if (!liste.length) { toast('Aucune ligne à exporter.', 'error'); return; }
+  var rows = ['Matricule,Nom,Prenoms,Poste,Regime,Brut mensuel,CNPS preleve,CMU prelevee,ITS preleve,Net estime,Observation'];
+  liste.forEach(function(e) {
+    var reg = _ndRegime(e);
+    var r = (typeof calcPaieEmploye === 'function') ? calcPaieEmploye(e) : {};
+    rows.push([
+      e.matricule||'', (e.nom||'').replace(/,/g,' '), (e.prenoms||'').replace(/,/g,' '),
+      (e.poste||'').replace(/,/g,' '), reg.label,
+      Math.round(r.brutTotal||0), Math.round(r.cnpsRetraiteSal||0), Math.round(r.cmuSal||0),
+      Math.round(r.itsNet||0), Math.round(r.net||0), reg.note.replace(/,/g,';')
+    ].join(','));
+  });
+  var blob = new Blob(['\ufeff'+rows.join('\n')], {type:'text/csv;charset=utf-8'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'personnel-non-declare-' + today() + '.csv';
+  a.click();
+  toast('Export généré (' + liste.length + ' ligne(s)).', 'success');
 }
 
 function calcBulletin() {
