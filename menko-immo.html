@@ -17674,6 +17674,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         <div class="form-group"><label>Email</label><input type="email" class="form-control" id="div-email" placeholder="contact@division.ci"></div>
         <div class="form-group"><label>N° CNPS employeur</label><input type="text" class="form-control" id="div-cnps-employeur" placeholder="422483"></div>
         <div class="form-group"><label>N° Télédéclarant e-CNPS</label><input type="text" class="form-control" id="div-teledeclarant-cnps" placeholder="Identifiant cnps.ci"></div>
+        <div class="form-group"><label>Taux CNPS Accident du Travail (%)</label><input type="number" step="0.01" min="2" max="5" class="form-control" id="div-taux-at" placeholder="Ex: 5 (défaut si vide)"></div>
       </div>
 
       <div class="form-section-title">🖼️ Logo de la division</div>
@@ -41213,6 +41214,13 @@ var CNPS = {
   plafondRetraite: PAIE_CI.cnps.plafondRetraite
 };
 var BAREME_ITS = PAIE_CI.baremeITS;
+/* Taux CNPS Accident du Travail : spécifique à chaque division (2–5% selon
+   risque de l'activité). Fallback sur le taux global si division absente
+   ou taux non paramétré. */
+function getTauxATDivision(divisionId) {
+  var div = divisionId ? (DATA.divisions || []).find(function(x){ return x.id === divisionId; }) : null;
+  return (div && div.tauxAT != null && div.tauxAT !== '') ? Number(div.tauxAT) : PAIE_CI.cnps.accidentTravail;
+}
 
 /* ══════════════════════════════════════════════════════════════════════
    GRILLE SALARIALE CÔTE D'IVOIRE 2023 — Convention BTP & activités connexes
@@ -41630,7 +41638,8 @@ function calcPaieCI(d) {
   /* CHARGES PATRONALES */
   var baseATPF        = Math.min(brutSocial, PAIE_CI.cnps.plafondATPF);
   var cnpsRetraitePat = exoCnps ? 0 : R(Math.min(brutSocial, PAIE_CI.cnps.plafondRetraite) * PAIE_CI.cnps.retraitePatronal);
-  var cnpsAT          = exoCnps ? 0 : R(baseATPF * PAIE_CI.cnps.accidentTravail);
+  var tauxAT          = (d.tauxAT != null) ? d.tauxAT : PAIE_CI.cnps.accidentTravail;
+  var cnpsAT          = exoCnps ? 0 : R(baseATPF * tauxAT);
   var cnpsPF          = exoCnps ? 0 : R(baseATPF * PAIE_CI.cnps.prestationsFam);
   var itsPat          = R(brutImposable * PAIE_CI.itsPatronal);
   var fdfpTA          = R(brutImposable * PAIE_CI.fdfp.taxeApprentissage);
@@ -41649,7 +41658,7 @@ function calcPaieCI(d) {
     brutImposable: brutImposable, brutSocial: brutSocial, brutTotal: brutTotal,
     cnpsRetraiteSal: cnpsRetraiteSal, itsBrut: itsBrut, ricf: ricf, itsNet: itsNet,
     cmuSal: cmuSal, retenuesDiv: retenuesDiv, avances: avances, totalRetenuesSal: totalRetenuesSal,
-    cnpsRetraitePat: cnpsRetraitePat, cnpsAT: cnpsAT, cnpsPF: cnpsPF, itsPat: itsPat,
+    cnpsRetraitePat: cnpsRetraitePat, cnpsAT: cnpsAT, tauxAT: tauxAT, cnpsPF: cnpsPF, itsPat: itsPat,
     fdfpTA: fdfpTA, fdfpFC: fdfpFC, fdfpRegul: fdfpRegul, cmuPat: cmuPat, totalPatronal: totalPatronal,
     net: net, coutTotal: coutTotal,
     /* alias rétrocompatibles */
@@ -41699,6 +41708,7 @@ function calcNetAPayer(b, emp) {
   }
   d.exoCnps = _exo;
   d.contrat = (_emp && _emp.contrat) || b.contrat || '';
+  if (d.tauxAT == null) d.tauxAT = getTauxATDivision(_emp && _emp.division);
   return calcPaieCI(d);
 }
 
@@ -41825,7 +41835,8 @@ function paieInputFromEmploye(e, moisArg) {
     /* Consultants (prestataires indépendants) et employés au statut CNPS
        "non_declare" (bypass explicite, voir fiche employé) : exonérés. */
     contrat: e.contrat || '',
-    exoCnps: e.contrat === 'consultant' || e.cnps_statut === 'non_declare'
+    exoCnps: e.contrat === 'consultant' || e.cnps_statut === 'non_declare',
+    tauxAT: getTauxATDivision(e.division)
   };
 }
 
@@ -41853,10 +41864,10 @@ function calcMasseSalariale(mois) {
            chargesPat: pat, coutEmployeur: cout };
 }
 
-function calcCNPSPatronal(brutTotal) {
+function calcCNPSPatronal(brutTotal, divisionId) {
   var retraite = Math.min(brutTotal, PAIE_CI.cnps.plafondRetraite) * PAIE_CI.cnps.retraitePatronal;
   var baseATPF = Math.min(brutTotal, PAIE_CI.cnps.plafondATPF);
-  var at = baseATPF * PAIE_CI.cnps.accidentTravail;
+  var at = baseATPF * getTauxATDivision(divisionId);
   var pf = baseATPF * PAIE_CI.cnps.prestationsFam;
   return { retraite: Math.round(retraite), at: Math.round(at), pf: Math.round(pf),
            total: Math.round(retraite + at + pf) };
@@ -41973,7 +41984,8 @@ function calcSalaireNet() {
     salaireCategoriel: base, primesImpos: primes, transport: transport, logement: logement,
     parts: calcPartsFiscales(mat, enf), tauxAnciennete: calcTauxAnciennete(dEmb),
     cmuPersonnes: 1 + (parseInt(enf)||0) + (mat === 'marie' ? 1 : 0), jours: PAIE_CI.joursMois,
-    contrat: _ctr, exoCnps: (_ctr === 'consultant' || _cst === 'non_declare')
+    contrat: _ctr, exoCnps: (_ctr === 'consultant' || _cst === 'non_declare'),
+    tauxAT: getTauxATDivision((document.getElementById('emp-division')||{}).value)
   });
   document.getElementById('emp-net-estime').value = fmtF(r.net) + ' FCFA (estimation)';
 }
@@ -42834,6 +42846,7 @@ function openDivisionsModal() {
   document.getElementById('div-email').value = '';
   document.getElementById('div-cnps-employeur').value = '';
   document.getElementById('div-teledeclarant-cnps').value = '';
+  document.getElementById('div-taux-at').value = '';
   showDivisionLogoPreview('');
   document.getElementById('btn-save-division').textContent = '+ Ajouter la division';
   document.getElementById('division-doc-hint').style.display = 'block';
@@ -42867,6 +42880,7 @@ async function saveDivision() {
     email: document.getElementById('div-email').value.trim(),
     cnpsEmployeur: document.getElementById('div-cnps-employeur').value.trim(),
     teledeclarantCnps: document.getElementById('div-teledeclarant-cnps').value.trim(),
+    tauxAT: document.getElementById('div-taux-at').value !== '' ? (Number(document.getElementById('div-taux-at').value) / 100) : null,
     logo: (_divisionLogoPending !== null) ? _divisionLogoPending : (existant ? existant.logo : ''),
     created_at: _editingDivisionId ? (existant ? existant.created_at : new Date().toISOString()) : new Date().toISOString()
   };
@@ -42909,6 +42923,7 @@ function editDivision(id) {
   document.getElementById('div-email').value = d.email || '';
   document.getElementById('div-cnps-employeur').value = d.cnpsEmployeur || '';
   document.getElementById('div-teledeclarant-cnps').value = d.teledeclarantCnps || '';
+  document.getElementById('div-taux-at').value = (d.tauxAT != null) ? (d.tauxAT * 100) : '';
   showDivisionLogoPreview(d.logo || '');
   document.getElementById('btn-save-division').textContent = '✓ Modifier la division';
   document.getElementById('division-doc-hint').style.display = 'none';
@@ -44312,7 +44327,7 @@ function exportAuditRapport(){
 function updateRHKPIs() {
   var actifs = DATA.employes.filter(function(e) { return empEstActif(e); });
   var masseBrute = actifs.reduce(function(s, e) { return s + (e.salaire_base + (e.primes||0) + (e.transport||0) + (e.logement||0)); }, 0);
-  var chargesPatronales = actifs.reduce(function(s, e) { return s + calcCNPSPatronal(e.salaire_base).total; }, 0);
+  var chargesPatronales = actifs.reduce(function(s, e) { return s + calcCNPSPatronal(e.salaire_base, e.division).total; }, 0);
   var kpiE = document.getElementById('kpi-effectif');
   var kpiMB = document.getElementById('kpi-masse-brute');
   var kpiCP = document.getElementById('kpi-charges-patronales');
@@ -44886,7 +44901,8 @@ function _bulletinInputs() {
     avances: v('b-avances'),
     jours: parseInt(document.getElementById('b-jours').value) || 30,
     contrat: emp ? (emp.contrat || '') : '',
-    exoCnps: !!(emp && (emp.contrat === 'consultant' || emp.cnps_statut === 'non_declare'))
+    exoCnps: !!(emp && (emp.contrat === 'consultant' || emp.cnps_statut === 'non_declare')),
+    tauxAT: getTauxATDivision(emp && emp.division)
   };
 }
 
@@ -45197,7 +45213,8 @@ function printBulletinData(d) {
   if (e) {
     d = Object.assign({}, d, {
       exoCnps: (e.contrat === 'consultant' || e.cnps_statut === 'non_declare'),
-      contrat: e.contrat || d.contrat || ''
+      contrat: e.contrat || d.contrat || '',
+      tauxAT: getTauxATDivision(e.division)
     });
   }
   var r = calcPaieCI(d);
@@ -45249,7 +45266,7 @@ function printBulletinData(d) {
   /* Retenues / patronal */
   rows += ret('31','ITS, Imp. sur Trait. et Sal.', r.brutImposable, '', r.itsNet, pct(PAIE_CI.itsPatronal), r.itsPat);
   rows += ret('34','CNPS, Régime de Retraite', r.brutSocial, r.exoCnps ? 'Exonéré' : pct(PAIE_CI.cnps.retraiteSalarial), r.cnpsRetraiteSal, r.exoCnps ? 'Exonéré' : pct(PAIE_CI.cnps.retraitePatronal), r.cnpsRetraitePat);
-  rows += ret('35','CNPS, Accident Travail', Math.min(r.brutSocial,PAIE_CI.cnps.plafondATPF), '', '', r.exoCnps ? 'Exonéré' : pct(PAIE_CI.cnps.accidentTravail), r.cnpsAT);
+  rows += ret('35','CNPS, Accident Travail', Math.min(r.brutSocial,PAIE_CI.cnps.plafondATPF), '', '', r.exoCnps ? 'Exonéré' : pct(r.tauxAT != null ? r.tauxAT : PAIE_CI.cnps.accidentTravail), r.cnpsAT);
   rows += ret('36','CNPS, Prest. Famil.', Math.min(r.brutSocial,PAIE_CI.cnps.plafondATPF), '', '', r.exoCnps ? 'Exonéré' : pct(PAIE_CI.cnps.prestationsFam), r.cnpsPF);
   rows += ret('37','FDFP, Taxe Apprentissage', r.brutImposable, '', '', pct(PAIE_CI.fdfp.taxeApprentissage), r.fdfpTA);
   rows += ret('38','FDFP, Taxe Form. Continue', r.brutImposable, '', '', pct(PAIE_CI.fdfp.formationContinue), r.fdfpFC);
@@ -45992,7 +46009,7 @@ function renderLPCharges() {
   var cols = ['cnpsRetraitePat', 'cnpsAT', 'cnpsPF', 'itsPat', 'fdfpTA', 'fdfpFC', 'fdfpRegul', 'cmuPat', 'totalPatronal'];
   var colLabels = {
     cnpsRetraitePat: 'CNPS Retraite 7,7%',
-    cnpsAT:          'CNPS AT 5%',
+    cnpsAT:          'CNPS AT',
     cnpsPF:          'CNPS PF 5,75%',
     itsPat:          'ITS patronal 1,2%',
     fdfpTA:          'FDFP TA 0,4%',
@@ -57386,7 +57403,7 @@ function buildTiersEtat() {
     var cnpsSal=estConsultant?0:calcCNPSSalarie(brutImp);
     masse+=brut;
     cnpsSalTotal+=cnpsSal;
-    cnpsPatTotal+=estConsultant?0:calcCNPSPatronal(brutImp).total;
+    cnpsPatTotal+=estConsultant?0:calcCNPSPatronal(brutImp, e.division).total;
     itsTotal+=calcITS(brutImp);
   });
   var tvaFact=sumCompte('443');
@@ -72688,7 +72705,8 @@ function quinzCalculer() {
   var cnpsSal = cnpsApplique ? Math.round(baseCnps * QUINZ.CNPS_SAL) : 0;
   var cnpsPat = cnpsApplique ? Math.round(baseCnps * PAIE_CI.cnps.retraitePatronal) : 0;
   var baseATPF = Math.min(brutImp, PAIE_CI.cnps.plafondATPF);
-  var cnpsAT = cnpsApplique ? Math.round(baseATPF * PAIE_CI.cnps.accidentTravail) : 0;
+  var _quinzEmp = (function(){ var id=(document.getElementById('quinz-employe')||{}).value; return id ? (DATA.employes||[]).find(function(x){return x.id===id;}) : null; })();
+  var cnpsAT = cnpsApplique ? Math.round(baseATPF * getTauxATDivision(_quinzEmp && _quinzEmp.division)) : 0;
   var cnpsPF = cnpsApplique ? Math.round(baseATPF * PAIE_CI.cnps.prestationsFam) : 0;
   /* FDFP = taxe apprentissage + formation continue, exclusivement patronale
      (Code Général des Impôts CI) — ne doit JAMAIS être retenue sur le net
