@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.93 · 2026-08-08 — Non déclarés : montants alignés sur le bulletin du mois (source affichée)';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.94 · 2026-08-08 — Paie : brut du mois détaillé + mois transmis aux calculs (pointage/journalier/horaire)';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -7728,6 +7728,8 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div class="table-wrap"><table>
               <thead><tr>
                 <th>Matricule</th><th>Nom &amp; Prénoms</th><th>Poste</th><th>Régime</th>
+                <th style="text-align:right;">Salaire de base</th>
+                <th style="text-align:right;">Primes / Sursal.</th>
                 <th style="text-align:right;">Brut du mois</th>
                 <th style="text-align:center;">CNPS</th><th style="text-align:center;">CMU</th><th style="text-align:center;">ITS</th>
                 <th style="text-align:right;">Net à payer</th><th>Source</th><th></th>
@@ -41822,8 +41824,13 @@ function paieInputFromEmploye(e, moisArg) {
 }
 
 /* Paie d'un employé : bulletin du mois si présent, sinon reconstruction depuis la fiche */
-function calcPaieEmploye(e, bull) {
-  return bull ? calcNetAPayer(bull, e) : calcPaieCI(paieInputFromEmploye(e));
+/* [FIX] Le mois doit traverser toute la chaîne. paieInputFromEmploye() en a
+   besoin pour les modes « pointage », « journalier » et « horaire » : sans lui
+   il retombait sur le mois courant, si bien qu'un brut de juillet pouvait
+   s'afficher avec les jours pointés d'août. Paramètre optionnel : les appels
+   existants sans mois gardent leur comportement (mois en cours). */
+function calcPaieEmploye(e, bull, moisKey) {
+  return bull ? calcNetAPayer(bull, e) : calcPaieCI(paieInputFromEmploye(e, moisKey));
 }
 
 /* Masse salariale du mois (bulletins si présents, sinon estimation fiche) */
@@ -44720,6 +44727,8 @@ function exportPreviewPaieCSV() {
     rows.push([
       e.matricule||'', (e.nom||'').replace(/,/g,' '), (e.prenoms||'').replace(/,/g,' '),
       l.regime ? l.regime.label : 'Standard',
+      Math.round(r.salaireCategoriel||r.categoriel||0),
+      Math.round((r.sursalaire||0)+(r.primesImpos||0)+(r.transport||0)+(r.logement||0)+(r.heuresSupp||0)+(r.anciennete||0)),
       Math.round(r.brutTotal||0), Math.round(r.cnpsRetraiteSal||0), Math.round(r.cmuSal||0),
       Math.round(r.itsNet||0), Math.round(r.net||0),
       l.deja ? 'Deja genere' : (l.anomalies.length ? 'A verifier' : 'Pret'),
@@ -44918,7 +44927,7 @@ function _ndCalc(e, moisKey) {
   var bull = (DATA.bulletins || []).find(function(b) {
     return b.employe_id === e.id && b.mois === moisKey;
   });
-  var r = (typeof calcPaieEmploye === 'function') ? calcPaieEmploye(e, bull) : {};
+  var r = (typeof calcPaieEmploye === 'function') ? calcPaieEmploye(e, bull, moisKey) : {};
   r._source = bull ? 'bulletin' : 'fiche';
   return r;
 }
@@ -44947,7 +44956,7 @@ function renderPaieNonDeclares() {
   }
 
   if (!liste.length) {
-    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--blanc-dim);padding:24px;">Aucun personnel dans ces régimes particuliers.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:var(--blanc-dim);padding:24px;">Aucun personnel dans ces régimes particuliers.</td></tr>';
     return;
   }
 
@@ -44971,7 +44980,9 @@ function renderPaieNonDeclares() {
       + '<td><strong>'+escHtml((e.nom||'')+' '+(e.prenoms||''))+'</strong></td>'
       + '<td style="font-size:12px;">'+escHtml(e.poste||'—')+'</td>'
       + '<td><span class="badge '+reg.badge+'" title="'+escHtml(reg.note)+'">'+reg.label+'</span></td>'
-      + '<td style="text-align:right;">'+fmtF(r.brutTotal || 0)+'</td>'
+      + '<td style="text-align:right;">'+fmtF(r.salaireCategoriel || r.categoriel || 0)+'</td>'
+      + '<td style="text-align:right;color:var(--blanc-dim);">'+fmtF((r.sursalaire||0)+(r.primesImpos||0)+(r.transport||0)+(r.logement||0)+(r.heuresSupp||0)+(r.anciennete||0))+'</td>'
+      + '<td style="text-align:right;font-weight:600;">'+fmtF(r.brutTotal || 0)+'</td>'
       + cell(cnpsPreleve, reg.attendu.cnps)
       + cell(cmuPreleve,  reg.attendu.cmu)
       + cell(itsPreleve,  reg.attendu.its)
@@ -44990,7 +45001,7 @@ function exportNonDeclaresCSV() {
   var liste = _ndListe();
   if (!liste.length) { toast('Aucune ligne à exporter.', 'error'); return; }
   var moisKey = _ndMois();
-  var rows = ['Mois,Matricule,Nom,Prenoms,Poste,Regime,Source,Brut,CNPS preleve,CMU prelevee,ITS preleve,Net,Observation'];
+  var rows = ['Mois,Matricule,Nom,Prenoms,Poste,Regime,Source,Salaire de base,Primes et sursalaire,Brut du mois,CNPS preleve,CMU prelevee,ITS preleve,Net,Observation'];
   liste.forEach(function(e) {
     var reg = _ndRegime(e);
     var r = _ndCalc(e, moisKey);
@@ -45348,7 +45359,7 @@ function _lpDataEmp(e, moisKey) {
   var bull = (DATA.bulletins || []).find(function(b) {
     return b.employe_id === e.id && b.mois === moisKey;
   });
-  var r = calcPaieEmploye(e, bull);
+  var r = calcPaieEmploye(e, bull, moisKey);
   r._source = bull ? 'bulletin' : 'fiche';
   return r;
 }
