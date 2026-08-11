@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.94 · 2026-08-08 — Paie : brut du mois détaillé + mois transmis aux calculs (pointage/journalier/horaire)';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.95 · 2026-08-08 — Paie : prorata rendu visible (colonne Jours) — fin des bruts divisés sans signal';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -7728,6 +7728,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div class="table-wrap"><table>
               <thead><tr>
                 <th>Matricule</th><th>Nom &amp; Prénoms</th><th>Poste</th><th>Régime</th>
+                <th style="text-align:center;">Jours</th>
                 <th style="text-align:right;">Salaire de base</th>
                 <th style="text-align:right;">Primes / Sursal.</th>
                 <th style="text-align:right;">Brut du mois</th>
@@ -44624,6 +44625,16 @@ function genererTousBulletins() {
     var anomalies = [];
     if (!deja) {
       if (!(parseFloat(e.salaire_base) > 0)) anomalies.push('Salaire de base non renseigné');
+      /* Prorata silencieux : sans pointage saisi, le brut est divisé sans
+         signal visible. C'est la cause d'écarts du type 120 000 → 12 000. */
+      if (typeof _ndJoursInfo === 'function') {
+        var _ji = _ndJoursInfo(e, mois);
+        if (_ji.mode !== 'mensuel' && _ji.prorata < 1) {
+          anomalies.push(_ji.pointageManquant
+            ? 'Aucun pointage saisi pour ' + mois + ' — brut proratisé à ' + Math.round(_ji.prorata*100) + ' %'
+            : _ji.joursPointes + ' jour(s) pointé(s) — brut proratisé à ' + Math.round(_ji.prorata*100) + ' %');
+        }
+      }
       if (reg && reg.code === 'consultant') anomalies.push('Consultant — une facture d\'honoraires est attendue, pas un bulletin');
       if (reg && reg.code === 'non_declare') anomalies.push('Non déclaré CNPS — ITS retenu, cotisations sociales exclues');
       if (reg && reg.code === 'stage') anomalies.push('Stagiaire — régime de cotisation à confirmer');
@@ -44727,6 +44738,7 @@ function exportPreviewPaieCSV() {
     rows.push([
       e.matricule||'', (e.nom||'').replace(/,/g,' '), (e.prenoms||'').replace(/,/g,' '),
       l.regime ? l.regime.label : 'Standard',
+      (function(){ var j=_ndJoursInfo(e,moisKey); if(r._source==='bulletin'&&r.jours!=null)j.jours=r.jours; return j.jours+'/'+PAIE_CI.joursMois; })(),
       Math.round(r.salaireCategoriel||r.categoriel||0),
       Math.round((r.sursalaire||0)+(r.primesImpos||0)+(r.transport||0)+(r.logement||0)+(r.heuresSupp||0)+(r.anciennete||0)),
       Math.round(r.brutTotal||0), Math.round(r.cnpsRetraiteSal||0), Math.round(r.cmuSal||0),
@@ -44919,6 +44931,30 @@ function _ndMois() {
   return m;
 }
 
+/* Diagnostic du prorata. Un salarié en mode « pointage », « journalier » ou
+   « horaire » voit son brut proratisé sur les jours réellement pointés. Si le
+   pointage du mois n'a pas été saisi, le prorata s'applique quand même et le
+   salaire est divisé sans le moindre signal : 120 000 affichés 12 000 pour
+   2 jours pointés sur 22. On distingue donc « réellement absent » de
+   « pointage non saisi », et on affiche le nombre de jours retenus. */
+function _ndJoursInfo(e, moisKey) {
+  var mode = e.mode_remuneration || 'mensuel';
+  var info = { mode: mode, jours: PAIE_CI.joursMois, prorata: 1, pointageManquant: false, joursPointes: null };
+  if (mode === 'mensuel') return info;
+  var jp = (typeof rhJoursPayables === 'function') ? rhJoursPayables(e.id, moisKey) : 0;
+  var pts = (typeof getPointageMois === 'function') ? getPointageMois(e.id, moisKey) : [];
+  var jo = (typeof joursOuvresDansMois === 'function') ? joursOuvresDansMois(moisKey) : PAIE_CI.joursMois;
+  info.joursPointes = jp;
+  info.pointageManquant = (!pts || pts.length === 0);
+  if (mode === 'pointage') {
+    info.jours = Math.round(PAIE_CI.joursMois * Math.min(1, jp / (jo || 1)));
+  } else {
+    info.jours = Math.min(PAIE_CI.joursMois, jp);
+  }
+  info.prorata = info.jours / PAIE_CI.joursMois;
+  return info;
+}
+
 /* Source unique de vérité, identique au livre de paie : le bulletin du mois
    prime sur la fiche employé. Sans cela, l'onglet affichait le salaire
    théorique de la fiche pendant que les autres écrans affichaient le montant
@@ -44956,7 +44992,7 @@ function renderPaieNonDeclares() {
   }
 
   if (!liste.length) {
-    tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:var(--blanc-dim);padding:24px;">Aucun personnel dans ces régimes particuliers.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="14" style="text-align:center;color:var(--blanc-dim);padding:24px;">Aucun personnel dans ces régimes particuliers.</td></tr>';
     return;
   }
 
@@ -44980,6 +45016,18 @@ function renderPaieNonDeclares() {
       + '<td><strong>'+escHtml((e.nom||'')+' '+(e.prenoms||''))+'</strong></td>'
       + '<td style="font-size:12px;">'+escHtml(e.poste||'—')+'</td>'
       + '<td><span class="badge '+reg.badge+'" title="'+escHtml(reg.note)+'">'+reg.label+'</span></td>'
+      + (function(){
+          var ji = _ndJoursInfo(e, moisKey);
+          if (r._source === 'bulletin' && r.jours != null) { ji.jours = r.jours; ji.prorata = r.jours / PAIE_CI.joursMois; }
+          var complet = ji.prorata >= 1;
+          var col = complet ? 'var(--blanc-dim)' : (ji.pointageManquant ? 'var(--rouge)' : 'var(--or)');
+          var tip = complet ? 'Mois complet'
+            : (ji.pointageManquant
+                ? 'Aucun pointage saisi pour ' + moisKey + ' — le salaire est proratisé à ' + Math.round(ji.prorata*100) + ' % faute de données'
+                : ji.joursPointes + ' jour(s) pointé(s) — salaire proratisé à ' + Math.round(ji.prorata*100) + ' %');
+          return '<td style="text-align:center;color:'+col+';font-weight:'+(complet?'400':'700')+';" title="'+escHtml(tip)+'">'
+            + ji.jours + '/' + PAIE_CI.joursMois + (complet ? '' : (ji.pointageManquant ? ' ⛔' : ' ⚠')) + '</td>';
+        })()
       + '<td style="text-align:right;">'+fmtF(r.salaireCategoriel || r.categoriel || 0)+'</td>'
       + '<td style="text-align:right;color:var(--blanc-dim);">'+fmtF((r.sursalaire||0)+(r.primesImpos||0)+(r.transport||0)+(r.logement||0)+(r.heuresSupp||0)+(r.anciennete||0))+'</td>'
       + '<td style="text-align:right;font-weight:600;">'+fmtF(r.brutTotal || 0)+'</td>'
@@ -45001,7 +45049,7 @@ function exportNonDeclaresCSV() {
   var liste = _ndListe();
   if (!liste.length) { toast('Aucune ligne à exporter.', 'error'); return; }
   var moisKey = _ndMois();
-  var rows = ['Mois,Matricule,Nom,Prenoms,Poste,Regime,Source,Salaire de base,Primes et sursalaire,Brut du mois,CNPS preleve,CMU prelevee,ITS preleve,Net,Observation'];
+  var rows = ['Mois,Matricule,Nom,Prenoms,Poste,Regime,Source,Jours retenus,Salaire de base,Primes et sursalaire,Brut du mois,CNPS preleve,CMU prelevee,ITS preleve,Net,Observation'];
   liste.forEach(function(e) {
     var reg = _ndRegime(e);
     var r = _ndCalc(e, moisKey);
