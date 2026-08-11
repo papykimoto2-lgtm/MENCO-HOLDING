@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.92 · 2026-08-08 — Paie : contrôle et validation avant génération des bulletins';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.93 · 2026-08-08 — Non déclarés : montants alignés sur le bulletin du mois (source affichée)';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -7716,6 +7716,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="card">
             <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;align-items:center;">
               <input type="text" class="search-input" id="nd-search" placeholder="🔍 Nom, matricule, poste..." oninput="_debInput('renderPaieNonDeclares')" style="flex:1;min-width:200px;">
+              <input type="month" class="filter-select" id="nd-mois" onchange="renderPaieNonDeclares()" title="Mois de référence — les montants proviennent du bulletin de ce mois s'il existe">
               <select class="filter-select" id="nd-filtre-regime" onchange="renderPaieNonDeclares()">
                 <option value="">Tous les régimes</option>
                 <option value="non_declare">🚫 Non déclarés CNPS</option>
@@ -7727,9 +7728,9 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div class="table-wrap"><table>
               <thead><tr>
                 <th>Matricule</th><th>Nom &amp; Prénoms</th><th>Poste</th><th>Régime</th>
-                <th style="text-align:right;">Brut mensuel</th>
+                <th style="text-align:right;">Brut du mois</th>
                 <th style="text-align:center;">CNPS</th><th style="text-align:center;">CMU</th><th style="text-align:center;">ITS</th>
-                <th style="text-align:right;">Net estimé</th><th></th>
+                <th style="text-align:right;">Net à payer</th><th>Source</th><th></th>
               </tr></thead>
               <tbody id="tbody-nondeclares"></tbody>
             </table></div>
@@ -44898,9 +44899,34 @@ function _ndListe() {
   });
 }
 
+/* Mois de référence de l'onglet. Aligné par défaut sur le mois de la paie en
+   cours (paie-mois) pour rester cohérent avec les autres onglets du module. */
+function _ndMois() {
+  var el = document.getElementById('nd-mois');
+  if (el && el.value) return el.value;
+  var pm = (document.getElementById('paie-mois') || {}).value;
+  var m = pm || (new Date().toISOString().slice(0,7));
+  if (el && !el.value) el.value = m;
+  return m;
+}
+
+/* Source unique de vérité, identique au livre de paie : le bulletin du mois
+   prime sur la fiche employé. Sans cela, l'onglet affichait le salaire
+   théorique de la fiche pendant que les autres écrans affichaient le montant
+   réellement établi pour le mois — d'où des chiffres divergents. */
+function _ndCalc(e, moisKey) {
+  var bull = (DATA.bulletins || []).find(function(b) {
+    return b.employe_id === e.id && b.mois === moisKey;
+  });
+  var r = (typeof calcPaieEmploye === 'function') ? calcPaieEmploye(e, bull) : {};
+  r._source = bull ? 'bulletin' : 'fiche';
+  return r;
+}
+
 function renderPaieNonDeclares() {
   var tbody = document.getElementById('tbody-nondeclares');
   if (!tbody) return;
+  var moisKey = _ndMois();
   var liste = _ndListe();
 
   var kz = document.getElementById('nd-kpis');
@@ -44910,24 +44936,24 @@ function renderPaieNonDeclares() {
     var nbN = tous.filter(function(e){ return _ndRegime(e).code==='non_declare'; }).length;
     var nbS = tous.filter(function(e){ return _ndRegime(e).code==='stage'; }).length;
     var masse = tous.reduce(function(a,e){
-      var r = (typeof calcPaieEmploye==='function') ? calcPaieEmploye(e) : null;
-      return a + ((r && r.brutTotal) || parseFloat(e.salaire_base) || 0);
+      var r = _ndCalc(e, moisKey);
+      return a + (r.brutTotal || 0);
     }, 0);
     kz.innerHTML =
       '<div class="kpi-card" data-icon="🚫"><div class="kpi-label">Non déclarés CNPS</div><div class="kpi-value" style="color:var(--rouge);">'+nbN+'</div></div>'
       + '<div class="kpi-card" data-icon="👔"><div class="kpi-label">Consultants</div><div class="kpi-value" style="color:var(--violet);">'+nbC+'</div></div>'
       + '<div class="kpi-card" data-icon="🎓"><div class="kpi-label">Stagiaires</div><div class="kpi-value" style="color:var(--or);">'+nbS+'</div></div>'
-      + '<div class="kpi-card" data-icon="💰"><div class="kpi-label">Masse brute concernée</div><div class="kpi-value">'+fmtF(masse)+' FCFA</div></div>';
+      + '<div class="kpi-card" data-icon="💰"><div class="kpi-label">Masse brute — '+moisKey+'</div><div class="kpi-value">'+fmtF(masse)+' FCFA</div></div>';
   }
 
   if (!liste.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--blanc-dim);padding:24px;">Aucun personnel dans ces régimes particuliers.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--blanc-dim);padding:24px;">Aucun personnel dans ces régimes particuliers.</td></tr>';
     return;
   }
 
   tbody.innerHTML = liste.map(function(e) {
     var reg = _ndRegime(e);
-    var r = (typeof calcPaieEmploye === 'function') ? calcPaieEmploye(e) : {};
+    var r = _ndCalc(e, moisKey);
     var cnpsPreleve = (r.cnpsRetraiteSal || 0) > 0;
     var cmuPreleve  = (r.cmuSal || 0) > 0;
     var itsPreleve  = (r.itsNet || 0) > 0;
@@ -44945,11 +44971,14 @@ function renderPaieNonDeclares() {
       + '<td><strong>'+escHtml((e.nom||'')+' '+(e.prenoms||''))+'</strong></td>'
       + '<td style="font-size:12px;">'+escHtml(e.poste||'—')+'</td>'
       + '<td><span class="badge '+reg.badge+'" title="'+escHtml(reg.note)+'">'+reg.label+'</span></td>'
-      + '<td style="text-align:right;">'+fmtF(r.brutTotal || parseFloat(e.salaire_base) || 0)+'</td>'
+      + '<td style="text-align:right;">'+fmtF(r.brutTotal || 0)+'</td>'
       + cell(cnpsPreleve, reg.attendu.cnps)
       + cell(cmuPreleve,  reg.attendu.cmu)
       + cell(itsPreleve,  reg.attendu.its)
       + '<td style="text-align:right;font-weight:600;color:var(--vert);">'+fmtF(r.net || 0)+'</td>'
+      + '<td>' + (r._source === 'bulletin'
+          ? '<span class="badge badge-vert" style="font-size:9px;" title="Montants issus du bulletin établi pour ' + moisKey + '">Bulletin</span>'
+          : '<span class="badge badge-neutre" style="font-size:9px;" title="Aucun bulletin pour ' + moisKey + ' — projection depuis la fiche employé">Fiche</span>') + '</td>'
       + '<td style="white-space:nowrap;">'
       +   '<button class="btn btn-secondary btn-sm btn-icon" title="Modifier la fiche (contrat / statut CNPS)" onclick="openEmployeModal(\''+e.id+'\')">✏️</button> '
       +   '<button class="btn btn-secondary btn-sm btn-icon" title="Établir le bulletin" onclick="switchTab(\'paie\',\'bulletins\');setTimeout(function(){var s=document.getElementById(\'b-employe\');if(s){s.value=\''+e.id+'\';if(typeof prefillBulletin===\'function\')prefillBulletin();}},80);">📋</button>'
@@ -44960,13 +44989,15 @@ function renderPaieNonDeclares() {
 function exportNonDeclaresCSV() {
   var liste = _ndListe();
   if (!liste.length) { toast('Aucune ligne à exporter.', 'error'); return; }
-  var rows = ['Matricule,Nom,Prenoms,Poste,Regime,Brut mensuel,CNPS preleve,CMU prelevee,ITS preleve,Net estime,Observation'];
+  var moisKey = _ndMois();
+  var rows = ['Mois,Matricule,Nom,Prenoms,Poste,Regime,Source,Brut,CNPS preleve,CMU prelevee,ITS preleve,Net,Observation'];
   liste.forEach(function(e) {
     var reg = _ndRegime(e);
-    var r = (typeof calcPaieEmploye === 'function') ? calcPaieEmploye(e) : {};
+    var r = _ndCalc(e, moisKey);
     rows.push([
+      moisKey, 
       e.matricule||'', (e.nom||'').replace(/,/g,' '), (e.prenoms||'').replace(/,/g,' '),
-      (e.poste||'').replace(/,/g,' '), reg.label,
+      (e.poste||'').replace(/,/g,' '), reg.label, (r._source === 'bulletin' ? 'Bulletin' : 'Fiche'),
       Math.round(r.brutTotal||0), Math.round(r.cnpsRetraiteSal||0), Math.round(r.cmuSal||0),
       Math.round(r.itsNet||0), Math.round(r.net||0), reg.note.replace(/,/g,';')
     ].join(','));
@@ -44974,7 +45005,7 @@ function exportNonDeclaresCSV() {
   var blob = new Blob(['\ufeff'+rows.join('\n')], {type:'text/csv;charset=utf-8'});
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'personnel-non-declare-' + today() + '.csv';
+  a.download = 'personnel-non-declare-' + moisKey + '.csv';
   a.click();
   toast('Export généré (' + liste.length + ' ligne(s)).', 'success');
 }
