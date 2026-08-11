@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v13.96 · 2026-08-08 — Livre de paie : filtre déclarés / non déclarés CNPS';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v13.97 · 2026-08-08 — Livre de paie : filtre CNPS appliqué au tableau du journal';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -45477,12 +45477,23 @@ function renderLPJournal() {
   var filterDept = (document.getElementById('lp-filter-dept-journal') || {}).value || '';
   var divF = _lpDivisionFiltre();
 
-  var actifs = (DATA.employes || []).filter(function(e) {
-    return empEstActif(e) && (!divF || e.division === divF) && (!filterDept || e.dept === filterDept) && _lpPresent(e, moisKey);
+  /* [FIX] Le journal refiltrait DATA.employes pour son compte au lieu de
+     partir de _lpActifs(), si bien qu'il ignorait le filtre « déclarés /
+     non déclarés CNPS » appliqué partout ailleurs dans le module : les KPI,
+     le livre annuel et les charges se filtraient, mais le tableau principal
+     continuait d'afficher tout le monde. On repart de la base commune et on
+     n'applique plus ici que ce qui lui est propre (département, présence). */
+  var actifs = _lpActifs().filter(function(e) {
+    return (!filterDept || e.dept === filterDept) && _lpPresent(e, moisKey);
   });
 
   if (!actifs.length) {
-    wrap.innerHTML = '<div style="color:var(--dim);font-size:13px;padding:20px;">Aucun employé actif.</div>';
+    var _sf = (document.getElementById('lp-statut-social') || {}).value || '';
+    wrap.innerHTML = '<div style="color:var(--dim);font-size:13px;padding:20px;">'
+      + (_sf === 'declare' ? 'Aucun employé déclaré CNPS sur ce mois.'
+        : _sf === 'non_declare' ? 'Aucun personnel hors régime CNPS sur ce mois.'
+        : 'Aucun employé actif.')
+      + '</div>';
     return;
   }
 
