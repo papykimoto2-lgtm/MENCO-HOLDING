@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.11 · 2026-08-14 — Fix cloisonnement : Bilan et Compte de Résultat ne filtraient PAS par division (contrairement à la Balance et au Grand Livre, déjà corrects) — toujours consolidés même avec une entité sélectionnée. Corrigé dans buildBilan, _calcResultat, _crMvtMap — bénéficie aussi automatiquement à l\'export PDF États DGI (etatCompteResultat) qui les réutilise.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.14 · 2026-08-14 — Fix cloisonnement : Trésorerie détaillée (buildTresorerieDetaille) et Balance âgée fournisseurs/Tiers 401 (buildTiers401, calcTiersFournisseurMateriaux, export CSV) ne filtraient pas par division. Corrigés. Revue exhaustive des ~34 points de lecture DATA.ecritures terminée : rapprochement bancaire jugé correct par nature (scopé implicitement par compte de trésorerie), utilitaires de rattrapage technique hors périmètre (non pertinents pour un filtre entité).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -8045,6 +8045,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div class="card-title">Montants à reporter — <span id="teledecl-mois-label"></span></div>
             <div style="display:flex;gap:8px;margin-bottom:12px;">
               <input type="month" class="filter-select" id="teledecl-mois" onchange="renderTeledeclaration()">
+              <select class="filter-select" id="teledecl-division" onchange="renderTeledeclaration()"><option value="">— Toutes divisions (consolidé) —</option></select>
               <button class="btn btn-secondary btn-sm" onclick="renderTeledeclaration()">Actualiser</button>
             </div>
             <div id="teledecl-recap"></div>
@@ -34051,7 +34052,8 @@ function filterEcritures() {
   }
 
   /* Résumé par journal — calculé sur l'année/mois (ou la période libre) sélectionnée, indépendamment du filtre journal lui-même */
-  var ecrPeriode = DATA.ecritures.filter(matchPeriode);
+  var divFResume = (typeof _comptaDivisionFilter === 'function') ? _comptaDivisionFilter() : '';
+  var ecrPeriode = DATA.ecritures.filter(function(e){ return matchPeriode(e) && (!divFResume || (e.division||'') === divFResume); });
   var resumeEl = document.getElementById('journal-resume');
   if (resumeEl) {
     var compteurs = {};
@@ -34075,6 +34077,7 @@ function filterEcritures() {
   var idxProg = {};
   DATA.programmes.forEach(function(p){ idxProg[p.id] = p; });
 
+  var divF = (typeof _comptaDivisionFilter === 'function') ? _comptaDivisionFilter() : '';
   var list = DATA.ecritures.filter(function(e) {
     var matchType = !type || e.type === type;
     var matchClasse = true;
@@ -34084,7 +34087,8 @@ function filterEcritures() {
     }
     var matchJournal = !journalF || getEcritureJournal(e) === journalF;
     var matchSearch = !search || (e.libelle||'').toLowerCase().includes(search) || (e.ref||'').toLowerCase().includes(search) || (e.compte_debit||e.compte||'').includes(search);
-    return matchPeriode(e) && matchType && matchClasse && matchJournal && matchSearch;
+    var matchDivision = !divF || (e.division||'') === divF;
+    return matchPeriode(e) && matchType && matchClasse && matchJournal && matchSearch && matchDivision;
   }).sort(function(a, b) { return new Date(a.date) - new Date(b.date); });
 
   var tbody = document.getElementById('tbody-ecritures');
@@ -37493,11 +37497,12 @@ function exportJournalCSV() {
   var d2 = document.getElementById('filter-date-fin') ? document.getElementById('filter-date-fin').value : '';
   if (d1 && d2 && d1 > d2) { var tmp = d1; d1 = d2; d2 = tmp; }
   var rows = ['Journal,N° Écriture,Date,Pièce,Libellé,Compte,Sens,Montant (FCFA),Mode,Programme'];
+  var divFExp = (typeof _comptaDivisionFilter === 'function') ? _comptaDivisionFilter() : '';
   DATA.ecritures.filter(function(e){
     var matchPeriode = (d1 || d2)
       ? ((!d1 || (e.date && e.date >= d1)) && (!d2 || (e.date && e.date <= d2)))
       : ((!year || (e.date && e.date.startsWith(year))) && (!mois || (e.date && e.date.startsWith(mois))));
-    return matchPeriode && (!journalF || getEcritureJournal(e) === journalF);
+    return matchPeriode && (!journalF || getEcritureJournal(e) === journalF) && (!divFExp || (e.division||'') === divFExp);
   })
     .sort(function(a,b){ return new Date(a.date)-new Date(b.date); })
     .forEach(function(e) {
@@ -37521,21 +37526,23 @@ function printResultat() { etatCompteResultat(); }
 
 function buildTresorerie() {
   var year = document.getElementById('filter-annee-compta').value || new Date().getFullYear();
+  var divFTreso = (typeof _comptaDivisionFilter === 'function') ? _comptaDivisionFilter() : '';
   var months = [];
   for (var m = 1; m <= 12; m++) {
     var mStr = year + '-' + String(m).padStart(2, '0');
     var label = new Date(year, m - 1, 1).toLocaleDateString('fr-FR', { month: 'short' });
-    var encaissements = DATA.versements.filter(function(v) { return v.date && v.date.startsWith(mStr); }).reduce(function(a, v) { return a + (parseFloat(v.montant) || 0); }, 0)
-      + (DATA.cessions_foncieres||[]).filter(function(c){ return c.date && c.date.startsWith(mStr); }).reduce(function(a, c){ return a + (parseFloat(c.montant_encaisse)||0); }, 0)
+    var encaissements = DATA.versements.filter(function(v) { return v.date && v.date.startsWith(mStr) && (!divFTreso || _resolveDivisionEcriture('client', v.client_id) === divFTreso); }).reduce(function(a, v) { return a + (parseFloat(v.montant) || 0); }, 0)
+      + (DATA.cessions_foncieres||[]).filter(function(c){ return c.date && c.date.startsWith(mStr) && (!divFTreso || (c.source_key && c.source_key.indexOf('parcelle:')===0 && _resolveDivisionEcriture('parcelle', c.source_key.slice(9)) === divFTreso)); }).reduce(function(a, c){ return a + (parseFloat(c.montant_encaisse)||0); }, 0)
       /* [FIX] cf. buildTresorerieDetaille — ajout des entrées de caisse, seule
          source d'encaissement réelle pour ce tenant (pi_versements vide). */
-      + (DATA.caisse_mouvements||[]).filter(function(m){ return m.type==='entree' && m.date && m.date.startsWith(mStr) && !m.versement_id && !m.cession_id; }).reduce(function(a,m){ return a+(parseFloat(m.montant)||0); }, 0);
-    var decaissements = dashDecaissements(function(e){ return (e.date||'').startsWith(mStr); });
+      + (DATA.caisse_mouvements||[]).filter(function(m){ return m.type==='entree' && m.date && m.date.startsWith(mStr) && !m.versement_id && !m.cession_id && (!divFTreso || _resolveDivisionEcriture('caisse_mouvement', m.id) === divFTreso); }).reduce(function(a,m){ return a+(parseFloat(m.montant)||0); }, 0);
+    var decaissements = dashDecaissements(function(e){ return (e.date||'').startsWith(mStr) && (!divFTreso || (e.division||'') === divFTreso); });
     /* [FIX] cf. buildTresorerieDetaille — même complément caisse brute pour
        couvrir les sorties non-classe-6 (fournisseurs, immobilisations) et les
        mouvements pas encore ventilés comptablement. */
     var decCaisseNonClasse6b = (DATA.caisse_mouvements||[]).filter(function(m){
       if (m.type !== 'sortie' || !m.date || !m.date.startsWith(mStr)) return false;
+      if (divFTreso && _resolveDivisionEcriture('caisse_mouvement', m.id) !== divFTreso) return false;
       var ecrLiee = (DATA.ecritures||[]).find(function(e){ return e.id === 'ecr_cse_' + m.id; });
       if (!ecrLiee) return true;
       var dejaClasse6 = ecrLignes(ecrLiee).some(function(l){ return l.sens==='D' && (l.compte||'').charAt(0)==='6'; });
@@ -49459,7 +49466,17 @@ function renderTeledeclaration() {
   var lbl = document.getElementById('teledecl-mois-label');
   if (lbl) lbl.textContent = new Date(mois + '-01').toLocaleDateString('fr-FR', { month:'long', year:'numeric' });
 
-  var actifs = (DATA.employes || []).filter(function(e){ return empEstActif(e); });
+  var selDivTD = document.getElementById('teledecl-division');
+  if (selDivTD && !selDivTD.options.length) {
+    selDivTD.innerHTML = '<option value="">— Toutes divisions (consolidé) —</option>'
+      + (DATA.divisions||[]).map(function(d){ return '<option value="'+d.id+'">'+escHtml(d.nom)+'</option>'; }).join('');
+  }
+  var divFTD = selDivTD ? selDivTD.value : '';
+
+  /* [Cloisonnement] Chaque entité juridique doit pouvoir produire sa propre
+     déclaration DGI/CNPS mensuelle — sans filtre, comportement historique
+     inchangé (tout le personnel + toutes les écritures, consolidé). */
+  var actifs = (DATA.employes || []).filter(function(e){ return empEstActif(e) && (!divFTD || e.division === divFTD); });
 
   /* [FIX CRITIQUE] La version précédente sommait r.cnpsPat et l'affichait sous
      « CNPS patronal », puis dans « Total CNPS à verser ». Or calcPaieCI()
@@ -49534,6 +49551,7 @@ function renderTeledeclaration() {
   var tvaCollectee = 0, tvaDeductible = 0;
   (DATA.ecritures || []).forEach(function(ec){
     if ((ec.date || '').slice(0,7) !== mois) return;
+    if (divFTD && (ec.division||'') !== divFTD) return;
     (typeof ecrLignes === 'function' ? ecrLignes(ec) : (ec.lignes || [])).forEach(function(l){
       var cpt = String(l.compte || ''), m = parseFloat(l.montant) || 0;
       /* TVA collectée : compte de dette, elle vit au CRÉDIT ; un débit la
@@ -57313,8 +57331,8 @@ function calcAncienneteFournisseur401(convs) {
   };
 }
 
-function calcTiersFournisseurMateriaux(fr) {
-  var ecrs = (DATA.ecritures||[]).filter(function(e){ return e.compte_credit===fr.compte || e.compte_debit===fr.compte; });
+function calcTiersFournisseurMateriaux(fr, divisionId) {
+  var ecrs = (DATA.ecritures||[]).filter(function(e){ return (e.compte_credit===fr.compte || e.compte_debit===fr.compte) && (!divisionId || (e.division||'')===divisionId); });
   var totalCredit = ecrs.filter(function(e){return e.compte_credit===fr.compte;}).reduce(function(s,e){return s+(e.montant||0);},0);
   var totalDebit  = ecrs.filter(function(e){return e.compte_debit===fr.compte;}).reduce(function(s,e){return s+(e.montant||0);},0);
   var solde = Math.max(0, totalCredit-totalDebit);
@@ -57330,13 +57348,15 @@ function buildTiers401() {
   var filtStatut = (document.getElementById('filter-tiers401-statut')||{}).value||'';
   var tbody = document.getElementById('tbody-tiers401');
   if (!tbody) return;
+  var divF401 = (typeof _comptaDivisionFilter === 'function') ? _comptaDivisionFilter() : '';
 
   var today = new Date();
   var totalSolde = 0;
   var anteriorite = {courant:0, m1_3:0, m3_6:0, m6_12:0, plus12:0};
 
   var rows = DATA.constructeurs.map(function(constr) {
-    var convs = DATA.conventions.filter(function(cv){return cv.constructeur_id===constr.id;});
+    var convs = DATA.conventions.filter(function(cv){return cv.constructeur_id===constr.id && (!divF401 || _progDivId(cv.programme_id)===divF401);});
+    if (divF401 && !convs.length) return null;   /* [Cloisonnement] aucune convention de ce constructeur sur ce périmètre */
     var totalTTC = convs.reduce(function(s,cv){return s+(cv.montant_ttc||0);},0);
     var avances = convs.reduce(function(s,cv){return s+(cv.avance_montant||0);},0);
     var retenues = convs.reduce(function(s,cv){return s+(cv.retenue_montant||0);},0);
@@ -57371,7 +57391,8 @@ function buildTiers401() {
   /* Fournisseurs matériaux (compte 401x, hors constructeurs/conventions) */
   var rowsMat = (DATA.fournisseurs||[]).map(function(fr){
     if (!fr.compte) return null;
-    var calc = calcTiersFournisseurMateriaux(fr);
+    var calc = calcTiersFournisseurMateriaux(fr, divF401);
+    if (divF401 && !calc.totalCredit && !calc.totalDebit) return null;   /* [Cloisonnement] aucun mouvement de ce fournisseur sur ce périmètre */
     var statut = calc.solde <= 0 ? 'solde' : 'crediteur';
     if (filtStatut && filtStatut !== statut) return null;
     if (search && !(fr.nom||'').toLowerCase().includes(search.toLowerCase())) return null;
@@ -57466,11 +57487,13 @@ function buildTiers401() {
 }
 
 function exportTiers401CSV() {
+  var divFExpT = (typeof _comptaDivisionFilter === 'function') ? _comptaDivisionFilter() : '';
   // Colonne "Méthode ancienneté" : 'echeance' = date réelle de facture/échéance,
   // 'signature' = repli sur la date de signature de convention (cf. calcAncienneteFournisseur401).
   var rows=['Type,Fournisseur,Spécialité,Montant TTC,Réglé,Situations,Retenues,Solde 401,Ancienneté (mois),Méthode ancienneté'];
   DATA.constructeurs.forEach(function(c){
-    var convs=DATA.conventions.filter(function(cv){return cv.constructeur_id===c.id;});
+    var convs=DATA.conventions.filter(function(cv){return cv.constructeur_id===c.id && (!divFExpT || _progDivId(cv.programme_id)===divFExpT);});
+    if (divFExpT && !convs.length) return;
     var ttc=convs.reduce(function(s,cv){return s+(cv.montant_ttc||0);},0);
     var av=convs.reduce(function(s,cv){return s+(cv.avance_montant||0);},0);
     var ret=convs.reduce(function(s,cv){return s+(cv.retenue_montant||0);},0);
@@ -57479,7 +57502,8 @@ function exportTiers401CSV() {
   });
   (DATA.fournisseurs||[]).forEach(function(fr){
     if(!fr.compte) return;
-    var calc=calcTiersFournisseurMateriaux(fr);
+    var calc=calcTiersFournisseurMateriaux(fr, divFExpT);
+    if (divFExpT && !calc.totalCredit && !calc.totalDebit) return;
     rows.push([(fr.type_tiers==='physique'?'Personne physique':'Matériaux'),fr.nom,'',calc.totalCredit,calc.totalDebit,0,0,calc.solde,calc.moisAnc,'ecritures'].join(','));
   });
   var blob=new Blob([rows.join('\n')],{type:'text/csv'});
@@ -69900,14 +69924,20 @@ function buildTresorerieDetaille() {
     }
   }
   var year = selAnnee ? selAnnee.value : new Date().getFullYear();
+  var divFTD2 = (typeof _comptaDivisionFilter === 'function') ? _comptaDivisionFilter() : '';
   var months = [];
   var soldeCumul = 0;
   var cesPaie = getCessionsPaiements();
   for (var m = 1; m <= 12; m++) {
     var mStr = year + '-' + String(m).padStart(2,'0');
     var label = new Date(year, m-1, 1).toLocaleDateString('fr-FR',{month:'short'});
-    var encVte = DATA.versements.filter(function(v){return v.date&&v.date.startsWith(mStr);}).reduce(function(a,v){return a+(parseFloat(v.montant)||0);},0);
-    var encCes = cesPaie.filter(function(p){return p.date&&p.date.startsWith(mStr);}).reduce(function(a,p){return a+p.montant;},0);
+    var encVte = DATA.versements.filter(function(v){return v.date&&v.date.startsWith(mStr)&&(!divFTD2||_resolveDivisionEcriture('client',v.client_id)===divFTD2);}).reduce(function(a,v){return a+(parseFloat(v.montant)||0);},0);
+    var encCes = cesPaie.filter(function(p){
+      if (!p.date||!p.date.startsWith(mStr)) return false;
+      if (!divFTD2) return true;
+      var sk = p.cession && p.cession.source_key;
+      return sk && sk.indexOf('parcelle:')===0 && _resolveDivisionEcriture('parcelle', sk.slice(9)) === divFTD2;
+    }).reduce(function(a,p){return a+p.montant;},0);
     /* [FIX] Sans ce bloc, "Encaissements" ne lisait que pi_versements (paiements
        lots) + cessions, deux sources vides pour ce tenant, alors que l'activité
        de caisse réelle (138 entrées, 114,8M FCFA) était totalement ignorée.
@@ -69917,10 +69947,10 @@ function buildTresorerieDetaille() {
        (deja compté ci-dessus) pour éviter un double comptage si le mouvement de
        caisse a été généré depuis un versement. */
     var encCaisse = (DATA.caisse_mouvements||[]).filter(function(m){
-      return m.type === 'entree' && m.date && m.date.startsWith(mStr) && !m.versement_id && !m.cession_id;
+      return m.type === 'entree' && m.date && m.date.startsWith(mStr) && !m.versement_id && !m.cession_id && (!divFTD2 || _resolveDivisionEcriture('caisse_mouvement', m.id) === divFTD2);
     }).reduce(function(a,m){return a+(parseFloat(m.montant)||0);},0);
     var enc = encVte + encCes + encCaisse;
-    var dec = dashDecaissements(function(e){ return (e.date||'').startsWith(mStr); });
+    var dec = dashDecaissements(function(e){ return (e.date||'').startsWith(mStr) && (!divFTD2 || (e.division||'') === divFTD2); });
     /* [FIX] Même raison que pour les encaissements : dashDecaissements() ne
        compte que les débits de classe 6 (charges comptabilisées) — cohérent
        pour un calcul de résultat, mais très incomplet pour une vue trésorerie
@@ -69933,6 +69963,7 @@ function buildTresorerieDetaille() {
        une sortie déjà comptée via une écriture classe 6 n'est pas réinjectée. */
     var decCaisseNonClasse6 = (DATA.caisse_mouvements||[]).filter(function(m){
       if (m.type !== 'sortie' || !m.date || !m.date.startsWith(mStr)) return false;
+      if (divFTD2 && _resolveDivisionEcriture('caisse_mouvement', m.id) !== divFTD2) return false;
       var ecrLiee = (DATA.ecritures||[]).find(function(e){ return e.id === 'ecr_cse_' + m.id; });
       if (!ecrLiee) return true; // pas encore ventilée : à inclure telle quelle
       var dejaClasse6 = ecrLignes(ecrLiee).some(function(l){ return l.sens==='D' && (l.compte||'').charAt(0)==='6'; });
