@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.00 · 2026-08-14 — Fix CSS body.no-delete .btn-danger masquait à tort les boutons Clôturer (caisse, séance recouvrement, exercice) pour tout profil sans droit de suppression';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.11 · 2026-08-14 — Fix cloisonnement : Bilan et Compte de Résultat ne filtraient PAS par division (contrairement à la Balance et au Grand Livre, déjà corrects) — toujours consolidés même avec une entité sélectionnée. Corrigé dans buildBilan, _calcResultat, _crMvtMap — bénéficie aussi automatiquement à l\'export PDF États DGI (etatCompteResultat) qui les réutilise.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -4139,6 +4139,10 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                     <option value="481">481 — Fournisseurs d'investissements (acquisition à crédit)</option>
                     <option value="512">512 — Banque (acquisition au comptant)</option>
                   </select>
+                </div>
+                <div class="form-group">
+                  <label>Division (entité juridique)</label>
+                  <select class="form-control" id="amort-division"><option value="">— Non affecté —</option></select>
                 </div>
                 <div class="form-group">
                   <label>Valeur d'origine (FCFA) *</label>
@@ -13847,6 +13851,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <div class="form-group span-2"><label>Désignation du site *</label><input type="text" id="af-op-nom" class="form-control" placeholder="Ex : Site Extension Sud"></div>
               <div class="form-group"><label>Agent du foncier</label><select id="af-op-agent" class="form-control"></select></div>
               <div class="form-group"><label>Étape (pipeline)</label><select id="af-op-stage" class="form-control" onchange="afStageBadge()"></select></div>
+              <div class="form-group"><label>Division (entité juridique)</label><select id="af-op-division" class="form-control"><option value="">— Non affecté —</option></select></div>
             </div>
 
             <div class="steps-nav" id="af-op-steps" style="margin:14px 0 6px;">
@@ -14515,6 +14520,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <div class="form-group"><label>Commune / adresse</label><input type="text" id="cop-im-adresse" class="form-control" placeholder="Cocody Angré, Abidjan"></div>
               <div class="form-group"><label>Nombre de lots</label><input type="number" id="cop-im-nblots" class="form-control" placeholder="24"></div>
               <div class="form-group"><label>Syndic (nom)</label><input type="text" id="cop-im-syndic" class="form-control" placeholder="SANIX Africa / nom du syndic"></div>
+              <div class="form-group"><label>Division (entité juridique)</label><select id="cop-im-division" class="form-control"><option value="">— Non affecté —</option></select></div>
             </div>
             <button class="btn btn-primary btn-sm" onclick="copCreerImmeuble()">Créer l'immeuble</button>
           </div>
@@ -16800,6 +16806,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         <div class="form-group"><label>Dépôt de garantie</label><input type="number" class="form-control" id="bl-depot"></div>
         <div class="form-group"><label><input type="checkbox" id="bl-meuble" style="accent-color:var(--or);"> Bien meublé</label></div>
         <div class="form-group"><label>Propriétaire</label><select class="form-control" id="bl-proprietaire"></select></div>
+        <div class="form-group"><label>Division (entité juridique)</label><select class="form-control" id="bl-division"><option value="">— Non affecté —</option></select></div>
         <div class="form-group"><label>Latitude</label><input type="text" class="form-control" id="bl-lat" placeholder="5.3599"></div>
         <div class="form-group"><label>Longitude</label><input type="text" class="form-control" id="bl-lng" placeholder="-4.0083"></div>
         <div class="form-group"><label>Statut</label><select class="form-control" id="bl-statut">
@@ -25619,6 +25626,7 @@ function goTo(page) {
   if (page === 'portail') { if (typeof pmRender === 'function') pmRender(); if (typeof pmsgRenderSelect === 'function') pmsgRenderSelect(); }
   if (page === 'accueil-visites') { if (typeof loadAccueil === 'function') loadAccueil(); }
   if (page === 'portail-apporteur') {
+    if (!SESSION_APPORTEUR && typeof verifierSessionApporteur === 'function') verifierSessionApporteur();
     if (!SESSION_APPORTEUR) {
       if (typeof ouvrirLoginApporteur === 'function') { ouvrirLoginApporteur(); }
       else { toast('⛔ Portail Apporteur : module non disponible sur cette version.', 'error'); _lastGoTo('dashboard'); applyRoleToSidebar(); }
@@ -28533,6 +28541,7 @@ async function comptabiliserCommission(comm, silencieux) {
     montant:       comm.montant_comm,
     mode:          'commission',
     programme_id:  client.programme_id || '',
+    division:      _resolveDivisionEcriture('programme', client.programme_id),
     notes:         'Taux ' + comm.taux + '% sur ' + fmtF(comm.montant_base) + ' FCFA — Auto-généré',
     source:        'commission',
     commission_id: comm.id,
@@ -28583,6 +28592,7 @@ async function comptabiliserPaiementCommission(comm, modePaiement) {
     montant:       comm.montant_comm,
     mode:          modePaiement || 'virement',
     programme_id:  '',
+    division:      _resolveDivisionEcriture('client', comm.client_id),
     notes:         'Règlement commission — Auto-généré',
     source:        'paiement_commission',
     commission_id: comm.id,
@@ -28793,6 +28803,7 @@ async function annulerCommission(id) {
       montant:       comm.montant_comm,
       mode:          'commission',
       programme_id:  '',
+      division:      _resolveDivisionEcriture('client', comm.client_id),
       notes:         'Contre-passation automatique — annulation commission',
       source:        'extourne_commission',
       commission_id: comm.id,
@@ -35746,7 +35757,8 @@ function buildBilan() {
   var year = document.getElementById('filter-annee-compta').value || new Date().getFullYear();
 
   var soldes = {};
-  DATA.ecritures.filter(function(e){ return e.date && e.date < (year+1+'-01-01'); }).forEach(function(e) {
+  var divFBilan = _comptaDivisionFilter();
+  DATA.ecritures.filter(function(e){ return e.date && e.date < (year+1+'-01-01') && (!divFBilan || e.division === divFBilan); }).forEach(function(e) {
     ecrLignes(e).forEach(function(l){
       if (!l.compte) return;
       if (!soldes[l.compte]) soldes[l.compte] = 0;
@@ -37228,7 +37240,8 @@ function dashFinanceCore(pmin) {
 }
 
 function _calcResultat(year) {
-  var ec = DATA.ecritures.filter(function(e){ return e.date && e.date.startsWith(year); });
+  var divFCR = _comptaDivisionFilter();
+  var ec = DATA.ecritures.filter(function(e){ return e.date && e.date.startsWith(year) && (!divFCR || e.division === divFCR); });
   function deb(pfx){ var t=0; ec.forEach(function(e){ ecrLignes(e).forEach(function(l){ if (l.sens==='D' && pfx.some(function(p){ return (l.compte||'').indexOf(p)===0; })) t += (parseFloat(l.montant)||0); }); }); return t; }
   function cre(pfx){ var t=0; ec.forEach(function(e){ ecrLignes(e).forEach(function(l){ if (l.sens==='C' && pfx.some(function(p){ return (l.compte||'').indexOf(p)===0; })) t += (parseFloat(l.montant)||0); }); }); return t; }
   // Produits (crédits classe 7) — buckets exclusifs
@@ -37283,7 +37296,8 @@ function _calcResultat(year) {
    _rubriqueDetailHTML pour le Bilan, mais sur des mouvements et non des soldes). */
 function _crMvtMap(year){
   var mD = {}, mC = {};
-  DATA.ecritures.filter(function(e){ return e.date && e.date.startsWith(year); }).forEach(function(e){
+  var divFMvt = _comptaDivisionFilter();
+  DATA.ecritures.filter(function(e){ return e.date && e.date.startsWith(year) && (!divFMvt || e.division === divFMvt); }).forEach(function(e){
     ecrLignes(e).forEach(function(l){
       if (!l.compte) return;
       if (l.sens === 'D') mD[l.compte] = (mD[l.compte]||0) + (parseFloat(l.montant)||0);
@@ -42727,6 +42741,84 @@ function _calcIndemniteLicenciementCI(salaireMoyen, anneesAnciennete) {
 }
 
 /* ── Solde de Tout Compte — calcul + aperçu avant impression ─── */
+function genererAttestationTravail(empId) {
+  var e = empId ? DATA.employes.find(function(x) { return x.id === empId; }) : null;
+  if (!e) { toast('Enregistrez d\'abord la fiche employé.', 'error'); return; }
+
+  var params = DATA.params || {};
+  var logo = getLogoForPrint ? getLogoForPrint() : '';
+  var now = new Date().toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' });
+  var nomComplet = escHtml((e.prenoms || '') + ' ' + (e.nom || ''));
+  var enCours = !e.date_depart;
+
+  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Attestation de travail — ' + nomComplet + '</title>'
+    + '<style>body{font-family:Arial,sans-serif;font-size:13px;padding:32px;color:#1C1C2E;line-height:1.8;}'
+    + 'h1{color:#1C1C2E;font-size:17px;text-align:center;margin-bottom:4px;text-transform:uppercase;}'
+    + '.header{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #B87333;padding-bottom:16px;margin-bottom:26px;}'
+    + '.sign{margin-top:60px;text-align:right;padding-right:40px;}'
+    + '.no-print{text-align:center;margin-bottom:20px;} .no-print button{padding:9px 20px;background:#B87333;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;}'
+    + '@media print{.no-print{display:none;}body{padding:16px;}}</style>'
+    + '</head><body>'
+    + '<div class="no-print"><button onclick="window.print()">🖨️ Imprimer / Enregistrer en PDF</button></div>'
+    + '<div class="header">' + (logo ? '<img src="' + logo + '" style="height:48px;object-fit:contain;">' : '<div></div>')
+    + '<div style="text-align:right;font-size:11px;color:#6B6B9A;">' + escHtml(params.societe || 'ImmoSuite ERP') + '<br>' + (params.tel || '') + '<br>' + (params.adresse || '') + '</div></div>'
+    + '<h1>Attestation de travail</h1>'
+    + '<p style="margin-top:26px;">Je soussigné(e), représentant de <strong>' + escHtml(params.societe || 'l\'employeur') + '</strong>, atteste par la présente que :</p>'
+    + '<p style="margin-top:18px;text-align:center;font-size:14px;"><strong>' + nomComplet + '</strong>'
+    + (e.piece_num ? ', titulaire de la pièce n° ' + escHtml(e.piece_num) : '') + '</p>'
+    + '<p style="margin-top:18px;">'
+    + (enCours
+        ? 'est employé(e) au sein de notre société depuis le <strong>' + (e.date_embauche ? dateShort(e.date_embauche) : '—') + '</strong>, en qualité de <strong>' + escHtml(e.poste || '—') + '</strong>' + (e.division ? ' au sein de la division ' + escHtml(_nomDivision(e.division)) : '') + '.'
+        : 'a été employé(e) au sein de notre société du <strong>' + (e.date_embauche ? dateShort(e.date_embauche) : '—') + '</strong> au <strong>' + dateShort(e.date_depart) + '</strong>, en qualité de <strong>' + escHtml(e.poste || '—') + '</strong>.')
+    + '</p>'
+    + '<p style="margin-top:18px;">Cette attestation est délivrée à l\'intéressé(e) pour servir et valoir ce que de droit.</p>'
+    + '<p style="margin-top:30px;">Fait à Abidjan, le ' + now + '.</p>'
+    + '<div class="sign"><p>Pour L\'EMPLOYEUR<br>' + escHtml(params.societe || '') + '</p><p style="margin-top:40px;">Signature et cachet :<br>___________________________</p></div>'
+    + '</body></html>';
+
+  var win = window.open('', '_blank');
+  win.document.write(docStamp(html));
+  win.document.close();
+}
+
+function genererCertificatTravail(empId) {
+  var e = empId ? DATA.employes.find(function(x) { return x.id === empId; }) : null;
+  if (!e) { toast('Enregistrez d\'abord la fiche employé.', 'error'); return; }
+  if (!e.date_depart) { toast('Renseignez la date de départ (onglet 🚪 Départ), puis Enregistrer, avant de générer le certificat de travail.', 'error'); return; }
+
+  var params = DATA.params || {};
+  var logo = getLogoForPrint ? getLogoForPrint() : '';
+  var now = new Date().toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' });
+  var nomComplet = escHtml((e.prenoms || '') + ' ' + (e.nom || ''));
+  var anc = _ancienneteYM(e.date_embauche, e.date_depart);
+
+  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Certificat de travail — ' + nomComplet + '</title>'
+    + '<style>body{font-family:Arial,sans-serif;font-size:13px;padding:32px;color:#1C1C2E;line-height:1.8;}'
+    + 'h1{color:#1C1C2E;font-size:17px;text-align:center;margin-bottom:4px;text-transform:uppercase;}'
+    + '.header{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #B87333;padding-bottom:16px;margin-bottom:26px;}'
+    + '.sign{margin-top:60px;text-align:right;padding-right:40px;}'
+    + '.no-print{text-align:center;margin-bottom:20px;} .no-print button{padding:9px 20px;background:#B87333;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;}'
+    + '@media print{.no-print{display:none;}body{padding:16px;}}</style>'
+    + '</head><body>'
+    + '<div class="no-print"><button onclick="window.print()">🖨️ Imprimer / Enregistrer en PDF</button></div>'
+    + '<div class="header">' + (logo ? '<img src="' + logo + '" style="height:48px;object-fit:contain;">' : '<div></div>')
+    + '<div style="text-align:right;font-size:11px;color:#6B6B9A;">' + escHtml(params.societe || 'ImmoSuite ERP') + '<br>' + (params.tel || '') + '<br>' + (params.adresse || '') + '</div></div>'
+    + '<h1>Certificat de travail</h1>'
+    + '<p style="margin-top:26px;">Je soussigné(e), représentant de <strong>' + escHtml(params.societe || 'l\'employeur') + '</strong>, certifie que :</p>'
+    + '<p style="margin-top:18px;text-align:center;font-size:14px;"><strong>' + nomComplet + '</strong>'
+    + (e.piece_num ? ', titulaire de la pièce n° ' + escHtml(e.piece_num) : '') + '</p>'
+    + '<p style="margin-top:18px;">a été employé(e) au sein de notre société du <strong>' + (e.date_embauche ? dateShort(e.date_embauche) : '—') + '</strong> au <strong>' + dateShort(e.date_depart) + '</strong>, soit une ancienneté de <strong>' + anc.annees + ' an(s) et ' + anc.mois + ' mois</strong>, en qualité de <strong>' + escHtml(e.poste || '—') + '</strong>' + (e.division ? ' au sein de la division ' + escHtml(_nomDivision(e.division)) : '') + '.</p>'
+    + '<p style="margin-top:18px;">Le/la salarié(e) quitte notre société libre de tout engagement, conformément aux dispositions du Code du Travail en vigueur en Côte d\'Ivoire.</p>'
+    + '<p style="margin-top:18px;">Ce certificat est délivré à l\'intéressé(e) pour servir et valoir ce que de droit.</p>'
+    + '<p style="margin-top:30px;">Fait à Abidjan, le ' + now + '.</p>'
+    + '<div class="sign"><p>Pour L\'EMPLOYEUR<br>' + escHtml(params.societe || '') + '</p><p style="margin-top:40px;">Signature et cachet :<br>___________________________</p></div>'
+    + '</body></html>';
+
+  var win = window.open('', '_blank');
+  win.document.write(docStamp(html));
+  win.document.close();
+}
+
 function genererSoldeToutCompte(empId) {
   var e = empId ? DATA.employes.find(function(x) { return x.id === empId; }) : null;
   if (!e) { toast('Enregistrez d\'abord la fiche employé.', 'error'); return; }
@@ -45740,13 +45832,13 @@ async function comptabiliserPaie(moisKey, opts){
       var x=list[j], lg=_paieLignes(x,C); if(!lg.length) continue;
       await _ecrUpsert({ id:'ecr_paie_'+x.emp.id+'_'+moisKey, ref:'PAIE-'+moisKey+'-'+(x.emp.matricule||''), date:date, piece:'OD-PAIE '+moisKey,
         libelle:'Paie '+moisKey+' — '+x.emp.nom+' '+(x.emp.prenoms||''), lignes:lg, montant:Math.round(x.brut+x.patronal),
-        journal:'PA', type:'od', _auto:'paie', _paie_mois:moisKey, _paie_dept:deptTag, created_at:today() }); created++;
+        journal:'PA', type:'od', division: x.emp.division||'', _auto:'paie', _paie_mois:moisKey, _paie_dept:deptTag, created_at:today() }); created++;
     }
   } else {
     var agg=_sumAgg(list), lg2=_paieLignes(agg,C);
     await _ecrUpsert({ id:'ecr_paie_od_'+moisKey+suffixe, ref:'PAIE-'+moisKey+(dept?'-'+dept:''), date:date, piece:'OD-PAIE '+moisKey,
       libelle:'OD de paie '+moisKey+(dept?' — '+dept:'')+' ('+list.length+' salarie-s)', lignes:lg2, montant:Math.round(agg.brut+agg.patronal),
-      journal:'PA', type:'od', _auto:'paie', _paie_mois:moisKey, _paie_dept:deptTag, created_at:today() }); created++;
+      journal:'PA', type:'od', division: '', /* [Cloisonnement] agrégat multi-employés potentiellement multi-entités — non affecté volontairement, voir mode 'detail' pour le scoping par salarié */ _auto:'paie', _paie_mois:moisKey, _paie_dept:deptTag, created_at:today() }); created++;
   }
   if(regl){
     var a=_sumAgg(list);
@@ -45764,7 +45856,7 @@ async function comptabiliserPaie(moisKey, opts){
     var tot=net+cnps+its+fdfp;
     if(tot>0){ rl.push({compte:C.treso,sens:'C',montant:tot,libelle:'Decaissement paie '+moisKey});
       await _ecrUpsert({ id:'ecr_paie_regl_'+moisKey+suffixe, ref:'REGL-PAIE-'+moisKey+(dept?'-'+dept:''), date:date, piece:'REGL-PAIE '+moisKey,
-        libelle:'Reglement paie '+moisKey+(dept?' — '+dept:''), lignes:rl, montant:tot, journal:'PA', type:'od', _auto:'paie_regl', _paie_mois:moisKey, _paie_dept:deptTag, created_at:today() }); created++; }
+        libelle:'Reglement paie '+moisKey+(dept?' — '+dept:''), lignes:rl, montant:tot, journal:'PA', type:'od', division: '', _auto:'paie_regl', _paie_mois:moisKey, _paie_dept:deptTag, created_at:today() }); created++; }
   }
   if(typeof buildBalance==='function') buildBalance();
   if(typeof buildGrandLivre==='function') buildGrandLivre();
@@ -46835,7 +46927,7 @@ async function payOnlineEcritureFrais(p,versement,frais,cfg){
   var ecr={ id:'ecr_frais_'+p.transaction_id, ref:'FRAIS-'+versement.ref, date:versement.date,
     piece:versement.reference, libelle:'Commission '+(p.provider||'passerelle')+' — '+versement.ref,
     compte:compteFrais, compte_debit:compteFrais, compte_credit:treso, montant:frais,
-    type:'charge', mode:'mobile_money', notes:'Frais passerelle de paiement (à confirmer TVA/6311)', created_at:today() };
+    type:'charge', mode:'mobile_money', division:_resolveDivisionEcriture('client',versement.client_id), notes:'Frais passerelle de paiement (à confirmer TVA/6311)', created_at:today() };
   var i=DATA.ecritures.findIndex(function(e){return e.id===ecr.id;});
   if(i>=0) DATA.ecritures[i]=ecr; else DATA.ecritures.push(ecr);
   await dbPut('ecritures',ecr);
@@ -46868,7 +46960,7 @@ async function payOnlineReconcilierDiaspo(p){
   var ecr={ id:'ecr_dspseq_online_'+p.transaction_id, ref:'SEQ-'+(d.ref||'').slice(0,12)+'-'+d.sequestre.length,
     date:mvt.date, piece:p.transaction_id,
     libelle:'Versement séquestre en ligne — '+_dspNom(d)+' ('+(d.pays||'')+')',
-    montant:brut, type:'passif', mode:'mobile_money', lignes:lignes,
+    montant:brut, type:'passif', mode:'mobile_money', lignes:lignes, division:_resolveDivisionEcriture('client',d.client_id),
     notes:'Paiement portail diaspora — libération conditionnée aux jalons prouvés.', created_at:today() };
   var i=DATA.ecritures.findIndex(function(e){return e.id===ecr.id;});
   if(i>=0) DATA.ecritures[i]=ecr; else DATA.ecritures.push(ecr);
@@ -47279,6 +47371,9 @@ function blOpen(id){
   if(sp) sp.innerHTML='<option value="">— Détenu en propre par le promoteur —</option>'
     +(typeof _locProps==='function'?_locProps():[]).filter(function(p){return p.statut!=='resilie';})
       .map(function(p){ return '<option value="'+p.id+'">'+escHtml(p.nom||'')+'</option>'; }).join('');
+  var sd=document.getElementById('bl-division');
+  if(sd) sd.innerHTML='<option value="">— Non affecté —</option>'
+    +(DATA.divisions||[]).map(function(d){ return '<option value="'+d.id+'">'+escHtml(d.nom)+'</option>'; }).join('');
   var b=id?_blL().find(function(x){return x.id===id;}):null;
   var v=function(i,val){var e=document.getElementById(i); if(e) e.value=val;};
   var k=function(i,val){var e=document.getElementById(i); if(e) e.checked=!!val;};
@@ -47290,6 +47385,7 @@ function blOpen(id){
   k('bl-meuble',b?b.meuble:false);
   v('bl-lat',b?b.lat:''); v('bl-lng',b?b.lng:'');
   v('bl-proprietaire',b?b.proprietaire_id:''); v('bl-statut',b?b.statut:'disponible');
+  v('bl-division',b?b.division_id:'');
   v('bl-dispo-le',b?b.disponible_le:''); v('bl-descriptif',b?b.descriptif:'');
   v('bl-equipements',b?(b.equipements||''):'');
   var t=document.getElementById('modal-bl-title'); if(t) t.textContent=b?('Bien '+(b.ref||'')):'Nouveau bien locatif';
@@ -47323,6 +47419,7 @@ async function blSave(){
   b.periodicite=g('bl-periodicite'); b.meuble=k('bl-meuble');
   b.lat=g('bl-lat'); b.lng=g('bl-lng');
   b.proprietaire_id=g('bl-proprietaire'); b.statut=g('bl-statut');
+  b.division_id=g('bl-division');
   b.disponible_le=g('bl-dispo-le'); b.descriptif=g('bl-descriptif'); b.equipements=g('bl-equipements');
   await _locSave('biens_locatifs',b,'pi_biens_locatifs');
   closeModal('modal-bl'); blRender(); if(typeof locFillSelects==='function') locFillSelects();
@@ -48389,7 +48486,7 @@ async function otComptabiliser(o){
   }
   var ecr={ id:'ecr_ot_'+o.id, ref:o.ref, date:date, piece:o.ref,
     libelle:'Intervention — '+o.objet+(b.bien?(' — '+b.bien):''),
-    tiers_id:o.artisan_id||'', montant:m, type:'charge', mode:'', lignes:lignes,
+    tiers_id:o.artisan_id||'', montant:m, type:'charge', mode:'', lignes:lignes, division:_resolveDivisionEcriture('bien_locatif',b.bien_id),
     notes:'Ordre de travail '+o.ref+' · imputation : '+cible
       +(a?(' · artisan : '+a.nom):'')+'. Facture de l\'artisan à régler séparément (D 4011 / C 5x).',
     created_at:today() };
@@ -48544,6 +48641,7 @@ async function payOnlineReconcilierLoyer(p){
     tiers_id:q.locataire_id, montant:m, type:'actif', mode:'mobile_money',
     lignes:[ {compte:treso,sens:'D',montant:m,libelle:'Encaissement loyer (portail locataire)'},
              {compte:cptLocataire,sens:'C',montant:m,libelle:'Lettrage quittance '+(q.ref||'')} ],
+    division:_resolveDivisionEcriture('bien_locatif',b.bien_id),
     notes:'Paiement autonome du locataire depuis le portail'+(b.bien?(' — '+b.bien):''), created_at:today() };
   var i=DATA.ecritures.findIndex(function(e){return e.id===ecr.id;});
   if(i>=0) DATA.ecritures[i]=ecr; else DATA.ecritures.push(ecr);
@@ -51954,6 +52052,22 @@ function renderCarteGeo() {
       }).join('');
     }
   }
+  window._geoListeExport = geoListe;
+}
+
+function exportGeoCSV() {
+  var liste = window._geoListeExport || [];
+  if (!liste.length) { toast('Aucun point à exporter — affichez la carte d\'abord.', 'info'); return; }
+  var rows = ['Type,Nom,Détail,Adresse'];
+  liste.forEach(function(p) {
+    rows.push([p.emoji || '', (p.nom || '').replace(/,/g,';'), (p.detail || '').replace(/,/g,';'), (p.adresse || '').replace(/,/g,';')].join(','));
+  });
+  var blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'carte_commerciale_' + today() + '.csv';
+  a.click();
+  toast('Export carte commerciale.', 'success');
 }
 
 function geoLocaliserMoi() {
@@ -55913,14 +56027,16 @@ function renderImmoSociete() {
 function openImmoSocieteModal(id) {
   APP._immoSocEdit = id || null;
   var sv = function(i,v){ var e=document.getElementById(i); if(e) e.value = v!==undefined&&v!==null?v:''; };
+  var selD=document.getElementById('is-division');
+  if(selD) selD.innerHTML='<option value="">— Non affecté —</option>'+(DATA.divisions||[]).map(function(d){ return '<option value="'+d.id+'">'+escHtml(d.nom)+'</option>'; }).join('');
   if (id) {
     var im = (DATA.immobilisations||[]).find(function(x){ return x.id===id; }); if (!im) return;
     sv('is-designation', im.designation); sv('is-compte', im.compte); sv('is-valeur', im.valeur_acquisition);
     sv('is-date', im.date_acquisition); sv('is-duree', im.duree_ans); sv('is-residuelle', im.valeur_residuelle||0);
-    sv('is-methode', im.methode||'lineaire');
+    sv('is-methode', im.methode||'lineaire'); sv('is-division', im.division_id||'');
     document.getElementById('modal-immo-soc-title').textContent = 'Modifier immobilisation';
   } else {
-    ['is-designation','is-compte','is-valeur','is-date','is-duree','is-residuelle'].forEach(function(i){ sv(i,''); });
+    ['is-designation','is-compte','is-valeur','is-date','is-duree','is-residuelle','is-division'].forEach(function(i){ sv(i,''); });
     sv('is-date', today()); sv('is-compte','21'); sv('is-residuelle','0'); sv('is-methode','lineaire');
     document.getElementById('modal-immo-soc-title').textContent = 'Nouvelle immobilisation';
   }
@@ -55945,6 +56061,7 @@ async function saveImmoSociete() {
   im.valeur_acquisition = valeur; im.date_acquisition = gv('is-date') || today();
   im.duree_ans = duree; im.valeur_residuelle = parseFloat(gv('is-residuelle')) || 0;
   im.methode = gv('is-methode') || 'lineaire';
+  im.division_id = gv('is-division') || '';
   await dbPut('immobilisations', im);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_immobilisations', im);
   closeModal('modal-immo-soc');
@@ -55996,7 +56113,7 @@ async function genererDotationsAnnuelles() {
       type: 'charge', libelle: 'Dotation amortissement ' + year + ' — ' + im.designation,
       lignes: [ { compte: cptDotation, sens:'D', montant: c.dotationAnnuelle, libelle:'Dotation' }, { compte: cptCumul, sens:'C', montant: c.dotationAnnuelle, libelle:'Amortissement cumulé' } ],
       compte: cptDotation, compte_debit: cptDotation, compte_credit: cptCumul, montant: c.dotationAnnuelle,
-      mode: 'od', programme_id: '', notes: 'Immobilisation ' + im.designation + ' — année ' + (c.anneesEcoulees) + '/' + c.duree, created_at: today()
+      mode: 'od', programme_id: '', division: im.division_id||'', notes: 'Immobilisation ' + im.designation + ' — année ' + (c.anneesEcoulees) + '/' + c.duree, created_at: today()
     };
     DATA.ecritures.push(ec); await dbPut('ecritures', ec);
     if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ec);
@@ -56028,7 +56145,10 @@ function switchAmortTab(tab) {
   if (tab==='biens') buildAmortBiens();
   else if (tab==='tableau') buildTableauAmort();
   else if (tab==='dotations') buildDotations();
-
+  else if (tab==='nouveau') {
+    var selAD=document.getElementById('amort-division');
+    if (selAD && !selAD.options.length) selAD.innerHTML='<option value="">— Non affecté —</option>'+(DATA.divisions||[]).map(function(d){ return '<option value="'+d.id+'">'+escHtml(d.nom)+'</option>'; }).join('');
+  }
   else if (tab==='societe') renderImmoSociete();
 }
 
@@ -56052,9 +56172,22 @@ goTo = function(page) {
 function renderClotureFEC() {
   var el = document.getElementById('cloture-fec-content'); if (!el) return;
   var annee = parseInt((document.getElementById('filter-annee-compta')||{}).value) || new Date().getFullYear();
-  var ecr = (DATA.ecritures||[]).filter(function(e){ return (e.date||'').startsWith(String(annee)); });
+  var selDiv = document.getElementById('filter-division-cloture');
+  if (selDiv && !selDiv.options.length) {
+    selDiv.innerHTML = '<option value="">— Toutes divisions (consolidé) —</option>'
+      + (DATA.divisions||[]).map(function(d){ return '<option value="'+d.id+'">'+escHtml(d.nom)+'</option>'; }).join('');
+    selDiv.onchange = function(){ renderClotureFEC(); };
+  }
+  var divF = selDiv ? selDiv.value : '';
+  var divLabel = divF ? (_nomDivision ? _nomDivision(divF) : divF) : 'Toutes divisions (consolidé)';
+  var refSuffixe = divF ? ('-'+divF) : '';
+  var ecr = (DATA.ecritures||[]).filter(function(e){
+    if (!(e.date||'').startsWith(String(annee))) return false;
+    if (!divF) return true;
+    return (e.division||'') === divF;
+  });
   var p = DATA.params||{};
-  var dejaCloture = p['cloture_'+annee] === true;
+  var dejaCloture = p['cloture_'+annee+refSuffixe] === true;
 
   /* Calcul résultat de l'exercice — via ecrLignes() pour couvrir les écritures
      multi-lignes, cohérent avec cloturerExercice() (sinon ce résumé affiché
@@ -56071,16 +56204,21 @@ function renderClotureFEC() {
   var resultat = produits - charges;
 
   el.innerHTML =
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">'
+    '<div class="card" style="margin-bottom:16px;">'
+    +'<div class="form-section-title">🏢 Périmètre</div>'
+    +'<select class="form-control" id="filter-division-cloture" style="max-width:340px;" onchange="renderClotureFEC()"></select>'
+    +'<div style="font-size:11px;color:var(--blanc-dim);margin-top:6px;">Chaque entité juridique (division) se clôture indépendamment — sa propre écriture de résultat, ses propres à-nouveaux, son propre verrou. « Toutes divisions » reste le mode consolidé historique (comportement inchangé pour qui n\'utilise qu\'une seule entité).</div>'
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">'
 
     /* ── Export FEC ── */
     +'<div class="card">'
     +'<div class="form-section-title">📄 Export FEC — Fichier des Écritures Comptables</div>'
     +'<div style="font-size:12px;color:var(--blanc-dim);margin:8px 0 14px;line-height:1.7;">'
     +'Format normalisé DGI (18 colonnes, séparateur |). Exigible en cas de contrôle fiscal.<br>'
-    +'Exercice : <strong>'+annee+'</strong> — '+ecr.length+' écriture(s)'
+    +'Exercice : <strong>'+annee+'</strong> — '+divLabel+' — '+ecr.length+' écriture(s)'
     +'</div>'
-    +'<button class="btn btn-primary" onclick="exporterFEC('+annee+')">⬇ Télécharger le FEC '+annee+'</button>'
+    +'<button class="btn btn-primary" onclick="exporterFEC('+annee+',\''+divF+'\')">⬇ Télécharger le FEC '+annee+'</button>'
     +'<div style="margin-top:10px;font-size:11px;color:var(--blanc-dim);">Nom du fichier : <code>'+( (p.dgi||'SIREN') +'FEC'+annee+'1231.txt')+'</code></div>'
     +'</div>'
 
@@ -56099,7 +56237,7 @@ function renderClotureFEC() {
     /* ── Clôture d'exercice ── */
     +'<div class="card" style="grid-column:1/-1;'+(dejaCloture?'border:2px solid var(--vert);':'border:2px solid var(--or);')+'">'
     +'<div class="form-section-title" style="display:flex;justify-content:space-between;align-items:center;">'
-    +'<span>🔒 Clôture de l\'exercice '+annee+'</span>'
+    +'<span>🔒 Clôture de l\'exercice '+annee+' — '+divLabel+'</span>'
     +(dejaCloture?'<span style="font-size:11px;background:rgba(5,150,105,0.15);color:var(--vert);padding:3px 10px;border-radius:8px;font-weight:600;">✅ Exercice clôturé</span>':'<span style="font-size:11px;background:rgba(234,88,12,0.15);color:var(--or);padding:3px 10px;border-radius:8px;font-weight:600;">Exercice ouvert</span>')
     +'</div>'
     +'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0;">'
@@ -56114,17 +56252,22 @@ function renderClotureFEC() {
     +'3️⃣ Verrouillage : les écritures '+annee+' ne seront plus modifiables'
     +'</div>'
     +(dejaCloture
-      ? '<button class="btn btn-secondary" onclick="rouvrirExercice('+annee+')">🔓 Rouvrir l\'exercice (admin)</button>'
-      : '<button class="btn btn-cloture" onclick="cloturerExercice('+annee+')">🔒 Clôturer l\'exercice '+annee+'</button>')
+      ? '<button class="btn btn-secondary" onclick="rouvrirExercice('+annee+',\''+divF+'\')">🔓 Rouvrir l\'exercice (admin)</button>'
+      : '<button class="btn btn-cloture" onclick="cloturerExercice('+annee+',\''+divF+'\')">🔒 Clôturer l\'exercice '+annee+' — '+divLabel+'</button>')
     +'</div>'
     +'</div>';
 }
 
 /* ── Export FEC (format DGI 18 colonnes) ───────────────────── */
-function exporterFEC(annee) {
-  var ecr = (DATA.ecritures||[]).filter(function(e){ return (e.date||'').startsWith(String(annee)); })
+function exporterFEC(annee, divisionId) {
+  divisionId = divisionId || '';
+  var ecr = (DATA.ecritures||[]).filter(function(e){
+      if (!(e.date||'').startsWith(String(annee))) return false;
+      if (divisionId && (e.division||'') !== divisionId) return false;
+      return true;
+    })
     .sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
-  if (!ecr.length) { toast('Aucune écriture pour '+annee+'.', 'error'); return; }
+  if (!ecr.length) { toast('Aucune écriture pour '+annee+(divisionId?' sur ce périmètre':'')+'.', 'error'); return; }
   var p = DATA.params||{};
   var siren = (p.dgi||p.rccm||'000000000').replace(/[^0-9A-Z]/gi,'');
 
@@ -56171,7 +56314,7 @@ function exporterFEC(annee) {
     });
   });
 
-  var nomFichier = siren+'FEC'+annee+'1231.txt';
+  var nomFichier = siren+'FEC'+annee+'1231'+(divisionId?('_'+divisionId):'')+'.txt';
   var blob = new Blob(['\uFEFF'+lignes.join('\r\n')], {type:'text/plain;charset=utf-8;'});
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -56317,13 +56460,22 @@ function etatNonLettres(annee) {
 }
 
 /* ── Clôture d'exercice ───────────────────────────────────── */
-async function cloturerExercice(annee) {
+async function cloturerExercice(annee, divisionId) {
+  divisionId = divisionId || '';
+  var divLabel = divisionId ? (_nomDivision ? _nomDivision(divisionId) : divisionId) : 'Toutes divisions (consolidé)';
   if (!exigerDroit('Comptabilite','v','la clôture de l\'exercice')) return;
   if (!hasRole('admin')) { toast('Réservé à l\'administrateur.', 'error'); return; }
-  if (!confirm('🔒 Clôturer l\'exercice '+annee+' ?\n\n• Solde de chaque compte 6 et 7 mouvementé → résultat\n• Génération des à-nouveaux au 01/01/'+(annee+1)+'\n• Verrouillage des écritures '+annee+'\n\nCette action est réversible uniquement par un admin.')) return;
-  if (!confirm('Dernière confirmation — exercice '+annee+' ?')) return;
+  if (!confirm('🔒 Clôturer l\'exercice '+annee+' — '+divLabel+' ?\n\n• Solde de chaque compte 6 et 7 mouvementé → résultat\n• Génération des à-nouveaux au 01/01/'+(annee+1)+'\n• Verrouillage des écritures '+annee+' de ce périmètre\n\nCette action est réversible uniquement par un admin.')) return;
+  if (!confirm('Dernière confirmation — exercice '+annee+' — '+divLabel+' ?')) return;
 
-  var ecr = (DATA.ecritures||[]).filter(function(e){ return (e.date||'').startsWith(String(annee)); });
+  /* [Cloisonnement] Périmètre : si divisionId fourni, uniquement les écritures
+     de cette entité juridique ; sinon comportement historique (tout confondu,
+     y compris les écritures sans division renseignée — clôture consolidée). */
+  var ecr = (DATA.ecritures||[]).filter(function(e){
+    if (!(e.date||'').startsWith(String(annee))) return false;
+    if (!divisionId) return true;
+    return (e.division||'') === divisionId;
+  });
 
   /* 1. Solde net par compte réel (D-C), sur TOUTES les lignes de chaque écriture
         (ecrLignes gère aussi bien le format legacy compte_debit/compte_credit que
@@ -56343,11 +56495,12 @@ async function cloturerExercice(annee) {
   });
 
   var comptesGestion = Object.keys(soldesCptGestion).filter(function(c){ return Math.abs(soldesCptGestion[c]) >= 1; });
-  if (!comptesGestion.length) { toast('Aucun mouvement de gestion (classes 6/7) sur ' + annee + '.', 'error'); return; }
+  if (!comptesGestion.length) { toast('Aucun mouvement de gestion (classes 6/7) sur ' + annee + (divisionId?' — '+divLabel:'') + '.', 'error'); return; }
 
   var resultat = 0;
   comptesGestion.forEach(function(c){ resultat -= soldesCptGestion[c]; });
   var cptResultat = resultat >= 0 ? '131' : '139';
+  var refSuffixe = divisionId ? ('-'+divisionId) : '';   /* [Cloisonnement] refs distinctes par entité, pour ne jamais confondre/écraser les clôtures d'entités différentes sur la même année */
 
   /* 2. Écriture de clôture au 31/12 — une ligne par compte de gestion réellement
         mouvementé (solde ramené à 0) + une ligne d'équilibrage vers le compte de
@@ -56364,14 +56517,14 @@ async function cloturerExercice(annee) {
 
   var ecritureResultat = {
     id: uid(), date: annee+'-12-31',
-    libelle: 'Détermination du résultat exercice '+annee+' ('+(resultat>=0?'bénéfice':'perte')+')',
+    libelle: 'Détermination du résultat exercice '+annee+(divisionId?' — '+divLabel:'')+' ('+(resultat>=0?'bénéfice':'perte')+')',
     lignes: lignesClo,
     compte: lignesClo[0].compte,
     compte_debit: (lignesClo.find(function(l){return l.sens==='D';})||{}).compte,
     compte_credit: (lignesClo.find(function(l){return l.sens==='C';})||{}).compte,
     montant: Math.abs(resultat),
-    journal: 'CLO', ref: 'CLOTURE-'+annee, reference: 'CLOTURE-'+annee,
-    type: 'cloture', verrouille: true,
+    journal: 'CLO', ref: 'CLOTURE-'+annee+refSuffixe, reference: 'CLOTURE-'+annee+refSuffixe,
+    division: divisionId, type: 'cloture', verrouille: true,
     created_at: new Date().toISOString()
   };
   DATA.ecritures.push(ecritureResultat);
@@ -56390,12 +56543,12 @@ async function cloturerExercice(annee) {
     if (Math.abs(s) < 1) continue;
     var an = {
       id: uid(), date: dateAN,
-      libelle: 'À-nouveau '+(annee+1)+' — compte '+cpt,
+      libelle: 'À-nouveau '+(annee+1)+' — compte '+cpt+(divisionId?' — '+divLabel:''),
       montant: Math.abs(s),
       compte_debit:  s>0 ? cpt : '890',
       compte_credit: s>0 ? '890' : cpt,
-      journal: 'AN', reference: 'AN-'+(annee+1),
-      type: 'a_nouveau',
+      journal: 'AN', reference: 'AN-'+(annee+1)+refSuffixe,
+      division: divisionId, type: 'a_nouveau',
       created_at: new Date().toISOString()
     };
     DATA.ecritures.push(an);
@@ -56404,45 +56557,60 @@ async function cloturerExercice(annee) {
     nbAN++;
   }
 
-  /* 4. Verrouiller l'exercice */
+  /* 4. Verrouiller l'exercice — clé scopée par division si applicable.
+        Une clôture par division ne verrouille QUE cette division (exerciceEstClos
+        avec 2e paramètre) ; sans division, comportement historique inchangé
+        (verrou global 'cloture_ANNEE' consulté partout ailleurs dans l'appli). */
   DATA.params = Object.assign(DATA.params||{}, {});
-  DATA.params['cloture_'+annee] = true;
+  DATA.params['cloture_'+annee+refSuffixe] = true;
   await dbPut('params', DATA.params);
   if (typeof syncToSupabase==='function') syncToSupabase('pi_params', DATA.params);
 
-  toast('✅ Exercice '+annee+' clôturé — résultat '+fmtF(resultat)+' FCFA, '+comptesGestion.length+' compte(s) de gestion soldé(s), '+nbAN+' à-nouveaux générés.', 'success');
+  toast('✅ Exercice '+annee+(divisionId?' — '+divLabel:'')+' clôturé — résultat '+fmtF(resultat)+' FCFA, '+comptesGestion.length+' compte(s) de gestion soldé(s), '+nbAN+' à-nouveaux générés.', 'success');
   renderClotureFEC();
   loadComptabilite();
 }
 
-async function rouvrirExercice(annee) {
+async function rouvrirExercice(annee, divisionId) {
+  divisionId = divisionId || '';
+  var divLabel = divisionId ? (_nomDivision ? _nomDivision(divisionId) : divisionId) : 'Toutes divisions (consolidé)';
   if (!hasRole('admin')) { toast('Réservé à l\'administrateur.', 'error'); return; }
-  if (!confirm('🔓 Rouvrir l\'exercice '+annee+' ?\n\nLes écritures de clôture et à-nouveaux seront SUPPRIMÉES.')) return;
+  if (!confirm('🔓 Rouvrir l\'exercice '+annee+' — '+divLabel+' ?\n\nLes écritures de clôture et à-nouveaux de ce périmètre seront SUPPRIMÉES.')) return;
 
-  /* Supprimer écritures CLO et AN liées */
+  var refSuffixe = divisionId ? ('-'+divisionId) : '';
+  /* Supprimer écritures CLO et AN liées à ce périmètre uniquement */
   var toDelete = (DATA.ecritures||[]).filter(function(e){
-    return (e.reference==='CLOTURE-'+annee) || (e.reference==='AN-'+(annee+1));
+    return (e.reference==='CLOTURE-'+annee+refSuffixe) || (e.reference==='AN-'+(annee+1)+refSuffixe);
   });
   for (var i=0; i<toDelete.length; i++) {
     await deleteRecord('ecritures', toDelete[i].id, { forceCloture: true });
   }
   DATA.ecritures = DATA.ecritures.filter(function(e){
-    return !(e.reference==='CLOTURE-'+annee || e.reference==='AN-'+(annee+1));
+    return !(e.reference==='CLOTURE-'+annee+refSuffixe || e.reference==='AN-'+(annee+1)+refSuffixe);
   });
 
-  DATA.params['cloture_'+annee] = false;
+  DATA.params['cloture_'+annee+refSuffixe] = false;
   await dbPut('params', DATA.params);
   if (typeof syncToSupabase==='function') syncToSupabase('pi_params', DATA.params);
 
-  toast('Exercice '+annee+' rouvert — '+toDelete.length+' écriture(s) de clôture supprimée(s).', 'info');
+  toast('Exercice '+annee+(divisionId?' — '+divLabel:'')+' rouvert — '+toDelete.length+' écriture(s) de clôture supprimée(s).', 'info');
   renderClotureFEC();
   loadComptabilite();
 }
 
-/* ── Verrou écritures exercice clos ────────────────────────── */
-function exerciceEstClos(date) {
+/* ── Verrou écritures exercice clos ────────────────────────────────────
+   [Cloisonnement] 2e paramètre optionnel et RÉTROCOMPATIBLE : les ~50
+   appels existants dans le reste de l'application (exerciceEstClos(date))
+   continuent de ne consulter QUE le verrou consolidé 'cloture_ANNEE' —
+   une clôture par division seule ne bloque donc pas les autres entités.
+   Un appelant qui connaît la division concernée peut passer le 2e argument
+   pour vérifier aussi le verrou spécifique à cette entité. */
+function exerciceEstClos(date, divisionId) {
   var an = new Date(date).getFullYear();
-  return (DATA.params||{})['cloture_'+an] === true;
+  var p = DATA.params||{};
+  if (p['cloture_'+an] === true) return true;               // verrou consolidé (comportement historique)
+  if (divisionId && p['cloture_'+an+'-'+divisionId] === true) return true;   // verrou spécifique à l'entité
+  return false;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -57578,6 +57746,7 @@ async function saveBienAmort() {
     duree: dur,
     methode: (document.getElementById('amort-methode-input')||{}).value||'lineaire',
     valeur_residuelle: parseFloat((document.getElementById('amort-valeur-residuelle')||{}).value)||0,
+    division_id: (document.getElementById('amort-division')||{}).value||'',
     notes: ((document.getElementById('amort-notes')||{}).value||'').trim(),
     created_at: new Date().toISOString().slice(0,10),
   };
@@ -57589,7 +57758,7 @@ async function saveBienAmort() {
   var compteContrepartie = (document.getElementById('amort-compte-contrepartie')||{}).value || '481';
   var ecr={id:'ecr_immo_'+bien.id,ref:'IMMO-'+(ref||bien.id.slice(-6).toUpperCase()),date:date,piece:'IMMO/'+(ref||bien.id.slice(-6).toUpperCase()),
     libelle:'Immobilisation — '+des,compte:bien.compte_immo,compte_debit:bien.compte_immo,
-    compte_credit:compteContrepartie,montant:val,type:'actif',mode:'interne',notes:'Immobilisation acquise par le promoteur',created_at:date};
+    compte_credit:compteContrepartie,montant:val,type:'actif',mode:'interne',division:bien.division_id||'',notes:'Immobilisation acquise par le promoteur',created_at:date};
   DATA.ecritures.push(ecr);
   await dbPut('ecritures',ecr);
   switchAmortTab('biens');
@@ -57597,6 +57766,25 @@ async function saveBienAmort() {
 }
 
 /* ─── Tableau biens amortissables ───────────────────── */
+function exportAmortCSV() {
+  var biens = DATA.biens_amort || [];
+  var annee = new Date().getFullYear();
+  var rows = ['Dossier,Désignation,Méthode,Valeur origine,Amort. cumulé,VNC,Dotation ' + annee + ',Statut'];
+  biens.forEach(function(b) {
+    rows.push([
+      b.dossier || '', (b.designation || '').replace(/,/g,';'), b.methode || '',
+      b.valeur_origine || 0, calcAmortCumul(b, annee), calcVNC(b, annee),
+      calcAnnuite(b, annee), b.statut || ''
+    ].join(','));
+  });
+  var blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'amortissements_' + annee + '.csv';
+  a.click();
+  toast('Export amortissements.', 'success');
+}
+
 function buildAmortBiens() {
   var biens = DATA.biens_amort||[];
   var search = ((document.getElementById('search-amort')||{}).value||'').toLowerCase();
@@ -57849,6 +58037,7 @@ async function comptabiliserDotations() {
       montant:dot,
       type:'charge',
       mode:'interne',
+      division:b.division_id||'',
       notes:'Amortissement linéaire — '+b.duree+' ans',
       created_at:date31dec,
     };
@@ -58455,6 +58644,7 @@ async function _locEcritureDepot(b){
     libelle:'Dépôt de garantie — '+b.ref+' — '+_locNom(b), montant:b.depot, type:'passif', mode:'virement',
     lignes:[ {compte:treso,sens:'D',montant:b.depot,libelle:'Encaissement dépôt de garantie'},
              {compte:_locCpt('depot'),sens:'C',montant:b.depot,libelle:'Dette de restitution (4194)'} ],
+    division:_resolveDivisionEcriture('bien_locatif',b.bien_id),
     notes:'Dépôt de garantie — dette restituable, non imposable au titre des loyers.', created_at:today() };
   var i=DATA.ecritures.findIndex(function(e){return e.id===ecr.id;});
   if(i>=0) DATA.ecritures[i]=ecr; else DATA.ecritures.push(ecr);
@@ -58467,6 +58657,7 @@ async function _locEcritureFraisAgence(b){
     libelle:"Frais d'agence — "+b.ref+' — '+_locNom(b), montant:b.frais_agence, type:'produit', mode:'virement',
     lignes:[ {compte:treso,sens:'D',montant:b.frais_agence,libelle:"Encaissement frais d'agence"},
              {compte:_locCpt('frais_agence'),sens:'C',montant:b.frais_agence,libelle:"Produit frais d'agence"} ],
+    division:_resolveDivisionEcriture('bien_locatif',b.bien_id),
     created_at:today() };
   var i=DATA.ecritures.findIndex(function(e){return e.id===ecr.id;});
   if(i>=0) DATA.ecritures[i]=ecr; else DATA.ecritures.push(ecr);
@@ -58496,6 +58687,7 @@ async function _locEcritureFraisAgence(b){
     libelle:'Commission démarcheur '+d.nom+' — '+b.ref, montant:montantComm, type:'charge', mode:'virement',
     lignes:[ {compte:_locCpt('demarcheur_commission'),sens:'D',montant:montantComm,libelle:'Charge commission démarcheur'},
              {compte:_locCpt('fournisseur'),sens:'C',montant:montantComm,libelle:'Commission démarcheur à payer'} ],
+    division:_resolveDivisionEcriture('bien_locatif',b.bien_id),
     created_at:today() };
   DATA.ecritures.push(ecrC); await dbPut('ecritures',ecrC);
   if(typeof syncToSupabase==='function') syncToSupabase('pi_ecritures',ecrC);
@@ -58627,7 +58819,7 @@ async function _locEcritureQuittance(q,b){
   if(q.tva>0) lignes.push({compte:_locCpt('tva'),sens:'C',montant:q.tva,libelle:'TVA collectée sur loyer'});
   var ecr={ id:'ecr_quit_'+q.id, ref:q.ref, date:q.date, piece:q.ref,
     libelle:'Quittance '+q.periode+' — '+_locNom(b)+' — '+(b.bien||''),
-    montant:q.total, type:'produit', mode:'', lignes:lignes, created_at:today() };
+    montant:q.total, type:'produit', mode:'', lignes:lignes, division:_resolveDivisionEcriture('bien_locatif',b.bien_id), created_at:today() };
   var i=DATA.ecritures.findIndex(function(e){return e.id===ecr.id;});
   if(i>=0) DATA.ecritures[i]=ecr; else DATA.ecritures.push(ecr);
   await dbPut('ecritures',ecr);
@@ -58654,10 +58846,12 @@ async function locSaveEncaissement(){
   q.paiements=(q.paiements||[]).concat([{date:date,montant:m,mode:mode,ref:ref}]);
   await _locSave('quittances',q,'pi_quittances');
   var treso=(typeof _compteTresoVersement==='function')?_compteTresoVersement(mode):'52100000';
+  var bEnc=_locBaux().find(function(x){return x.id===q.bail_id;})||{};
   var ecr={ id:'ecr_enc_'+q.id+'_'+q.paiements.length, ref:'ENC-'+q.ref, date:date, piece:ref||q.ref,
     libelle:'Encaissement loyer '+q.periode+' — '+q.ref, montant:m, type:'actif', mode:mode,
     lignes:[ {compte:treso,sens:'D',montant:m,libelle:'Encaissement loyer'},
              {compte:_locCpt('locataire'),sens:'C',montant:m,libelle:'Lettrage quittance '+q.ref} ],
+    division:_resolveDivisionEcriture('bien_locatif',bEnc.bien_id),
     created_at:today() };
   var i=DATA.ecritures.findIndex(function(e){return e.id===ecr.id;});
   if(i>=0) DATA.ecritures[i]=ecr; else DATA.ecritures.push(ecr);
@@ -58692,10 +58886,12 @@ async function locSaveReversement(){
   q.reversements=(q.reversements||[]).concat([{date:date,montant:m,mode:mode,ref:ref}]);
   await _locSave('quittances',q,'pi_quittances');
   var treso=(typeof _compteTresoVersement==='function')?_compteTresoVersement(mode):'52100000';
+  var bRev=_locBaux().find(function(x){return x.id===q.bail_id;})||{};
   var ecr={ id:'ecr_rev_'+q.id+'_'+q.reversements.length, ref:'REV-'+q.ref, date:date, piece:ref||q.ref,
     libelle:'Reversement propriétaire — '+q.ref+' — '+_locNomProp(q), montant:m, type:'passif', mode:mode,
     lignes:[ {compte:_locCpt('mandant'),sens:'D',montant:m,libelle:'Reversement part propriétaire'},
              {compte:treso,sens:'C',montant:m,libelle:'Sortie de trésorerie — reversement'} ],
+    division:_resolveDivisionEcriture('bien_locatif',bRev.bien_id),
     created_at:today() };
   var i=DATA.ecritures.findIndex(function(e){return e.id===ecr.id;});
   if(i>=0) DATA.ecritures[i]=ecr; else DATA.ecritures.push(ecr);
@@ -58742,7 +58938,7 @@ async function locRegulariserCharges(){
   lignes.push({compte:_locCpt('loyers'),sens:'C',montant:reel,libelle:'Charges récupérables réelles '+an});
   var ecr={ id:'ecr_regch_'+bid+'_'+an, ref:'REGCH-'+an+'-'+b.ref, date:date, piece:b.ref,
     libelle:'Régularisation charges '+an+' — '+b.ref+' — '+_locNom(b),
-    montant:Math.max(prov,reel), type:'produit', mode:'', lignes:lignes,
+    montant:Math.max(prov,reel), type:'produit', mode:'', lignes:lignes, division:_resolveDivisionEcriture('bien_locatif',b.bien_id),
     notes:'Provisions encaissées : '+fmtF(prov)+' · Charges réelles : '+fmtF(reel)+' · Solde : '+fmtF(solde), created_at:today() };
   var i=DATA.ecritures.findIndex(function(e){return e.id===ecr.id;});
   if(i>=0) DATA.ecritures[i]=ecr; else DATA.ecritures.push(ecr);
@@ -59215,7 +59411,7 @@ async function dspSaveVersement(){
   lignes.push({compte:_dspCpt('sequestre'),sens:'C',montant:brut,libelle:'Fonds séquestrés — non acquis (4191)'});
   var ecr={ id:'ecr_dspseq_'+did+'_'+d.sequestre.length, ref:'SEQ-'+(d.ref||did).slice(0,12)+'-'+d.sequestre.length,
     date:mvt.date, piece:mvt.ref||'', libelle:'Versement séquestre diaspora — '+_dspNom(d)+' ('+mvt.devise+' '+m+' @ '+t+')',
-    montant:brut, type:'passif', mode:mvt.mode, lignes:lignes,
+    montant:brut, type:'passif', mode:mvt.mode, lignes:lignes, division:_resolveDivisionEcriture('client',d.client_id),
     notes:'Fonds non acquis — libération conditionnée au franchissement de jalons prouvés.', created_at:today() };
   var i=DATA.ecritures.findIndex(function(e){return e.id===ecr.id;});
   if(i>=0) DATA.ecritures[i]=ecr; else DATA.ecritures.push(ecr);
@@ -59249,6 +59445,7 @@ async function dspLibererJalon(jid){
     libelle:'Libération séquestre — '+j.label+' — '+_dspNom(d), montant:j.montant, type:'actif', mode:'',
     lignes:[ {compte:_dspCpt('sequestre'),sens:'D',montant:j.montant,libelle:'Apurement fonds séquestrés'},
              {compte:_dspCpt('client'),sens:'C',montant:j.montant,libelle:'Imputation créance client — jalon franchi'} ],
+    division:_resolveDivisionEcriture('client',d.client_id),
     notes:'Preuve scellée bloc #'+last.index+' · empreinte '+last.hash+' · validateur '+(j.validateur||'—'), created_at:today() };
   var i=DATA.ecritures.findIndex(function(e){return e.id===ecr.id;});
   if(i>=0) DATA.ecritures[i]=ecr; else DATA.ecritures.push(ecr);
@@ -59751,6 +59948,15 @@ function _tresoInfoEcriture(e, compte) {
   var mD = 0, mC = 0, cpt = '';
   lignesT.forEach(function(l){ cpt = cpt || l.compte; if (l.sens==='D') mD += (parseFloat(l.montant)||0); else mC += (parseFloat(l.montant)||0); });
   return { has: lignesT.length > 0, montant: mD >= mC ? mD : mC, isDebit: mD >= mC, compte: cpt };
+}
+
+/* Rafraîchit la vue de rapprochement quand la période ou le compte change
+   (sans relancer le matching automatique — voir rapprochAuto pour ça). */
+function loadRapprochement() {
+  if (typeof populateComptesTresorerieSelects === 'function') populateComptesTresorerieSelects();
+  buildRapprochement();
+  buildRapprochKPIs();
+  renderReleveTable();
 }
 
 function rapprochAuto() {
@@ -61032,7 +61238,6 @@ function exportProgrammesCSV(){
 function renderConceptions(){renderConceptionsFull();}
 function openConception(id){openConceptionFull(id);}
 function renderChantiersDashboard_lots(){}
-function renderPlans(){renderPlansFull();}
 
 function renderConceptionsFull(){
   var grid=document.getElementById('conceptions-grid');if(!grid)return;
@@ -61502,16 +61707,17 @@ async function saveSituationAndCompta(){
     var moLib=(conv&&conv.maitre_ouvrage)?conv.maitre_ouvrage:'Client';
     var cptTreso=(s.mode==='especes')?(requireCompteDefaut('treso_caisse')):(s.mode==='cheque'?(requireCompteDefaut('treso_banque')):(requireCompteDefaut('treso_banque')));
     var cptRetenue=requireCompteDefaut('retenue_garantie');   /* dette de retenue de garantie */
+    var _divS = conv ? _resolveDivisionEcriture('convention', conv.id) : '';   /* [Cloisonnement] entité juridique de la situation, via convention→programme */
 
     if(constr.interne){
       /* ── DÉPARTEMENT INTERNE : la société se facture à elle-même → PRODUIT ── */
       var cptClient=requireCompteDefaut('client_lots');
       var cptTvaColl=requireCompteDefaut('tva_collectee');
       var cptTravInt=requireCompteDefaut('travaux_interne_produit');
-      var ev={id:'ecr_situ_'+s.id,ref:'SIT-'+s.numero,date:s.date,piece:num,libelle:'Travaux facturés '+num+' — '+(conv?conv.numero:'')+' — '+moLib,compte:cptClient,compte_debit:cptClient,compte_credit:cptTravInt,montant:ht,type:'produit',mode:s.mode,source:'situation',situation_id:s.id,notes:'Dépt interne · Avancement '+avPct+'%',created_at:today()};
+      var ev={id:'ecr_situ_'+s.id,ref:'SIT-'+s.numero,date:s.date,piece:num,libelle:'Travaux facturés '+num+' — '+(conv?conv.numero:'')+' — '+moLib,compte:cptClient,compte_debit:cptClient,compte_credit:cptTravInt,montant:ht,type:'produit',mode:s.mode,source:'situation',situation_id:s.id,notes:'Dépt interne · Avancement '+avPct+'%',division:_divS,created_at:today()};
       DATA.ecritures.push(ev);await dbPut('ecritures',ev);_sync(ev);
-      if(tvaMt>0){var et={id:'ecr_tva_'+s.id,ref:'TVA-'+s.numero,date:s.date,piece:num,libelle:'TVA collectée s/ travaux '+num,compte:cptTvaColl,compte_debit:cptClient,compte_credit:cptTvaColl,montant:tvaMt,type:'produit',source:'situation',situation_id:s.id,mode:s.mode,created_at:today()};DATA.ecritures.push(et);await dbPut('ecritures',et);_sync(et);}
-      if(s.statut==='payee'){var enc={id:'ecr_enc_'+s.id,ref:'ENC-'+s.numero,date:s.date,piece:num,libelle:'Encaissement '+num+' — '+moLib,compte:cptTreso,compte_debit:cptTreso,compte_credit:cptClient,montant:s.net,type:'actif',source:'situation',situation_id:s.id,mode:s.mode,created_at:today()};DATA.ecritures.push(enc);await dbPut('ecritures',enc);_sync(enc);}
+      if(tvaMt>0){var et={id:'ecr_tva_'+s.id,ref:'TVA-'+s.numero,date:s.date,piece:num,libelle:'TVA collectée s/ travaux '+num,compte:cptTvaColl,compte_debit:cptClient,compte_credit:cptTvaColl,montant:tvaMt,type:'produit',source:'situation',situation_id:s.id,mode:s.mode,division:_divS,created_at:today()};DATA.ecritures.push(et);await dbPut('ecritures',et);_sync(et);}
+      if(s.statut==='payee'){var enc={id:'ecr_enc_'+s.id,ref:'ENC-'+s.numero,date:s.date,piece:num,libelle:'Encaissement '+num+' — '+moLib,compte:cptTreso,compte_debit:cptTreso,compte_credit:cptClient,montant:s.net,type:'actif',source:'situation',situation_id:s.id,mode:s.mode,division:_divS,created_at:today()};DATA.ecritures.push(enc);await dbPut('ecritures',enc);_sync(enc);}
       toast('✅ Situation interne comptabilisée (705 + TVA'+(s.statut==='payee'?' + encaissement':'')+').','success');
     } else {
       /* ── CONSTRUCTEUR EXTERNE : sous-traitance → CHARGE ──
@@ -61525,16 +61731,16 @@ async function saveSituationAndCompta(){
       var cptTravExt=requireCompteDefaut('travaux_externe_charge');
 
       /* 1. Charge HT */
-      var ecr={id:'ecr_situ_'+s.id,ref:'SIT-'+s.numero,date:s.date,piece:num,libelle:'Situation travaux '+num+' — '+(conv?conv.numero:'')+' — '+constr.raison_sociale,compte:cptFour,compte_debit:cptTravExt,compte_credit:cptFour,montant:ht,type:'charge',mode:s.mode,source:'situation',situation_id:s.id,notes:'Avancement '+avPct+'%',created_at:today()};
+      var ecr={id:'ecr_situ_'+s.id,ref:'SIT-'+s.numero,date:s.date,piece:num,libelle:'Situation travaux '+num+' — '+(conv?conv.numero:'')+' — '+constr.raison_sociale,compte:cptFour,compte_debit:cptTravExt,compte_credit:cptFour,montant:ht,type:'charge',mode:s.mode,source:'situation',situation_id:s.id,notes:'Avancement '+avPct+'%',division:_divS,created_at:today()};
       DATA.ecritures.push(ecr);await dbPut('ecritures',ecr);_sync(ecr);
       /* 2. TVA déductible */
-      if(tvaMt>0){var etd={id:'ecr_tva_'+s.id,ref:'TVA-'+s.numero,date:s.date,piece:num,libelle:'TVA déductible s/ situation '+num,compte:cptTvaDed,compte_debit:cptTvaDed,compte_credit:cptFour,montant:tvaMt,type:'charge',source:'situation',situation_id:s.id,mode:s.mode,created_at:today()};DATA.ecritures.push(etd);await dbPut('ecritures',etd);_sync(etd);}
+      if(tvaMt>0){var etd={id:'ecr_tva_'+s.id,ref:'TVA-'+s.numero,date:s.date,piece:num,libelle:'TVA déductible s/ situation '+num,compte:cptTvaDed,compte_debit:cptTvaDed,compte_credit:cptFour,montant:tvaMt,type:'charge',source:'situation',situation_id:s.id,mode:s.mode,division:_divS,created_at:today()};DATA.ecritures.push(etd);await dbPut('ecritures',etd);_sync(etd);}
       /* 3. Retenue de garantie isolée (réduit la dette 401, crédite 4017) */
-      if((s.retenue||0)>0){var ergt={id:'ecr_ret_'+s.id,ref:'RG-'+s.numero,date:s.date,piece:num,libelle:'Retenue de garantie '+(conv.retenue_pct||10)+'% s/ situation '+num,compte:cptRetenue,compte_debit:cptFour,compte_credit:cptRetenue,montant:s.retenue,type:'passif',source:'situation',situation_id:s.id,mode:s.mode,created_at:today()};DATA.ecritures.push(ergt);await dbPut('ecritures',ergt);_sync(ergt);}
+      if((s.retenue||0)>0){var ergt={id:'ecr_ret_'+s.id,ref:'RG-'+s.numero,date:s.date,piece:num,libelle:'Retenue de garantie '+(conv.retenue_pct||10)+'% s/ situation '+num,compte:cptRetenue,compte_debit:cptFour,compte_credit:cptRetenue,montant:s.retenue,type:'passif',source:'situation',situation_id:s.id,mode:s.mode,division:_divS,created_at:today()};DATA.ecritures.push(ergt);await dbPut('ecritures',ergt);_sync(ergt);}
       /* 4. Récupération avance de démarrage */
-      if((s.avance_recup||0)>0){var eavr={id:'ecr_avr_'+s.id,ref:'AVR-'+s.numero,date:s.date,piece:num,libelle:'Récupération avance démarrage s/ situation '+num,compte:cptAvance,compte_debit:cptFour,compte_credit:cptAvance,montant:s.avance_recup,type:'actif',source:'situation',situation_id:s.id,mode:s.mode,created_at:today()};DATA.ecritures.push(eavr);await dbPut('ecritures',eavr);_sync(eavr);}
+      if((s.avance_recup||0)>0){var eavr={id:'ecr_avr_'+s.id,ref:'AVR-'+s.numero,date:s.date,piece:num,libelle:'Récupération avance démarrage s/ situation '+num,compte:cptAvance,compte_debit:cptFour,compte_credit:cptAvance,montant:s.avance_recup,type:'actif',source:'situation',situation_id:s.id,mode:s.mode,division:_divS,created_at:today()};DATA.ecritures.push(eavr);await dbPut('ecritures',eavr);_sync(eavr);}
       /* 5. Règlement du net */
-      if(s.statut==='payee'&&(s.net||0)>0){var ep={id:'ecr_pay_'+s.id,ref:'PAY-'+s.numero,date:s.date,piece:num,libelle:'Règlement net situation '+num+' — '+constr.raison_sociale,compte:cptFour,compte_debit:cptFour,compte_credit:cptTreso,montant:s.net,type:'actif',source:'situation',situation_id:s.id,mode:s.mode,created_at:today()};DATA.ecritures.push(ep);await dbPut('ecritures',ep);_sync(ep);}
+      if(s.statut==='payee'&&(s.net||0)>0){var ep={id:'ecr_pay_'+s.id,ref:'PAY-'+s.numero,date:s.date,piece:num,libelle:'Règlement net situation '+num+' — '+constr.raison_sociale,compte:cptFour,compte_debit:cptFour,compte_credit:cptTreso,montant:s.net,type:'actif',source:'situation',situation_id:s.id,mode:s.mode,division:_divS,created_at:today()};DATA.ecritures.push(ep);await dbPut('ecritures',ep);_sync(ep);}
       toast('✅ Situation comptabilisée (6111+4452 / 401 · retenue 4017'+((s.avance_recup||0)>0?' · avance 4091':'')+(s.statut==='payee'?' · règlement':'')+').','success');
     }
   } else toast('Situation enregistrée (non comptabilisée — statut '+s.statut+').','info');
@@ -61936,7 +62142,7 @@ async function libererGarantie(convId,montant){
   var cd=(DATA.params&&DATA.params.comptes_defaut)||{};
   var cptRetenue=requireCompteDefaut('retenue_garantie');
   var cptTreso=requireCompteDefaut('treso_banque');
-  var ecr={id:'ecr_gar_'+convId,ref:'GAR-'+conv.numero,date:today(),piece:'GAR/'+conv.numero,libelle:'Libération retenue de garantie — '+constr.raison_sociale,compte:cptRetenue,compte_debit:cptRetenue,compte_credit:cptTreso,montant:montant,type:'passif',mode:'virement',source:'garantie',convention_id:convId,created_at:today()};
+  var ecr={id:'ecr_gar_'+convId,ref:'GAR-'+conv.numero,date:today(),piece:'GAR/'+conv.numero,libelle:'Libération retenue de garantie — '+constr.raison_sociale,compte:cptRetenue,compte_debit:cptRetenue,compte_credit:cptTreso,montant:montant,type:'passif',mode:'virement',division:_resolveDivisionEcriture('convention',convId),source:'garantie',convention_id:convId,created_at:today()};
   DATA.ecritures.push(ecr);await dbPut('ecritures',ecr);
   if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',ecr);
   /* Marque les situations de la convention comme retenue libérée. */
@@ -61974,7 +62180,7 @@ async function appliquerPenalites(convId){
   var cd=(DATA.params&&DATA.params.comptes_defaut)||{};
   var cptFour=requireCompteDefaut('fournisseur');
   var cptPen=requireCompteDefaut('penalites_produit');
-  var ecr={id:'ecr_pen_'+convId+'_'+Date.now(),ref:'PEN-'+conv.numero,date:today(),piece:'PEN/'+conv.numero,libelle:'Pénalités de retard '+p.semaines+' sem. — '+constr.raison_sociale,compte:cptFour,compte_debit:cptFour,compte_credit:cptPen,montant:p.montant,type:'produit',mode:'compensation',source:'penalite',convention_id:convId,created_at:today()};
+  var ecr={id:'ecr_pen_'+convId+'_'+Date.now(),ref:'PEN-'+conv.numero,date:today(),piece:'PEN/'+conv.numero,libelle:'Pénalités de retard '+p.semaines+' sem. — '+constr.raison_sociale,compte:cptFour,compte_debit:cptFour,compte_credit:cptPen,montant:p.montant,type:'produit',mode:'compensation',division:_resolveDivisionEcriture('convention',convId),source:'penalite',convention_id:convId,created_at:today()};
   DATA.ecritures.push(ecr);await dbPut('ecritures',ecr);
   if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',ecr);
   conv.penalites_appliquees=(conv.penalites_appliquees||0)+p.montant;conv._modifie=new Date().toISOString();
@@ -62288,29 +62494,10 @@ function openRapportChantier(convId){
   document.getElementById('rch-modal-title').textContent='Rapport hebdomadaire de chantier';
   document.getElementById('modal-rapport-chantier').classList.add('open');
 }
-function onSelectConventionRapport(){var id=document.getElementById('rch-convention').value;if(!id)return;var conv=DATA.conventions.find(function(c){return c.id===id;});if(!conv)return;document.getElementById('rch-avancement').value=conv.avancement||0;var prevPct=Math.round(Math.min(100,conv.date_demarrage&&conv.date_fin_prev?(new Date()-new Date(conv.date_demarrage))/(new Date(conv.date_fin_prev)-new Date(conv.date_demarrage))*100:conv.avancement||0));document.getElementById('rch-avancement-prevu').value=prevPct;var nb=DATA.rapports_chantier.filter(function(r){return r.convention_id===id;}).length+1;document.getElementById('rch-numero').value='R-'+today().slice(0,4)+'-'+String(nb).padStart(3,'0');var paye=DATA.situations.filter(function(s){return s.convention_id===id&&s.statut==='payee';}).reduce(function(s,x){return s+(x.net||0);},0);document.getElementById('rch-budget-cumul').value=paye;updateRapportGauge();}
-function updateRapportGauge(){var r=parseInt((document.getElementById('rch-avancement')||{}).value)||0;var p=parseInt((document.getElementById('rch-avancement-prevu')||{}).value)||0;var box=document.getElementById('rch-gauge-content');if(!box)return;var ec=r-p;box.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:10px;"><div><div style="font-size:11px;color:var(--blanc-dim);margin-bottom:4px;">Avancement réalisé</div><div style="height:10px;background:var(--bord);border-radius:5px;"><div style="width:'+r+'%;height:100%;background:var(--vert);border-radius:5px;"></div></div><div style="font-size:11px;text-align:right;color:var(--vert);margin-top:2px;font-weight:700;">'+r+'%</div></div><div><div style="font-size:11px;color:var(--blanc-dim);margin-bottom:4px;">Avancement prévu</div><div style="height:10px;background:var(--bord);border-radius:5px;"><div style="width:'+p+'%;height:100%;background:var(--bleu);border-radius:5px;"></div></div><div style="font-size:11px;text-align:right;color:var(--bleu);margin-top:2px;font-weight:700;">'+p+'%</div></div></div><div style="text-align:center;padding:8px;background:'+(ec>=0?'rgba(74,196,122,0.1)':'rgba(224,82,82,0.1)')+';border-radius:var(--r);font-weight:700;">Écart : <span style="color:'+(ec>=0?'var(--vert)':'var(--rouge)')+';font-size:16px;">'+(ec>=0?'+':'')+ec+'%</span> '+(ec>=0?'✅ En avance':'⚠️ Retard')+'</div>';}
-async function saveRapportChantier(){var convId=document.getElementById('rch-convention').value;if(!convId){toast('Sélectionnez une convention.','error');return;}var av=parseInt(document.getElementById('rch-avancement').value)||0;var r={id:APP.editingId||uid(),convention_id:convId,numero:document.getElementById('rch-numero').value.trim(),date_debut:document.getElementById('rch-date-debut').value,date_fin:document.getElementById('rch-date-fin').value,avancement:av,avancement_prevu:parseInt(document.getElementById('rch-avancement-prevu').value)||0,nb_ouvriers:parseInt(document.getElementById('rch-ouvriers').value)||0,meteo:document.getElementById('rch-meteo').value,travaux_realises:document.getElementById('rch-travaux-realises').value.trim(),travaux_prevus:document.getElementById('rch-travaux-prevus').value.trim(),difficultes:document.getElementById('rch-difficultes').value.trim(),depenses:parseFloat(document.getElementById('rch-depenses').value)||0,budget_cumul:parseFloat(document.getElementById('rch-budget-cumul').value)||0,observations:document.getElementById('rch-observations').value.trim(),valideur:document.getElementById('rch-valideur').value.trim(),statut:document.getElementById('rch-statut').value,created_at:APP.editingId?undefined:today()};if(APP.editingId){var idx=DATA.rapports_chantier.findIndex(function(x){return x.id===APP.editingId;});if(idx>=0)DATA.rapports_chantier[idx]=r;}else DATA.rapports_chantier.push(r);await dbPut('rapports_chantier',r);var conv=DATA.conventions.find(function(c){return c.id===convId;});if(conv&&av>=(conv.avancement||0)){conv.avancement=av;await dbPut('conventions',conv);}closeModal('modal-rapport-chantier');renderChantiersDashboard();renderRapports();renderConventions();toast('Rapport enregistré.','success');}
-function editRapportChantier(id){APP.editingId=id;openRapportChantier();setTimeout(function(){var r=DATA.rapports_chantier.find(function(x){return x.id===id;});if(!r)return;var el=function(eid,v){var e=document.getElementById(eid);if(e)e.value=v||'';};el('rch-convention',r.convention_id);el('rch-numero',r.numero);el('rch-date-debut',r.date_debut);el('rch-date-fin',r.date_fin);el('rch-avancement',r.avancement);el('rch-avancement-prevu',r.avancement_prevu);el('rch-ouvriers',r.nb_ouvriers);el('rch-meteo',r.meteo);el('rch-travaux-realises',r.travaux_realises);el('rch-travaux-prevus',r.travaux_prevus);el('rch-difficultes',r.difficultes);el('rch-depenses',r.depenses);el('rch-budget-cumul',r.budget_cumul);el('rch-observations',r.observations);el('rch-valideur',r.valideur);el('rch-statut',r.statut);document.getElementById('rch-modal-title').textContent='Modifier rapport';updateRapportGauge();},120);}
-async function deleteRapport(id){if(!confirm('Supprimer ce rapport ?'))return;if(await deleteRecord('rapports_chantier',id)===false)return;renderRapports();toast('Supprimé.','info');}
-/* [FIX 2026-06-30] Ancienne définition de printRapportId supprimée ici :
-   elle était dupliquée plus bas (fusionnée avec la fonctionnalité photos
-   de chantier le 2026-06-30) et était de toute façon écrasée silencieusement
-   par cette seconde définition, comme toute redéfinition de fonction en JS. */
-function exportRapportsChantier(){var rows=['Rapport,Convention,Date début,Avancement,Prévu,Ouvriers,Statut'];DATA.rapports_chantier.forEach(function(r){rows.push([r.numero,(DATA.conventions.find(function(c){return c.id===r.convention_id;})||{numero:''}).numero,r.date_debut,r.avancement+'%',(r.avancement_prevu||r.avancement)+'%',r.nb_ouvriers,r.statut].join(','));});var b=new Blob([rows.join('\n')],{type:'text/csv'});var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='rapports_chantier.csv';a.click();toast('Export rapports chantier.','success');}
-function printRapportChantier(){var id=APP.editingId;if(id)printRapportId(id);else toast('Enregistrez d\'abord le rapport.','info');}
-
-/* ─── Coût de revient ──────────────────────────────── */
-function buildCoutRevient(){
-  var kpiEl=document.getElementById('cout-kpi');var detEl=document.getElementById('cout-revient-detail');if(!kpiEl||!detEl)return;
-  var totalM=DATA.conventions.reduce(function(s,c){return s+(c.montant_ttc||0);},0);
-  var totalF=DATA.terrains.reduce(function(s,t){return s+(t.valeur_actuelle||t.prix_acq||0);},0);
-  var totalE=DATA.conceptions.reduce(function(s,c){return s+(c.cout||0);},0);
-  var totalCA=DATA.versements.reduce(function(s,v){return s+(v.montant||0);},0);
-  var totalCout=totalF+totalM+totalE;var marge=totalCA-totalCout;
-  kpiEl.innerHTML=[{l:'Foncier',v:fmtF(totalF)+' FCFA',i:'🌍',c:'kpi-blue'},{l:'Marchés TTC',v:fmtF(totalM)+' FCFA',i:'🏗️',c:'kpi-copper'},{l:'Études',v:fmtF(totalE)+' FCFA',i:'📐',c:''},{l:'Coût total',v:fmtF(totalCout)+' FCFA',i:'📊',c:'kpi-red'},{l:'CA encaissé',v:fmtF(totalCA)+' FCFA',i:'💰',c:'kpi-green'},{l:'Marge brute',v:fmtF(marge)+' FCFA',i:marge>=0?'📈':'📉',c:marge>=0?'kpi-green':'kpi-red'}].map(function(k){return'<div class="kpi-card '+k.c+'" data-icon="'+k.i+'"><div class="kpi-label">'+k.l+'</div><div class="kpi-value or" style="font-size:15px;">'+k.v+'</div></div>';}).join('');
-  detEl.innerHTML=DATA.programmes.map(function(prog){var lotsP=DATA.lots.filter(function(l){return l.programme_id===prog.id;});var vendus=lotsP.filter(function(l){return l.statut==='vendu';}).length;var caP=DATA.versements.filter(function(v){var cli=DATA.clients.find(function(c){return c.id===v.client_id;});return cli&&cli.programme_id===prog.id;}).reduce(function(s,v){return s+(v.montant||0);},0);var mP=DATA.conventions.filter(function(c){return c.programme_id===prog.id;}).reduce(function(s,c){return s+(c.montant_ttc||0);},0);var fP=DATA.terrains.filter(function(t){return t.programme_id===prog.id;}).reduce(function(s,t){return s+(t.valeur_actuelle||t.prix_acq||0);},0);var eP=DATA.conceptions.filter(function(c){return c.programme_id===prog.id;}).reduce(function(s,c){return s+(c.cout||0);},0);var aP=(DATA.conventions_amenagement||[]).filter(function(c){return c.programme_id===prog.id;}).reduce(function(s,c){return s+(c.montant_ttc||0);},0);var coutP=fP+mP+eP+aP;var margeP=caP-coutP;var convs=DATA.conventions.filter(function(c){return c.programme_id===prog.id&&c.avancement;}).concat((DATA.conventions_amenagement||[]).filter(function(c){return c.programme_id===prog.id&&c.avancement;}));var av=convs.length?Math.round(convs.reduce(function(s,c){return s+(c.avancement||0);},0)/convs.length):0;return'<div class="card" style="margin-bottom:16px;border-left:4px solid var(--or);"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;"><div><div style="font-weight:700;font-size:16px;">'+prog.nom+'</div><div style="font-size:12px;color:var(--blanc-dim);">'+prog.localisation+' — '+vendus+'/'+lotsP.length+' lots vendus</div></div><div style="text-align:right;"><div style="font-size:11px;color:var(--blanc-dim);">Avancement chantiers</div><div style="font-size:22px;font-weight:700;color:var(--or);">'+av+'%</div></div></div><div class="avancement-barre" style="margin-bottom:14px;"><div class="avancement-fill" style="width:'+av+'%;"></div></div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;font-size:12px;"><div><div style="color:var(--blanc-dim);">Foncier</div><div style="font-weight:700;color:var(--bleu);">'+fmtF(fP)+' FCFA</div></div><div><div style="color:var(--blanc-dim);">Travaux</div><div style="font-weight:700;">'+fmtF(mP)+' FCFA</div></div><div><div style="color:var(--blanc-dim);">Études</div><div style="font-weight:700;">'+fmtF(eP)+' FCFA</div></div><div><div style="color:var(--blanc-dim);">Aménagement</div><div style="font-weight:700;color:var(--vert);">'+fmtF(aP)+' FCFA</div></div><div><div style="color:var(--blanc-dim);">Coût total</div><div style="font-weight:700;color:var(--rouge);">'+fmtF(coutP)+' FCFA</div></div><div><div style="color:var(--blanc-dim);">CA encaissé</div><div style="font-weight:700;color:var(--vert);">'+fmtF(caP)+' FCFA</div></div><div><div style="color:var(--blanc-dim);">Marge brute</div><div style="font-weight:700;color:'+(margeP>=0?'var(--vert)':'var(--rouge)')+';">'+fmtF(margeP)+' FCFA</div></div></div></div>';}).join('');
-}
+/* [Purge code mort 2026-08-14] 5 fonctions dupliquées (onSelectConventionRapport,
+   updateRapportGauge, saveRapportChantier, editRapportChantier, deleteRapport,
+   exportRapportsChantier, printRapportChantier, buildCoutRevient) supprimées ici :
+   version obsolète, écrasée silencieusement par la redéfinition plus bas. */
 
 
 /* ══════════════════════════════════════════════════════
@@ -62319,6 +62506,7 @@ function buildCoutRevient(){
 ══════════════════════════════════════════════════════ */
 
 var SESSION_SOUSCRIPTEUR = null;
+var SESSION_APPORTEUR = null;
 
 /* ─── Migration : mot de passe par défaut ───────────── */
 function migrerClientsAvecMotDePasse() {
@@ -62412,6 +62600,201 @@ async function genererCodeApporteur(apporteurId) {
     secret: code, email: a.email || '', tel: a.tel || '',
     type: 'apporteur', secretLabel: "Code d'accès"
   });
+}
+
+/* ══════════════════════════════════════════════════════
+   PORTAIL APPORTEUR — Authentification & Espace Partenaire
+   Session · Dossiers · Commissions · Messagerie
+══════════════════════════════════════════════════════ */
+
+/* ─── Session persistante ────────────────────────────── */
+function verifierSessionApporteur() {
+  try {
+    var saved = localStorage.getItem('apporteur_session');
+    if (!saved) return false;
+    var data = JSON.parse(saved);
+    var a = DATA.apporteurs.find(function(x) { return x.id === data.id; });
+    if (a) { SESSION_APPORTEUR = a; return true; }
+    localStorage.removeItem('apporteur_session');
+  } catch(e) {}
+  return false;
+}
+
+/* ─── Authentification ───────────────────────────────── */
+function ouvrirLoginApporteur() {
+  document.getElementById('ap-login-id').value = '';
+  document.getElementById('ap-login-code').value = '';
+  document.getElementById('ap-login-error').style.display = 'none';
+  document.getElementById('modal-login-apporteur').classList.add('open');
+  setTimeout(function(){ document.getElementById('ap-login-id').focus(); }, 200);
+}
+
+async function authentifierApporteur() {
+  var login = document.getElementById('ap-login-id').value.trim();
+  var code  = document.getElementById('ap-login-code').value.trim();
+  var errEl = document.getElementById('ap-login-error');
+  errEl.style.display = 'none';
+
+  if (!login || !code) {
+    errEl.textContent = 'Veuillez saisir votre email/téléphone et votre code d\'accès.';
+    errEl.style.display = 'block'; return;
+  }
+
+  var loginNorm = login.replace(/\s/g,'').toLowerCase();
+  var cand = DATA.apporteurs.find(function(a) {
+    var tel = (a.tel || '').replace(/\s/g,'');
+    return (a.email || '').toLowerCase() === loginNorm || tel === login.replace(/\s/g,'');
+  });
+
+  var codeOk = false;
+  if (cand) {
+    if (cand.code_acces_hash && cand.code_acces_salt) {
+      codeOk = (await hashPassword(code, cand.code_acces_salt)) === cand.code_acces_hash;
+    } else if (cand.code_acces) {
+      codeOk = String(cand.code_acces) === code;
+    }
+  }
+  var apporteur = codeOk ? cand : null;
+
+  if (!apporteur) {
+    errEl.textContent = 'Identifiants incorrects. Vérifiez votre email/téléphone et votre code d\'accès.';
+    errEl.style.display = 'block';
+    await logConnexion('[APPORTEUR] ' + login, false, 'Code accès incorrect');
+    return;
+  }
+  if (apporteur.statut && apporteur.statut !== 'actif') {
+    errEl.textContent = 'Ce compte apporteur est inactif. Contactez l\'équipe.';
+    errEl.style.display = 'block';
+    await logConnexion('[APPORTEUR] ' + login, false, 'Compte inactif');
+    return;
+  }
+
+  await logConnexion('[APPORTEUR] ' + (apporteur.email || apporteur.tel || apporteur.id), true,
+    'Portail apporteur — ' + (apporteur.prenoms || '') + ' ' + apporteur.nom);
+
+  apporteur.derniere_connexion_portail = new Date().toISOString();
+  apporteur.nb_connexions_portail = (apporteur.nb_connexions_portail || 0) + 1;
+  await dbPut('apporteurs', apporteur);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_apporteurs', apporteur);
+
+  SESSION_APPORTEUR = apporteur;
+  localStorage.setItem('apporteur_session', JSON.stringify({ id: apporteur.id }));
+  closeModal('modal-login-apporteur');
+  toast('Bienvenue ' + (apporteur.prenoms || '') + ' ' + apporteur.nom + ' 👋', 'success');
+  goTo('portail-apporteur');
+}
+
+function deconnecterApporteur() {
+  if (!confirm('Voulez-vous vous déconnecter de votre espace apporteur ?')) return;
+  SESSION_APPORTEUR = null;
+  localStorage.removeItem('apporteur_session');
+  toast('Déconnecté.', 'info');
+  goTo('dashboard');
+}
+
+/* ─── Chargement principal du portail ────────────────── */
+function chargerPortailApporteur() {
+  if (!SESSION_APPORTEUR) { ouvrirLoginApporteur(); return; }
+  var a = SESSION_APPORTEUR;
+  var nomEl = document.getElementById('portail-apporteur-nom');
+  if (nomEl) nomEl.textContent = (a.prenoms ? a.prenoms + ' ' : '') + a.nom + (a.societe ? ' · ' + a.societe : '');
+
+  var mesClients = DATA.clients.filter(function(c) { return c.apporteur_id === a.id; });
+  var mesCommissions = (DATA.commissions || []).filter(function(cm) { return cm.apporteur_id === a.id; });
+  var totalDu = mesCommissions.reduce(function(s,c){ return s + (c.montant_du||0); },0);
+  var totalVerse = mesCommissions.reduce(function(s,c){ return s + (c.montant_verse||0); },0);
+
+  var kpiEl = document.getElementById('portail-ap-kpis');
+  if (kpiEl) {
+    kpiEl.innerHTML =
+        '<div class="kpi-card"><div class="kpi-label">Dossiers apportés</div><div class="kpi-value">' + mesClients.length + '</div></div>'
+      + '<div class="kpi-card"><div class="kpi-label">Commissions dues</div><div class="kpi-value">' + fcfa(totalDu) + '</div></div>'
+      + '<div class="kpi-card"><div class="kpi-label">Commissions versées</div><div class="kpi-value">' + fcfa(totalVerse) + '</div></div>'
+      + '<div class="kpi-card"><div class="kpi-label">Solde restant</div><div class="kpi-value">' + fcfa(totalDu - totalVerse) + '</div></div>';
+  }
+
+  var tbD = document.getElementById('portail-ap-tbody-dossiers');
+  if (tbD) {
+    tbD.innerHTML = mesClients.length ? mesClients.map(function(c) {
+      var lot = DATA.lots ? DATA.lots.find(function(l){ return l.id === c.lot_id; }) : null;
+      var prog = lot && DATA.programmes ? DATA.programmes.find(function(p){ return p.id === lot.programme_id; }) : null;
+      var verse = (DATA.versements || []).filter(function(v){ return v.client_id === c.id && v.statut !== 'annule'; })
+        .reduce(function(s,v){ return s + (v.montant||0); },0);
+      return '<tr><td>' + escHtml(c.dossier || '—') + '</td><td>' + escHtml((c.prenoms ? c.prenoms + ' ' : '') + (c.nom || '')) + '</td>'
+        + '<td>' + escHtml(lot ? lot.numero || '' : '—') + '</td><td>' + escHtml(prog ? prog.nom : '—') + '</td>'
+        + '<td>' + fcfa(c.montant_total || 0) + '</td><td>' + fcfa(verse) + '</td>'
+        + '<td><span class="badge">' + escHtml(c.statut || '—') + '</span></td></tr>';
+    }).join('') : '<tr><td colspan="7" style="text-align:center;color:#94a3b8;">Aucun dossier apporté pour le moment.</td></tr>';
+  }
+
+  var tbC = document.getElementById('portail-ap-tbody-commissions');
+  if (tbC) {
+    tbC.innerHTML = mesCommissions.length ? mesCommissions.map(function(cm) {
+      var cl = DATA.clients.find(function(c){ return c.id === cm.client_id; });
+      var solde = (cm.montant_du||0) - (cm.montant_verse||0);
+      return '<tr><td>' + dateShort(cm.date) + '</td><td>' + escHtml(cl ? (cl.dossier || cl.nom) : '—') + '</td>'
+        + '<td>' + escHtml(cm.type || '—') + '</td><td>' + fcfa(cm.montant_du||0) + '</td>'
+        + '<td>' + fcfa(cm.montant_verse||0) + '</td><td>' + fcfa(solde) + '</td>'
+        + '<td><span class="badge">' + escHtml(cm.statut || '—') + '</span></td></tr>';
+    }).join('') : '<tr><td colspan="7" style="text-align:center;color:#94a3b8;">Aucune commission enregistrée.</td></tr>';
+  }
+
+  switchPortailApTab('dossiers');
+  portailApRenderMessages();
+}
+
+/* ─── Onglets ─────────────────────────────────────────── */
+function switchPortailApTab(tab) {
+  var tabs = ['dossiers','commissions','messagerie'];
+  tabs.forEach(function(t) {
+    var el = document.getElementById('portail-ap-tab-' + t);
+    if (el) el.style.display = (t === tab) ? '' : 'none';
+  });
+  document.querySelectorAll('#page-portail-apporteur .tab-btn').forEach(function(btn) {
+    var oc = btn.getAttribute('onclick') || '';
+    btn.classList.toggle('active', oc.indexOf("'" + tab + "'") !== -1);
+  });
+  if (tab === 'messagerie') portailApRenderMessages();
+}
+
+/* ─── Messagerie (côté apporteur) ────────────────────── */
+function portailApRenderMessages() {
+  if (!SESSION_APPORTEUR) return;
+  var el = document.getElementById('portail-ap-thread');
+  if (!el) return;
+  var msgs = (DATA.portail_messages || []).filter(function(m) {
+    return m.partie_type === 'apporteur' && m.partie_id === SESSION_APPORTEUR.id;
+  }).sort(function(a,b){ return new Date(a.date||a.created_at) - new Date(b.date||b.created_at); });
+
+  var changed = false;
+  msgs.forEach(function(m) {
+    if (m.expediteur === 'staff' && !m.lu_client) { m.lu_client = true; changed = true; dbPut('portail_messages', m);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_portail_messages', m); }
+  });
+
+  el.innerHTML = msgs.length ? msgs.map(function(m) {
+    var mine = m.expediteur === 'client';
+    return '<div style="display:flex;justify-content:' + (mine?'flex-end':'flex-start') + ';margin:6px 0;"><div style="max-width:75%;background:'
+      + (mine?'#1a6b2a':'#fff') + ';color:' + (mine?'#fff':'#1C1C2E') + ';border:1px solid ' + (mine?'#1a6b2a':'#E0E0EA')
+      + ';border-radius:12px;padding:8px 12px;font-size:13px;"><div>' + escHtml(m.contenu) + '</div><div style="font-size:9px;opacity:.7;margin-top:3px;">'
+      + (mine?'Vous':'Équipe') + ' · ' + _pmsgDate(m.date||m.created_at) + '</div></div></div>';
+  }).join('') : '<div style="color:#6B6B9A;text-align:center;padding:20px 0;">Aucun message. Démarrez la conversation.</div>';
+  el.scrollTop = el.scrollHeight;
+}
+
+async function portailApEnvoyerMessage() {
+  if (!SESSION_APPORTEUR) return;
+  var inp = document.getElementById('portail-ap-msg-input');
+  var txt = (inp.value || '').trim();
+  if (!txt) return;
+  var msg = { id: uid(), partie_type: 'apporteur', partie_id: SESSION_APPORTEUR.id,
+    expediteur: 'client', contenu: txt, date: new Date().toISOString(), lu_staff: false, lu_client: true };
+  DATA.portail_messages.push(msg);
+  await dbPut('portail_messages', msg);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_portail_messages', msg);
+  inp.value = '';
+  portailApRenderMessages();
+  if (typeof pmsgRenderSelect === 'function') pmsgRenderSelect();
 }
 
 /* ═══ Médias du portail (admin → site public + espace souscripteur) ═══ */
@@ -62694,6 +63077,8 @@ function copFillSelects(){
   ['cop-bud-immeuble','cop-ag-immeuble','cop-ft-immeuble'].forEach(function(id){
     var el=document.getElementById(id); if(el){ var cur=el.value; el.innerHTML=opts; el.value=cur; }
   });
+  var selDiv=document.getElementById('cop-im-division');
+  if(selDiv && !selDiv.options.length) selDiv.innerHTML='<option value="">— Non affecté —</option>'+(DATA.divisions||[]).map(function(d){ return '<option value="'+d.id+'">'+escHtml(d.nom)+'</option>'; }).join('');
   var budOpts = '<option value="">— Choisir —</option>' + (DATA.budgets_copro||[]).map(function(b){
     var im=(DATA.coproprietes||[]).find(function(c){ return c.id===b.copropriete_id; });
     return '<option value="'+b.id+'">'+escHtml((im?im.nom+' — ':'')+b.exercice)+'</option>';
@@ -62710,7 +63095,8 @@ async function copCreerImmeuble(){
   if(!nom){ toast('Indiquez le nom de la résidence.','error'); return; }
   var im={ id:uid(), nom:nom, adresse:((document.getElementById('cop-im-adresse')||{}).value||'').trim(),
     nb_lots: parseInt((document.getElementById('cop-im-nblots')||{}).value,10)||0,
-    syndic_nom:((document.getElementById('cop-im-syndic')||{}).value||'').trim(), created_at:new Date().toISOString() };
+    syndic_nom:((document.getElementById('cop-im-syndic')||{}).value||'').trim(),
+    division_id:(document.getElementById('cop-im-division')||{}).value||'', created_at:new Date().toISOString() };
   DATA.coproprietes.push(im);
   await dbPut('coproprietes', im);
   if(typeof syncToSupabase==='function') syncToSupabase('pi_coproprietes', im);
@@ -62885,7 +63271,7 @@ async function copComptabiliserAppel(appel){
   var ecr={ id:'ecr_cop_'+appel.id, ref:'APC-'+appel.periode, date:appel.date||today(), piece:'APC-'+appel.periode,
     libelle:'Appel de charges '+appel.periode+' — '+(im.nom||''),
     compte:compteTiers, compte_debit:compteTiers, compte_credit:compteProduit,
-    montant: parseFloat(appel.montant_total)||0, type:'produit', created_at:today() };
+    montant: parseFloat(appel.montant_total)||0, type:'produit', division:im.division_id||'', created_at:today() };
   var idx=DATA.ecritures.findIndex(function(e){ return e.id===ecr.id; });
   if(idx>=0) DATA.ecritures[idx]=ecr; else DATA.ecritures.push(ecr);
   await dbPut('ecritures', ecr);
@@ -62978,7 +63364,7 @@ async function copGenererFondsTravaux(){
     var im=(DATA.coproprietes||[]).find(function(c){ return c.id===coproId; })||{};
     var ecr={ id:'ecr_ft_'+ft.id, ref:'FT-'+periode, date:ft.date, piece:'FT-'+periode,
       libelle:'Cotisation fonds travaux '+periode+' — '+(im.nom||''),
-      compte:compteTiers, compte_debit:compteTiers, compte_credit:compteFonds, montant:montant, type:'passif', created_at:today() };
+      compte:compteTiers, compte_debit:compteTiers, compte_credit:compteFonds, montant:montant, type:'passif', division:im.division_id||'', created_at:today() };
     DATA.ecritures.push(ecr); await dbPut('ecritures', ecr);
     if(typeof syncToSupabase==='function') syncToSupabase('pi_ecritures', ecr);
     if(typeof buildBalance==='function') buildBalance();
@@ -63183,7 +63569,7 @@ async function restGenererDecompte(bailId){
     if(impayes>0) lignes.push({compte:_locCpt('loyers'),sens:'C',montant:impayes,libelle:'Compensation loyers impayés'});
     var ecr={ id:'ecr_rest_'+rest.id, ref:'REST-'+b.ref, date:rest.date, piece:'REST-'+b.ref,
       libelle:'Restitution caution — '+b.ref+' — '+_locNom(b), montant:depot, type:'passif', mode:'virement',
-      lignes:lignes, created_at:today() };
+      lignes:lignes, division:_resolveDivisionEcriture('bien_locatif',b.bien_id), created_at:today() };
     DATA.ecritures.push(ecr); await dbPut('ecritures',ecr);
     if(typeof syncToSupabase==='function') syncToSupabase('pi_ecritures', ecr);
     if(typeof buildBalance==='function') buildBalance();
@@ -65337,6 +65723,80 @@ var GED_CAT_PORTAIL = {
   document:  'Portail — Documents'
 };
 function gedModule(entity_type) { return GED_MAP[entity_type] || GED_MAP.autre; }
+
+/* ═══ Résolution de la division (entité juridique) pour la comptabilité ═══
+   Contrairement à gedDivisionDoc (qui renvoie un libellé pour l'affichage GED),
+   celle-ci renvoie l'id brut de division — utilisé pour peupler le champ
+   `division` des écritures comptables (DATA.ecritures), déjà consommé par
+   les filtres de balance/grand livre/bilan (`e.division !== divF`).
+   '' = non résolvable → l'écriture reste visible en vue consolidée "Toutes
+   divisions" mais absente d'une vue filtrée sur une entité précise. */
+function _progDivId(progId) {
+  var p = (DATA.programmes||[]).find(function(x){ return x.id === progId; });
+  return p ? (p.division_id || '') : '';
+}
+function _resolveDivisionEcriture(entity_type, entity_id) {
+  if (!entity_id) return '';
+  if (entity_type === 'division')   return entity_id;
+  if (entity_type === 'programme')  return _progDivId(entity_id);
+  if (entity_type === 'client') {
+    var cli = (DATA.clients||[]).find(function(x){ return x.id === entity_id; });
+    return cli ? _progDivId(cli.programme_id) : '';
+  }
+  if (entity_type === 'convention') {
+    var conv = (DATA.conventions||[]).find(function(x){ return x.id === entity_id; });
+    return conv ? _progDivId(conv.programme_id) : '';
+  }
+  if (entity_type === 'convention_amenagement') {
+    var convA = (DATA.conventions_amenagement||[]).find(function(x){ return x.id === entity_id; });
+    return convA ? _progDivId(convA.programme_id) : '';
+  }
+  if (entity_type === 'bien_locatif') {
+    var bl = (DATA.biens_locatifs||[]).find(function(x){ return x.id === entity_id; });
+    return bl ? (bl.division_id || '') : '';
+  }
+  if (entity_type === 'bail') {
+    var bail = (DATA.baux||[]).find(function(x){ return x.id === entity_id; });
+    return (bail && bail.bien_id) ? _resolveDivisionEcriture('bien_locatif', bail.bien_id) : '';
+  }
+  if (entity_type === 'af_operation') {
+    var afo = (DATA.af_operations||[]).find(function(x){ return x.id === entity_id; });
+    return afo ? (afo.division_id || '') : '';
+  }
+  if (entity_type === 'immobilisation') {
+    var immo = (DATA.immobilisations||[]).find(function(x){ return x.id === entity_id; });
+    return immo ? (immo.division_id || '') : '';
+  }
+  if (entity_type === 'bien_amort') {
+    var ba = (DATA.biens_amort||[]).find(function(x){ return x.id === entity_id; });
+    return ba ? (ba.division_id || '') : '';
+  }
+  if (entity_type === 'copropriete') {
+    var cop = (DATA.coproprietes||[]).find(function(x){ return x.id === entity_id; });
+    return cop ? (cop.division_id || '') : '';
+  }
+  if (entity_type === 'parcelle') {
+    var parc = (DATA.parcelles||[]).find(function(x){ return x.id === entity_id; });
+    if (!parc) return '';
+    if (parc.programme_id) return _progDivId(parc.programme_id);
+    var afoP = parc.operation_id ? (DATA.af_operations||[]).find(function(x){ return x.id === parc.operation_id; }) : null;
+    return afoP ? (afoP.division_id || '') : '';
+  }
+  if (entity_type === 'foncier') {
+    var ter = (DATA.terrains||[]).find(function(x){ return x.id === entity_id; });
+    return ter ? _progDivId(ter.programme_id) : '';
+  }
+  if (entity_type === 'employe') {
+    var emp = (DATA.employes||[]).find(function(x){ return x.id === entity_id; });
+    return emp ? (emp.division || '') : '';
+  }
+  if (entity_type === 'caisse_mouvement') {
+    var mvt = (DATA.caisse_mouvements||[]).find(function(x){ return x.id === entity_id; });
+    var caisse = mvt ? (DATA.caisses||[]).find(function(x){ return x.id === mvt.caisse_id; }) : null;
+    return caisse ? (caisse.division_id || '') : '';
+  }
+  return '';
+}
 
 /* Résolution best-effort de la division réelle à partir de l'entité liée */
 function gedDivisionDoc(entity_type, entity_id) {
@@ -73242,6 +73702,30 @@ function imprimerOrdreMission(id) {
   win.document.close();
 }
 
+async function saveTournee() {
+  var empId = (document.getElementById('iti-comm')||{}).value || '';
+  var date  = (document.getElementById('iti-date-m')||{}).value || '';
+  if (!empId || !date) { toast('Commercial et date obligatoires.', 'error'); return; }
+
+  var tournee = {
+    id: uid(),
+    commercial_id:  empId,
+    commercial_nom: _itiResolveCommercial(empId),
+    date:           date,
+    objectif:       (document.getElementById('iti-objectif-m')||{}).value || '',
+    zone:           (document.getElementById('iti-zone')||{}).value || '',
+    notes:          (document.getElementById('iti-notes-m')||{}).value || '',
+    statut:         'planifiee',
+    created_at:     new Date().toISOString()
+  };
+  DATA.itineraires.push(tournee);
+  await dbPut('itineraires', tournee);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_itineraires', tournee);
+  closeModal('modal-itineraire');
+  toast('Tournée créée.', 'success');
+  if (typeof renderItinerairesTable === 'function') renderItinerairesTable();
+}
+
 function openItineraire() {
   var d = document.getElementById('iti-new-date');
   if (d && !d.value) d.value = today();
@@ -75299,6 +75783,7 @@ async function amSaveSituation() {
     var ecr = { id: 'ecr_amsit_' + s.id, ref: 'AMG-' + s.numero, date: s.date, piece: s.numero,
       libelle: lib + natureInfo, compte: CPT_AMENAGEMENT_DEBIT, compte_debit: CPT_AMENAGEMENT_DEBIT, compte_credit: cptCredit,
       montant: s.montant_ht, type: 'charge', mode: s.mode, programme_id: cv.programme_id || '',
+      division: _progDivId(cv.programme_id),
       notes: 'Avancement ' + s.avancement + '% — Règlement ' + (s.mode === 'nature' ? 'en nature (parcelles)' : s.mode), created_at: today() };
     if (!DATA.ecritures.some(function(e){ return e.id === ecr.id; })) DATA.ecritures.push(ecr);
     else { var ei = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; }); DATA.ecritures[ei] = ecr; }
@@ -75308,7 +75793,7 @@ async function amSaveSituation() {
       var _cdAmg = (DATA.params && DATA.params.comptes_defaut) || {};
       var ep = { id: 'ecr_ampay_' + s.id, ref: 'AMG-PAY-' + s.numero, date: s.date, piece: s.numero,
         libelle: 'Règlement ' + lib, compte: (requireCompteDefaut('fournisseur')), compte_debit: (requireCompteDefaut('fournisseur')), compte_credit: (requireCompteDefaut('treso_banque')),
-        montant: s.net, type: 'actif', mode: s.mode, created_at: today() };
+        montant: s.net, type: 'actif', mode: s.mode, division: _progDivId(cv.programme_id), created_at: today() };
       if (!DATA.ecritures.some(function(e){ return e.id === ep.id; })) DATA.ecritures.push(ep);
       else { var pi = DATA.ecritures.findIndex(function(e){ return e.id === ep.id; }); DATA.ecritures[pi] = ep; }
       await dbPut('ecritures', ep);
@@ -75450,7 +75935,7 @@ async function amLibererGarantie(convId, montant) {
   var _cptBqGar = requireCompteDefaut('treso_banque');
   var ecr = { id: 'ecr_amgar_' + convId, ref: 'AMG-GAR-' + cv.numero, date: today(), piece: cv.numero,
     libelle: 'Libération retenue garantie — ' + cv.numero + ' — ' + _amName(cv.amenageur_id),
-    compte: _cptGar, compte_debit: _cptGar, compte_credit: _cptBqGar, montant: montant, type: 'actif', mode: 'virement', created_at: today() };
+    compte: _cptGar, compte_debit: _cptGar, compte_credit: _cptBqGar, montant: montant, type: 'actif', mode: 'virement', division: _resolveDivisionEcriture('convention_amenagement', convId), created_at: today() };
   DATA.ecritures.push(ecr);
   await dbPut('ecritures', ecr);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecr);
@@ -83318,30 +83803,8 @@ function edsOpenOuvrage(id) {
 function edsAddComposant() { _edsComp.push({ type:'materiau', libelle:'', unite:'', qte:1, pu:0 }); edsRenderComp(); }
 function edsRemoveComposant(i) { _edsComp.splice(i, 1); edsRenderComp(); }
 
-function edsRenderComp() {
-  var tb = document.getElementById('tbody-eds-comp');
-  if (!tb) return;
-  if (!_edsComp.length) { tb.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:12px;">Aucun composant — cliquez sur + Composant.</td></tr>'; }
-  else {
-    tb.innerHTML = _edsComp.map(function(c, i) {
-      var opts = Object.keys(EDS_TYPES).map(function(k) { return '<option value="' + k + '"' + (c.type === k ? ' selected' : '') + '>' + EDS_TYPES[k] + '</option>'; }).join('');
-      var m = (parseFloat(c.qte) || 0) * (parseFloat(c.pu) || 0);
-      return '<tr>' +
-        '<td><select class="form-control" onchange="_edsComp[' + i + '].type=this.value;edsRenderComp()">' + opts + '</select></td>' +
-        '<td><input class="form-control" value="' + (c.libelle || '').replace(/"/g, '&quot;') + '" oninput="_edsComp[' + i + '].libelle=this.value"></td>' +
-        '<td><input class="form-control" style="width:70px" value="' + (c.unite || '') + '" oninput="_edsComp[' + i + '].unite=this.value"></td>' +
-        '<td><input type="number" step="0.0001" class="form-control" style="width:90px;text-align:right" value="' + (c.qte || 0) + '" oninput="_edsComp[' + i + '].qte=parseFloat(this.value)||0;edsRenderComp()"></td>' +
-        '<td><input type="number" class="form-control" style="width:110px;text-align:right" value="' + (c.pu || 0) + '" oninput="_edsComp[' + i + '].pu=parseFloat(this.value)||0;edsRenderComp()"></td>' +
-        '<td style="text-align:right;font-weight:600;">' + fmtF(m) + '</td>' +
-        '<td><button class="btn btn-secondary btn-sm" onclick="edsRemoveComposant(' + i + ')">✕</button></td>' +
-        '</tr>';
-    }).join('');
-  }
-  var d = edsDebourse({ composants: _edsComp });
-  document.getElementById('eds-o-total').innerHTML =
-    'Matériaux <strong>' + fmtF(d.materiau) + '</strong> · MO <strong>' + fmtF(d.mo) + '</strong> · Matériel <strong>' + fmtF(d.materiel) + '</strong> · ST <strong>' + fmtF(d.st) + '</strong><br>' +
-    '<span style="font-size:16px;">Déboursé sec : <strong style="color:var(--vert,#1A6B3A);">' + fmtF(d.total) + ' FCFA / unité</strong></span>';
-}
+/* [Purge code mort 2026-08-14] edsRenderComp (version sans bibliothèque
+   de prix centralisée) supprimée : écrasée par la version avec edsResPU/edsLinkRes plus bas. */
 
 async function edsSaveOuvrage() {
   if (APP._savingOuvrage) return;
@@ -86307,7 +86770,7 @@ function afRenderPipeline() {
 
 /* ════════ OPÉRATION — ouverture / sauvegarde ════════ */
 function afNewOperation() {
-  _afOp = { id:'af_'+uid(), nom:'', agent_id:'', stage:'prospection',
+  _afOp = { id:'af_'+uid(), nom:'', agent_id:'', stage:'prospection', division_id:'',
     village:'', commune:'', departement:'', superficie:0, lat:'', lng:'', statut_nego:'',
     proprietaires:[], documents:[], rencontres:[], prop_cle:'', accord_principe:false,
     verif_droits:'', juridique_valide:false, litiges:[], demarches:[],
@@ -86334,6 +86797,8 @@ function afBindOperation(isEdit) {
   if (elUnarch) elUnarch.style.display = (isEdit && _afOp.archived) ? '' : 'none';
   var set = function(id,v){ var e=document.getElementById(id); if(e){ if(e.type==='checkbox') e.checked=!!v; else e.value=(v==null?'':v); } };
   set('af-op-nom',_afOp.nom); set('af-op-agent',_afOp.agent_id); set('af-op-stage',_afOp.stage);
+  var selD=document.getElementById('af-op-division');
+  if(selD){ selD.innerHTML='<option value="">— Non affecté —</option>'+(DATA.divisions||[]).map(function(d){ return '<option value="'+d.id+'">'+escHtml(d.nom)+'</option>'; }).join(''); selD.value=_afOp.division_id||''; }
   set('af-village',_afOp.village); set('af-commune',_afOp.commune); set('af-departement',_afOp.departement);
   set('af-superficie',_afOp.superficie); set('af-lat',_afOp.lat); set('af-lng',_afOp.lng); set('af-statut-nego',_afOp.statut_nego);
   set('af-prop-cle',_afOp.prop_cle); set('af-accord-principe',_afOp.accord_principe);
@@ -86817,6 +87282,7 @@ async function afSaveOperation(){
   var g=function(id){ var e=document.getElementById(id); return e?(e.type==='checkbox'?e.checked:e.value):''; };
   if(!g('af-op-nom').trim()){ toast('Désignation obligatoire','error'); return; }
   _afOp.nom=g('af-op-nom').trim(); _afOp.agent_id=g('af-op-agent'); _afOp.stage=g('af-op-stage');
+  _afOp.division_id=g('af-op-division');
   _afOp.village=g('af-village'); _afOp.commune=g('af-commune'); _afOp.departement=g('af-departement');
   _afOp.superficie=parseFloat(g('af-superficie'))||0; _afOp.lat=g('af-lat'); _afOp.lng=g('af-lng'); _afOp.statut_nego=g('af-statut-nego');
   _afOp.prop_cle=g('af-prop-cle'); _afOp.accord_principe=g('af-accord-principe');
@@ -87146,6 +87612,7 @@ async function annulerCommissionSilencieux(comm) {
       libelle: 'Extourne commission ' + typeB.toLowerCase() + ' — ' + (comm.beneficiaire || '') + ' (modification versement)',
       compte: compteProvision, compte_debit: compteProvision, compte_credit: compteCharge,
       montant: comm.montant_comm, mode: 'commission', programme_id: '',
+      division: _resolveDivisionEcriture('client', comm.client_id),
       notes: 'Contre-passation automatique — réimputation versement', source: 'extourne_commission',
       commission_id: comm.id, created_at: today()
     };
@@ -87928,10 +88395,11 @@ async function saveReception(){
   var cfg=stockComptaCfgRequired(totalHT>0?['c_achat','c_fnp']:[]);
   if(totalHT>0){
     if(cfg.methode==='permanent')stockComptaCfgRequired(['c_stock','c_variation']);
-    var e1={ id:'ecr_rec_'+recId, ref:recNum, date:dat, piece:recNum, libelle:'Réception '+recNum+' (BC '+b.numero+') — '+bcFournisseurName(b.fournisseur_id), compte:cfg.c_achat, compte_debit:cfg.c_achat, compte_credit:cfg.c_fnp, montant:totalHT, type:'charge', mode:'', created_at:today() };
+    var _divRec = b.chantier_id ? _resolveDivisionEcriture('convention', b.chantier_id) : '';   /* [Cloisonnement] */
+    var e1={ id:'ecr_rec_'+recId, ref:recNum, date:dat, piece:recNum, libelle:'Réception '+recNum+' (BC '+b.numero+') — '+bcFournisseurName(b.fournisseur_id), compte:cfg.c_achat, compte_debit:cfg.c_achat, compte_credit:cfg.c_fnp, montant:totalHT, type:'charge', mode:'', division:_divRec, created_at:today() };
     DATA.ecritures.push(e1); await dbPut('ecritures',e1); if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',e1);
     if(cfg.methode==='permanent'){
-      var e2={ id:'ecr_recstk_'+recId, ref:'STK-'+recNum, date:dat, piece:recNum, libelle:'Entrée en stock '+recNum, compte:cfg.c_stock, compte_debit:cfg.c_stock, compte_credit:cfg.c_variation, montant:totalHT, type:'charge', mode:'', created_at:today() };
+      var e2={ id:'ecr_recstk_'+recId, ref:'STK-'+recNum, date:dat, piece:recNum, libelle:'Entrée en stock '+recNum, compte:cfg.c_stock, compte_debit:cfg.c_stock, compte_credit:cfg.c_variation, montant:totalHT, type:'charge', mode:'', division:_divRec, created_at:today() };
       DATA.ecritures.push(e2); await dbPut('ecritures',e2); if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',e2);
     }
   }
@@ -88698,7 +89166,7 @@ async function saveStockSortie(){
     var perteS=(m.sortie_nature==='perte');
     stockComptaCfgRequired(perteS?['c_perte','c_stock']:['c_variation','c_stock']);
     var dbtS=perteS?cfgS.c_perte:cfgS.c_variation; var pfxS=perteS?'PRT-':'SOR-';
-    var es={ id:'ecr_sort_'+m.id, ref:pfxS+m.id.slice(-5), date:m.date, piece:pfxS+m.id.slice(-5), libelle:(perteS?'Perte/casse matériaux — ':'Consommation matériaux — ')+infoS.libelle+(convS&&convS.numero?(' / '+convS.numero):''), compte:dbtS, compte_debit:dbtS, compte_credit:cfgS.c_stock, montant:coutSortie, type:'charge', mode:'', created_at:today() };
+    var es={ id:'ecr_sort_'+m.id, ref:pfxS+m.id.slice(-5), date:m.date, piece:pfxS+m.id.slice(-5), libelle:(perteS?'Perte/casse matériaux — ':'Consommation matériaux — ')+infoS.libelle+(convS&&convS.numero?(' / '+convS.numero):''), compte:dbtS, compte_debit:dbtS, compte_credit:cfgS.c_stock, montant:coutSortie, type:'charge', mode:'', division: m.chantier_id ? _resolveDivisionEcriture('convention', m.chantier_id) : '', created_at:today() };
     DATA.ecritures.push(es); await dbPut('ecritures',es); if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',es);
   }
   closeModal('modal-stock-sortie'); renderStock(); etudesLiveRefresh('stock_mouvements'); toast('Sortie enregistrée.','success');
@@ -89432,11 +89900,12 @@ async function cesGenererEcriture(c) {
   var an=(c.date||today()).slice(0,4);
   var cptTiers = (typeof crecCompte === 'function') ? crecCompte() : requireCompteDefaut('client_foncier');
   var cptProduit = requireCompteDefaut('cession_produit');
+  var _divCes = (c.source_key && c.source_key.indexOf('parcelle:') === 0) ? _resolveDivisionEcriture('parcelle', c.source_key.slice(9)) : '';   /* [Cloisonnement] */
   /* 1. Vente : tiers (débit) / produit cession (crédit) — comptes configurables (Paramètres → Comptabilité) */
   var evente={ id:uid(), ref:'CESS-'+an+'-'+prochainNumeroRef('ecritures','CESS',an,4), date:c.date||today(), piece:'CESSION',
     type:'produit', libelle:'Cession foncière — '+(c.designation||'')+' à '+(c.acquereur||''),
     compte:cptProduit, compte_debit:cptTiers, compte_credit:cptProduit, montant:c.prix_cession||0,
-    mode:'cession', programme_id:'', notes:'Cession part entreprise — '+cesSourceRef(c.source_key), source:'cession_fonciere', cession_id:c.id, created_at:today() };
+    mode:'cession', programme_id:'', division:_divCes, notes:'Cession part entreprise — '+cesSourceRef(c.source_key), source:'cession_fonciere', cession_id:c.id, created_at:today() };
   DATA.ecritures.push(evente); await dbPut('ecritures', evente);
   if (typeof syncToSupabase==='function') syncToSupabase('pi_ecritures', evente);
   c.ecriture_vente_id=evente.id;
@@ -89454,7 +89923,7 @@ async function cesGenererEcriture(c) {
       var esortie = { id:uid(), ref:'STK-SORT-'+an+'-'+prochainNumeroRef('ecritures','STK-SORT',an,4), date:c.date||today(), piece:'CESSION',
         type:'produit', libelle:'Sortie de stock — '+(c.nb_lots||1)+' lot(s) part entreprise — '+(c.designation||''),
         compte:_cptVarS, compte_debit:_cptVarS, compte_credit:_cptStkS, montant:montantSortie,
-        mode:'stock', programme_id:'', notes:'Coût de revient sorti en face de la cession '+evente.ref, source:'cession_fonciere', cession_id:c.id, created_at:today() };
+        mode:'stock', programme_id:'', division:_divCes, notes:'Coût de revient sorti en face de la cession '+evente.ref, source:'cession_fonciere', cession_id:c.id, created_at:today() };
       DATA.ecritures.push(esortie); await dbPut('ecritures', esortie);
       if (typeof syncToSupabase==='function') syncToSupabase('pi_ecritures', esortie);
       c.ecriture_stock_id = esortie.id;
@@ -89466,7 +89935,7 @@ async function cesGenererEcriture(c) {
     var eenc={ id:uid(), ref:'ENC-CESS-'+an+'-'+prochainNumeroRef('ecritures','ENC-CESS',an,4), date:c.date||today(), piece:'CESSION',
       type:'tresorerie', libelle:'Encaissement cession — '+(c.acquereur||''),
       compte:compteTreso, compte_debit:compteTreso, compte_credit:cptTiers, montant:c.montant_encaisse||0,
-      mode:c.mode||'virement', programme_id:'', notes:'Encaissement cession foncière', source:'cession_fonciere', cession_id:c.id, created_at:today() };
+      mode:c.mode||'virement', programme_id:'', division:_divCes, notes:'Encaissement cession foncière', source:'cession_fonciere', cession_id:c.id, created_at:today() };
     DATA.ecritures.push(eenc); await dbPut('ecritures', eenc);
     if (typeof syncToSupabase==='function') syncToSupabase('pi_ecritures', eenc);
     c.ecriture_enc_id=eenc.id;
@@ -90359,7 +90828,9 @@ async function crecGenEcriture(c, p) {
     id: uid(), ref: 'ENC-ACQ-' + an + '-' + prochainNumeroRef('ecritures','ENC-ACQ',an,4), date: p.date || today(), piece: 'RECOUVREMENT',
     type: 'tresorerie', libelle: 'Recouvrement acquéreur foncier — ' + (c.acquereur || ''),
     compte: compteTreso, compte_debit: compteTreso, compte_credit: compteCre, montant: p.montant,
-    mode: p.mode || 'virement', programme_id: '', notes: 'Versement cession ' + (c.contrat_ref || c.id), source: 'recouvrement_cession', cession_id: c.id, paiement_id: p.id, created_at: today()
+    mode: p.mode || 'virement', programme_id: '',
+    division: (c.source_key && c.source_key.indexOf('parcelle:') === 0) ? _resolveDivisionEcriture('parcelle', c.source_key.slice(9)) : '',
+    notes: 'Versement cession ' + (c.contrat_ref || c.id), source: 'recouvrement_cession', cession_id: c.id, paiement_id: p.id, created_at: today()
   };
   DATA.ecritures.push(e); await dbPut('ecritures', e);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', e);
@@ -90957,7 +91428,7 @@ async function filiereGenererLots(opId) {
     var eStk = { id: uid(), ref: 'STK-FONC-' + an + '-' + prochainNumeroRef('ecritures','STK-FONC',an,4), date: today(), piece: 'ENTREE STOCK',
       type: 'produit', libelle: 'Entrée en stock — part entreprise (' + nb + ' lots) — ' + (op.nom || ''),
       compte: _cptVarE, compte_debit: _cptStkE, compte_credit: _cptVarE, montant: montantStock,
-      mode: 'stock', programme_id: progId, notes: 'Valorisation part entreprise — coût unitaire ' + fmtF(Math.round(coutUnitaire)) + ' F/lot',
+      mode: 'stock', programme_id: progId, division: progId ? _progDivId(progId) : _resolveDivisionEcriture('af_operation', op.id), notes: 'Valorisation part entreprise — coût unitaire ' + fmtF(Math.round(coutUnitaire)) + ' F/lot',
       source: 'af_operation_stock', af_operation_id: op.id, created_at: today() };
     DATA.ecritures.push(eStk); await dbPut('ecritures', eStk);
     if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', eStk);
@@ -95811,7 +96282,7 @@ async function luGenererEcriture(u){
   var _cptProdApt = requireCompteDefaut('vente_lot_produit');
   var e={ id:uid(), ref:'VAPT-'+an+'-'+prochainNumeroRef('ecritures','VAPT',an,4), date:u.date_vente||today(), piece:'VENTE APPT',
     type:'produit', libelle:lib, compte:_cptProdApt, compte_debit:_cptCl, compte_credit:_cptProdApt, montant:u.prix||0,
-    mode:'vente', programme_id:prog, notes:'Vente appartement (immeuble) \u2014 '+(u.numero||''),
+    mode:'vente', programme_id:prog, division:_progDivId(prog), notes:'Vente appartement (immeuble) \u2014 '+(u.numero||''),
     source:'lot_unite', lot_unite_id:u.id, created_at:today() };
   DATA.ecritures.push(e); await dbPut('ecritures',e);
   if(typeof syncToSupabase==='function') syncToSupabase('pi_ecritures',e);
@@ -109605,6 +110076,7 @@ goTo = function(page) {
           </select>
         </div>
         <div class="form-group span-2"><label>Valeur résiduelle (FCFA)</label><input type="number" class="form-control" id="is-residuelle" value="0"></div>
+        <div class="form-group span-2"><label>Division (entité juridique)</label><select class="form-control" id="is-division"><option value="">— Non affecté —</option></select></div>
       </div>
     </div>
     <div class="modal-footer">
