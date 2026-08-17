@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.23 · 2026-08-14 — Nouveau : ajustement du fond d\'ouverture d\'une caisse (caisseAjusterFondOuvertureModal). Aucune UI n\'existait pour corriger fond_ouverture après création de session — figé au premier enregistrement. Bouton « ⚖️ Ajuster fond » sur la carte caisse (admin/comptable uniquement), motif obligatoire, historique des corrections tracé sur la session, snapshot de sécurité automatique avant modification. À utiliser pour corriger le solde Caisse Principale MENKO HOLDING au 1er janvier (108 800 FCFA).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.26 · 2026-08-14 — Fix majeur import DWG (éditeur de plan) : même bug que le fix DXF précédent, en pire — les blocs imbriqués (murs contenant portes/fenêtres) n\'étaient même pas comptés comme ignorés, juste silencieusement absents (emitOne ne traitait pas le type INSERT). Testé avec la vraie librairie LibreDWG sur fichier réel fourni (même plan source que le DXF) : 544 → 1117 entités (+105%), 57 blocs imbriqués (fenêtres/portes/armoires) désormais restitués. Même profondeur 8 + anti-cycle que le fix DXF.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -84971,7 +84971,7 @@ function _dwgDatabaseToRes(db) {
     });
   } catch(eBlk) {}
 
-  function emitOne(e, lay, tr) {
+  function emitOne(e, lay, tr, prof, chaineBlocs) {
     function T(x, y) {
       if (!tr) return { x:x, y:y };
       var c = Math.cos(tr.rot), s = Math.sin(tr.rot);
@@ -84993,6 +84993,25 @@ function _dwgDatabaseToRes(db) {
       var p = T((e.startPoint||e.insertionPoint||{x:0,y:0}).x, (e.startPoint||e.insertionPoint||{x:0,y:0}).y);
       var txt = String(e.text || '').replace(/\\[A-Za-z][^;]*;/g, '').replace(/[{}]/g, '').trim();
       if (txt) emit({ g:'text', lay:lay, p:p, h:e.textHeight || 0.2, txt:txt });
+    } else if (e.type === 'INSERT') {
+      /* [Fix imbrication] Même bug que le parseur DXF (voir _dxfParse) : un
+         bloc mur qui contient lui-même des INSERT de portes/fenêtres — cas
+         courant et confirmé sur un fichier réel (57 INSERT imbriqués dans
+         les blocs Mur_1..15) — était auparavant silencieusement perdu, ce
+         type n'étant même pas traité ici. Profondeur 8 + anti-cycle. */
+      if (prof >= 8) { erreursEntites++; return; }
+      var nomB2 = e.name || '';
+      if (chaineBlocs.indexOf(nomB2) !== -1) { erreursEntites++; return; }   /* référence circulaire */
+      var liste2 = blocsIndex[nomB2];
+      if (!liste2 || !liste2.length) { blocsBruts.push({ nom: nomB2, lay: lay, x: (e.insertionPoint||{}).x||0, y: (e.insertionPoint||{}).y||0 }); return; }
+      var ip2 = T(e.insertionPoint.x, e.insertionPoint.y);
+      var tr2 = { x: ip2.x, y: ip2.y,
+                  sx: (e.xScale!=null?e.xScale:1) * (tr ? tr.sx : 1),
+                  sy: (e.yScale!=null?e.yScale:1) * (tr ? tr.sy : 1),
+                  rot: (e.rotation||0) + (tr ? tr.rot : 0) };
+      chaineBlocs.push(nomB2);
+      liste2.forEach(function(be){ try { emitOne(be, be.layer || lay, tr2, prof + 1, chaineBlocs); } catch(eIn){} });
+      chaineBlocs.pop();
     }
   }
 
@@ -85005,13 +85024,13 @@ function _dwgDatabaseToRes(db) {
           var tr = { x:e.insertionPoint.x, y:e.insertionPoint.y,
                      sx:(e.xScale!=null?e.xScale:1), sy:(e.yScale!=null?e.yScale:1),
                      rot:(e.rotation||0) };
-          liste.forEach(function(be){ try { emitOne(be, be.layer || lay, tr); } catch(eIn){} });
+          liste.forEach(function(be){ try { emitOne(be, be.layer || lay, tr, 1, [e.name || '']); } catch(eIn){} });
         } else {
           blocsBruts.push({ nom: e.name || '', lay: lay, x: e.insertionPoint.x, y: e.insertionPoint.y });
         }
         return;
       }
-      emitOne(e, lay, null);
+      emitOne(e, lay, null, 0, []);
     } catch(errEnt) { erreursEntites++; }
   });
   var blocsCount = {};
@@ -100755,10 +100774,64 @@ function qrSvgTag(text){
       var r = c.getBoundingClientRect();
       _archiZoomAt(e.deltaY < 0 ? 1.15 : 0.87, e.clientX - r.left, e.clientY - r.top);
     }, { passive: false });
-    c.addEventListener('touchstart', function(e){ e.preventDefault(); _onDown(_touchToMouse(e)); }, { passive: false });
-    c.addEventListener('touchmove',  function(e){ e.preventDefault(); _onMove(_touchToMouse(e)); }, { passive: false });
-    c.addEventListener('touchend',   function(e){ e.preventDefault(); _onUp(_touchToMouse(e)); },   { passive: false });
+    /* [Pinch-zoom tactile] L'ancien code ne lisait que touches[0] — un doigt
+       posé sur tablette/mobile ne pouvait jamais zoomer, seulement dessiner
+       ou déplacer. On intercepte maintenant le cas à 2 doigts en amont pour
+       zoomer autour du point médian ; à 1 doigt, comportement inchangé
+       (dessin/sélection via _touchToMouse). */
+    var _pinchDist = null;
+    c.addEventListener('touchstart', function(e){
+      if (e.touches.length === 2) { e.preventDefault(); _pinchDist = _archiPinchDist(e.touches); return; }
+      e.preventDefault(); _onDown(_touchToMouse(e));
+    }, { passive: false });
+    c.addEventListener('touchmove', function(e){
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        var d = _archiPinchDist(e.touches);
+        if (_pinchDist) {
+          var r = c.getBoundingClientRect();
+          var mid = _archiPinchMid(e.touches, r);
+          _archiZoomAt(d / _pinchDist, mid.x, mid.y);
+        }
+        _pinchDist = d;
+        return;
+      }
+      e.preventDefault(); _onMove(_touchToMouse(e));
+    }, { passive: false });
+    c.addEventListener('touchend', function(e){
+      if (e.touches.length < 2) _pinchDist = null;
+      if (e.touches.length === 0) { e.preventDefault(); _onUp(_touchToMouse(e)); }
+    }, { passive: false });
     c.addEventListener('dblclick',   _onDblClick);
+
+    /* [Annuler avec Échap] Un dessin multi-clics en cours (polygone lot,
+       tracé voirie/réseau, mur courbe 3 points) restait bloqué à mi-chemin
+       si l'utilisateur changeait d'avis — aucun moyen de l'annuler sans
+       cliquer ailleurs et espérer que ça se réinitialise. Échap repasse sur
+       l'outil Sélection, qui remet déjà à zéro tous les états transitoires
+       (polyPoints, _arcPoints, drawing, drawStart — cf. archiSetTool). */
+    document.addEventListener('keydown', function(e){
+      if (e.key !== 'Escape') return;
+      var enCours = (ED.tool && ED.tool !== 'select')
+        && ((ED.polyPoints && ED.polyPoints.length) || (ED._arcPoints && ED._arcPoints.length) || ED.drawing);
+      if (!enCours) return;
+      /* Ne consomme Échap que s'il y avait réellement quelque chose à annuler
+         sur ce canvas — sinon on laisse Échap fermer une modale ouverte
+         ailleurs dans l'appli, comportement standard déjà géré globalement. */
+      window.archiSetTool('select');
+      if (typeof archiRedraw === 'function') archiRedraw();
+      if (typeof toast === 'function') toast('Dessin en cours annulé (Échap).', 'info');
+    });
+  }
+
+  function _archiPinchDist(touches) {
+    var dx = touches[0].clientX - touches[1].clientX;
+    var dy = touches[0].clientY - touches[1].clientY;
+    return Math.sqrt(dx*dx + dy*dy);
+  }
+  function _archiPinchMid(touches, rect) {
+    return { x: (touches[0].clientX + touches[1].clientX) / 2 - rect.left,
+             y: (touches[0].clientY + touches[1].clientY) / 2 - rect.top };
   }
 
   function _touchToMouse(e) {
@@ -102803,7 +102876,7 @@ function qrSvgTag(text){
         _impMsg('✅ <b>' + res.ents.length + ' entité(s)</b> sur <b>' + lay.length + ' calque(s)</b>.<br>'
           + 'Unité détectée : <b>' + res.uniteNom + '</b> · Emprise : <b>'
           + (Math.round(res.wM * 10) / 10) + ' × ' + (Math.round(res.hM * 10) / 10) + ' m</b>'
-          + (res.blocsIgnores ? '<br>⚠️ ' + res.blocsIgnores + ' bloc(s) imbriqué(s) au-delà du 1er niveau ignorés.' : '')
+          + (res.blocsIgnores ? '<br>⚠️ ' + res.blocsIgnores + ' bloc(s) ignoré(s) (imbrication au-delà de 8 niveaux, ou référence circulaire détectée — cas rarissime).' : '')
           + (res.vuesIgnorees ? '<br>ℹ️ ' + res.vuesIgnorees + ' vue(s) façade/coupe exclue(s) du cadrage (hors emprise plan).' : '')
           + '<br><span style="color:var(--dim);">Calques : ' + lay.slice(0, 12).join(', ') + (lay.length > 12 ? '…' : '') + '</span>', 'ok');
         if (btn) btn.disabled = false;
@@ -102847,6 +102920,7 @@ function qrSvgTag(text){
     }
 
     var insunits = null, layers = {}, blocs = {}, ents = [], blocsIgnores = 0, vuesIgnorees = 0;
+    var chaineBlocs = [];   /* [Fix imbrication] pile des noms de blocs en cours d'expansion — détecte les références circulaires */
     var RE_VUE_ANNEXE = /fa[çc]ade|plan\s*de\s*coupe|^coupe/i;
 
     /* HEADER : $INSUNITS */
@@ -102933,14 +103007,25 @@ function qrSvgTag(text){
         });
         if (sp.length >= 3) out.push({ g: 'poly', lay: lay, pts: sp, closed: true });
       } else if (t === 'INSERT') {
-        if (prof >= 1) { blocsIgnores++; return; }
+        /* [Fix imbrication] Limitée à 1 seul niveau auparavant : un plan
+           réel où un bloc « Mur » contient lui-même des INSERT de portes/
+           fenêtres (cas très courant — confirmé sur un DXF réel où les
+           blocs Mur_1, Mur_2... imbriquaient jusqu'à 3 INSERT chacun) voyait
+           toute cette géométrie de second niveau silencieusement disparaître.
+           Profondeur portée à 8 (largement suffisant pour un usage réel),
+           avec protection anti-cycle (bloc qui s'insère lui-même, directement
+           ou via une chaîne — sinon boucle infinie garantie). */
+        if (prof >= 8) { blocsIgnores++; return; }
         var nomB = _g(e, 2, '');
+        if (chaineBlocs.indexOf(nomB) !== -1) { blocsIgnores++; return; }   /* référence circulaire */
         var b2 = blocs[nomB];
         if (!b2) return;
         var ip = T(_gf(e, 10, 0), _gf(e, 20, 0));
         var tr2 = { x: ip.x, y: ip.y, sx: _gf(e, 41, 1) * (tr ? tr.sx : 1), sy: _gf(e, 42, 1) * (tr ? tr.sy : 1),
                     rot: _gf(e, 50, 0) * Math.PI / 180 + (tr ? tr.rot : 0) };
+        chaineBlocs.push(nomB);
         b2.ents.forEach(function(be) { _emit(be, out, tr2, prof + 1); });
+        chaineBlocs.pop();
       }
     }
 
