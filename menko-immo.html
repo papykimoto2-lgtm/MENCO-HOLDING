@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.18 · 2026-08-14 — Norme interne paie : le champ « Transport non impos. » n\'est plus plafonné/réintégré dans l\'imposable pour le personnel NON DÉCLARÉ CNPS, quel que soit le montant (distinct des consultants, qui gardent le plafond légal). Corrigé à la source unique calcPaieCI + propagé aux 4 points d\'entrée (modal Bulletin de Salaire, paie mensuelle globale, aperçu temps réel fiche employé).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.20 · 2026-08-14 — Revue lenteur bouton "Enregistrer" caisse : 2 causes trouvées et corrigées. 1) caisseProchainNumero() bloquait TOUT l\'enregistrement sur un aller-retour réseau Supabase (protection anti-doublon ajoutée après l\'incident des 539 000 F) — timeout 1,2s ajouté, le fetch cloud ne bloque plus la caissière au-delà, la protection reste active. 2) caisseRenderDashboard() (re-rendu après chaque bon) scannait DATA.caisse_mouvements ~12 fois pour la mini-série annuelle — réduit à 1 seul passage, coût croissant avec l\'historique de la caisse.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -46255,12 +46255,36 @@ function printLivrePaie() {
   var idsLegalesLP = [(divLP && divLP.rccm) ? 'RCCM ' + divLP.rccm : '', (divLP && divLP.ncc) ? 'NCC ' + divLP.ncc : ''].filter(Boolean).join(' — ');
   var titreLP = 'LIVRE DE PAIE' + (divLP ? ' — ' + divLP.nom : '') + ' — EXERCICE ' + annee;
 
-  var moisBlocks = LP_MOIS_LABELS.map(function(moisLabel, i) {
+  /* [Fix] L'impression imprimait systématiquement les 12 mois, même quand
+     l'utilisateur est sur l'onglet Journal Mensuel avec un mois précis
+     sélectionné (et éventuellement un département) — aucun rapport avec ce
+     qu'il regardait à l'écran. On imprime maintenant SEULEMENT ce mois-là
+     si c'est l'onglet actif ; le comportement complet (12 mois) reste
+     inchangé pour les autres onglets (Récap annuel, Fiche individuelle,
+     Charges patronales) où l'impression globale a du sens. */
+  var ongletJournalActif = (function(){
+    var tp = document.getElementById('tab-livre-paie-journal');
+    return !!(tp && tp.classList.contains('active'));
+  })();
+  var moisAImprimer = [0,1,2,3,4,5,6,7,8,9,10,11];
+  var filterDeptLP = '';
+  if (ongletJournalActif) {
+    var moisNumLP = (document.getElementById('lp-mois-journal') || {}).value || '01';
+    moisAImprimer = [parseInt(moisNumLP, 10) - 1];
+    filterDeptLP = (document.getElementById('lp-filter-dept-journal') || {}).value || '';
+    if (filterDeptLP) titreLP += ' — Département : ' + filterDeptLP;
+    titreLP = titreLP.replace('EXERCICE ' + annee, LP_MOIS_LABELS[moisAImprimer[0]] + ' ' + annee);
+  }
+
+  var moisBlocks = moisAImprimer.map(function(i) {
+    var moisLabel = LP_MOIS_LABELS[i];
     var mm = String(i + 1).padStart(2, '0');
     var moisKey = annee + '-' + mm;
 
     var totBrut = 0, totNet = 0, totITS = 0, totCNPS = 0, totPat = 0;
-    var tbody = actifs.map(function(e) {
+    var tbody = actifs.filter(function(e){
+      return (!filterDeptLP || e.dept === filterDeptLP) && (!ongletJournalActif || _lpPresent(e, moisKey));
+    }).map(function(e) {
       var r = _lpDataEmp(e, moisKey);
       if (r.itsNet == null) r.itsNet = r.its || 0;
       if (r.cnpsRetraiteSal == null) r.cnpsRetraiteSal = r.cnpsSal || 0;
@@ -46398,10 +46422,13 @@ function printFicheIndividuelle() {
   var win = window.open('', '_blank');
   win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8">'
     + '<title>Fiche Individuelle ' + e.matricule + ' — ' + annee + '</title>'
-    + '<style>body{font-family:Arial,sans-serif;font-size:9px;margin:10mm;}table{width:100%;border-collapse:collapse;}'
-    + 'th{background:#1e3a5f;color:#fff;padding:4px;border:1px solid #ccc;font-size:9px;}'
-    + 'td{padding:3px 5px;border:1px solid #ddd;}tr:nth-child(even){background:#fafafa;}'
-    + '@page{margin:10mm;size:A4 landscape;}'
+    + '<style>body{font-family:Arial,sans-serif;font-size:8px;margin:6mm;}'
+    + 'table{width:100%;table-layout:fixed;border-collapse:collapse;}'
+    + 'th{background:#1e3a5f;color:#fff;padding:3px 2px;border:1px solid #ccc;font-size:8px;white-space:nowrap;}'
+    + 'td{padding:2px 3px;border:1px solid #ddd;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}'
+    + 'tr:nth-child(even){background:#fafafa;}'
+    + 'th:first-child,td:first-child{width:120px;white-space:normal;}'
+    + '@page{margin:6mm;size:A3 landscape;}'
     + '@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>'
     + '</head><body>'
     + '<div style="display:flex;justify-content:space-between;border-bottom:3px solid #1e3a5f;padding-bottom:8px;margin-bottom:12px;">'
@@ -104538,10 +104565,23 @@ async function caisseProchainNumero(caisseId, type, dateStr, compteCaisse) {
       if (!isNaN(n) && n > maxNum) maxNum = n;
     }
   });
+  /* [Fix lenteur] Ce fetch cloud protège contre les doublons de numéro entre
+     2 postes qui créent un bon avant synchro (cf. incident réel : 23 doublons,
+     ~539 000 F de solde faussé — voir caisseReparerNumerosDupliques ci-dessous,
+     qui reste le filet de sécurité pour les cas résiduels). Mais un `await`
+     sans limite bloquait TOUT l'enregistrement du bon sur une connexion
+     mobile lente/instable — la caissière attendait le réseau pour rien la
+     plupart du temps. Timeout de 1,2 s : passé ce délai, on part sur le
+     max local seul (comportement d'avant le fix cloud) plutôt que de figer
+     l'écran. Le fetch continue en arrière-plan mais n'est plus attendu. */
   if (typeof sbFetch === 'function' && navigator.onLine) {
     try {
-      var rows = await sbFetch('pi_caisse_mouvements?select=numero&caisse_id=eq.' + encodeURIComponent(caisseId)
-        + '&numero=like.' + encodeURIComponent(pfxNum + '%') + '&order=numero.desc&limit=1');
+      var _timeoutPromise = new Promise(function(resolve){ setTimeout(function(){ resolve(null); }, 1200); });
+      var rows = await Promise.race([
+        sbFetch('pi_caisse_mouvements?select=numero&caisse_id=eq.' + encodeURIComponent(caisseId)
+          + '&numero=like.' + encodeURIComponent(pfxNum + '%') + '&order=numero.desc&limit=1'),
+        _timeoutPromise
+      ]);
       if (rows && rows.length && rows[0].numero) {
         var nc = parseInt(String(rows[0].numero).slice(pfxNum.length), 10);
         if (!isNaN(nc) && nc > maxNum) maxNum = nc;
@@ -107743,19 +107783,27 @@ function caisseRenderDashboard(){
     return s.statut==='cloturee' && j>=b.deb && j<=b.fin && idsFiltre.indexOf(s.caisse_id) >= 0;
   }).reduce(function(s,x){ return s+(parseFloat(x.ecart)||0); },0);
 
-  var serie = [], now=new Date();
+  /* [Fix lenteur] Cette fonction tourne à CHAQUE sauvegarde de bon. Avant :
+     12 passages complets sur DATA.caisse_mouvements (un par mois de la
+     série), qui grossit avec l'historique de la caisse. Maintenant : un
+     seul passage, regroupé par clé mois dans une map. */
+  var now=new Date();
+  var moisCles = [];
   for (var i=11;i>=0;i--){
     var d=new Date(now.getFullYear(),now.getMonth()-i,1);
-    var key=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
-    var mm=(DATA.caisse_mouvements||[]).filter(function(x){
-      return (x.date||'').slice(0,7)===key && idsFiltre.indexOf(x.caisse_id) >= 0;
-    });
-    serie.push({
-      k: d.toLocaleDateString('fr-FR',{month:'short'}).replace('.',''),
-      e: mm.filter(function(x){return x.type==='entree';}).reduce(function(s,x){return s+(+x.montant||0);},0),
-      d: mm.filter(function(x){return x.type==='sortie';}).reduce(function(s,x){return s+(+x.montant||0);},0)
-    });
+    moisCles.push({ key: d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'),
+                     label: d.toLocaleDateString('fr-FR',{month:'short'}).replace('.','') });
   }
+  var parMois = {};
+  moisCles.forEach(function(mc){ parMois[mc.key] = { e:0, d:0 }; });
+  (DATA.caisse_mouvements||[]).forEach(function(x){
+    if (idsFiltre.indexOf(x.caisse_id) < 0) return;
+    var key = (x.date||'').slice(0,7);
+    var bucket = parMois[key];
+    if (!bucket) return;   /* hors des 12 derniers mois affichés */
+    if (x.type==='entree') bucket.e += (+x.montant||0); else bucket.d += (+x.montant||0);
+  });
+  var serie = moisCles.map(function(mc){ return { k: mc.label, e: parMois[mc.key].e, d: parMois[mc.key].d }; });
 
   var postes={};
   clot.filter(function(m){ return m.type==='sortie' && m.compte_ventile; }).forEach(function(m){
