@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.26 · 2026-08-14 — Fix majeur import DWG (éditeur de plan) : même bug que le fix DXF précédent, en pire — les blocs imbriqués (murs contenant portes/fenêtres) n\'étaient même pas comptés comme ignorés, juste silencieusement absents (emitOne ne traitait pas le type INSERT). Testé avec la vraie librairie LibreDWG sur fichier réel fourni (même plan source que le DXF) : 544 → 1117 entités (+105%), 57 blocs imbriqués (fenêtres/portes/armoires) désormais restitués. Même profondeur 8 + anti-cycle que le fix DXF.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.28 · 2026-08-14 — Site / Portail — Médias publiables : restriction admin/manager retirée sur les 4 actions de publication (photos, vidéo par lien, vidéo fichier, document). Tout utilisateur ayant accès à cette page peut désormais publier — cohérent avec pmToggleVisible/pmDelete qui n\'avaient déjà aucune restriction.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -62896,7 +62896,6 @@ function pmParseVideoUrl(url){
   return null;
 }
 async function pmAjouterVideo(){
-  if (!hasRole('admin') && !hasRole('manager')) { toast('⛔ Réservé à l\'administrateur.','error'); return; }
   var url = (document.getElementById('pm-video-url')||{}).value || '';
   var v = pmParseVideoUrl(url);
   if (!v) { toast('❌ Lien non reconnu. Formats acceptés : YouTube, Vimeo, ou fichier .mp4/.webm en https.', 'error'); return; }
@@ -62919,7 +62918,6 @@ function pmOuvrirDocument(){ var i=document.getElementById('pm-input-doc'); if(i
 function pmOuvrirVideoFichier(){ var i=document.getElementById('pm-input-video'); if(i){ i.value=''; i.click(); } }
 var PM_VIDEO_MAX_MO = 25;
 async function pmAjouterVideoFichier(input){
-  if (!hasRole('admin') && !hasRole('manager')) { toast('⛔ Réservé à l\'administrateur.','error'); input.value=''; return; }
   var f = (input.files||[])[0];
   if(!f){ return; }
   if (f.type.indexOf('video/')!==0){ toast('❌ Fichier non reconnu comme vidéo.','error'); input.value=''; return; }
@@ -62945,7 +62943,6 @@ async function pmAjouterVideoFichier(input){
 function _pmLabelCat(c){ return ({eden:'Programme',chantier:'Chantier',catalogue:'Catalogue',location:'Location',document:'Document',investir:'Investir'})[c]||c; }
 
 async function pmAjouterPhotos(input){
-  if (!hasRole('admin') && !hasRole('manager')) { toast('⛔ Réservé à l\'administrateur.','error'); return; }
   var cat = (document.getElementById('pm-categorie')||{}).value || 'eden';
   if (cat === 'document') cat = 'eden';
   var titre = (document.getElementById('pm-titre')||{}).value || '';
@@ -62967,7 +62964,6 @@ async function pmAjouterPhotos(input){
 }
 
 async function pmAjouterDocument(input){
-  if (!hasRole('admin') && !hasRole('manager')) { toast('⛔ Réservé à l\'administrateur.','error'); return; }
   var titre = (document.getElementById('pm-titre')||{}).value || '';
   var f = (input.files||[])[0];
   if(!f){ return; }
@@ -85579,7 +85575,25 @@ function brnImportDXF(input){
       } else if (binDxf){
         toast('DXF binaire non pris en charge — ré-exportez en DXF ASCII (R12/2018 ASCII).','error');
       } else {
-        var txt = new TextDecoder('utf-8').decode(arr);
+        /* [Fix encodage] Même correction que l'import DXF de l'éditeur de
+           plan (archiImportFichier) : décodage tranché par $ACADVER, pas par
+           $DWGCODEPAGE seul (vestigial et non fiable depuis DXF 2007/AC1021,
+           où l'UTF-8 est obligatoire quel que soit ce champ). */
+        var sondeAVB = new TextDecoder('windows-1252').decode(arr);
+        var mVerB = /\$ACADVER\s*[\r\n]+\s*1\s*[\r\n]+\s*AC(\d+)/i.exec(sondeAVB);
+        var versionNumB = mVerB ? parseInt(mVerB[1], 10) : 9999;
+        var encodageB = 'utf-8';
+        if (versionNumB < 1021) {
+          var mCpB = /\$DWGCODEPAGE\s*[\r\n]+\s*3\s*[\r\n]+\s*(ANSI_\d+)/i.exec(sondeAVB);
+          if (mCpB) {
+            var numB = mCpB[1].replace(/^ANSI_/i, '');
+            try { new TextDecoder('windows-' + numB); encodageB = 'windows-' + numB; } catch(eEncB) {}
+          } else {
+            encodageB = 'windows-1252';
+          }
+        }
+        var txt;
+        try { txt = new TextDecoder(encodageB).decode(arr); } catch(eDecB) { txt = new TextDecoder('utf-8').decode(arr); }
         _dxfApplyBornes(_dxfToBornes(_dxfParse(txt)), name);
       }
     } catch(e){ toast('Lecture impossible : '+(e.message||e),'error'); }
@@ -102859,7 +102873,32 @@ function qrSvgTag(text){
     if (ext === 'dxf') {
       var fr = new FileReader();
       fr.onload = function() {
-        var txt = String(fr.result || '');
+        var buf = fr.result;
+        /* [Fix encodage] Un DXF ANTÉRIEUR à la révision 2007 (AC1021) encode
+           son contenu texte selon $DWGCODEPAGE (souvent ANSI_1252). À partir
+           de 2007, la norme DXF impose l'UTF-8 pour tout le fichier, et
+           $DWGCODEPAGE devient un champ vestigial qu'il ne faut PAS utiliser
+           pour décider du décodage — un fichier AutoCAD 2018 (AC1032) peut
+           très bien déclarer ANSI_1252 dans ce champ tout en étant réellement
+           enregistré en UTF-8 (constaté sur un fichier réel : y forcer
+           windows-1252 aurait corrompu un fichier déjà correct en UTF-8).
+           On sonde donc d'abord $ACADVER pour trancher. */
+        var sondeAV = new TextDecoder('windows-1252').decode(buf);
+        var mVer = /\$ACADVER\s*[\r\n]+\s*1\s*[\r\n]+\s*AC(\d+)/i.exec(sondeAV);
+        var versionNum = mVer ? parseInt(mVer[1], 10) : 9999;   /* version inconnue → on suppose récent (UTF-8) */
+        var encodage = 'utf-8';
+        if (versionNum < 1021) {   /* antérieur à DXF 2007 : $DWGCODEPAGE fait foi */
+          var mCp = /\$DWGCODEPAGE\s*[\r\n]+\s*3\s*[\r\n]+\s*(ANSI_\d+)/i.exec(sondeAV);
+          if (mCp) {
+            var num = mCp[1].replace(/^ANSI_/i, '');
+            try { new TextDecoder('windows-' + num); encodage = 'windows-' + num; } catch(eEnc) {}
+          } else {
+            encodage = 'windows-1252';   /* pas de $DWGCODEPAGE non plus → repli raisonnable pour du DXF ancien */
+          }
+        }
+        var txt;
+        try { txt = new TextDecoder(encodage).decode(buf); }
+        catch(eDec) { txt = new TextDecoder('utf-8').decode(buf); }
         if (/^\s*AutoCAD Binary DXF/.test(txt.slice(0, 40))) {
           _impMsg('<b>DXF binaire détecté.</b><br>Ré-enregistrez en <b>DXF ASCII</b> (dans AutoCAD : <i>Enregistrer sous → DXF</i>, puis bouton <i>Outils → Options → format ASCII</i>).', 'error');
           return;
@@ -102882,7 +102921,7 @@ function qrSvgTag(text){
         if (btn) btn.disabled = false;
       };
       fr.onerror = function() { _impMsg('Lecture du fichier impossible.', 'error'); };
-      fr.readAsText(file);
+      fr.readAsArrayBuffer(file);
       return;
     }
 
