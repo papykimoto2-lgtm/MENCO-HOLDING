@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.20 · 2026-08-14 — Revue lenteur bouton "Enregistrer" caisse : 2 causes trouvées et corrigées. 1) caisseProchainNumero() bloquait TOUT l\'enregistrement sur un aller-retour réseau Supabase (protection anti-doublon ajoutée après l\'incident des 539 000 F) — timeout 1,2s ajouté, le fetch cloud ne bloque plus la caissière au-delà, la protection reste active. 2) caisseRenderDashboard() (re-rendu après chaque bon) scannait DATA.caisse_mouvements ~12 fois pour la mini-série annuelle — réduit à 1 seul passage, coût croissant avec l\'historique de la caisse.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.22 · 2026-08-14 — Nouveau : état des écritures non ventilées du dernier import CSV caisse (caisseEtatDernierImport). Chaque import est maintenant tagué d\'un identifiant de lot (import_batch_id) persisté par caisse — bouton « 🧾 État dernier import » sur la carte caisse (visible seulement si un import a eu lieu), liste les mouvements du dernier lot encore « à ventiler », avec compte suggéré si disponible et solde net non ventilé.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -104542,7 +104542,7 @@ function imprimerFactureFNE(facId) {
    de la ventilation, après vérification — jamais par la caissière.
 ══════════════════════════════════════════════════════════════════════════ */
 
-var CAISSE_UI = { brouillardCaisseId: null, brouillardSessionId: null };
+var CAISSE_UI = { brouillardCaisseId: null, brouillardSessionId: null, brouillardMode: 'session', brouillardDebut: null, brouillardFin: null };
 
 /* ── Utilitaires ─────────────────────────────────────────────────────── */
 function _caissePad3(n) { n = String(n); while (n.length < 3) n = '0' + n; return n; }
@@ -105126,6 +105126,7 @@ function caisseRenderListe() {
         + '<button class="btn btn-secondary btn-sm" onclick="caisseOuvrirBonModal(\'' + c.id + '\',\'sortie\')">📤 Sortie</button>'
         + '<button class="btn btn-secondary btn-sm" onclick="caisseAfficherBrouillard(\'' + c.id + '\')">📋 Brouillard</button>'
         + '<button class="btn btn-secondary btn-sm" onclick="caisseImportCSVModal(\'' + c.id + '\')">📥 Import CSV</button>'
+        + ((DATA.params||{})['caisse_dernier_import_' + c.id] ? '<button class="btn btn-secondary btn-sm" onclick="caisseEtatDernierImport(\'' + c.id + '\')" title="Écritures non ventilées du dernier import CSV">🧾 État dernier import</button>' : '')
         + '<button class="btn btn-cloture btn-sm" onclick="caisseClôturerModal(\'' + c.id + '\')">🔒 Clôturer</button>';
     }
     if (caisseRoleAdminLike()) {
@@ -105730,6 +105731,59 @@ function _caisseFingerprint(caisseId, date, type, montant, piece, motif) {
   var base = caisseId + '|' + (date||'').slice(0,10) + '|' + type + '|' + Math.round(parseFloat(montant)||0);
   return p ? base + '|' + p : base + '|' + (motif||'').trim().toLowerCase().slice(0,60);
 }
+
+/* ── État des écritures NON PASSÉES (non ventilées) du dernier import CSV ──
+   « Passée » = ventilée sur un compte comptable (mvt.statut === 'ventile'),
+   donc traduite en écriture réelle dans DATA.ecritures. Un mouvement importé
+   reste « à ventiler » tant que personne n'a choisi son compte — cet état
+   liste précisément ce qui traîne, pour LE DERNIER lot importé sur cette
+   caisse (pas tout l'historique), identifié via import_batch_id. */
+function caisseEtatDernierImport(caisseId) {
+  var batchId = (DATA.params||{})['caisse_dernier_import_' + caisseId];
+  var c = (DATA.caisses||[]).find(function(x){ return x.id === caisseId; });
+  if (!batchId) { toast('Aucun import CSV enregistré pour cette caisse (ou trop ancien — antérieur à ce suivi).', 'info'); return; }
+
+  var lot = (DATA.caisse_mouvements||[]).filter(function(m){ return m.caisse_id === caisseId && m.import_batch_id === batchId; });
+  if (!lot.length) { toast('Le dernier import de cette caisse ne contient plus aucun mouvement (supprimés depuis ?).', 'info'); return; }
+
+  var nonPassees = lot.filter(function(m){ return m.statut !== 'ventile'; }).sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
+  var passees = lot.filter(function(m){ return m.statut === 'ventile'; });
+  var totalNonPassees = nonPassees.reduce(function(s,m){ return s + (m.type==='entree' ? (parseFloat(m.montant)||0) : -(parseFloat(m.montant)||0)); }, 0);
+
+  var win = window.open('', '_blank');
+  var rows = nonPassees.length
+    ? nonPassees.map(function(m){
+        return '<tr>'
+          + '<td>' + (m.date||'').slice(0,10) + '</td>'
+          + '<td>' + escHtml(m.numero||'') + '</td>'
+          + '<td>' + (m.type==='entree'?'Entrée':'Sortie') + '</td>'
+          + '<td>' + escHtml(m.motif||'') + (m.beneficiaire ? ' — ' + escHtml(m.beneficiaire) : '') + '</td>'
+          + '<td style="text-align:right;">' + fmtF(m.montant) + '</td>'
+          + '<td>' + (m.compte_suggere ? escHtml(m.compte_suggere) + ' <span style="color:#B87333;">(suggéré, non validé)</span>' : '<span style="color:#dc2626;">— aucune suggestion —</span>') + '</td>'
+          + '</tr>';
+      }).join('')
+    : '<tr><td colspan="6" style="text-align:center;color:#16a34a;font-weight:600;">✅ Tout le dernier import est ventilé.</td></tr>';
+
+  win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8">'
+    + '<title>État dernier import — ' + escHtml(c?c.nom:'') + '</title>'
+    + '<style>body{font-family:Arial,sans-serif;font-size:12px;margin:12mm;}'
+    + 'h1{font-size:16px;} table{width:100%;border-collapse:collapse;margin-top:10px;}'
+    + 'th{background:#1e3a5f;color:#fff;padding:5px;border:1px solid #ccc;text-align:left;}'
+    + 'td{padding:4px 6px;border:1px solid #ddd;} tr:nth-child(even){background:#fafafa;}'
+    + '.no-print{margin-bottom:14px;} .no-print button{padding:8px 16px;background:#B87333;color:#fff;border:none;border-radius:6px;cursor:pointer;}'
+    + '@media print{.no-print{display:none;}}</style></head><body>'
+    + '<div class="no-print"><button onclick="window.print()">🖨️ Imprimer</button></div>'
+    + '<h1>État du dernier import CSV — ' + escHtml(c?c.nom:'') + '</h1>'
+    + '<div style="font-size:11px;color:#666;margin-bottom:6px;">' + lot.length + ' ligne(s) importée(s) au total · ' + passees.length + ' déjà ventilée(s) · <strong>' + nonPassees.length + ' non ventilée(s)</strong></div>'
+    + '<table><thead><tr><th>Date</th><th>N° bon</th><th>Type</th><th>Motif</th><th style="text-align:right;">Montant</th><th>Compte</th></tr></thead>'
+    + '<tbody>' + rows + '</tbody>'
+    + (nonPassees.length ? '<tfoot><tr style="font-weight:700;background:#f5f5f5;"><td colspan="4">Solde net non ventilé</td><td style="text-align:right;">' + fmtF(totalNonPassees) + '</td><td></td></tr></tfoot>' : '')
+    + '</table>'
+    + '<div style="margin-top:14px;font-size:10px;color:#888;">Édité le ' + new Date().toLocaleDateString('fr-CI') + ' — À faire : ventiler ces lignes dans Caisse → onglet Ventilation, ou vérifier qu\'elles ne correspondent pas à des doublons/erreurs de saisie.</div>'
+    + '</body></html>');
+  win.document.close();
+}
+
 async function caisseImportCSVConfirmer() {
   var caisseId = document.getElementById('cim-caisse-id').value;
   var session = caisseGetSessionOuverte(caisseId);
@@ -105738,6 +105792,7 @@ async function caisseImportCSVConfirmer() {
   var valides = _cimRows.filter(function(r){ return r.valide; });
   if (!valides.length) return;
   var user = (APP.currentUser && APP.currentUser.nom) || '—';
+  var importBatchId = 'imp_' + Date.now();   /* [Suivi import] identifie tous les mouvements créés dans CE lot précis, pour pouvoir sortir un état "dernier import" ciblé */
   await caisseSnapshotAvantMasse('import CSV caisse');
 
   /* [Anti-réimport] Empreinte de tous les mouvements déjà existants pour cette
@@ -105781,6 +105836,7 @@ async function caisseImportCSVConfirmer() {
       piece_ref: l.piece, statut: 'a_ventiler', compte_ventile: null, ecriture_id: null,
       ventile_par: null, ventile_le: null,
       compte_suggere: _caisseRuleMatch(l.libelle) || null,
+      import_batch_id: importBatchId,
       created_by: user + ' (import CSV)', created_at: new Date().toISOString()
     };
     DATA.caisse_mouvements.push(mvt);
@@ -105791,6 +105847,12 @@ async function caisseImportCSVConfirmer() {
   }
   closeModal('modal-caisse-import');
   window._cimDernierDoublons = doublonsDetail;
+  if (nCrees > 0) {
+    DATA.params = DATA.params || {};
+    DATA.params['caisse_dernier_import_' + caisseId] = importBatchId;
+    await dbPut('params', DATA.params);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_params', DATA.params);
+  }
   toast('✅ ' + nCrees + ' mouvement(s) importé(s).' + (nSuggeres ? ' · 💡 ' + nSuggeres + ' compte(s) déjà pré-suggéré(s) (ventilation en un clic).' : '') + (nDoublons ? ' · ⏭️ ' + nDoublons + ' déjà présent(s), ignoré(s).' : ''), 'success');
   if (nDoublons) {
     setTimeout(function(){
@@ -106165,20 +106227,110 @@ function caisseAfficherBrouillard(caisseId) {
     .sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); });
   var sessionCourante = caisseGetSessionOuverte(caisseId) || sessions[0];
   CAISSE_UI.brouillardSessionId = sessionCourante ? sessionCourante.id : null;
+  CAISSE_UI.brouillardMode = CAISSE_UI.brouillardMode || 'session';
   var selectHtml = '<select class="filter-select" id="cb-session-select" onchange="caisseRenderBrouillardSession(this.value)">'
     + sessions.map(function(s){ return '<option value="' + s.id + '"' + (s.id === CAISSE_UI.brouillardSessionId ? ' selected' : '') + '>' + s.date + (s.statut==='ouverte'?' (en cours)':' — clôturée') + '</option>'; }).join('')
     + '</select>';
+  var today0 = today();
+  var mois0 = today0.slice(0,8) + '01';
   var box = document.getElementById('caisse-brouillard-box');
   box.innerHTML = '<div class="card" style="padding:16px;margin-top:4px;">'
     + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">'
     + '<div style="font-weight:800;font-size:15px;">📋 Brouillard de caisse</div>'
-    + '<div style="display:flex;gap:8px;align-items:center;">' + selectHtml
+    + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
+    + '<div class="btn-group" style="display:flex;">'
+    + '<button class="btn btn-sm ' + (CAISSE_UI.brouillardMode==='session'?'btn-primary':'btn-secondary') + '" onclick="caisseBrouillardModeToggle(\'session\')" style="border-radius:6px 0 0 6px;">Par session</button>'
+    + '<button class="btn btn-sm ' + (CAISSE_UI.brouillardMode==='periode'?'btn-primary':'btn-secondary') + '" onclick="caisseBrouillardModeToggle(\'periode\')" style="border-radius:0 6px 6px 0;">Par période</button>'
+    + '</div>'
+    + '<span id="cb-mode-session-wrap" style="display:' + (CAISSE_UI.brouillardMode==='session'?'':'none') + ';">' + selectHtml + '</span>'
+    + '<span id="cb-mode-periode-wrap" style="display:' + (CAISSE_UI.brouillardMode==='periode'?'':'none') + ';align-items:center;gap:6px;">'
+    + '<input type="date" class="filter-select" id="cb-periode-debut" value="' + (CAISSE_UI.brouillardDebut || mois0) + '" onchange="caisseRenderBrouillardPeriode()">'
+    + '<span style="font-size:12px;color:var(--blanc-dim);">→</span>'
+    + '<input type="date" class="filter-select" id="cb-periode-fin" value="' + (CAISSE_UI.brouillardFin || today0) + '" onchange="caisseRenderBrouillardPeriode()">'
+    + '</span>'
     + '<button class="btn btn-secondary btn-sm" onclick="caisseImprimerBrouillard()">🖨️ Imprimer</button>'
     + '<button class="btn btn-secondary btn-sm" onclick="caisseEnvoyerEtatManuel()">✉️ Envoyer l\'état</button>'
     + '</div></div>'
     + '<div id="caisse-brouillard-table"></div>'
     + '</div>';
-  caisseRenderBrouillardSession(CAISSE_UI.brouillardSessionId);
+  if (CAISSE_UI.brouillardMode === 'periode') caisseRenderBrouillardPeriode();
+  else caisseRenderBrouillardSession(CAISSE_UI.brouillardSessionId);
+}
+
+function caisseBrouillardModeToggle(mode) {
+  CAISSE_UI.brouillardMode = mode;
+  caisseAfficherBrouillard(CAISSE_UI.brouillardCaisseId);
+}
+
+/* ── Brouillard par PÉRIODE (date début → date fin), indépendant des
+   sessions ────────────────────────────────────────────────────────────
+   Nécessaire car l'import CSV tague tous les mouvements importés avec la
+   session OUVERTE au moment de l'import (caisseImportCSVConfirmer), quelle
+   que soit leur date réelle — un import massif de données historiques se
+   retrouve donc éclaté sur plusieurs sessions sans rapport avec leur date.
+   Cette vue ignore le session_id : elle filtre uniquement par caisse_id et
+   par date réelle du mouvement (m.date), ce qui inclut correctement les
+   données importées quelle que soit la session à laquelle elles ont été
+   techniquement rattachées. */
+function caisseRenderBrouillardPeriode() {
+  var caisseId = CAISSE_UI.brouillardCaisseId;
+  var debut = (document.getElementById('cb-periode-debut')||{}).value || today().slice(0,8)+'01';
+  var fin   = (document.getElementById('cb-periode-fin')||{}).value || today();
+  CAISSE_UI.brouillardDebut = debut;
+  CAISSE_UI.brouillardFin = fin;
+  var tbl = document.getElementById('caisse-brouillard-table');
+  if (!tbl) return;
+  if (debut > fin) { tbl.innerHTML = '<div style="color:var(--rouge);">Date de début postérieure à la date de fin.</div>'; return; }
+
+  var tousMvts = (DATA.caisse_mouvements || []).filter(function(m){ return m.caisse_id === caisseId; });
+
+  /* Solde d'ouverture réel à la date de début : fond d'ouverture de la toute
+     première session de cette caisse (peu importe qu'elle soit couverte par
+     la période ou non) + tous les mouvements antérieurs à `debut`, y compris
+     les mouvements importés dont la date réelle précède la session à
+     laquelle ils sont techniquement rattachés. */
+  var sessionsCaisse = (DATA.caisse_sessions || []).filter(function(s){ return s.caisse_id === caisseId; })
+    .sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
+  var soldeOuverture = sessionsCaisse.length ? (parseFloat(sessionsCaisse[0].fond_ouverture) || 0) : 0;
+  tousMvts.forEach(function(m){
+    var d = (m.date||'').slice(0,10);
+    if (d && d < debut) soldeOuverture += (m.type==='entree' ? (parseFloat(m.montant)||0) : -(parseFloat(m.montant)||0));
+  });
+
+  var mvts = tousMvts.filter(function(m){
+    var d = (m.date||'').slice(0,10);
+    return d && d >= debut && d <= fin;
+  }).sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
+
+  var sessById = {};
+  sessionsCaisse.forEach(function(s){ sessById[s.id] = s; });
+
+  var solde = soldeOuverture;
+  var rows = '<tr style="font-weight:700;background:rgba(255,255,255,0.04);"><td colspan="6">Solde d\'ouverture au ' + dateShort(debut) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td></tr>';
+  mvts.forEach(function(m) {
+    solde += m.type === 'entree' ? (parseFloat(m.montant)||0) : -(parseFloat(m.montant)||0);
+    var sess = sessById[m.session_id];
+    var estImporte = /import CSV/i.test(m.created_by || '');
+    rows += '<tr>'
+      + '<td>' + (m.date||'').slice(0,10) + '</td>'
+      + '<td>' + (sess ? sess.date : '—') + (estImporte ? ' <span title="Donnée importée — date réelle peut différer de la session" style="color:var(--or);">📥</span>' : '') + '</td>'
+      + '<td>' + escHtml(m.numero||'') + '</td>'
+      + '<td>' + escHtml(m.motif||'') + (m.beneficiaire ? ' — ' + escHtml(m.beneficiaire) : '') + '</td>'
+      + '<td style="text-align:right;color:var(--vert);">' + (m.type==='entree' ? fmtF(m.montant) : '') + '</td>'
+      + '<td style="text-align:right;color:var(--rouge);">' + (m.type==='sortie' ? fmtF(m.montant) : '') + '</td>'
+      + '<td style="text-align:right;">' + fmtF(solde) + '</td>'
+      + '</tr>';
+  });
+
+  var totalEntrees = mvts.filter(function(m){ return m.type==='entree'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+  var totalSorties = mvts.filter(function(m){ return m.type==='sortie'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+
+  tbl.innerHTML = '<div style="overflow-x:auto;">'
+    + '<table class="data-table"><thead><tr><th>Date</th><th>Session</th><th>N° bon</th><th>Motif</th><th style="text-align:right;">Entrée</th><th style="text-align:right;">Sortie</th><th style="text-align:right;">Solde</th></tr></thead>'
+    + '<tbody>' + rows + '</tbody>'
+    + '<tfoot><tr style="font-weight:800;border-top:2px solid var(--bord);"><td colspan="4">Totaux ' + dateShort(debut) + ' → ' + dateShort(fin) + '</td><td style="text-align:right;color:var(--vert);">' + fmtF(totalEntrees) + '</td><td style="text-align:right;color:var(--rouge);">' + fmtF(totalSorties) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td></tr></tfoot>'
+    + '</table></div>'
+    + '<div style="margin-top:10px;font-size:11px;color:var(--blanc-dim);">' + mvts.length + ' mouvement(s) · 📥 = donnée importée (rattachée techniquement à la session ouverte au moment de l\'import, pas forcément celle de sa date réelle)</div>';
 }
 
 function caisseRenderBrouillardSession(sessionId) {
@@ -106259,6 +106411,7 @@ function caisseImprimerBon(mvtId) {
 }
 
 function caisseImprimerBrouillard() {
+  if (CAISSE_UI.brouillardMode === 'periode') { caisseImprimerBrouillardPeriode(); return; }
   var session = (DATA.caisse_sessions || []).find(function(s){ return s.id === CAISSE_UI.brouillardSessionId; });
   if (!session) { toast('Aucune session sélectionnée.', 'error'); return; }
   var c = (DATA.caisses || []).find(function(x){ return x.id === session.caisse_id; });
@@ -106294,6 +106447,56 @@ function caisseImprimerBrouillard() {
     + '<div>Vérifié par (Comptabilité)<br><br>___________________</div>'
     + '</div></div>';
   openPrintPreview(html, 'Brouillard de caisse — ' + (c?c.nom:'') + ' — ' + session.date, true);
+}
+
+function caisseImprimerBrouillardPeriode() {
+  var caisseId = CAISSE_UI.brouillardCaisseId;
+  var debut = CAISSE_UI.brouillardDebut || (document.getElementById('cb-periode-debut')||{}).value;
+  var fin   = CAISSE_UI.brouillardFin   || (document.getElementById('cb-periode-fin')||{}).value;
+  var c = (DATA.caisses || []).find(function(x){ return x.id === caisseId; });
+  var p = DATA.params || {};
+  if (!debut || !fin) { toast('Sélectionnez une période.', 'error'); return; }
+
+  var tousMvts = (DATA.caisse_mouvements || []).filter(function(m){ return m.caisse_id === caisseId; });
+  var sessionsCaisse = (DATA.caisse_sessions || []).filter(function(s){ return s.caisse_id === caisseId; })
+    .sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
+  var soldeOuverture = sessionsCaisse.length ? (parseFloat(sessionsCaisse[0].fond_ouverture) || 0) : 0;
+  tousMvts.forEach(function(m){
+    var d = (m.date||'').slice(0,10);
+    if (d && d < debut) soldeOuverture += (m.type==='entree' ? (parseFloat(m.montant)||0) : -(parseFloat(m.montant)||0));
+  });
+  var mvts = tousMvts.filter(function(m){
+    var d = (m.date||'').slice(0,10);
+    return d && d >= debut && d <= fin;
+  }).sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
+
+  var solde = soldeOuverture;
+  var rows = '';
+  mvts.forEach(function(m) {
+    solde += m.type === 'entree' ? (parseFloat(m.montant)||0) : -(parseFloat(m.montant)||0);
+    rows += '<tr><td style="white-space:nowrap;">' + (m.date||'').slice(0,10) + '</td><td style="white-space:nowrap;">' + escHtml(m.numero||'') + '</td><td>' + escHtml(m.motif||'') + '</td>'
+      + '<td style="text-align:right;white-space:nowrap;">' + (m.type==='entree'?fmtF(m.montant):'') + '</td>'
+      + '<td style="text-align:right;white-space:nowrap;">' + (m.type==='sortie'?fmtF(m.montant):'') + '</td>'
+      + '<td style="text-align:right;white-space:nowrap;">' + fmtF(solde) + '</td></tr>';
+  });
+  var totalEntrees = mvts.filter(function(m){ return m.type==='entree'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+  var totalSorties = mvts.filter(function(m){ return m.type==='sortie'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+  var html = '<div style="font-family:Georgia,serif;">'
+    + '<div style="text-align:center;margin-bottom:14px;"><div style="font-size:16px;font-weight:800;">' + escHtml(p.societe||'ImmoSuite ERP') + '</div>'
+    + '<div style="font-size:18px;font-weight:800;margin-top:8px;">Brouillard de caisse — Période</div>'
+    + '<div style="font-size:12px;color:#666;">' + escHtml(c ? c.nom : '') + ' — ' + dateShort(debut) + ' au ' + dateShort(fin) + '</div></div>'
+    + '<table style="width:100%;border-collapse:collapse;font-size:12px;" border="1" cellpadding="5">'
+    + '<thead><tr style="background:#eee;"><th>Date</th><th>N° bon</th><th>Motif</th><th>Entrée</th><th>Sortie</th><th>Solde</th></tr></thead>'
+    + '<tbody><tr><td colspan="5" style="font-weight:700;">Solde d\'ouverture au ' + dateShort(debut) + '</td><td style="text-align:right;font-weight:700;">' + fmtF(soldeOuverture) + '</td></tr>'
+    + rows
+    + '<tr style="font-weight:800;background:#f5f5f5;"><td colspan="3">Totaux période</td><td style="text-align:right;">' + fmtF(totalEntrees) + '</td><td style="text-align:right;">' + fmtF(totalSorties) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td></tr>'
+    + '</tbody></table>'
+    + '<div style="margin-top:8px;font-size:10px;color:#888;">' + mvts.length + ' mouvement(s), y compris les données importées (par date réelle, indépendamment de la session à laquelle elles sont techniquement rattachées).</div>'
+    + '<div style="display:flex;justify-content:space-between;margin-top:50px;font-size:12px;">'
+    + '<div>Caissière<br><br>___________________</div>'
+    + '<div>Vérifié par (Comptabilité)<br><br>___________________</div>'
+    + '</div></div>';
+  openPrintPreview(html, 'Brouillard de caisse — ' + (c?c.nom:'') + ' — ' + dateShort(debut) + ' au ' + dateShort(fin), true);
 }
 
 /* ── Clôture de caisse ───────────────────────────────────────────────── */
