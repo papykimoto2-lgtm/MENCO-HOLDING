@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.14 · 2026-08-14 — Fix cloisonnement : Trésorerie détaillée (buildTresorerieDetaille) et Balance âgée fournisseurs/Tiers 401 (buildTiers401, calcTiersFournisseurMateriaux, export CSV) ne filtraient pas par division. Corrigés. Revue exhaustive des ~34 points de lecture DATA.ecritures terminée : rapprochement bancaire jugé correct par nature (scopé implicitement par compte de trésorerie), utilitaires de rattrapage technique hors périmètre (non pertinents pour un filtre entité).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.18 · 2026-08-14 — Norme interne paie : le champ « Transport non impos. » n\'est plus plafonné/réintégré dans l\'imposable pour le personnel NON DÉCLARÉ CNPS, quel que soit le montant (distinct des consultants, qui gardent le plafond légal). Corrigé à la source unique calcPaieCI + propagé aux 4 points d\'entrée (modal Bulletin de Salaire, paie mensuelle globale, aperçu temps réel fiche employé).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -22082,13 +22082,15 @@ function iaaReponseLocale(texte) {
   return null;
 }
 
-var IAA_SYSTEM_PROMPT = "Tu es SANIX IA, l'assistant intelligent central d'ImmoSuite ERP (Menko Immo), un ERP immobilier/foncier pour la Côte d'Ivoire (droit OHADA, comptabilité SYSCOHADA). "
+function IAA_SYSTEM_PROMPT() {
+  return "Tu es SANIX IA, l'assistant intelligent central d'ImmoSuite ERP, un ERP immobilier/foncier pour la Côte d'Ivoire (droit OHADA, comptabilité SYSCOHADA), au service de " + ((DATA.params||{}).societe || "votre société") + ". "
   + "Réponds en français, de façon concise et professionnelle, avec des chiffres exacts en utilisant les outils fournis plutôt qu'en inventant des données. "
   + "Utilise les outils pour toute question chiffrée ou factuelle sur les lots, clients, trésorerie, dossiers juridiques ou rentabilité. "
   + "Pour toute question sur L'UTILISATION du logiciel (« comment faire X », « où trouver Y », quel bouton/onglet utiliser), appuie-toi STRICTEMENT sur le manuel de procédures ci-dessous — ne décris jamais un bouton, onglet ou fonctionnalité qui n'y figure pas explicitement ; si l'information n'y est pas, dis que tu ne sais pas plutôt que d'inventer. "
   + "Tu n'exécutes jamais d'action irréversible (paiement, écriture comptable, suppression) — tu es un assistant d'analyse et de conseil, pas un exécutant automatique ; toute action critique doit être validée par un humain dans l'ERP. "
   + "Si la question sort du périmètre de l'ERP, réponds normalement avec tes connaissances générales.\n\n"
   + "## MANUEL DE PROCÉDURES (modules couverts)\n" + IAA_MANUEL_TEXTE;
+}
 
 async function iaaEnvoyer() {
   if (IAA.running) return;
@@ -22151,7 +22153,7 @@ async function iaaAppelBoucle(messages) {
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1200,
-        system: IAA_SYSTEM_PROMPT,
+        system: IAA_SYSTEM_PROMPT(),
         tools: IAA_TOOLS,
         messages: messages
       })
@@ -29987,7 +29989,7 @@ function serieExporterPDF() {
   if (!(window.jspdf && window.jspdf.jsPDF)) { toast('jsPDF indisponible (hors ligne au 1er usage).', 'error'); return; }
   if (!_SERIE_PREVIEW.length) { toast('Aucun lot à exporter.', 'error'); return; }
   var prog = (DATA.programmes || []).find(function(p) { return p.id === _SERIE_PROGID; }) || {};
-  var soc = ((DATA.params||{}).societe) || 'MENKO IMMO';
+  var soc = ((DATA.params||{}).societe) || 'ImmoSuite ERP';
   var frd = (typeof _frDate === 'function') ? _frDate(today()) : today();
   var doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.text(String(soc), 148, 14, { align: 'center' });
@@ -41637,9 +41639,13 @@ function calcPaieCI(d) {
   var logement    = R((d.logement || 0) * prorata);
   var heuresSupp  = R(d.heuresSupp || 0);
 
-  /* GAINS non imposables — transport exonéré plafonné ; excédent réintégré */
+  /* GAINS non imposables — transport exonéré plafonné ; excédent réintégré.
+     [Norme interne] Exception : personnel NON DÉCLARÉ CNPS uniquement (pas
+     les consultants) — le transport reste intégralement non imposable, quel
+     que soit le montant, aucun plafond appliqué. */
   var transportBrut = R((d.transport || 0) * prorata);
-  var _exoMax = (PAIE_CI.transportExoPlafond != null) ? PAIE_CI.transportExoPlafond : transportBrut;
+  var _exoMax = d.nonDeclare ? transportBrut
+    : ((PAIE_CI.transportExoPlafond != null) ? PAIE_CI.transportExoPlafond : transportBrut);
   var transport = Math.min(transportBrut, _exoMax);      /* part exonérée */
   var transportImpos = Math.max(0, transportBrut - transport); /* excédent imposable + CNPS */
 
@@ -41862,6 +41868,7 @@ function paieInputFromEmploye(e, moisArg) {
        "non_declare" (bypass explicite, voir fiche employé) : exonérés. */
     contrat: e.contrat || '',
     exoCnps: e.contrat === 'consultant' || e.cnps_statut === 'non_declare',
+    nonDeclare: e.cnps_statut === 'non_declare',   /* [Norme interne] transport intégralement non imposable, uniquement ce statut (pas consultant) */
     tauxAT: getTauxATDivision(e.division)
   };
 }
@@ -42011,6 +42018,7 @@ function calcSalaireNet() {
     parts: calcPartsFiscales(mat, enf), tauxAnciennete: calcTauxAnciennete(dEmb),
     cmuPersonnes: 1 + (parseInt(enf)||0) + (mat === 'marie' ? 1 : 0), jours: PAIE_CI.joursMois,
     contrat: _ctr, exoCnps: (_ctr === 'consultant' || _cst === 'non_declare'),
+    nonDeclare: (_cst === 'non_declare'),
     tauxAT: getTauxATDivision((document.getElementById('emp-division')||{}).value)
   });
   document.getElementById('emp-net-estime').value = fmtF(r.net) + ' FCFA (estimation)';
@@ -45006,6 +45014,7 @@ function _bulletinInputs() {
     jours: parseInt(document.getElementById('b-jours').value) || 30,
     contrat: emp ? (emp.contrat || '') : '',
     exoCnps: !!(emp && (emp.contrat === 'consultant' || emp.cnps_statut === 'non_declare')),
+    nonDeclare: !!(emp && emp.cnps_statut === 'non_declare'),   /* [Norme interne] distinct du consultant : seul ce statut a le transport intégralement non imposable */
     tauxAT: getTauxATDivision(emp && emp.division)
   };
 }
@@ -79012,6 +79021,26 @@ function planOuvrirSlot(angleId) {
 }
 
 /* ── Traiter des fichiers (avec ou sans angle assigné) ── */
+/* Détecte un fichier CAO (DXF/DWG) par extension — file.type est vide pour
+   ces formats dans la plupart des navigateurs, d'où ce fallback sur le nom. */
+/* Téléchargement direct d'une vue — seul moyen d'ouvrir un DXF/DWG stocké ici,
+   puisque ce module ne fait aucun rendu CAO (contrairement à l'import plan de
+   masse, qui parse réellement le DXF). */
+function planTelechargerVue(vueId) {
+  var v = PLAN_STATE.vues.find(function(x){ return x.id === vueId; });
+  if (!v) return;
+  var a = document.createElement('a');
+  a.href = v.data;
+  a.download = v.nom || 'plan.dxf';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+function planEstFichierCAO(nom) {
+  return /\.(dxf|dwg)$/i.test(nom || '');
+}
+
 function planTraiterFichiers(files, angleId) {
   if (!files.length) return;
   var MAX = 5 * 1024 * 1024; /* 5 Mo */
@@ -79082,6 +79111,8 @@ function planRenderVuesGrid() {
         +' onclick="event.stopPropagation();planOuvrirLightboxAngle(\''+angle.id+'\',0)">';
     } else if (hasFile && firstVue && firstVue.type === 'application/pdf') {
       thumbHtml = '<div style="font-size:28px;">📄</div>';
+    } else if (hasFile && firstVue && planEstFichierCAO(firstVue.nom)) {
+      thumbHtml = '<div style="font-size:28px;cursor:pointer;" title="Plan CAO — clic pour télécharger et ouvrir dans AutoCAD/DraftSight" onclick="event.stopPropagation();planTelechargerVue(\''+firstVue.id+'\')">📐</div>';
     }
 
     var multi = vues.length > 1 ? '<span class="plan-slot-badge">'+vues.length+'</span>' : '';
@@ -79091,7 +79122,7 @@ function planRenderVuesGrid() {
         + vues.slice(0,4).map(function(v,i){
             return v.type && v.type.startsWith('image/')
               ? '<img src="'+v.data+'" style="width:22px;height:22px;object-fit:cover;border-radius:3px;cursor:pointer;" onclick="event.stopPropagation();planOuvrirLightboxAngle(\''+angle.id+'\','+i+')">'
-              : '<span style="font-size:14px;">📄</span>';
+              : (planEstFichierCAO(v.nom) ? '<span style="font-size:14px;cursor:pointer;" title="'+escHtml(v.nom)+' — clic pour télécharger" onclick="event.stopPropagation();planTelechargerVue(\''+v.id+'\')">📐</span>' : '<span style="font-size:14px;">📄</span>');
           }).join('')
         + (vues.length > 4 ? '<span style="font-size:10px;color:var(--dim);">+'+( vues.length-4)+'</span>' : '')
         + '</div>';
@@ -79130,16 +79161,17 @@ function planRenderVuesLibres() {
 
   el.innerHTML = libres.map(function(v) {
     var isImg = v.type && v.type.startsWith('image/');
+    var isCAO = !isImg && planEstFichierCAO(v.nom);
     var taille = v.taille > 1024*1024 ? (v.taille/1024/1024).toFixed(1)+' Mo' : Math.round(v.taille/1024)+' Ko';
     var angle = PLAN_ANGLES.find(function(a){ return a.id === v.angle_id; }) || { icon:'📄', label:'Autre' };
     return '<div class="plan-vue-item" id="pv-'+v.id+'">'
       + (isImg
           ? '<img class="plan-vue-thumb" src="'+v.data+'" onclick="planOuvrirLightboxVue(\''+v.id+'\')">'
-          : '<div style="width:48px;height:48px;border-radius:6px;background:rgba(74,148,224,0.12);display:flex;align-items:center;justify-content:center;font-size:22px;">📄</div>')
+          : '<div style="width:48px;height:48px;border-radius:6px;background:rgba(74,148,224,0.12);display:flex;align-items:center;justify-content:center;font-size:22px;">'+(isCAO?'📐':'📄')+'</div>')
       + '<div class="plan-vue-info">'
-      + '<div class="plan-vue-nom">'+v.nom+'</div>'
+      + '<div class="plan-vue-nom">'+escHtml(v.nom)+'</div>'
       + '<div class="plan-vue-meta">'+taille+' · '+v.date_ajout+'</div>'
-      + '<input class="pt-input-notes" placeholder="Label personnalisé..." value="'+(v.label_custom||'')+'"'
+      + '<input class="pt-input-notes" placeholder="Label personnalisé..." value="'+escHtml(v.label_custom||'')+'"'
           + ' onchange="planMajLabel(\''+v.id+'\',this.value)"'
           + ' style="margin-top:4px;font-size:11px;max-width:200px;">'
       + '</div>'
@@ -79147,9 +79179,10 @@ function planRenderVuesLibres() {
       + '<select class="plan-vue-angle-sel" onchange="planMajAngle(\''+v.id+'\',this.value)">'
           + PLAN_ANGLES.map(function(a){ return '<option value="'+a.id+'"'+(v.angle_id===a.id?' selected':'')+'>'+a.icon+' '+a.label+'</option>'; }).join('')
           + '</select>'
-      + '<input class="pt-input-heure" type="text" placeholder="échelle" value="'+(v.echelle||'')+'"'
+      + '<input class="pt-input-heure" type="text" placeholder="échelle" value="'+escHtml(v.echelle||'')+'"'
           + ' style="width:80px;font-size:11px;" onchange="planMajEchelle(\''+v.id+'\',this.value)">'
       + (isImg ? '<button class="btn btn-secondary btn-sm btn-icon" style="font-size:11px;" onclick="planOuvrirLightboxVue(\''+v.id+'\')">🔍</button>' : '')
+      + (isCAO ? '<button class="btn btn-secondary btn-sm btn-icon" style="font-size:11px;" title="Télécharger" onclick="planTelechargerVue(\''+v.id+'\')">⬇</button>' : '')
       + '<button class="btn btn-danger btn-sm btn-icon" style="font-size:11px;" onclick="planSupprimerVue(\''+v.id+'\')">🗑</button>'
       + '</div>'
       + '</div>';
@@ -79193,8 +79226,8 @@ function planRenderDocs() {
     var icone = d.type==='application/pdf'?'📕':d.type.includes('word')?'📘':d.type.includes('excel')?'📗':'📎';
     return '<div class="plan-doc-item">'
       +'<div class="plan-doc-icon">'+icone+'</div>'
-      +'<div class="plan-doc-info"><div class="plan-doc-nom">'+d.nom+'</div><div class="plan-doc-taille">'+taille+'</div></div>'
-      +'<a href="'+d.data+'" download="'+d.nom+'" class="btn btn-secondary btn-sm btn-icon" style="font-size:11px;">⬇</a>'
+      +'<div class="plan-doc-info"><div class="plan-doc-nom">'+escHtml(d.nom)+'</div><div class="plan-doc-taille">'+taille+'</div></div>'
+      +'<a href="'+d.data+'" download="'+escHtml(d.nom)+'" class="btn btn-secondary btn-sm btn-icon" style="font-size:11px;">⬇</a>'
       +'<button class="btn btn-danger btn-sm btn-icon" style="font-size:11px;" onclick="planSupprimerDoc(\''+d.id+'\')">🗑</button>'
       +'</div>';
   }).join('');
@@ -111933,7 +111966,7 @@ function dossierTechniqueLot(lotId){
   var prog=(DATA.programmes||[]).find(function(p){return p.id===l.programme_id;})||{};
   var parc=(DATA.parcelles||[]).find(function(p){return p.id===l.parcelle_id;})||{};
   var cli=(DATA.clients||[]).find(function(c){return c.lot_id===l.id;});
-  var zone=l.utm_zone||30, soc=((DATA.params||{}).societe)||'MENKO IMMO';
+  var zone=l.utm_zone||30, soc=((DATA.params||{}).societe)||'ImmoSuite ERP';
   var frd=(typeof _frDate==='function')?_frDate(today()):today();
   var ref='DT-'+String(prog.nom||'PRG').substring(0,4).toUpperCase()+'-L'+String(l.numero||'').replace(/\s/g,'')+'-'+String(today()).replace(/-/g,'');
   var doc=new window.jspdf.jsPDF({orientation:'portrait',unit:'mm',format:'a4'});
