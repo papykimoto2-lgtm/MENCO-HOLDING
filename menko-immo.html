@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.28 · 2026-08-14 — Site / Portail — Médias publiables : restriction admin/manager retirée sur les 4 actions de publication (photos, vidéo par lien, vidéo fichier, document). Tout utilisateur ayant accès à cette page peut désormais publier — cohérent avec pmToggleVisible/pmDelete qui n\'avaient déjà aucune restriction.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.33 · 2026-08-14 — Revue du fix « connexion impossible » : 2e risque de sécurité trouvé et corrigé dans mon propre correctif — l\'utilisateur renvoyé par l\'Edge Function n\'a pas de password_hash (volontaire, jamais exposé au client), ce qui aurait neutralisé silencieusement la protection d\'invalidation de session au changement de mot de passe (startSession lie le jeton local aux 16 premiers caractères du hash). Corrigé : un second fetch AUTHENTIFIÉ (via le jeton STAFF fraîchement obtenu, donc plus bloqué par RLS) récupère le hash réel avant mise en cache locale.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -2370,7 +2370,9 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
     <button class="topbar-menu-btn" onclick="toggleSidebar()" aria-label="Menu">☰</button>
     <div class="topbar-brand">ImmoSuite <span>ERP</span></div>
     <div class="topbar-spacer"></div>
-    <div id="rt-badge" title="Realtime multi-utilisateurs" style="font-size:10px;padding:3px 8px;border-radius:12px;background:rgba(255,255,255,0.07);color:#94a3b8;margin-right:6px;cursor:default;letter-spacing:.5px;transition:all .4s;">⬤ RT</div><div class="sync-badge" id="sync-badge">● Sync</div>
+    <div id="rt-badge" title="Realtime multi-utilisateurs" style="font-size:10px;padding:3px 8px;border-radius:12px;background:rgba(255,255,255,0.07);color:#94a3b8;margin-right:6px;cursor:default;letter-spacing:.5px;transition:all .4s;">⬤ RT</div>
+    <div id="staff-session-badge" title="Session personnel dégradée — cliquer pour réessayer" style="display:none;font-size:10px;padding:3px 8px;border-radius:12px;background:rgba(234,88,12,0.18);color:#EA580C;margin-right:6px;cursor:pointer;letter-spacing:.5px;flex-shrink:0;white-space:nowrap;" onclick="staffLoginRetryManuel()">⚠ Session</div>
+    <div class="sync-badge" id="sync-badge">● Sync</div>
     <div class="topbar-user" onclick="logout()">
       <div class="user-avatar" id="user-avatar">A</div>
       <span id="user-name">Admin</span>
@@ -22467,11 +22469,22 @@ function sbAuth(){
 }
 async function staffLogin(login, motdepasse){
   if(!SB.url||!SB.key) throw new Error('Configurez Supabase avant.');
-  var r=await fetch(SB.url.replace(/\/+$/,'')+'/functions/v1/staff-login',{
-    method:'POST',
-    headers:{'Content-Type':'application/json','apikey':SB.key,'Authorization':'Bearer '+sbAuth()},
-    body:JSON.stringify({login:login, motdepasse:motdepasse})
-  });
+  var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  var timeoutId = ctrl ? setTimeout(function(){ ctrl.abort(); }, 8000) : null;
+  var r;
+  try {
+    r = await fetch(SB.url.replace(/\/+$/,'')+'/functions/v1/staff-login',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','apikey':SB.key,'Authorization':'Bearer '+sbAuth()},
+      body:JSON.stringify({login:login, motdepasse:motdepasse}),
+      signal: ctrl ? ctrl.signal : undefined
+    });
+  } catch (eFetch) {
+    if (eFetch && eFetch.name === 'AbortError') throw new Error('Délai réseau dépassé (8s) — connexion trop lente ou serveur indisponible.');
+    throw eFetch;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
   if(!r.ok) throw new Error('Identifiants refusés');
   var d=await r.json();
   if(!d.token) throw new Error('Réponse invalide');
@@ -22482,8 +22495,46 @@ async function staffLogin(login, motdepasse){
 function staffLogout(){
   STAFF={token:null,expire:0,user:null};
   localStorage.removeItem('sb_staff');
+  /* [Revue] staffLogout() ne coupait pas l'intervalle d'auto-guérison créé
+     au login (voir doLogin) — il continuait de tourner jusqu'à 30 min après
+     la déconnexion, retentant staffLogin() avec les identifiants PÉRIMÉS de
+     l'utilisateur précédent (fermés sur les variables u/p par la closure).
+     Risque concret : reconstitution d'un jeton STAFF pour une session déjà
+     déconnectée pendant qu'un autre utilisateur se connecte sur le même
+     poste/onglet. */
+  if (window._staffRetryInterval) { clearInterval(window._staffRetryInterval); window._staffRetryInterval = null; }
+  var b = document.getElementById('staff-session-badge');
+  if (b) b.style.display = 'none';
 }
 function staffActif(){ return !!(STAFF.token && STAFF.expire>Date.now()); }
+
+/* [Fix instabilité accès] Badge visible pour signaler une session dégradée
+   (staff-login indisponible → repli sur clé anon → RLS bloque les tables
+   internes). Auparavant : simple console.warn invisible pour l'utilisateur,
+   qui subissait des échecs de lecture/écriture Supabase sans comprendre
+   pourquoi — perçu comme une instabilité générale et aléatoire de l'accès. */
+function _majBadgeStaffSession() {
+  var b = document.getElementById('staff-session-badge');
+  if (!b) return;
+  var degrade = SB.url && SB.key && !staffActif();
+  b.style.display = degrade ? '' : 'none';
+}
+
+async function staffLoginRetryManuel() {
+  var b = document.getElementById('staff-session-badge');
+  if (b) { b.textContent = '⏳…'; b.style.pointerEvents = 'none'; }
+  toast('Reconnexion à la session personnel en cours…', 'info');
+  var mdp = prompt('Session Supabase dégradée depuis un moment.\nRessaisissez votre mot de passe pour la rétablir (identifiant : ' + (APP.currentUser ? APP.currentUser.login : '') + ') :');
+  if (!mdp) { if (b) { b.textContent = '⚠ Session'; b.style.pointerEvents = ''; } return; }
+  try {
+    await staffLogin(APP.currentUser.login, mdp);
+    toast('✅ Session Supabase rétablie.', 'success');
+  } catch (e) {
+    toast('❌ Toujours indisponible — réessayez plus tard, la session locale reste fonctionnelle.', 'error');
+  }
+  if (b) { b.textContent = '⚠ Session'; b.style.pointerEvents = ''; }
+  _majBadgeStaffSession();
+}
 
 function getSBConfig() {
   var u = (localStorage.getItem('sb_url') || '').trim();
@@ -25253,6 +25304,49 @@ async function doLogin() {
       try { if (typeof syncToSupabase === 'function') syncToSupabase('pi_users', user); } catch(e) {}
     }
   }
+  var _authDejaValideeParEdge = false;
+  if (!user) {
+    /* [Fix connexion impossible] Cause racine probable des utilisateurs qui
+       n'arrivent pas du tout à se connecter : DATA.users local (IndexedDB)
+       ne contient pas encore ce compte (nouvel appareil, nouvel employé,
+       cache navigateur vidé) ET fetchUserFromCloud() échoue silencieusement
+       car elle utilise la clé ANONYME — bloquée par les politiques RLS sur
+       pi_users depuis le correctif de sécurité. Résultat : identifiants
+       pourtant corrects, refusés quand même, sans que rien n'indique
+       pourquoi. L'Edge Function staff-login, elle, vérifie le mot de passe
+       CÔTÉ SERVEUR — indépendamment du RLS client. On l'utilise ici comme
+       filet de secours avant d'abandonner, et on met en cache localement
+       le compte renvoyé pour que les connexions suivantes n'aient plus
+       besoin du réseau. */
+    if (SB.url && SB.key && navigator.onLine) {
+      try {
+        var userViaEdge = await staffLogin(u, p);
+        if (userViaEdge) {
+          user = userViaEdge;
+          _authDejaValideeParEdge = true;
+          /* [Sécurité] d.user (renvoyé par l'Edge Function) n'inclut pas
+             password_hash/salt — à raison, un hash ne doit jamais transiter
+             vers le client sans nécessité. Mais startSession() lie le jeton
+             de session LOCALE à ces 16 premiers caractères du hash pour
+             invalider la session si le mot de passe change ailleurs ; sans
+             cette valeur réelle, cette protection serait silencieusement
+             neutralisée (hash vide de part et d'autre → comparaison toujours
+             vraie). On profite du jeton STAFF fraîchement obtenu pour refaire
+             un fetch cette fois AUTHENTIFIÉ (sbAuth() renverra STAFF.token,
+             plus la clé anonyme bloquée par RLS) et récupérer le vrai hash. */
+          try {
+            var userComplet = await fetchUserFromCloud(u);
+            if (userComplet && userComplet.password_hash) user = userComplet;
+          } catch (eRefetch) {}
+          try {
+            await dbPut('users', user);
+            var idxE = DATA.users.findIndex(function(x){ return x.id === user.id || x.login === user.login; });
+            if (idxE >= 0) DATA.users[idxE] = user; else DATA.users.push(user);
+          } catch(eCache) {}
+        }
+      } catch (eEdge) { /* Edge Function aussi indisponible — abandon normal ci-dessous */ }
+    }
+  }
   if (!user) {
     attempts[bfKey] = attCount + 1;
     localStorage.setItem('pici_login_attempts', JSON.stringify(attempts));
@@ -25267,11 +25361,11 @@ async function doLogin() {
   }
 
   // ── Vérification du mot de passe ─────────────────────────────────────
-  var valid = false;
-  if (user.password_hash && user.salt) {
+  var valid = _authDejaValideeParEdge;   /* déjà confirmé côté serveur — ne pas re-vérifier localement (le hash n'est volontairement pas exposé par l'Edge Function) */
+  if (!valid && user.password_hash && user.salt) {
     // Chemin normal : comparaison des hashs SHA-256
     valid = (await hashPassword(p, user.salt)) === user.password_hash;
-  } else if (user.password) {
+  } else if (!valid && user.password) {
     // Transition : mot de passe en clair non encore migré
     valid = (user.password === p);
     if (valid) {
@@ -25325,11 +25419,45 @@ async function doLogin() {
      la session locale reste pleinement fonctionnelle (mode dégradé). */
   try {
     if (typeof staffLogin === 'function' && SB.url && SB.key) {
-      await staffLogin(u, p);
+      /* [Fix instabilité accès] Une seule tentative auparavant — un simple
+         aléa réseau ou un cold-start de l'Edge Function (courant sur
+         Supabase après une période d'inactivité) faisait échouer staffLogin
+         définitivement pour toute la session : STAFF.token restait null,
+         sbAuth() retombait sur la clé anon, et TOUTE lecture/écriture
+         Supabase se heurtait au RLS (accès anon révoqué) sans que
+         l'utilisateur en soit informé — c'est exactement l'instabilité
+         d'accès observée en usage réel. On réessaie maintenant 2 fois
+         avec un court délai avant d'abandonner. */
+      var _staffLoginOk = false;
+      for (var _sTry = 0; _sTry < 3 && !_staffLoginOk; _sTry++) {
+        try {
+          if (_sTry > 0) await new Promise(function(res){ setTimeout(res, 800 * _sTry); });
+          await staffLogin(u, p);
+          _staffLoginOk = true;
+        } catch (eRetry) { if (_sTry === 2) throw eRetry; }
+      }
     }
   } catch (e) {
-    console.warn('[AUTH] Session Supabase (staff-login) indisponible — poursuite en session locale uniquement.', e);
+    console.warn('[AUTH] Session Supabase (staff-login) indisponible après 3 tentatives — poursuite en session locale uniquement.', e);
   }
+  _majBadgeStaffSession();
+  /* Auto-guérison : si staffLogin a échoué au login (Edge Function temporairement
+     indisponible), on retente en silence toutes les 2 minutes tant que la
+     session locale reste ouverte — dès que ça repasse, le badge disparaît sans
+     obliger l'utilisateur à se déconnecter/reconnecter pour retrouver un accès
+     Supabase normal. */
+  if (window._staffRetryInterval) clearInterval(window._staffRetryInterval);
+  var _staffRetryCount = 0;
+  window._staffRetryInterval = setInterval(function(){
+    _staffRetryCount++;
+    if (staffActif() || !SB.url || !SB.key || !navigator.onLine || _staffRetryCount > 15) {
+      /* Session rétablie, ou 30 min de tentatives infructueuses (15×2 min) —
+         on arrête et on efface la référence au mot de passe en mémoire. */
+      clearInterval(window._staffRetryInterval); window._staffRetryInterval = null; p = null; u = null;
+      return;
+    }
+    staffLogin(u, p).then(function(){ _majBadgeStaffSession(); clearInterval(window._staffRetryInterval); window._staffRetryInterval = null; p = null; u = null; }).catch(function(){});
+  }, 120000);
 
   demarrerSyncAuto();           // ← lance le push dirty toutes les 30 s
   startInactivityTimer();
@@ -67472,6 +67600,7 @@ async function startApp() {
        déconnexion/reconnexion — et pouvait sembler « réinjectée » dès
        qu'un autre poste ou un futur pull ramenait l'ancienne version. */
     try { demarrerSyncAuto(); } catch(e){}
+    try { _majBadgeStaffSession(); } catch(e){}
     try { setTimeout(function(){ pullFromCloudSilent(); }, 1500); } catch(e){}
     goTo('dashboard');
     /* Démarrage Realtime après login */
