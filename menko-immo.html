@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.22 · 2026-08-14 — Nouveau : état des écritures non ventilées du dernier import CSV caisse (caisseEtatDernierImport). Chaque import est maintenant tagué d\'un identifiant de lot (import_batch_id) persisté par caisse — bouton « 🧾 État dernier import » sur la carte caisse (visible seulement si un import a eu lieu), liste les mouvements du dernier lot encore « à ventiler », avec compte suggéré si disponible et solde net non ventilé.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.23 · 2026-08-14 — Nouveau : ajustement du fond d\'ouverture d\'une caisse (caisseAjusterFondOuvertureModal). Aucune UI n\'existait pour corriger fond_ouverture après création de session — figé au premier enregistrement. Bouton « ⚖️ Ajuster fond » sur la carte caisse (admin/comptable uniquement), motif obligatoire, historique des corrections tracé sur la session, snapshot de sécurité automatique avant modification. À utiliser pour corriger le solde Caisse Principale MENKO HOLDING au 1er janvier (108 800 FCFA).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -105127,6 +105127,7 @@ function caisseRenderListe() {
         + '<button class="btn btn-secondary btn-sm" onclick="caisseAfficherBrouillard(\'' + c.id + '\')">📋 Brouillard</button>'
         + '<button class="btn btn-secondary btn-sm" onclick="caisseImportCSVModal(\'' + c.id + '\')">📥 Import CSV</button>'
         + ((DATA.params||{})['caisse_dernier_import_' + c.id] ? '<button class="btn btn-secondary btn-sm" onclick="caisseEtatDernierImport(\'' + c.id + '\')" title="Écritures non ventilées du dernier import CSV">🧾 État dernier import</button>' : '')
+        + (caisseRoleAdminLike() ? '<button class="btn btn-secondary btn-sm" onclick="caisseAjusterFondOuvertureModal(\'' + c.id + '\')" title="Corriger le fond d\'ouverture de la première session">⚖️ Ajuster fond</button>' : '')
         + '<button class="btn btn-cloture btn-sm" onclick="caisseClôturerModal(\'' + c.id + '\')">🔒 Clôturer</button>';
     }
     if (caisseRoleAdminLike()) {
@@ -107397,6 +107398,65 @@ async function caisseAnnulerVentilationsAutoParRegle(motCle) {
    point de restauration (JSON, localStorage, 3 derniers conservés) AVANT
    d'écrire — sans blocage : si le stockage échoue, l'opération continue,
    l'absence de filet ne doit pas empêcher le travail. */
+/* ── Ajustement du fond d'ouverture (correction admin) ────────────────
+   Rien dans le module ne permettait de corriger fond_ouverture après
+   création de la session — figé au premier enregistrement. Nécessaire
+   quand le solde réel constaté au 1er janvier diffère de ce qui a été
+   saisi (erreur de saisie initiale, oubli, etc.). Réservé admin/comptable
+   (caisseRoleAdminLike), snapshot de sécurité avant toute modification. */
+function caisseAjusterFondOuvertureModal(caisseId) {
+  if (!caisseRoleAdminLike()) { toast('Réservé au comptable / manager / admin.', 'error'); return; }
+  var c = (DATA.caisses||[]).find(function(x){ return x.id === caisseId; });
+  var sessionsCaisse = (DATA.caisse_sessions||[]).filter(function(s){ return s.caisse_id === caisseId; })
+    .sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
+  if (!sessionsCaisse.length) { toast('Aucune session pour cette caisse — rien à ajuster.', 'error'); return; }
+  var premiere = sessionsCaisse[0];
+  document.getElementById('caf-caisse-id').value = caisseId;
+  document.getElementById('caf-session-id').value = premiere.id;
+  document.getElementById('caf-recap').innerHTML =
+    '<strong>' + escHtml(c ? c.nom : '') + '</strong><br>'
+    + 'Première session : ' + premiere.date + (premiere.statut==='ouverte' ? ' (en cours)' : ' — clôturée') + '<br>'
+    + 'Fond d\'ouverture actuellement enregistré : <strong>' + fmtF(premiere.fond_ouverture) + ' FCFA</strong>';
+  document.getElementById('caf-nouveau-montant').value = premiere.fond_ouverture || 0;
+  document.getElementById('caf-motif').value = '';
+  openModal('modal-caisse-ajuster-fond');
+}
+
+async function caisseConfirmerAjustementFond() {
+  var caisseId = document.getElementById('caf-caisse-id').value;
+  var sessionId = document.getElementById('caf-session-id').value;
+  var nouveau = parseFloat(document.getElementById('caf-nouveau-montant').value);
+  var motif = document.getElementById('caf-motif').value.trim();
+  if (isNaN(nouveau) || nouveau < 0) { toast('Montant invalide.', 'error'); return; }
+  if (!motif) { toast('Le motif de la correction est obligatoire (traçabilité).', 'error'); return; }
+
+  var session = (DATA.caisse_sessions||[]).find(function(s){ return s.id === sessionId; });
+  if (!session) { toast('Session introuvable.', 'error'); return; }
+  var ancien = parseFloat(session.fond_ouverture) || 0;
+  if (ancien === nouveau) { toast('Aucun changement — montant identique à l\'existant.', 'info'); return; }
+
+  if (!confirm('Confirmer le changement du fond d\'ouverture de ' + fmtF(ancien) + ' FCFA à ' + fmtF(nouveau) + ' FCFA ?\n\nÉcart : ' + fmtF(nouveau - ancien) + ' FCFA — cet écart se répercute sur le solde de toutes les périodes suivantes.')) return;
+
+  await caisseSnapshotAvantMasse('ajustement fond d\'ouverture — ' + (session.date||''));
+
+  session.fond_ouverture_historique = session.fond_ouverture_historique || [];
+  session.fond_ouverture_historique.push({
+    ancien_montant: ancien, nouveau_montant: nouveau, ecart: nouveau - ancien,
+    motif: motif, par: (APP.currentUser && APP.currentUser.nom) || '—', le: new Date().toISOString()
+  });
+  session.fond_ouverture = nouveau;
+
+  await dbPut('caisse_sessions', session);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_sessions', session);
+
+  closeModal('modal-caisse-ajuster-fond');
+  toast('✅ Fond d\'ouverture ajusté : ' + fmtF(ancien) + ' → ' + fmtF(nouveau) + ' FCFA (écart ' + fmtF(nouveau - ancien) + ' FCFA).', 'success');
+  caisseRenderListe();
+  if (typeof caisseRenderDashboard === 'function') caisseRenderDashboard();
+  if (CAISSE_UI.brouillardCaisseId === caisseId) caisseAfficherBrouillard(caisseId);
+  if (typeof buildBalance === 'function') buildBalance();
+}
+
 async function caisseSnapshotAvantMasse(libelle) {
   try {
     var snap = {
@@ -111453,6 +111513,34 @@ goTo = function(page) {
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-caisse-cloturer')">Annuler</button>
       <button class="btn btn-primary" onclick="caisseCloturer()">🔒 Clôturer la caisse</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Ajustement du fond d'ouverture (correction admin, réservé) -->
+<div class="modal-overlay" id="modal-caisse-ajuster-fond">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>⚖️ Ajuster le fond d'ouverture</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-caisse-ajuster-fond')">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="caf-caisse-id">
+      <input type="hidden" id="caf-session-id">
+      <div id="caf-recap" style="margin-bottom:12px;font-size:13px;background:rgba(184,115,51,0.08);border-left:3px solid var(--or);padding:10px 12px;border-radius:6px;"></div>
+      <div class="form-group">
+        <label>Nouveau fond d'ouverture réel (FCFA) *</label>
+        <input type="number" class="form-control" id="caf-nouveau-montant" value="0">
+      </div>
+      <div class="form-group">
+        <label>Motif de la correction *</label>
+        <textarea class="form-control" id="caf-motif" placeholder="Ex : solde réel au 01/01 confirmé par comptage physique, différent de la valeur saisie initialement." style="min-height:60px;"></textarea>
+      </div>
+      <div style="font-size:11px;color:var(--blanc-dim);margin-top:8px;">⚠️ Cette correction modifie directement le fond d'ouverture de la <strong>toute première session</strong> de cette caisse — elle décale mécaniquement le solde de toutes les périodes suivantes. Un snapshot de sécurité est pris automatiquement avant modification (restaurable depuis Paramètres → Sauvegardes locales).</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-caisse-ajuster-fond')">Annuler</button>
+      <button class="btn btn-primary" onclick="caisseConfirmerAjustementFond()">⚖️ Appliquer la correction</button>
     </div>
   </div>
 </div>
