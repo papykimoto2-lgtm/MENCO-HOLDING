@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.33 · 2026-08-14 — Revue du fix « connexion impossible » : 2e risque de sécurité trouvé et corrigé dans mon propre correctif — l\'utilisateur renvoyé par l\'Edge Function n\'a pas de password_hash (volontaire, jamais exposé au client), ce qui aurait neutralisé silencieusement la protection d\'invalidation de session au changement de mot de passe (startSession lie le jeton local aux 16 premiers caractères du hash). Corrigé : un second fetch AUTHENTIFIÉ (via le jeton STAFF fraîchement obtenu, donc plus bloqué par RLS) récupère le hash réel avant mise en cache locale.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.34 · 2026-08-18 — FIX CRITIQUE, cause racine réelle du « je n\'arrive plus à me connecter » : hashPassword() côté client ne sait faire QUE du SHA-256 simple, alors que staff-login (serveur) migre silencieusement tout compte vers PBKDF2 après une connexion serveur réussie. Tout compte migré (dont celui de Kessie, vérifié) devenait donc rejeté à vie en connexion locale, quel que soit le mot de passe saisi. Ajout de pbkdf2Client() (WebCrypto, identique à l\'algo serveur, vérifié empiriquement avec les vraies données du compte) + sélection du bon algo selon user.pwd_algo, sur les 6 points concernés (login + changement de mot de passe, individuel et en masse) + réinitialisation systématique de pwd_algo partout où un nouveau hash SHA-256 simple est écrit, pour ne pas recasser au prochain login. En parallèle : staff-login (Edge Function) corrigé pour le mismatch de nom de champ password/motdepasse qui le faisait échouer pour tout le monde depuis toujours (v4 déployée), et pour émettre un vrai JWT Supabase role=authenticated (v3 déployée).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -24889,6 +24889,25 @@ async function hashPassword(password, salt) {
   return _sha256js(data);
 }
 
+/* [Fix connexion impossible — cause racine] hashPassword() ci-dessus ne fait
+   QUE du SHA-256+sel simple. staff-login (Edge Function) migre en silence
+   tout compte vers PBKDF2 (210 000 itérations, standard OWASP 2024) après
+   une première connexion serveur réussie — mais le client n'avait AUCUN
+   moyen de vérifier un hash PBKDF2 localement. Résultat concret constaté :
+   un compte migré ne pouvait plus JAMAIS se reconnecter en local, quel que
+   soit le mot de passe saisi (toujours rejeté à tort), même hors ligne avec
+   les bons identifiants. Cette fonction reproduit exactement l'algorithme
+   serveur via WebCrypto (deriveBits PBKDF2), pour que la vérification locale
+   fonctionne aussi pour ces comptes — essentiel au mode offline-first. */
+async function pbkdf2Client(password, salt, iterations) {
+  var enc = new TextEncoder();
+  var keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+  var bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode(salt), iterations: iterations || 210000 },
+    keyMaterial, 256);
+  return Array.from(new Uint8Array(bits)).map(function(b){ return b.toString(16).padStart(2,'0'); }).join('');
+}
+
 /** Politique de mot de passe fort : 8 car., 1 maj, 1 chiffre, 1 spécial */
 /** Réinitialise les mots de passe de TOUS les utilisateurs (SHA-256 + sel). */
 async function reinitialiserTousMotsDePasse(nouveauMdp) {
@@ -24902,6 +24921,7 @@ async function reinitialiserTousMotsDePasse(nouveauMdp) {
     var u = DATA.users[i];
     u.salt = generateSalt();
     u.password_hash = await hashPassword(nouveauMdp, u.salt);
+    u.pwd_algo = null;
     delete u.password;
     u.must_change = true;
     await dbPut('users', u);
@@ -24969,6 +24989,7 @@ async function _validerChangementMotDePasseForce() {
   try {
     user.salt = generateSalt();
     user.password_hash = await hashPassword(pwd, user.salt);
+    user.pwd_algo = null;
     delete user.password;
     user.must_change = false;
     await dbPut('users', user);
@@ -25362,8 +25383,11 @@ async function doLogin() {
 
   // ── Vérification du mot de passe ─────────────────────────────────────
   var valid = _authDejaValideeParEdge;   /* déjà confirmé côté serveur — ne pas re-vérifier localement (le hash n'est volontairement pas exposé par l'Edge Function) */
-  if (!valid && user.password_hash && user.salt) {
-    // Chemin normal : comparaison des hashs SHA-256
+  if (!valid && user.pwd_algo === 'pbkdf2' && user.password_hash && user.salt) {
+    // Compte migré côté serveur (staff-login) vers PBKDF2 — même algo ici
+    valid = (await pbkdf2Client(p, user.salt, user.pwd_iter || 210000)) === user.password_hash;
+  } else if (!valid && user.password_hash && user.salt) {
+    // Chemin legacy : comparaison des hashs SHA-256 simple (compte pas encore migré)
     valid = (await hashPassword(p, user.salt)) === user.password_hash;
   } else if (!valid && user.password) {
     // Transition : mot de passe en clair non encore migré
@@ -41004,7 +41028,9 @@ async function changeUserPassword(userId) {
     var oldPwd = prompt('Mot de passe actuel :');
     if (!oldPwd) return;
     var verified = false;
-    if (target.password_hash && target.salt) {
+    if (target.pwd_algo === 'pbkdf2' && target.password_hash && target.salt) {
+      verified = (await pbkdf2Client(oldPwd, target.salt, target.pwd_iter || 210000)) === target.password_hash;
+    } else if (target.password_hash && target.salt) {
       verified = (await hashPassword(oldPwd, target.salt)) === target.password_hash;
     } else if (target.password) {
       verified = (target.password === oldPwd);
@@ -41017,6 +41043,7 @@ async function changeUserPassword(userId) {
   if (pErr) { toast('⚠️ ' + pErr, 'error'); return; }
   target.salt          = generateSalt();
   target.password_hash = await hashPassword(newPwd, target.salt);
+  target.pwd_algo       = null;   /* [Fix] sans ça, un compte ex-pbkdf2 garderait cette étiquette alors que le hash ci-dessus est du SHA-256 simple — prochain login cassé de la même façon */
   delete target.password;
   await dbPut('users', target);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_users', target);
@@ -81525,6 +81552,7 @@ function togglePwdVisibility(inputId, eyeId) {
       if (pwd) {
         user.salt          = generateSalt();
         user.password_hash = await hashPassword(pwd, user.salt);
+        user.pwd_algo       = null;
         delete user.password;
       }
       if (role === 'caissiere' && pin) {
