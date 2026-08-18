@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.35 · 2026-08-18 — REVUE MODULE UTILISATEUR : faille de sécurité critique trouvée et corrigée dans hasRole(). Hiérarchie hardcodée ne couvrait que 3 rôles (admin/comptable/commercial) — tout rôle absent (dont "manager") tombait à 0, et 0>=0 étant toujours vrai, les ~35 gardes `hasRole(admin)||hasRole(manager)` (suppressions, paramètres sensibles) étaient inopérantes pour N\'IMPORTE QUI (caissière, stagiaire, rôle vide). Pire : 9 rôles personnalisés réels chez ce client (gerant_menko_building, financier, service_foncier...) étaient eux totalement bloqués sur TOUT hasRole(), système verrouillé pour ces personnes. Refonte : hasRole() lit maintenant le champ `level` déjà présent sur chaque rôle (système ET personnalisé) via getAllRoles() — source de vérité unique, couvre automatiquement tout rôle futur. Testé avec les vraies données Supabase de ce client. Rôles "validateur"/"direction"/"dg" câblés dans la logique mais pas encore créés côté client — à faire via l\'interface si les workflows d\'approbation associés doivent s\'activer.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.39 · 2026-08-18 — Stabilisation de la chaîne image→DQE, 3 failles corrigées. (1) DOUBLE-COMPTAGE, risque financier majeur : l\'injection empilait dans ED.elements sans vérifier l\'existant — deux clics, ou une seconde analyse après correction, doublaient silencieusement surfaces, quantités et coûts du DQE. Détection des pièces déjà présentes sur le niveau + choix explicite remplacer/ajouter, et purge du lot temporaire après injection. (2) TRAÇABILITÉ : le marqueur _source_scan_ia était posé mais jamais lu — un chiffrage issu d\'une photo (source la moins fiable) était indiscernable d\'un chiffrage issu d\'un DXF (cotes exactes). Avertissement explicite désormais affiché à l\'écran de génération. (3) ERREUR D\'ÉCHELLE GLOBALE : les contrôles pièce par pièce ne détectent pas une échelle fausse qui divise tout uniformément (chaque pièce restant plausible isolément) — contrôle croisé ajouté entre total mesuré et surface déclarée dans la fiche de conception, calibré pour attraper les facteurs ×2/÷4 sans faux positif sur les écarts normaux.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -12613,6 +12613,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           </select>
           <button class="btn btn-secondary btn-sm" onclick="printPreviewDQE()" title="Aperçu avant impression du DQE">👁 Aperçu DQE</button>
           <button class="btn btn-secondary btn-sm" onclick="dqeListePlans()" title="Tous les DQE générés depuis l'éditeur de plan">📐 DQE issus des plans</button>
+          <button class="btn btn-secondary btn-sm" onclick="dqeOuvrirScanPlan()" title="Extraire pièces et surfaces d'une image de plan (photo, scan, capture) pour pré-remplir le DQE">🖼️ Analyser un plan (image)</button>
           <button class="btn btn-secondary btn-sm" onclick="dqeOuvrirListeProgramme()" title="Tous les DQE existants, par programme — accès direct et modification">🗂️ Liste des DQE</button>
           <button class="btn btn-secondary btn-sm" onclick="exportDQE()">⬇ Export CSV</button>
           <span style="width:1px;background:var(--bord);align-self:stretch;margin:0 4px;"></span>
@@ -86005,6 +86006,461 @@ async function mrcScanPlanMasse() {
   }
 }
 
+/* ══════════════════════════════════════════════
+   SCAN PLAN DE MAISON — extraction IA pièces/surfaces pour DQE
+   Même principe que mrcScanPlanMasse() (plan de masse/lotissement)
+   ci-dessus, appliqué au plan intérieur d'un logement : lit les
+   libellés et surfaces déjà annotés sur l'image (« Chambre 2 —
+   11,20 m² »), crée directement les pièces dans l'éditeur de plan,
+   prêtes pour archiOuvrirGenNomenclature() (génération DQE existante).
+   ══════════════════════════════════════════════ */
+var _dqeScanPlanTmp = { pieces: [] };
+var _dqeScanPlanFichierData = null;
+
+/* ── Cotation manuelle sur l'image (échelle + tracé de pièces) ──────────
+   Complète l'extraction IA : pour un plan sans annotations lisibles, ou
+   pour corriger/compléter une pièce que l'IA aurait mal lue, l'utilisateur
+   définit une échelle (2 clics sur une cote connue + distance réelle), puis
+   trace un rectangle par pièce directement sur l'image — surface déduite
+   automatiquement du nombre de pixels selon cette échelle. */
+var _dqeCotation = {
+  img: null, canvas: null, ctx: null,
+  mode: 'idle',              // idle | echelle | piece
+  echellePxParM: null,       // pixels par mètre, une fois définie
+  echellePoints: [],         // points temporaires en cours de clic (mode echelle)
+  pieceDebut: null,          // point de départ du rectangle en cours (mode piece)
+  pieceEnCours: null,        // {x,y,w,h} pendant le drag
+  pieces: []                 // pièces cotées manuellement : {label,longueur,largeur,surface,rect:{x,y,w,h}}
+};
+var _dqeCotationLastPt = null;
+
+function dqeOuvrirScanPlan() {
+  document.getElementById('scan-plan-dqe-input').value = '';
+  document.getElementById('scan-plan-dqe-preview').innerHTML = '';
+  document.getElementById('scan-plan-dqe-status').innerHTML = '';
+  document.getElementById('scan-plan-dqe-cotation-tools').style.display = 'none';
+  document.getElementById('btn-scan-plan-dqe-analyser').disabled = true;
+  _dqeScanPlanFichierData = null;
+  _dqeCotation.img = null; _dqeCotation.mode = 'idle'; _dqeCotation.echellePxParM = null;
+  _dqeCotation.echellePoints = []; _dqeCotation.pieces = [];
+  openModal('modal-scan-plan-dqe');
+}
+
+function dqeScanPlanFichier(input) {
+  var f = (input.files || [])[0];
+  if (!f) return;
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    _dqeScanPlanFichierData = e.target.result;
+    var preview = document.getElementById('scan-plan-dqe-preview');
+    if (f.type.indexOf('image/') === 0) {
+      preview.innerHTML = '';
+      var img = new Image();
+      img.onload = function() { _dqeCotationInitCanvas(img); };
+      img.src = e.target.result;
+    } else {
+      preview.innerHTML = '<div style="padding:10px;background:rgba(255,255,255,0.04);border-radius:8px;">📄 ' + escHtml(f.name) + ' — cotation manuelle indisponible pour un PDF (fonctionne pour les images uniquement ; l\'analyse IA reste disponible).</div>';
+      document.getElementById('scan-plan-dqe-cotation-tools').style.display = 'none';
+    }
+    document.getElementById('btn-scan-plan-dqe-analyser').disabled = false;
+  };
+  reader.readAsDataURL(f);
+}
+
+function _dqeCotationInitCanvas(img) {
+  _dqeCotation.img = img; _dqeCotation.mode = 'idle'; _dqeCotation.echellePxParM = null;
+  _dqeCotation.echellePoints = []; _dqeCotation.pieces = [];
+  var c = document.getElementById('scan-plan-dqe-canvas');
+  _dqeCotation.canvas = c; _dqeCotation.ctx = c.getContext('2d');
+  /* Limite raisonnable de largeur d'affichage — le ratio px/m reste cohérent
+     puisqu'on mesure toujours en pixels CANVAS, pas en pixels image source. */
+  var maxW = 760;
+  var scale = Math.min(1, maxW / img.width);
+  c.width = Math.round(img.width * scale);
+  c.height = Math.round(img.height * scale);
+  document.getElementById('scan-plan-dqe-cotation-tools').style.display = '';
+  document.getElementById('btn-cotation-echelle').disabled = false;
+  document.getElementById('btn-cotation-piece').disabled = true;
+  document.getElementById('cotation-echelle-info').textContent = 'Échelle non définie — cliquez 2 points d\'une cote connue sur le plan (ex. deux extrémités d\'un mur), puis indiquez la distance réelle.';
+  _dqeCotationRedraw();
+  if (!c._bound) {
+    c._bound = true;
+    c.addEventListener('mousedown', _dqeCotationDown);
+    c.addEventListener('mousemove', _dqeCotationMove);
+    c.addEventListener('mouseup', _dqeCotationUp);
+    c.addEventListener('touchstart', function(e){ e.preventDefault(); _dqeCotationDown(e); }, { passive:false });
+    c.addEventListener('touchmove', function(e){ e.preventDefault(); _dqeCotationMove(e); }, { passive:false });
+    c.addEventListener('touchend', function(e){ e.preventDefault(); _dqeCotationUp(e); }, { passive:false });
+  }
+}
+
+/* [Fix fiabilite critique] getBoundingClientRect() donne la taille CSS
+   affichee du canvas, qui peut differer de sa resolution interne (c.width,
+   jusqu'a 760px) - notamment sur mobile ou max-width:100% reduit l'affichage.
+   Sans cette conversion, un clic souris a l'ecran ne pointait PAS le bon
+   pixel du buffer des que l'affichage etait retreci : toutes les mesures
+   issues de la cotation manuelle etaient silencieusement fausses, sans le
+   moindre message d'erreur. Utilisee pour chaque clic/deplacement, souris
+   et tactile - plus aucun acces direct a e.offsetX/offsetY ailleurs. */
+function _dqeCotationPt(e) {
+  var c = _dqeCotation.canvas;
+  var r = c.getBoundingClientRect();
+  var clientX = (e.touches && e.touches[0]) ? e.touches[0].clientX : (e.changedTouches && e.changedTouches[0]) ? e.changedTouches[0].clientX : e.clientX;
+  var clientY = (e.touches && e.touches[0]) ? e.touches[0].clientY : (e.changedTouches && e.changedTouches[0]) ? e.changedTouches[0].clientY : e.clientY;
+  var pt = {
+    x: (clientX - r.left) * (c.width / r.width),
+    y: (clientY - r.top) * (c.height / r.height)
+  };
+  _dqeCotationLastPt = pt;
+  return pt;
+}
+
+function _dqeCotationRedraw() {
+  var ctx = _dqeCotation.ctx, c = _dqeCotation.canvas;
+  if (!ctx || !_dqeCotation.img) return;
+  ctx.clearRect(0, 0, c.width, c.height);
+  ctx.drawImage(_dqeCotation.img, 0, 0, c.width, c.height);
+  /* Pièces déjà cotées : rectangle vert + libellé */
+  _dqeCotation.pieces.forEach(function(p) {
+    ctx.strokeStyle = '#16a34a'; ctx.lineWidth = 2;
+    ctx.strokeRect(p.rect.x, p.rect.y, p.rect.w, p.rect.h);
+    ctx.fillStyle = 'rgba(22,163,74,0.15)';
+    ctx.fillRect(p.rect.x, p.rect.y, p.rect.w, p.rect.h);
+    ctx.fillStyle = '#16a34a'; ctx.font = 'bold 11px sans-serif';
+    ctx.fillText(p.label + ' (' + p.surface + ' m²)', p.rect.x + 4, p.rect.y + 14);
+  });
+  /* Rectangle en cours de tracé */
+  if (_dqeCotation.mode === 'piece' && _dqeCotation.pieceEnCours) {
+    var r = _dqeCotation.pieceEnCours;
+    ctx.strokeStyle = '#B87333'; ctx.lineWidth = 2; ctx.setLineDash([5,3]);
+    ctx.strokeRect(r.x, r.y, r.w, r.h);
+    ctx.setLineDash([]);
+  }
+  /* Points/ligne d'échelle */
+  if (_dqeCotation.echellePoints.length) {
+    ctx.fillStyle = '#2563EB';
+    _dqeCotation.echellePoints.forEach(function(p) { ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, 7); ctx.fill(); });
+    if (_dqeCotation.echellePoints.length === 2) {
+      ctx.strokeStyle = '#2563EB'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(_dqeCotation.echellePoints[0].x, _dqeCotation.echellePoints[0].y);
+      ctx.lineTo(_dqeCotation.echellePoints[1].x, _dqeCotation.echellePoints[1].y); ctx.stroke();
+    }
+  }
+}
+
+function dqeCotationModeEchelle() {
+  if (!_dqeCotation.img) { toast('Chargez d\'abord une image.', 'error'); return; }
+  _dqeCotation.mode = 'echelle'; _dqeCotation.echellePoints = [];
+  document.getElementById('cotation-echelle-info').textContent = '📏 Cliquez le 1er point de la cote connue…';
+}
+
+function dqeCotationModePiece() {
+  if (!_dqeCotation.echellePxParM) { toast('Définissez d\'abord l\'échelle.', 'error'); return; }
+  _dqeCotation.mode = 'piece';
+}
+
+function _dqeCotationDown(e) {
+  if (_dqeCotation.mode === 'idle') return;
+  var p = _dqeCotationPt(e);
+  var x = p.x, y = p.y;
+  if (_dqeCotation.mode === 'echelle') {
+    _dqeCotation.echellePoints.push({ x: x, y: y });
+    _dqeCotationRedraw();
+    if (_dqeCotation.echellePoints.length === 1) {
+      document.getElementById('cotation-echelle-info').textContent = '📏 Cliquez le 2ᵉ point de la cote connue…';
+    } else if (_dqeCotation.echellePoints.length === 2) {
+      var p0 = _dqeCotation.echellePoints[0], p1 = _dqeCotation.echellePoints[1];
+      var distPx = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+      if (distPx < 40) {
+        var confirmCourt = confirm('Distance de référence très courte à l\'écran (' + Math.round(distPx) + ' px).\n\nUne imprécision de quelques pixels au clic se répercutera fortement sur TOUTES les surfaces calculées ensuite.\n\nRecommandé : recommencez avec une cote plus longue (largeur du bâtiment, longueur d\'un mur extérieur...).\n\nContinuer quand même avec cette référence courte ?');
+        if (!confirmCourt) {
+          _dqeCotation.mode = 'idle'; _dqeCotation.echellePoints = []; _dqeCotationRedraw();
+          document.getElementById('cotation-echelle-info').textContent = 'Échelle annulée — recommencez avec une cote plus longue.';
+          return;
+        }
+      }
+      var reponse = prompt('Distance réelle entre ces 2 points (en mètres) ?\nEx. 5 pour 5 mètres, 2.5 pour 2,50 m.');
+      var distM = parseFloat((reponse || '').replace(',', '.'));
+      if (!distM || distM <= 0) {
+        toast('Échelle annulée — distance invalide.', 'error');
+        _dqeCotation.mode = 'idle'; _dqeCotation.echellePoints = []; _dqeCotationRedraw();
+        return;
+      }
+      if (distM > 50) {
+        toast('Distance de ' + distM + ' m inhabituelle pour un plan de logement — vérifiez qu\'il n\'y a pas d\'erreur de saisie.', 'error');
+      }
+      _dqeCotation.echellePxParM = distPx / distM;
+      _dqeCotation.mode = 'idle';
+      document.getElementById('cotation-echelle-info').textContent = '✅ Échelle définie : ' + Math.round(_dqeCotation.echellePxParM) + ' px/m (' + distM + ' m mesurés). Vous pouvez maintenant tracer les pièces.';
+      document.getElementById('btn-cotation-piece').disabled = false;
+      toast('Échelle définie — tracez maintenant vos pièces.', 'success');
+    }
+    return;
+  }
+  if (_dqeCotation.mode === 'piece') {
+    _dqeCotation.pieceDebut = { x: x, y: y };
+  }
+}
+
+function _dqeCotationMove(e) {
+  if (_dqeCotation.mode !== 'piece' || !_dqeCotation.pieceDebut) return;
+  var p = _dqeCotationPt(e);
+  var x = p.x, y = p.y;
+  _dqeCotation.pieceEnCours = {
+    x: Math.min(x, _dqeCotation.pieceDebut.x), y: Math.min(y, _dqeCotation.pieceDebut.y),
+    w: Math.abs(x - _dqeCotation.pieceDebut.x), h: Math.abs(y - _dqeCotation.pieceDebut.y)
+  };
+  _dqeCotationRedraw();
+}
+
+function _dqeCotationUp(e) {
+  if (_dqeCotation.mode !== 'piece' || !_dqeCotation.pieceDebut) return;
+  var r = _dqeCotation.pieceEnCours;
+  _dqeCotation.pieceDebut = null; _dqeCotation.pieceEnCours = null;
+  if (!r || r.w < 8 || r.h < 8) { _dqeCotationRedraw(); return; }   /* rectangle trop petit — clic accidentel */
+  var longueur = Math.round((r.w / _dqeCotation.echellePxParM) * 100) / 100;
+  var largeur = Math.round((r.h / _dqeCotation.echellePxParM) * 100) / 100;
+  var label = prompt('Nom de cette pièce ?', 'Pièce ' + (_dqeCotation.pieces.length + 1));
+  if (!label) { _dqeCotationRedraw(); return; }
+  _dqeCotation.pieces.push({ label: label, longueur: longueur, largeur: largeur, surface: Math.round(longueur*largeur*100)/100, rect: r });
+  _dqeCotationRedraw();
+  _dqeCotationMajListe();
+  toast('Pièce ajoutée : ' + label + ' — ' + Math.round(longueur*largeur*100)/100 + ' m².', 'success');
+}
+
+function _dqeCotationMajListe() {
+  var el = document.getElementById('cotation-pieces-liste');
+  if (!_dqeCotation.pieces.length) { el.innerHTML = ''; return; }
+  el.innerHTML = '<b>' + _dqeCotation.pieces.length + ' pièce(s) cotée(s) manuellement :</b> '
+    + _dqeCotation.pieces.map(function(p, i) {
+        return escHtml(p.label) + ' (' + p.surface + ' m²) <a href="#" onclick="event.preventDefault();_dqeCotation.pieces.splice(' + i + ',1);_dqeCotationRedraw();_dqeCotationMajListe();" style="color:var(--rouge);">✕</a>';
+      }).join(' · ');
+}
+
+/* Bascule les pièces cotées manuellement vers le tableau de vérification,
+   sans passer par l'IA — utilisable seule ou en complément d'une analyse IA
+   déjà faite (les deux sources fusionnent dans _dqeScanPlanTmp.pieces). */
+function dqeScanPlanValiderCotationManuelle() {
+  if (!_dqeCotation.pieces.length) { toast('Aucune pièce cotée manuellement.', 'error'); return; }
+  _dqeCotation.pieces.forEach(function(p) {
+    _dqeScanPlanTmp.pieces.push({ label: p.label, longueur: p.longueur, largeur: p.largeur, surface: p.surface, estime: false });
+  });
+  closeModal('modal-scan-plan-dqe');
+  _dqeRenderScanPlanReview();
+}
+
+/* Ligne vide ajoutée directement au tableau de vérification, pour une pièce
+   ni détectée par l'IA ni cotée sur l'image — saisie 100% manuelle. */
+function dqeScanPlanAjouterPieceManuelle() {
+  _dqeScanPlanTmp.pieces.push({ label: 'Nouvelle pièce', longueur: 0, largeur: 0, surface: 0, estime: false });
+  _dqeRenderScanPlanReview();
+}
+
+async function dqeScanPlanAnalyser() {
+  if (typeof IA === 'undefined' || !IA.key) { toast('Clé IA absente. Paramètres → Intelligence Artificielle.', 'error'); return; }
+  if (!_dqeScanPlanFichierData) { toast('Choisissez d\'abord une image.', 'error'); return; }
+  var statusEl = document.getElementById('scan-plan-dqe-status');
+  statusEl.innerHTML = '⏳ Analyse en cours…';
+  var btn = document.getElementById('btn-scan-plan-dqe-analyser');
+  btn.disabled = true;
+  try {
+    var m = _dqeScanPlanFichierData.match(/^data:([^;]+);base64,(.+)$/);
+    if (!m) { statusEl.innerHTML = '❌ Format fichier non reconnu.'; btn.disabled = false; return; }
+    var media = m[1], b64 = m[2];
+    var isPdf = media.indexOf('pdf') !== -1;
+    var srcType = isPdf ? 'document' : 'image';
+    var prompt = 'Analyse ce plan de maison (architecture intérieure — chambres, salon, cuisine, etc.). '
+      + 'Liste chaque pièce identifiée avec son libellé exact tel qu\'écrit sur le plan (ex. "Chambre 2", "Salon", "Cuisine", "SDB", "WC", "Terrasse", "Véranda", "Garage", "Couloir"). '
+      + 'Si une surface en m² est annotée sur le plan pour cette pièce, utilise-la exactement. '
+      + 'Si seules des cotes (longueur × largeur) sont visibles, calcule la surface à partir d\'elles et renvoie aussi longueur/largeur. '
+      + 'Si ni surface ni cotes ne sont visibles pour une pièce, estime une surface plausible selon le type de pièce et la taille apparente sur le dessin (ex. chambre standard ~10-14 m², salon ~20-28 m², cuisine ~9-12 m², SDB/WC ~2-5 m²) — indique alors "estime":true. '
+      + 'Renvoie UNIQUEMENT un JSON strict, sans texte hors JSON : '
+      + '{"pieces":[{"label":"Chambre 2","longueur":3.5,"largeur":3.2,"surface":11.20,"estime":false}], "surface_totale_habitable":0, "nb_chambres":0}. '
+      + 'Longueur/largeur en mètres, surface en m². N\'inclus PAS les murs, portes, fenêtres — uniquement les pièces (zones fermées nommées).';
+    var resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json', 'x-api-key':IA.key, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514', max_tokens: 4000,
+        messages: [{ role:'user', content: [
+          { type: srcType, source: { type:'base64', media_type: media, data: b64 } },
+          { type: 'text', text: prompt }
+        ]}]
+      })
+    });
+    if (!resp.ok) throw new Error('API vision ' + resp.status);
+    var data = await resp.json();
+    var raw = (data.content||[]).map(function(b){ return b.type==='text'?b.text:''; }).join('');
+    var jsonStr = raw.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
+    var obj;
+    try { obj = JSON.parse(jsonStr); } catch(e) { var mm = jsonStr.match(/\{[\s\S]*\}/); obj = mm ? JSON.parse(mm[0]) : { pieces: [] }; }
+
+    _dqeScanPlanTmp.pieces = (obj.pieces || []).map(function(p) {
+      var surf = parseFloat(p.surface) || 0;
+      var lg = parseFloat(p.longueur) || 0;
+      var lgg = parseFloat(p.largeur) || 0;
+      if ((!lg || !lgg) && surf) {
+        /* Pas de cotes fournies — on dérive un rectangle plausible depuis la
+           seule surface (ratio 1,2:1, standard pour la majorité des pièces
+           d'habitation), pour que l'éditeur de plan ait des dimensions
+           concrètes à afficher/ajuster. La position exacte importe peu :
+           seuls la surface et le périmètre alimentent le calcul du DQE. */
+        lgg = Math.sqrt(surf / 1.2);
+        lg = surf / lgg;
+      }
+      return { label: p.label || 'Pièce', longueur: Math.round(lg*100)/100, largeur: Math.round(lgg*100)/100,
+               surface: surf || Math.round(lg*lgg*100)/100, estime: !!p.estime };
+    }).filter(function(p){ return p.longueur > 0 && p.largeur > 0; });
+
+    if (!_dqeScanPlanTmp.pieces.length) { statusEl.innerHTML = '❌ Aucune pièce détectée. Plan peu lisible ?'; btn.disabled = false; return; }
+    closeModal('modal-scan-plan-dqe');
+    _dqeRenderScanPlanReview();
+  } catch(e) {
+    statusEl.innerHTML = '❌ Échec analyse : ' + escHtml(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function _dqeSurfacePlausible(label, surface) {
+  var l = (label || '').toLowerCase();
+  var plage = null;
+  if (/chambre|bedroom/i.test(l)) plage = [7, 22];
+  else if (/salon|séjour|sejour|living/i.test(l)) plage = [14, 45];
+  else if (/cuisine|kitchen/i.test(l)) plage = [5, 20];
+  else if (/sdb|salle de bain|douche|shower/i.test(l)) plage = [1.5, 9];
+  else if (/wc|toilette/i.test(l)) plage = [0.8, 4];
+  else if (/couloir|hall|dégagement|corridor/i.test(l)) plage = [1.5, 15];
+  else if (/garage/i.test(l)) plage = [10, 40];
+  else if (/terrasse|véranda|balcon/i.test(l)) plage = [3, 40];
+  if (!plage || !surface) return null;
+  if (surface < plage[0] || surface > plage[1]) return plage;
+  return null;
+}
+
+function _dqeRenderScanPlanReview() {
+  var pcs = _dqeScanPlanTmp.pieces;
+  var total = pcs.reduce(function(s,p){ return s + p.surface; }, 0);
+  var nbEstimees = pcs.filter(function(p){ return p.estime; }).length;
+  var anomalies = pcs.filter(function(p){ return _dqeSurfacePlausible(p.label, p.surface); });
+  /* [Contrôle croisé — détection d'erreur d'échelle globale]
+     Les contrôles pièce par pièce ne voient PAS une erreur d'échelle qui
+     affecte tout uniformément (ex. 5 m saisis au lieu de 10 → toutes les
+     surfaces divisées par 4, chacune restant "plausible" isolément).
+     On compare donc le total mesuré à la surface déjà déclarée dans la
+     fiche de conception liée, quand elle existe : un écart massif est le
+     seul signal fiable d'une échelle fausse. */
+  var alerteEchelle = '';
+  try {
+    var _cIdRev = (window._archiPlanCourant || {}).conception_id || '';
+    var _concRev = _cIdRev ? (DATA.conceptions||[]).find(function(c){ return c.id === _cIdRev; }) : null;
+    var surfDeclaree = _concRev ? (parseFloat(_concRev.surface) || 0) : 0;
+    if (surfDeclaree > 0 && total > 0) {
+      var ratio = total / surfDeclaree;
+      if (ratio < 0.6 || ratio > 1.6) {
+        alerteEchelle = '<div style="margin-top:8px;padding:8px 10px;background:rgba(220,38,38,0.12);border-left:3px solid var(--rouge);border-radius:6px;font-size:12px;">'
+          + '<b>🚨 Écart important avec la fiche de conception</b><br>'
+          + 'Total mesuré : <b>' + Math.round(total*10)/10 + ' m²</b> · Surface déclarée dans la conception : <b>' + surfDeclaree + ' m²</b> '
+          + '(rapport ×' + (Math.round(ratio*100)/100) + ').<br>'
+          + 'Cause la plus probable : <b>échelle mal définie</b> (distance de référence erronée). Reprenez la cotation avant de chiffrer — '
+          + 'une échelle fausse décale TOUTES les quantités du DQE dans la même proportion.'
+          + '</div>';
+      }
+    }
+  } catch(e) {}
+  document.getElementById('scan-plan-dqe-review-info').innerHTML =
+    pcs.length + ' pièce(s) détectée(s) · ' + Math.round(total*10)/10 + ' m² habitables au total'
+    + (nbEstimees ? ' · ⚠️ ' + nbEstimees + ' surface(s) estimée(s) (non annotée(s) sur le plan — à vérifier)' : '')
+    + (anomalies.length ? ' · <span style="color:var(--rouge);font-weight:700;">🚩 ' + anomalies.length + ' surface(s) hors plage plausible pour leur type — probable erreur, à revérifier</span>' : '')
+    + alerteEchelle;
+  document.getElementById('tbody-scan-plan-dqe-review').innerHTML = pcs.map(function(p, i) {
+    var plageAnormale = _dqeSurfacePlausible(p.label, p.surface);
+    var style = plageAnormale ? 'background:rgba(220,38,38,0.10);' : (p.estime ? 'background:rgba(234,88,12,0.06);' : '');
+    return '<tr style="' + style + '">'
+      + '<td contenteditable onblur="_dqeScanPlanTmp.pieces[' + i + '].label=this.textContent.trim();_dqeRenderScanPlanReview()">' + escHtml(p.label) + (p.estime ? ' <span style="font-size:10px;color:var(--or,#B87333);">estimé</span>' : '') + '</td>'
+      + '<td contenteditable style="text-align:right;" onblur="_dqeScanPlanMajDim(' + i + ',\'longueur\',this.textContent)">' + p.longueur + '</td>'
+      + '<td contenteditable style="text-align:right;" onblur="_dqeScanPlanMajDim(' + i + ',\'largeur\',this.textContent)">' + p.largeur + '</td>'
+      + '<td contenteditable style="text-align:right;" onblur="_dqeScanPlanTmp.pieces[' + i + '].surface=parseFloat(this.textContent.replace(\',\',\'.\'))||0;_dqeRenderScanPlanReview()">' + p.surface
+        + (plageAnormale ? ' <span title="Plage plausible : ' + plageAnormale[0] + '–' + plageAnormale[1] + ' m²">🚩</span>' : '') + '</td>'
+      + '<td><button class="btn btn-danger btn-sm btn-icon" onclick="_dqeScanPlanTmp.pieces.splice(' + i + ',1);_dqeRenderScanPlanReview()">🗑</button></td>'
+      + '</tr>';
+  }).join('');
+  openModal('modal-scan-plan-dqe-review');
+}
+
+function _dqeScanPlanMajDim(i, champ, val) {
+  var v = parseFloat(String(val).replace(',', '.')) || 0;
+  _dqeScanPlanTmp.pieces[i][champ] = v;
+  _dqeScanPlanTmp.pieces[i].surface = Math.round(_dqeScanPlanTmp.pieces[i].longueur * _dqeScanPlanTmp.pieces[i].largeur * 100) / 100;
+  _dqeRenderScanPlanReview();
+}
+
+/* Injecte les pièces vérifiées dans l'éditeur de plan (ED.elements), en
+   grille simple (la position exacte est indifférente au calcul DQE — seules
+   surface et périmètre comptent), puis enchaîne directement sur la
+   génération de nomenclature déjà existante (archiOuvrirGenNomenclature). */
+function dqeScanPlanInjecter() {
+  if (!_dqeScanPlanTmp.pieces.length) { toast('Aucune pièce à injecter.', 'error'); return; }
+  var anomalies = _dqeScanPlanTmp.pieces.filter(function(p){ return _dqeSurfacePlausible(p.label, p.surface); });
+  var vides = _dqeScanPlanTmp.pieces.filter(function(p){ return !p.surface || p.surface <= 0; });
+  if (anomalies.length || vides.length) {
+    var msg = 'Avant d\'injecter dans le DQE :\n\n';
+    if (anomalies.length) msg += '- ' + anomalies.length + ' pièce(s) avec une surface qui semble anormale pour leur type (marquées 🚩).\n';
+    if (vides.length) msg += '- ' + vides.length + ' pièce(s) sans surface renseignée (0 m²).\n';
+    msg += '\nUne mauvaise surface fausse directement les quantités du DQE (matériaux, coûts). Continuer quand même ?';
+    if (!confirm(msg)) return;
+  }
+  if (typeof window.ED === 'undefined' || !window.ED.canvas) {
+    toast('Ouvrez d\'abord « Plans & Conception » → onglet Plans (pour initialiser l\'éditeur), puis rouvrez cette fenêtre de vérification — vos pièces détectées restent en mémoire.', 'error');
+    return;
+  }
+
+  /* [Garde anti-double-comptage — risque financier majeur]
+     ED.elements est cumulatif : sans ce contrôle, injecter deux fois (double
+     clic, ou nouvelle analyse après correction d'une surface) empilait les
+     pièces en double. Le DQE aval somme toutes les pièces présentes sans
+     dédoublonnage → surfaces doublées → quantités de matériaux et coûts
+     doublés, sans le moindre signal. C'est le scénario de perte le plus
+     probable de toute la chaîne. On force donc un choix explicite. */
+  var pieceExistantes = ED.elements.filter(function(e){ return e.type === 'piece' && (e.niv || 0) === (ED.nivActif || 0); });
+  if (pieceExistantes.length) {
+    var surfExist = Math.round(pieceExistantes.reduce(function(s,e){ return s + (e.w||0)*(e.h||0); }, 0) * 10) / 10;
+    var surfNouv = Math.round(_dqeScanPlanTmp.pieces.reduce(function(s,p){ return s + p.surface; }, 0) * 10) / 10;
+    var choix = confirm(
+      'Ce niveau contient DÉJÀ ' + pieceExistantes.length + ' pièce(s) (' + surfExist + ' m²).\n\n'
+      + 'Vous vous apprêtez à en ajouter ' + _dqeScanPlanTmp.pieces.length + ' (' + surfNouv + ' m²).\n\n'
+      + 'OK  = REMPLACER les pièces existantes de ce niveau (recommandé si vous refaites la cotation du même plan)\n'
+      + 'Annuler = les GARDER et ajouter par-dessus (total : ' + Math.round((surfExist+surfNouv)*10)/10 + ' m² — uniquement si c\'est vraiment un autre bâtiment)\n\n'
+      + '⚠️ Ajouter par-dessus le même plan double les quantités et les coûts du DQE.'
+    );
+    if (choix) {
+      ED.elements = ED.elements.filter(function(e){ return !(e.type === 'piece' && (e.niv || 0) === (ED.nivActif || 0)); });
+    }
+  }
+
+  var x = 0, y = 0, ligneH = 0, largeurMax = 20;
+  var ajoutes = 0;
+  _dqeScanPlanTmp.pieces.forEach(function(p) {
+    if (x + p.longueur > largeurMax) { x = 0; y += ligneH + 0.3; ligneH = 0; }
+    ED.elements.push({ id: 'ae_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
+      type: 'piece', niv: ED.nivActif || 0, x: Math.round(x*100)/100, y: Math.round(y*100)/100,
+      w: p.longueur, h: p.largeur, label: p.label, _source_scan_ia: true });
+    x += p.longueur + 0.3;
+    ligneH = Math.max(ligneH, p.largeur);
+    ajoutes++;
+  });
+  if (typeof archiRedraw === 'function') archiRedraw();
+  closeModal('modal-scan-plan-dqe-review');
+  /* Vidage après injection : sans ça, rouvrir la fenêtre de vérification et
+     revalider réinjectait le même lot (double comptage). */
+  _dqeScanPlanTmp.pieces = [];
+  _dqeCotation.pieces = [];
+  toast('✅ ' + ajoutes + ' pièce(s) injectée(s) — vérifiez les surfaces dans l\'éditeur avant de chiffrer.', 'success');
+  if (typeof window.archiOuvrirGenNomenclature === 'function') {
+    setTimeout(function(){ window.archiOuvrirGenNomenclature(); }, 400);
+  }
+}
+
 function _mrcRenderScanReview() {
   var t = _mrcScanTmp;
   var totParc = t.parcelles.reduce(function(s,p){ return s + p.superficie; }, 0);
@@ -101989,10 +102445,20 @@ function qrSvgTag(text){
     var srcEl = document.getElementById('gen-nomen-source');
     if (srcEl) {
       var nbDxf = ED.elements.filter(function(e) { return e._dxf; }).length;
+      var nbScanIA = ED.elements.filter(function(e) { return e._source_scan_ia; }).length;
       var fondsNoms = Object.keys(ED.fonds).map(function(k) { return _nivCode(parseInt(k, 10)) + ' : ' + ED.fonds[k].nom; });
-      srcEl.textContent = nbDxf
-        ? 'Source : ' + nbDxf + ' élément(s) issus d\'un import DXF' + (fondsNoms.length ? ' (' + fondsNoms.join(' · ') + ')' : '') + ' — vérifiez les surfaces converties avant de chiffrer. '
-        : (fondsNoms.length ? 'Fond de plan actif : ' + fondsNoms.join(' · ') + '. ' : '');
+      /* [Traçabilité fiabilité] Une géométrie issue d'une photo/scan est la
+         source la MOINS fiable de la chaîne (échelle définie à la main,
+         surfaces parfois estimées par l'IA) — elle doit être signalée plus
+         fortement qu'un import DXF, dont les cotes sont exactes par nature.
+         Auparavant _source_scan_ia était posé à l'injection mais jamais lu
+         ici : un chiffrage issu d'une photo était indiscernable d'un
+         chiffrage issu d'un plan CAO. */
+      srcEl.textContent = (nbScanIA
+        ? '⚠️ ATTENTION — ' + nbScanIA + ' élément(s) issus d\'une image cotée à la main / analysée par IA : surfaces à vérifier impérativement avant de chiffrer (une erreur d\'échelle se répercute sur tout le DQE). '
+        : '')
+        + (nbDxf ? 'Source : ' + nbDxf + ' élément(s) issus d\'un import DXF — vérifiez les surfaces converties avant de chiffrer. ' : '')
+        + (fondsNoms.length ? 'Fond de plan actif : ' + fondsNoms.join(' · ') + '. ' : '');
     }
     archiGenScopeChange();
     openModal('modal-archi-gen-nomen');
@@ -110595,6 +111061,72 @@ goTo = function(page) {
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-scan-bornes')">Annuler</button>
       <button class="btn btn-primary" onclick="brnInjecterScan()" id="btn-injecter-scan">✓ Injecter dans le tableau</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Analyser un plan (image) pour pré-remplir le DQE -->
+<div class="modal-overlay" id="modal-scan-plan-dqe">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3>🖼️ Analyser un plan (image) — Extraction pièces & surfaces</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-scan-plan-dqe')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:12px;color:var(--blanc-dim);margin-bottom:12px;">
+        Photo, scan ou capture d'un plan. Deux façons de récupérer les pièces, combinables :
+        <b>🔍 Analyser (IA)</b> lit les libellés/surfaces déjà inscrits sur le plan automatiquement ;
+        <b>📏 cotation manuelle</b> ci-dessous permet de définir l'échelle puis de tracer chaque pièce
+        directement sur l'image pour en déduire la surface exacte — utile si l'IA rate une pièce ou
+        si le plan n'a pas d'annotations lisibles.
+      </div>
+      <input type="file" id="scan-plan-dqe-input" class="form-control" accept="image/*,.pdf" onchange="dqeScanPlanFichier(this)">
+      <div id="scan-plan-dqe-preview" style="margin-top:10px;"></div>
+
+      <div id="scan-plan-dqe-cotation-tools" style="display:none;margin-top:10px;padding:10px;background:rgba(255,255,255,0.04);border-radius:8px;">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <button class="btn btn-secondary btn-sm" onclick="dqeCotationModeEchelle()" id="btn-cotation-echelle">📏 1. Définir l'échelle</button>
+          <span id="cotation-echelle-info" style="font-size:11px;color:var(--blanc-dim);">Échelle non définie — cliquez 2 points d'une cote connue et <b>la plus longue possible</b> (ex. la largeur totale du bâtiment plutôt qu'une porte) : plus la référence est longue, moins une imprécision de clic fausse le résultat.</span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+          <button class="btn btn-secondary btn-sm" onclick="dqeCotationModePiece()" id="btn-cotation-piece" disabled>▭ 2. Tracer une pièce</button>
+          <span style="font-size:11px;color:var(--blanc-dim);">Cliquez-glissez un rectangle <b>au nu intérieur des murs</b> (surface habitable, pas surface œuvre). ⚠️ Outil rectangle uniquement — pour une pièce en L ou irrégulière, décomposez-la en 2-3 rectangles ajoutés séparément.</span>
+        </div>
+        <canvas id="scan-plan-dqe-canvas" style="max-width:100%;margin-top:10px;border:1px solid var(--bord);border-radius:8px;cursor:crosshair;touch-action:none;"></canvas>
+        <div id="cotation-pieces-liste" style="margin-top:8px;font-size:12px;"></div>
+      </div>
+
+      <div id="scan-plan-dqe-status" style="margin-top:10px;font-size:12px;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-scan-plan-dqe')">Annuler</button>
+      <button class="btn btn-secondary" onclick="dqeScanPlanValiderCotationManuelle()">✓ Valider les pièces cotées manuellement</button>
+      <button class="btn btn-primary" onclick="dqeScanPlanAnalyser()" id="btn-scan-plan-dqe-analyser" disabled>🔍 Analyser (IA)</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Vérification des pièces extraites avant injection dans l'éditeur -->
+<div class="modal-overlay" id="modal-scan-plan-dqe-review">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3>📋 Pièces détectées — Vérification avant injection</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-scan-plan-dqe-review')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="scan-plan-dqe-review-info" style="font-size:12px;color:var(--blanc-dim);margin-bottom:10px;"></div>
+      <button class="btn btn-secondary btn-sm" onclick="dqeScanPlanAjouterPieceManuelle()" style="margin-bottom:10px;">➕ Ajouter une pièce</button>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Libellé</th><th style="text-align:right;">Longueur (m)</th><th style="text-align:right;">Largeur (m)</th><th style="text-align:right;">Surface (m²)</th><th></th></tr></thead>
+          <tbody id="tbody-scan-plan-dqe-review"></tbody>
+        </table>
+      </div>
+      <div style="font-size:11px;color:var(--or,#B87333);margin-top:10px;">⚠️ Vérifiez chaque pièce avant injection — surfaces estimées si non annotées sur le plan source. Corrigez directement dans les cellules.</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-scan-plan-dqe-review')">Annuler</button>
+      <button class="btn btn-primary" onclick="dqeScanPlanInjecter()">✓ Injecter dans l'éditeur de plan</button>
     </div>
   </div>
 </div>
