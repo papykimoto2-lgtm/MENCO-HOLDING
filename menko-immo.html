@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.34 · 2026-08-18 — FIX CRITIQUE, cause racine réelle du « je n\'arrive plus à me connecter » : hashPassword() côté client ne sait faire QUE du SHA-256 simple, alors que staff-login (serveur) migre silencieusement tout compte vers PBKDF2 après une connexion serveur réussie. Tout compte migré (dont celui de Kessie, vérifié) devenait donc rejeté à vie en connexion locale, quel que soit le mot de passe saisi. Ajout de pbkdf2Client() (WebCrypto, identique à l\'algo serveur, vérifié empiriquement avec les vraies données du compte) + sélection du bon algo selon user.pwd_algo, sur les 6 points concernés (login + changement de mot de passe, individuel et en masse) + réinitialisation systématique de pwd_algo partout où un nouveau hash SHA-256 simple est écrit, pour ne pas recasser au prochain login. En parallèle : staff-login (Edge Function) corrigé pour le mismatch de nom de champ password/motdepasse qui le faisait échouer pour tout le monde depuis toujours (v4 déployée), et pour émettre un vrai JWT Supabase role=authenticated (v3 déployée).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.35 · 2026-08-18 — REVUE MODULE UTILISATEUR : faille de sécurité critique trouvée et corrigée dans hasRole(). Hiérarchie hardcodée ne couvrait que 3 rôles (admin/comptable/commercial) — tout rôle absent (dont "manager") tombait à 0, et 0>=0 étant toujours vrai, les ~35 gardes `hasRole(admin)||hasRole(manager)` (suppressions, paramètres sensibles) étaient inopérantes pour N\'IMPORTE QUI (caissière, stagiaire, rôle vide). Pire : 9 rôles personnalisés réels chez ce client (gerant_menko_building, financier, service_foncier...) étaient eux totalement bloqués sur TOUT hasRole(), système verrouillé pour ces personnes. Refonte : hasRole() lit maintenant le champ `level` déjà présent sur chaque rôle (système ET personnalisé) via getAllRoles() — source de vérité unique, couvre automatiquement tout rôle futur. Testé avec les vraies données Supabase de ce client. Rôles "validateur"/"direction"/"dg" câblés dans la logique mais pas encore créés côté client — à faire via l\'interface si les workflows d\'approbation associés doivent s\'activer.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -25071,8 +25071,28 @@ async function checkSession() {
 /** Vérifie le rôle de l'utilisateur courant (hiérarchie admin > comptable > commercial) */
 function hasRole(requiredRole) {
   if (!APP.currentUser) return false;
-  var h = { admin: 3, comptable: 2, commercial: 1 };
-  return (h[APP.currentUser.role] || 0) >= (h[requiredRole] || 0);
+  /* [Refonte sécurité — revue module utilisateur 2026-08-18]
+     Deux bugs empilés ici. 1) La hiérarchie hardcodée précédente (3 rôles)
+     laissait passer n'importe quel rôle inconnu sur hasRole('manager') —
+     déjà corrigé une première fois en élargissant la liste à 8 rôles. Mais
+     2) cette liste elle-même était fausse : ce client a NEUF rôles
+     personnalisés réels (gerant_menko_building, financier, service_foncier,
+     assistante_de_direction...), aucun ne correspondant aux noms que
+     j'avais ajoutés (direction/dg/validateur — jamais créés en pratique).
+     Un utilisateur avec un rôle personnalisé aurait donc été refusé à tout
+     hasRole(), système entier verrouillé pour lui.
+     Source de vérité unique : le champ `level` déjà porté par CHAQUE rôle
+     (système ET personnalisé, table custom_roles) via getAllRoles() — un
+     rôle personnalisé de niveau 2 passe donc les mêmes portes qu'un rôle
+     système de niveau 2 (ex. comptable), sans qu'il faille le lister
+     nommément nulle part. Fonctionne pour tout rôle futur automatiquement. */
+  var roles = (typeof getAllRoles === 'function') ? getAllRoles() : {};
+  var reqRole = roles[requiredRole];
+  var userRoleDef = roles[APP.currentUser.role];
+  if (!reqRole || !userRoleDef) return false;   /* rôle inconnu (l'un ou l'autre) → refuser, jamais autoriser par défaut */
+  var reqLevel = parseInt(reqRole.level, 10) || 0;
+  var userLevel = parseInt(userRoleDef.level, 10) || 0;
+  return reqLevel > 0 && userLevel >= reqLevel;
 }
 
 /** Devine un libellé humain (OS + navigateur + type d'appareil) depuis un userAgent. */
