@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.41 · 2026-08-18 — FIX CRITIQUE : tempête de reconnexion Realtime saturant le projet Supabase. Les erreurs « CORS » affichées en console étaient trompeuses — les logs backend montrent des HTTP 522 (le serveur d\'origine ne répond plus), et un 522 ne renvoie pas les en-têtes CORS, d\'où le message. Cause réelle : startRealtime() créait un NOUVEAU client Supabase à chaque appel en ne retirant que le canal de l\'ancien, jamais le client lui-même — or supabase-js reconnecte tout seul en interne, donc chaque client orphelin continuait à rouvrir son websocket indéfiniment, et chaque échec replanifiait un startRealtime() créant encore un client (croissance exponentielle). Mesuré en production : ~3 connexions websocket par SECONDE. Correctifs : destruction complète de l\'ancien client (removeAllChannels + realtime.disconnect), verrou anti-appels concurrents, timer de reconnexion unique et annulable, backoff exponentiel 8s→256s (au lieu d\'un martèlement fixe toutes les 8s qui entretenait la saturation), et watchdog 30s empêchant le verrou de rester bloqué si le serveur ne répond jamais.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.42 · 2026-08-18 — Tempête Realtime, 2e cause identifiée après constat que v14.41 ne suffisait pas : supabase-js pilote SA PROPRE reconnexion du socket (défaut ~1s/2s/5s/10s en boucle), indépendamment du callback subscribe(). Contrôler uniquement le backoff applicatif était donc inopérant — c\'est cette reconnexion interne qui produisait les rafales mesurées en production (8 tentatives en 1,2 s). Ajout de reconnectAfterMs (backoff exponentiel 2s→300s) + heartbeat 30s. Ajout aussi d\'un plafond absolu : au-delà de 8 échecs consécutifs le Realtime est ABANDONNÉ plutôt que de marteler un serveur déjà saturé (ce martèlement entretenait la panne qu\'il subissait) — l\'app reste fonctionnelle via la synchro périodique, et le badge RT devient cliquable pour relancer manuellement. IMPORTANT : un onglet déjà ouvert continue d\'exécuter l\'ancien code — fermer TOUS les onglets ERP sur TOUS les postes est nécessaire pour que la tempête cesse.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -67388,7 +67388,20 @@ async function startRealtime(){
   }
 
   _RT.client  = window.supabase.createClient(SB.url, SB.key, {
-    realtime: { params: { eventsPerSecond: 20 } }
+    realtime: {
+      params: { eventsPerSecond: 20 },
+      /* [Fix tempête — 2e cause] supabase-js pilote SA PROPRE reconnexion du
+         socket, indépendamment du callback subscribe() : par défaut il
+         réessaie très vite (1s, 2s, 5s, 10s…) et en boucle. Contrôler
+         uniquement mon backoff applicatif ne suffisait donc pas — c'est
+         cette reconnexion interne qui produisait les rafales observées en
+         production (8 tentatives en 1,2 s). On impose ici un backoff
+         exponentiel plafonné à 5 min, aligné sur celui de startRealtime(). */
+      reconnectAfterMs: function(tentatives){
+        return Math.min(2000 * Math.pow(2, Math.max(0, tentatives - 1)), 300000);
+      },
+      heartbeatIntervalMs: 30000
+    }
   });
   _RT._badge('','⬤ RT…');
 
@@ -67429,7 +67442,21 @@ async function startRealtime(){
            prolongé, un délai fixe de 8 s faisait marteler le serveur déjà
            en difficulté par chaque poste connecté — exactement ce qui
            entretenait la saturation au lieu de la laisser se résorber. */
-        _RT.retryCount = Math.min(_RT.retryCount + 1, 6);
+        /* [Fix tempête] Plafond absolu : au-delà de 8 échecs consécutifs, on
+           ABANDONNE le Realtime au lieu de marteler indéfiniment un serveur
+           déjà en difficulté (ce martèlement entretenait la saturation qu'il
+           subissait). L'application reste pleinement fonctionnelle sans lui :
+           la synchronisation périodique et les pulls continuent — seule la
+           mise à jour instantanée multi-postes est suspendue. Le badge
+           devient cliquable pour relancer manuellement. */
+        _RT.retryCount = _RT.retryCount + 1;
+        if (_RT.retryCount > 8) {
+          console.warn('[RT] Realtime abandonné après 8 tentatives — synchronisation périodique toujours active. Cliquez le badge RT pour relancer.');
+          var b = document.getElementById('rt-badge');
+          if (b) { b.style.cursor = 'pointer'; b.title = 'Realtime interrompu — cliquer pour relancer'; b.onclick = function(){ _RT.retryCount = 0; startRealtime(); }; }
+          _RT._badge('rt-off','⬤ RT ⟳');
+          return;
+        }
         var delai = Math.min(8000 * Math.pow(2, _RT.retryCount - 1), 300000);
         if (_RT.retryTimer) clearTimeout(_RT.retryTimer);
         _RT.retryTimer = setTimeout(function(){
