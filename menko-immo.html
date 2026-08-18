@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.42 · 2026-08-18 — Tempête Realtime, 2e cause identifiée après constat que v14.41 ne suffisait pas : supabase-js pilote SA PROPRE reconnexion du socket (défaut ~1s/2s/5s/10s en boucle), indépendamment du callback subscribe(). Contrôler uniquement le backoff applicatif était donc inopérant — c\'est cette reconnexion interne qui produisait les rafales mesurées en production (8 tentatives en 1,2 s). Ajout de reconnectAfterMs (backoff exponentiel 2s→300s) + heartbeat 30s. Ajout aussi d\'un plafond absolu : au-delà de 8 échecs consécutifs le Realtime est ABANDONNÉ plutôt que de marteler un serveur déjà saturé (ce martèlement entretenait la panne qu\'il subissait) — l\'app reste fonctionnelle via la synchro périodique, et le badge RT devient cliquable pour relancer manuellement. IMPORTANT : un onglet déjà ouvert continue d\'exécuter l\'ancien code — fermer TOUS les onglets ERP sur TOUS les postes est nécessaire pour que la tempête cesse.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.43 · 2026-08-18 — Suite tempête Realtime : logout() n\'appelait JAMAIS stopRealtime() — le websocket restait ouvert et continuait à se reconnecter en boucle après déconnexion, y compris pendant l\'affichage de l\'écran de login. Conséquence directe : le module de déconnexion à distance (deconnecterAutresPostes) ne pouvait pas éteindre la tempête, les postes déconnectés continuant de marteler le serveur. Corrigé sur les deux chemins (déconnexion manuelle et déconnexion forcée à distance, cette dernière coupant désormais le Realtime avant son rechargement plutôt que 1,5 s après).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -25163,6 +25163,10 @@ async function _verifierSessionEncoreValide() {
   if (!APP.currentUser) return;
   var u = await checkSession();
   if (!u) {
+    /* Couper le Realtime AVANT le rechargement : sur un backend saturé,
+       libérer la connexion tout de suite compte, plutôt que de la laisser
+       vivre encore 1,5 s pendant l'affichage du message. */
+    if (typeof stopRealtime === 'function') { try { stopRealtime(); } catch(e){} }
     try { if (typeof toast === 'function') toast('🔒 Session terminée à distance par un administrateur.', 'info'); } catch(e){}
     setTimeout(function(){ location.reload(); }, 1500);
   }
@@ -25554,6 +25558,13 @@ function logout(forced) {
   if (window._autoSyncTimer) { clearInterval(window._autoSyncTimer); window._autoSyncTimer = null; }
   if (window._portailPollTimer) { clearInterval(window._portailPollTimer); window._portailPollTimer = null; }
   if (window._accueilAutoTimer) { clearInterval(window._accueilAutoTimer); window._accueilAutoTimer = null; }
+  /* [Fix tempête Realtime] logout() n'arrêtait PAS le Realtime : le websocket
+     restait ouvert et continuait à se reconnecter en boucle après la
+     déconnexion, y compris pendant que l'écran de login était affiché.
+     Conséquence directe : la déconnexion à distance (deconnecterAutresPostes)
+     ne pouvait pas éteindre une tempête de reconnexion — les postes
+     déconnectés continuaient de marteler le serveur. */
+  if (typeof stopRealtime === 'function') { try { stopRealtime(); } catch(e){} }
   localStorage.removeItem('pici_auth_token');
   if (typeof staffLogout === 'function') staffLogout();
   APP.currentUser = null;
