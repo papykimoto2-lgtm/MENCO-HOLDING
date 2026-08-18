@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.39 · 2026-08-18 — Stabilisation de la chaîne image→DQE, 3 failles corrigées. (1) DOUBLE-COMPTAGE, risque financier majeur : l\'injection empilait dans ED.elements sans vérifier l\'existant — deux clics, ou une seconde analyse après correction, doublaient silencieusement surfaces, quantités et coûts du DQE. Détection des pièces déjà présentes sur le niveau + choix explicite remplacer/ajouter, et purge du lot temporaire après injection. (2) TRAÇABILITÉ : le marqueur _source_scan_ia était posé mais jamais lu — un chiffrage issu d\'une photo (source la moins fiable) était indiscernable d\'un chiffrage issu d\'un DXF (cotes exactes). Avertissement explicite désormais affiché à l\'écran de génération. (3) ERREUR D\'ÉCHELLE GLOBALE : les contrôles pièce par pièce ne détectent pas une échelle fausse qui divise tout uniformément (chaque pièce restant plausible isolément) — contrôle croisé ajouté entre total mesuré et surface déclarée dans la fiche de conception, calibré pour attraper les facteurs ×2/÷4 sans faux positif sur les écarts normaux.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.41 · 2026-08-18 — FIX CRITIQUE : tempête de reconnexion Realtime saturant le projet Supabase. Les erreurs « CORS » affichées en console étaient trompeuses — les logs backend montrent des HTTP 522 (le serveur d\'origine ne répond plus), et un 522 ne renvoie pas les en-têtes CORS, d\'où le message. Cause réelle : startRealtime() créait un NOUVEAU client Supabase à chaque appel en ne retirant que le canal de l\'ancien, jamais le client lui-même — or supabase-js reconnecte tout seul en interne, donc chaque client orphelin continuait à rouvrir son websocket indéfiniment, et chaque échec replanifiait un startRealtime() créant encore un client (croissance exponentielle). Mesuré en production : ~3 connexions websocket par SECONDE. Correctifs : destruction complète de l\'ancien client (removeAllChannels + realtime.disconnect), verrou anti-appels concurrents, timer de reconnexion unique et annulable, backoff exponentiel 8s→256s (au lieu d\'un martèlement fixe toutes les 8s qui entretenait la saturation), et watchdog 30s empêchant le verrou de rester bloqué si le serveur ne répond jamais.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -67123,6 +67123,9 @@ var _RT = {
   client:   null,
   channel:  null,
   active:   false,
+  starting: false,       /* [Fix tempête] verrou anti-appels concurrents */
+  retryTimer: null,      /* [Fix tempête] timer de reconnexion unique, annulable */
+  retryCount: 0,         /* [Fix tempête] pour backoff exponentiel */
   myWrites: {},          /* id → timestamp : suppressions de rebond propre écriture */
   _badge:   function(cls,label){ var b=document.getElementById('rt-badge'); if(b){ b.className=cls; b.textContent=label; } },
   _flash:   function(){ var b=document.getElementById('rt-badge'); if(!b)return; b.classList.add('rt-rx'); setTimeout(function(){ if(_RT.active) b.classList.remove('rt-rx'); },600); }
@@ -67337,8 +67340,52 @@ async function startRealtime(){
   if (!SB.url || !SB.key) { _RT._badge('rt-off','⬤ RT'); return; }
   if (typeof window.supabase === 'undefined') { _RT._badge('rt-off','⬤ RT'); return; }
 
-  /* Fermer proprement si déjà connecté */
-  if (_RT.channel) { try { _RT.client.removeChannel(_RT.channel); } catch(e){} }
+  /* [FIX CRITIQUE — tempête de reconnexion, saturation du projet]
+     Cette fonction créait un NOUVEAU client Supabase à chaque appel, en ne
+     retirant que le canal de l'ancien — jamais le client lui-même. Or
+     supabase-js embarque sa propre reconnexion automatique au niveau du
+     client : chaque ancien client restait donc vivant et continuait à
+     rouvrir son websocket indéfiniment. Comme chaque échec replanifiait en
+     plus un startRealtime() (créant encore un client), la croissance était
+     exponentielle. Constaté en production : ~3 connexions websocket par
+     SECONDE, saturant le backend au point de faire échouer toutes les
+     requêtes REST en HTTP 522 (que le navigateur signale trompeusement
+     comme des erreurs « CORS », puisqu'un 522 ne renvoie pas les en-têtes).
+     Trois verrous ajoutés : (1) destruction réelle de l'ancien client,
+     (2) verrou anti-appels concurrents, (3) timer de reconnexion unique
+     avec backoff exponentiel au lieu d'un délai fixe. */
+  if (_RT.starting) return;                       /* (2) un démarrage est déjà en cours */
+  _RT.starting = true;
+  if (_RT.retryTimer) { clearTimeout(_RT.retryTimer); _RT.retryTimer = null; }   /* (3) jamais deux timers en vol */
+
+  /* Garde-fou anti-blocage : si subscribe() ne rappelle JAMAIS (cas réel
+     quand le backend est saturé et ne répond plus), le verrou ci-dessus
+     resterait à true indéfiniment et bloquerait toute reconnexion future —
+     le Realtime serait mort jusqu'au rechargement de la page. On relâche
+     donc le verrou au bout de 30 s si aucun statut n'est revenu. */
+  var _watchdog = setTimeout(function(){
+    if (_RT.starting && !_RT.active) {
+      _RT.starting = false;
+      _RT._badge('rt-off','⬤ RT ✗');
+      console.warn('[RT] Aucune réponse du serveur en 30 s — nouvelle tentative planifiée.');
+      if (!_RT.retryTimer) {
+        _RT.retryCount = Math.min(_RT.retryCount + 1, 6);
+        _RT.retryTimer = setTimeout(function(){ _RT.retryTimer = null; if (!_RT.active) startRealtime(); },
+                                    Math.min(8000 * Math.pow(2, _RT.retryCount - 1), 300000));
+      }
+    }
+  }, 30000);
+  _RT._watchdog = _watchdog;
+
+  /* (1) Fermeture COMPLÈTE de l'ancienne connexion : retirer le canal ne
+     suffit pas, il faut couper le transport du client, sinon il reconnecte
+     tout seul en boucle dans son coin. */
+  if (_RT.client) {
+    try { if (_RT.channel) _RT.client.removeChannel(_RT.channel); } catch(e){}
+    try { _RT.client.removeAllChannels(); } catch(e){}
+    try { _RT.client.realtime.disconnect(); } catch(e){}
+    _RT.client = null; _RT.channel = null;
+  }
 
   _RT.client  = window.supabase.createClient(SB.url, SB.key, {
     realtime: { params: { eventsPerSecond: 20 } }
@@ -67359,8 +67406,11 @@ async function startRealtime(){
           _rtApply(payload.table, payload.eventType, payload.new, payload.old).catch(function(){});
         })
     .subscribe(function(status){
+      if (_RT._watchdog) { clearTimeout(_RT._watchdog); _RT._watchdog = null; }   /* réponse reçue : le garde-fou n'a plus lieu d'être */
       if (status === 'SUBSCRIBED') {
         _RT.active = true;
+        _RT.starting = false;
+        _RT.retryCount = 0;                       /* reconnexion réussie : on repart d'un délai court */
         _RT._badge('rt-on','⬤ RT ✓');
         console.log('[RT] Realtime connecté');
         /* Revue synchronisation : Postgres Realtime ne rejoue pas les événements
@@ -67372,19 +67422,34 @@ async function startRealtime(){
         try { if (typeof pullFromCloudSilent === 'function') pullFromCloudSilent(); } catch(e){}
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
         _RT.active = false;
+        _RT.starting = false;
         _RT._badge('rt-off','⬤ RT ✗');
         console.warn('[RT] Realtime déconnecté :', status);
-        /* Reconnexion auto dans 8 s */
-        setTimeout(function(){ if (!_RT.active) startRealtime(); }, 8000);
+        /* Backoff exponentiel plafonné à 5 min : sur incident backend
+           prolongé, un délai fixe de 8 s faisait marteler le serveur déjà
+           en difficulté par chaque poste connecté — exactement ce qui
+           entretenait la saturation au lieu de la laisser se résorber. */
+        _RT.retryCount = Math.min(_RT.retryCount + 1, 6);
+        var delai = Math.min(8000 * Math.pow(2, _RT.retryCount - 1), 300000);
+        if (_RT.retryTimer) clearTimeout(_RT.retryTimer);
+        _RT.retryTimer = setTimeout(function(){
+          _RT.retryTimer = null;
+          if (!_RT.active) startRealtime();
+        }, delai);
       }
     });
 }
 
 function stopRealtime(){
-  if (_RT.channel && _RT.client) {
-    try { _RT.client.removeChannel(_RT.channel); } catch(e){}
+  if (_RT.retryTimer) { clearTimeout(_RT.retryTimer); _RT.retryTimer = null; }
+  if (_RT._watchdog) { clearTimeout(_RT._watchdog); _RT._watchdog = null; }
+  if (_RT.client) {
+    try { if (_RT.channel) _RT.client.removeChannel(_RT.channel); } catch(e){}
+    try { _RT.client.removeAllChannels(); } catch(e){}
+    try { _RT.client.realtime.disconnect(); } catch(e){}
   }
-  _RT.active = false; _RT.channel = null;
+  _RT.active = false; _RT.starting = false; _RT.retryCount = 0;
+  _RT.channel = null; _RT.client = null;
   _RT._badge('rt-off','⬤ RT ✗');
 }
 
@@ -103628,8 +103693,76 @@ function qrSvgTag(text){
         else if (cur) cur.p.push(pl[k]);
       }
       if (cur) out.push(cur);
+      return _fusionnerPolylines(out);
+    }
+
+    /* [Fix éléments ignorés] POLYLINE « ancien format » : contrairement à
+       LWPOLYLINE (qui porte tous ses points dans une seule entité), une
+       POLYLINE classique est suivie d'une série d'entités VERTEX distinctes,
+       terminée par SEQEND. Le découpage par code 0 les séparait donc, et
+       AUCUN des trois types n'étant traité, ces polylignes disparaissaient
+       intégralement de l'import — silencieusement. Ce format reste très
+       répandu (anciens logiciels de CAO, exports de certains géomètres).
+       On refusionne ici les VERTEX dans leur POLYLINE parente, sous une
+       forme que _emit sait lire. */
+    function _fusionnerPolylines(list) {
+      var out = [], i = 0;
+      while (i < list.length) {
+        var e = list[i];
+        if (e.type === 'POLYLINE') {
+          var sommets = [];
+          var j = i + 1;
+          while (j < list.length && list[j].type === 'VERTEX') {
+            var vx = null, vy = null, vb = 0;
+            for (var k = 0; k < list[j].p.length; k++) {
+              if (list[j].p[k][0] === 10) vx = parseFloat(list[j].p[k][1]);
+              if (list[j].p[k][0] === 20) vy = parseFloat(list[j].p[k][1]);
+              if (list[j].p[k][0] === 42) vb = parseFloat(list[j].p[k][1]) || 0;
+            }
+            if (vx !== null && vy !== null && !isNaN(vx) && !isNaN(vy)) sommets.push({ x: vx, y: vy, bulge: vb });
+            j++;
+          }
+          if (j < list.length && list[j].type === 'SEQEND') j++;   /* consommer le marqueur de fin */
+          e._sommets = sommets;
+          out.push(e);
+          i = j;
+          continue;
+        }
+        if (e.type === 'VERTEX' || e.type === 'SEQEND') { i++; continue; }   /* orphelins éventuels : ignorés proprement */
+        out.push(e);
+        i++;
+      }
       return out;
     }
+
+    /* [Fix précision géométrique] Un segment de polyligne peut porter un
+       « bulge » (code 42) : il décrit alors un ARC, pas un segment droit.
+       Traiter cet arc comme une corde droite sous-estime la surface d'une
+       pièce arrondie et fausse le linéaire de mur — donc les quantités du
+       DQE. On échantillonne l'arc en points intermédiaires.
+       bulge = tan(θ/4), θ = angle au centre du segment. */
+    function _pointsArcBulge(p0, p1, bulge) {
+      if (!bulge) return [];
+      var theta = 4 * Math.atan(bulge);
+      var dx = p1.x - p0.x, dy = p1.y - p0.y;
+      var corde = Math.sqrt(dx*dx + dy*dy);
+      if (!corde) return [];
+      var rayon = corde / (2 * Math.sin(Math.abs(theta) / 2));
+      if (!isFinite(rayon)) return [];
+      var mx = (p0.x + p1.x) / 2, my = (p0.y + p1.y) / 2;
+      var h = rayon * Math.cos(theta / 2);
+      var sgn = bulge > 0 ? 1 : -1;
+      var cx = mx - sgn * h * (dy / corde), cy = my + sgn * h * (dx / corde);
+      var a0 = Math.atan2(p0.y - cy, p0.x - cx);
+      var nbSeg = Math.max(2, Math.min(24, Math.ceil(Math.abs(theta) / (Math.PI / 12))));
+      var res = [];
+      for (var s = 1; s < nbSeg; s++) {
+        var a = a0 + theta * (s / nbSeg);
+        res.push({ x: cx + rayon * Math.cos(a), y: cy + rayon * Math.sin(a) });
+      }
+      return res;
+    }
+
     function _g(e, code, def) {
       for (var k = 0; k < e.p.length; k++) if (e.p[k][0] === code) return e.p[k][1];
       return def;
@@ -103662,14 +103795,84 @@ function qrSvgTag(text){
         var a = T(_gf(e, 10, 0), _gf(e, 20, 0)), b = T(_gf(e, 11, 0), _gf(e, 21, 0));
         out.push({ g: 'line', lay: lay, pts: [a, b] });
       } else if (t === 'LWPOLYLINE') {
-        var xs = [], ys = [];
+        /* [Fix précision] Lecture séquentielle des paires pour associer
+           chaque bulge (42) au bon sommet : l'ancienne version collectait
+           les X et les Y dans deux tableaux séparés et ignorait totalement
+           les bulges — une polyligne à segments arrondis était donc réduite
+           à ses cordes droites, sous-estimant les surfaces. */
+        var sommetsLw = [];
+        var curX = null, curY = null, curB = 0;
         for (var k = 0; k < e.p.length; k++) {
-          if (e.p[k][0] === 10) xs.push(parseFloat(e.p[k][1]));
-          if (e.p[k][0] === 20) ys.push(parseFloat(e.p[k][1]));
+          var cd = e.p[k][0];
+          if (cd === 10) {
+            if (curX !== null && curY !== null) sommetsLw.push({ x: curX, y: curY, bulge: curB });
+            curX = parseFloat(e.p[k][1]); curY = null; curB = 0;
+          } else if (cd === 20) { curY = parseFloat(e.p[k][1]); }
+          else if (cd === 42) { curB = parseFloat(e.p[k][1]) || 0; }
         }
-        var pts = [];
-        for (var k2 = 0; k2 < Math.min(xs.length, ys.length); k2++) pts.push(T(xs[k2], ys[k2]));
-        if (pts.length >= 2) out.push({ g: 'poly', lay: lay, pts: pts, closed: (parseInt(_g(e, 70, '0'), 10) & 1) === 1 });
+        if (curX !== null && curY !== null) sommetsLw.push({ x: curX, y: curY, bulge: curB });
+        var fermeeLw = (parseInt(_g(e, 70, '0'), 10) & 1) === 1;
+        var ptsLw = [];
+        for (var k2 = 0; k2 < sommetsLw.length; k2++) {
+          var s0 = sommetsLw[k2];
+          ptsLw.push(T(s0.x, s0.y));
+          var s1 = sommetsLw[k2 + 1] || (fermeeLw ? sommetsLw[0] : null);
+          if (s1 && s0.bulge) {
+            _pointsArcBulge(s0, s1, s0.bulge).forEach(function(pi){ ptsLw.push(T(pi.x, pi.y)); });
+          }
+        }
+        if (ptsLw.length >= 2) out.push({ g: 'poly', lay: lay, pts: ptsLw, closed: fermeeLw });
+      } else if (t === 'POLYLINE') {
+        /* Ancien format : sommets refusionnés en amont par _fusionnerPolylines */
+        var somPl = e._sommets || [];
+        var fermeePl = (parseInt(_g(e, 70, '0'), 10) & 1) === 1;
+        var ptsPl = [];
+        for (var k3 = 0; k3 < somPl.length; k3++) {
+          var q0 = somPl[k3];
+          ptsPl.push(T(q0.x, q0.y));
+          var q1 = somPl[k3 + 1] || (fermeePl ? somPl[0] : null);
+          if (q1 && q0.bulge) {
+            _pointsArcBulge(q0, q1, q0.bulge).forEach(function(pi){ ptsPl.push(T(pi.x, pi.y)); });
+          }
+        }
+        if (ptsPl.length >= 2) out.push({ g: 'poly', lay: lay, pts: ptsPl, closed: fermeePl });
+      } else if (t === 'ELLIPSE') {
+        /* Approximée en polygone : suffisant pour un métré de surface. */
+        var ce = T(_gf(e, 10, 0), _gf(e, 20, 0));
+        var axeX = _gf(e, 11, 0), axeY = _gf(e, 21, 0);
+        var ratio = _gf(e, 40, 1);
+        var demiGrand = Math.sqrt(axeX*axeX + axeY*axeY) * Math.abs(tr ? tr.sx : 1);
+        var demiPetit = demiGrand * ratio;
+        var rotE = Math.atan2(axeY, axeX) + (tr ? tr.rot : 0);
+        var d0 = _gf(e, 41, 0), d1 = _gf(e, 42, Math.PI * 2);
+        var ptsE = [];
+        var nbE = 32;
+        for (var se = 0; se <= nbE; se++) {
+          var pa = d0 + (d1 - d0) * (se / nbE);
+          var ex = demiGrand * Math.cos(pa), ey = demiPetit * Math.sin(pa);
+          ptsE.push({ x: ce.x + ex * Math.cos(rotE) - ey * Math.sin(rotE),
+                      y: ce.y + ex * Math.sin(rotE) + ey * Math.cos(rotE) });
+        }
+        if (ptsE.length >= 3) out.push({ g: 'poly', lay: lay, pts: ptsE, closed: Math.abs((d1 - d0) - Math.PI*2) < 0.01 });
+      } else if (t === 'SPLINE') {
+        /* Approximée par ses points de passage (11/21) ou, à défaut, ses
+           points de contrôle (10/20) : une courbe libre (mur arrondi, tracé
+           de voirie) valait mieux approchée que totalement absente. */
+        var fx = [], fy = [], cxs = [], cys = [];
+        for (var k4 = 0; k4 < e.p.length; k4++) {
+          var cc4 = e.p[k4][0];
+          if (cc4 === 11) fx.push(parseFloat(e.p[k4][1]));
+          else if (cc4 === 21) fy.push(parseFloat(e.p[k4][1]));
+          else if (cc4 === 10) cxs.push(parseFloat(e.p[k4][1]));
+          else if (cc4 === 20) cys.push(parseFloat(e.p[k4][1]));
+        }
+        var sx = fx.length >= 2 ? fx : cxs, sy = fx.length >= 2 ? fy : cys;
+        var ptsS = [];
+        for (var k5 = 0; k5 < Math.min(sx.length, sy.length); k5++) ptsS.push(T(sx[k5], sy[k5]));
+        if (ptsS.length >= 2) out.push({ g: 'poly', lay: lay, pts: ptsS, closed: (parseInt(_g(e, 70, '0'), 10) & 1) === 1 });
+      } else if (t === 'POINT') {
+        var pp = T(_gf(e, 10, 0), _gf(e, 20, 0));
+        out.push({ g: 'point', lay: lay, p: pp });
       } else if (t === 'CIRCLE') {
         var cc = T(_gf(e, 10, 0), _gf(e, 20, 0));
         out.push({ g: 'circle', lay: lay, c: cc, r: _gf(e, 40, 0) * Math.abs(tr ? tr.sx : 1) });
@@ -103717,15 +103920,14 @@ function qrSvgTag(text){
        Indépendant du calque : le nom du bloc porte le sens, pas la layer. */
     var blocsBruts = [];
     /* POLYLINE + VERTEX (ancien format) */
-    var polyCour = null;
     for (var r = 0; r < raw.length; r++) {
       var e = raw[r];
-      if (e.type === 'POLYLINE') { polyCour = { lay: _g(e, 8, '0'), pts: [], closed: (parseInt(_g(e, 70, '0'), 10) & 1) === 1 }; continue; }
-      if (e.type === 'VERTEX' && polyCour) { polyCour.pts.push({ x: _gf(e, 10, 0), y: _gf(e, 20, 0) }); continue; }
-      if (e.type === 'SEQEND' && polyCour) {
-        if (polyCour.pts.length >= 2) { geo.push({ g: 'poly', lay: polyCour.lay, pts: polyCour.pts, closed: polyCour.closed }); layers[polyCour.lay] = (layers[polyCour.lay] || 0) + 1; }
-        polyCour = null; continue;
-      }
+      /* [Fix] Le traitement POLYLINE/VERTEX/SEQEND vivait ici, mais UNIQUEMENT
+         au niveau racine : une POLYLINE ancien format située dans un bloc
+         était donc perdue. Il est désormais assuré par _fusionnerPolylines()
+         (qui rattache les VERTEX à leur parent dès le découpage) puis par
+         _emit(), qui s'applique aussi bien à la racine qu'à l'intérieur des
+         blocs — ce qui étend le support à un cas qui n'a jamais fonctionné. */
       if (e.type === 'INSERT' && RE_VUE_ANNEXE.test(_g(e, 2, ''))) { vuesIgnorees++; continue; }
       if (e.type === 'INSERT') {
         blocsBruts.push({ nom: _g(e, 2, ''), lay: _g(e, 8, '0'), x: _gf(e, 10, 0), y: _gf(e, 20, 0) });
