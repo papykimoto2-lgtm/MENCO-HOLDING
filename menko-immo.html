@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.59 · 2026-08-18 — Dernière revue du fix persistance portail public : correction du choix de stockage. localStorage (v14.58) résolvait bien le F5, mais une revue a révélé un vrai bug — localStorage est PARTAGÉ entre tous les onglets du même navigateur : un client connecté comme souscripteur dans un onglet, si un AUTRE onglet du même navigateur se connectait ensuite comme apporteur, verrait son propre onglet basculer silencieusement sur les données de l\'apporteur au moindre rechargement (la session la plus récente écrasant les autres). Confirmé par simulation avant correction. Basculé vers sessionStorage — isolé par onglet, résout ce conflit, tout en continuant de survivre à un simple F5 (le vrai problème signalé à l\'origine) et en s\'effaçant à la fermeture (réduit aussi le risque identifié sur poste partagé/cybercafé). Re-simulé après correction : chaque onglet garde bien sa propre session, indépendante. Les 6 sites du mécanisme (jeton + session d\'espace, lecture/écriture/effacement) migrés de façon cohérente. Revalidé de bout en bout (JS sur les deux fichiers, décodage/réencodage intègre, zéro régression sur menko-immo.html).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.60 · 2026-08-18 — NOUVEAU : Circuit budgétaire complet. Budget prévisionnel annuel (compte×division, brouillon→soumis→validé DG) → Fiche d\'Engagement de Dépense (FED, avec disponible affiché en direct) → validation (contrôle du disponible, décrémente la ligne) → LA FICHE SE TRANSFORME EN Demande d\'Achat (numéro DA attribué, numéro FED conservé pour traçabilité) → apparaît à la Caisse dans « Décaissements à faire » → décaissement pré-rempli sans re-ventilation (compte déjà connu). Transferts de ligne à ligne, même validation (plafond de rôle réutilisé via exigerPlafond/userPlafond, aucun nouveau mécanisme). Ancien « Suivi budgétaire » (alerte sur sorties déjà faites, v14.54) retiré de la Caisse comme demandé — le contrôle se fait désormais en amont, la Caisse exécute un décaissement déjà autorisé. BUG GRAVE TROUVÉ ET CORRIGÉ AVANT LIVRAISON : mon propre modal budget (v14.54) partageait l\'ID « cb-montant » avec le modal de bon de caisse pré-existant — un vrai bug de collision DOM qui aurait pu casser la saisie des sorties/entrées de caisse, fonctionnalité vitale. Repéré en construisant l\'écran de décaissement, corrigé par renommage complet (cb-→cbud-). Cas de décaissement différé (montant au-delà du plafond de l\'auteur) traité explicitement : la DA ne passe à « décaissée » qu\'au moment où l\'argent sort réellement, pas avant. Circuit complet testé empiriquement de bout en bout (budget→FED→DA→décaissement, y compris le refus d\'une 2e fiche dépassant le disponible). Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -2725,6 +2725,10 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="nav-item" onclick="goTo('parc-auto')" data-page="parc-auto">
         <span class="nav-icon">🚗</span><span>Parc Auto</span>
         <span class="nav-badge" id="badge-parc-auto" style="display:none;">0</span>
+      </div>
+          <div class="nav-item" onclick="goTo('budget')" data-page="budget">
+        <span class="nav-icon">💰</span><span>Budget</span>
+        <span class="nav-badge" id="badge-budget" style="display:none;">0</span>
       </div>
           <div class="nav-item" onclick="mgOuvrir()" data-page="achats">
         <span class="nav-icon">🛒</span><span>Moyens Généraux</span>
@@ -11391,16 +11395,11 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
 
         <div id="caisse-ventilation-box" style="margin-top:24px;"></div>
 
-        <!-- ══ Suivi budgétaire — compte de charge + division, mensuel ou annuel ══ -->
-        <div class="card" style="margin-top:24px;">
-          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
-            <div>
-              <div class="card-title" style="margin-bottom:2px;">📊 Suivi budgétaire</div>
-              <div style="font-size:11px;color:var(--dim);">Budget par compte de charge et par division — comparé aux sorties de caisse déjà ventilées</div>
-            </div>
-            <button class="btn btn-primary btn-sm" onclick="caisseBudgetOuvrir()">➕ Nouveau budget</button>
-          </div>
-          <div id="caisse-budget-box"></div>
+        <!-- ══ Décaissements à faire — DA validées, en attente de paiement ══ -->
+        <div class="card" style="margin-top:24px;border:1px solid var(--or,#B87333);">
+          <div class="card-title" style="margin-bottom:2px;">💵 Décaissements à faire</div>
+          <div style="font-size:11px;color:var(--dim);margin-bottom:10px;">Demandes d'Achat validées (module Budget) — le compte est déjà connu, aucune ventilation à refaire.</div>
+          <div id="caisse-decaissements-box"></div>
         </div>
 
         <!-- ══ Balance auxiliaire · balance âgée · échéances (pour planifier les paiements depuis la caisse) ══ -->
@@ -14302,6 +14301,55 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         </div>
       </div>
 
+      <!-- ═══ BUDGET — Engagement de dépense, validation DG, transferts ═══ -->
+      <div class="page" id="page-budget">
+        <div class="page-header">
+          <div>
+            <h1 class="page-title">💰 Budget</h1>
+            <div class="page-sub">Budget prévisionnel · Fiches d'engagement de dépense → Demandes d'Achat · Transferts de ligne</div>
+          </div>
+        </div>
+
+        <div class="etape-btns" style="margin-bottom:14px;">
+          <button class="tab-btn active" onclick="switchTab('budget','previsionnel')">📋 Budget prévisionnel</button>
+          <button class="tab-btn" onclick="switchTab('budget','fed')">📝 Engagements de dépense</button>
+          <button class="tab-btn" onclick="switchTab('budget','transferts')">🔀 Transferts</button>
+        </div>
+
+        <!-- ── Onglet Budget prévisionnel ── -->
+        <div class="tab-pane active" id="tab-budget-previsionnel">
+          <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+              <div style="font-size:12px;color:var(--blanc-dim);">Un budget par compte × division × exercice — soumis puis validé par le DG (ou tout rôle habilité) avant de devenir actif.</div>
+              <button class="btn btn-primary btn-sm" onclick="budgetPrevisionnelOuvrir()">➕ Nouveau budget</button>
+            </div>
+            <div id="budget-previsionnel-box"></div>
+          </div>
+        </div>
+
+        <!-- ── Onglet Fiches d'Engagement de Dépense ── -->
+        <div class="tab-pane" id="tab-budget-fed">
+          <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+              <div style="font-size:12px;color:var(--blanc-dim);">Chaque fiche engage une dépense sur une ligne budgétaire précise. Une fois validée, elle devient une Demande d'Achat et apparaît à la Caisse pour décaissement.</div>
+              <button class="btn btn-primary btn-sm" onclick="fedOuvrir()">➕ Nouvelle fiche</button>
+            </div>
+            <div id="budget-fed-box"></div>
+          </div>
+        </div>
+
+        <!-- ── Onglet Transferts budgétaires ── -->
+        <div class="tab-pane" id="tab-budget-transferts">
+          <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+              <div style="font-size:12px;color:var(--blanc-dim);">Déplace du disponible d'une ligne budgétaire vers une autre — utile quand une fiche d'engagement ne peut pas être validée faute de disponible suffisant.</div>
+              <button class="btn btn-primary btn-sm" onclick="transfertOuvrir()">➕ Nouveau transfert</button>
+            </div>
+            <div id="budget-transferts-box"></div>
+          </div>
+        </div>
+      </div>
+
       <!-- ═══ PARC AUTO (Logistique) ═══════════════════════════════════ -->
       <div class="page" id="page-parc-auto">
         <div class="page-header">
@@ -14423,27 +14471,80 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
       <div class="modal-overlay" id="modal-caisse-budget">
         <div class="modal">
           <div class="modal-header">
-            <h3 id="cb-modal-titre">📊 Nouveau budget</h3>
+            <h3 id="cbud-modal-titre">📊 Nouveau budget prévisionnel</h3>
             <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-caisse-budget')">✕</button>
           </div>
           <div class="modal-body">
-            <input type="hidden" id="cb-id">
+            <input type="hidden" id="cbud-id">
             <div class="form-grid">
-              <div class="form-group span-2"><label>Compte de charge *</label><input type="text" class="form-control" id="cb-compte" list="dl-plan-comptable" placeholder="Ex : 6055, 6051..."></div>
-              <div class="form-group span-2"><label>Division</label><select class="form-control" id="cb-division"><option value="">— Toutes divisions (consolidé) —</option></select></div>
-              <div class="form-group"><label>Périodicité *</label><select class="form-control" id="cb-periode" onchange="caisseBudgetTogglePeriode()">
-                <option value="mensuel">Mensuel</option><option value="annuel">Annuel</option>
-              </select></div>
-              <div class="form-group"><label>Année *</label><input type="number" class="form-control" id="cb-annee" min="2020" max="2100"></div>
-              <div class="form-group" id="cb-mois-wrap"><label>Mois (si mensuel)</label><input type="month" class="form-control" id="cb-mois"></div>
-              <div class="form-group"><label>Montant budgété (FCFA) *</label><input type="number" class="form-control" id="cb-montant" min="0"></div>
+              <div class="form-group span-2"><label>Compte de charge *</label><input type="text" class="form-control" id="cbud-compte" list="dl-plan-comptable" placeholder="Ex : 6055, 6051..."></div>
+              <div class="form-group span-2"><label>Division</label><select class="form-control" id="cbud-division"><option value="">— Toutes divisions (consolidé) —</option></select></div>
+              <div class="form-group"><label>Exercice *</label><input type="number" class="form-control" id="cbud-annee" min="2020" max="2100"></div>
+              <div class="form-group"><label>Montant alloué (FCFA) *</label><input type="number" class="form-control" id="cbud-montant" min="0"></div>
             </div>
-            <div style="font-size:11px;color:var(--blanc-dim);margin-top:8px;">« Toutes divisions » compare aux sorties de TOUTES les entités confondues sur ce compte — utile pour un budget de groupe ; une division précise isole une seule entité.</div>
+            <div style="font-size:11px;color:var(--blanc-dim);margin-top:8px;">Enregistré en brouillon — soumettez-le ensuite pour validation par le DG (ou tout rôle habilité). « Toutes divisions » compare à toutes les entités confondues sur ce compte.</div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal('modal-caisse-budget')">Annuler</button>
-            <button class="btn btn-danger" id="cb-btn-suppr" style="display:none;" onclick="caisseBudgetSupprimer()">🗑️ Supprimer</button>
-            <button class="btn btn-primary" onclick="caisseBudgetSauver()">💾 Enregistrer</button>
+            <button class="btn btn-danger" id="cbud-btn-suppr" style="display:none;" onclick="budgetPrevisionnelSupprimer(document.getElementById('cbud-id').value).then(function(){ closeModal('modal-caisse-budget'); budgetRenderPrevisionnel(); })">🗑️ Supprimer</button>
+            <button class="btn btn-primary" onclick="budgetPrevisionnelSauverDepuisForm()">💾 Enregistrer</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal : Fiche d'Engagement de Dépense (FED → DA à la validation) -->
+      <div class="modal-overlay" id="modal-fed">
+        <div class="modal modal-lg">
+          <div class="modal-header">
+            <h3 id="fed-modal-titre">📝 Nouvelle fiche d'engagement de dépense</h3>
+            <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-fed')">✕</button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="fed-id">
+            <div class="form-grid">
+              <div class="form-group"><label>Division</label><select class="form-control" id="fed-division" onchange="fedMajDisponible()"><option value="">— Toutes divisions —</option></select></div>
+              <div class="form-group"><label>Exercice *</label><input type="number" class="form-control" id="fed-exercice" min="2020" max="2100" onchange="fedMajDisponible()"></div>
+              <div class="form-group"><label>Ligne budgétaire (compte) *</label><input type="text" class="form-control" id="fed-compte" list="dl-plan-comptable" placeholder="Ex : 6055" onchange="fedMajDisponible()" oninput="fedMajDisponible()"></div>
+              <div class="form-group span-2"><label>Objet *</label><input type="text" class="form-control" id="fed-objet" placeholder="Motif de la dépense"></div>
+              <div class="form-group"><label>Fournisseur (optionnel)</label><select class="form-control" id="fed-fournisseur"><option value="">— Aucun —</option></select></div>
+              <div class="form-group"><label>Bénéficiaire (si pas de fournisseur)</label><input type="text" class="form-control" id="fed-beneficiaire"></div>
+            </div>
+            <div id="fed-disponible-box" style="font-size:12px;margin:8px 0;"></div>
+            <div class="form-section-title" style="margin-top:10px;">Lignes</div>
+            <div id="fed-lignes-box"></div>
+            <button class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="fedAjouterLigne()">➕ Ajouter une ligne</button>
+            <div style="text-align:right;font-weight:700;margin-top:10px;font-size:15px;">Total : <span id="fed-total">0</span> F</div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal('modal-fed')">Annuler</button>
+            <button class="btn btn-danger" id="fed-btn-suppr" style="display:none;" onclick="daSupprimer(document.getElementById('fed-id').value).then(function(){ closeModal('modal-fed'); budgetRenderFed(); })">🗑️ Supprimer</button>
+            <button class="btn btn-primary" onclick="fedSauverDepuisForm()">💾 Enregistrer</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal : Transfert budgétaire -->
+      <div class="modal-overlay" id="modal-transfert">
+        <div class="modal">
+          <div class="modal-header">
+            <h3 id="transfert-modal-titre">🔀 Nouveau transfert budgétaire</h3>
+            <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-transfert')">✕</button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="transfert-id">
+            <div class="form-grid">
+              <div class="form-group span-2"><label>Division</label><select class="form-control" id="transfert-division"><option value="">— Toutes divisions —</option></select></div>
+              <div class="form-group"><label>Exercice *</label><input type="number" class="form-control" id="transfert-exercice" min="2020" max="2100"></div>
+              <div class="form-group"><label>Montant (FCFA) *</label><input type="number" class="form-control" id="transfert-montant" min="0"></div>
+              <div class="form-group"><label>Compte source (donne) *</label><input type="text" class="form-control" id="transfert-source" list="dl-plan-comptable"></div>
+              <div class="form-group"><label>Compte destination (reçoit) *</label><input type="text" class="form-control" id="transfert-dest" list="dl-plan-comptable"></div>
+              <div class="form-group span-2"><label>Motif</label><input type="text" class="form-control" id="transfert-motif"></div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal('modal-transfert')">Annuler</button>
+            <button class="btn btn-danger" id="transfert-btn-suppr" style="display:none;" onclick="transfertSupprimer(document.getElementById('transfert-id').value).then(function(){ closeModal('modal-transfert'); budgetRenderTransferts(); })">🗑️ Supprimer</button>
+            <button class="btn btn-primary" onclick="transfertSauverDepuisForm()">💾 Enregistrer</button>
           </div>
         </div>
       </div>
@@ -21461,14 +21562,19 @@ var DATA = {
   vehicule_entretiens: [],
   vehicule_affectations: [],
   /* v146 — Suivi budgétaire caisse (compte + division, mensuel ou annuel) */
-  caisse_budgets: []
+  caisse_budgets: [],
+  /* v147 — Circuit budgétaire complet : budget prévisionnel annuel par
+     division/compte, validé par le DG, décrémenté par les Demandes d'Achat
+     validées, avec transferts de ligne à ligne */
+  fiches_engagement_depense: [],
+  transferts_budgetaires: []
 };
 
 /* ──────────────────────────────────────────────────────
    INDEXEDDB
 ────────────────────────────────────────────────────── */
 var DB_NAME = 'ImmoSuiteDB';
-var DB_VERSION = 146; /* v146: store 'caisse_budgets' (suivi budgétaire caisse, compte+division, mensuel/annuel) */
+var DB_VERSION = 147; /* v147: stores 'fiches_engagement_depense', 'transferts_budgetaires' — circuit budgétaire complet avec validation DG */
 var db = null;
 
 /* Liste COMPLÈTE et définitive de tous les stores */
@@ -21583,7 +21689,9 @@ var ALL_STORES = [
   /* v145 — Parc Auto (logistique) */
   'vehicules', 'vehicule_carburant', 'vehicule_entretiens', 'vehicule_affectations',
   /* v146 — Suivi budgétaire caisse */
-  'caisse_budgets'
+  'caisse_budgets',
+  /* v147 — Circuit budgétaire : DA + transferts */
+  'fiches_engagement_depense', 'transferts_budgetaires'
 ];
 
 function initDB() {
@@ -21974,7 +22082,9 @@ async function loadAllData() {
   /* v145 — Parc Auto (logistique) */
   'vehicules','vehicule_carburant','vehicule_entretiens','vehicule_affectations',
   /* v146 — Suivi budgétaire caisse */
-  'caisse_budgets'
+  'caisse_budgets',
+  /* v147 — Circuit budgétaire : DA + transferts */
+  'fiches_engagement_depense', 'transferts_budgetaires'
   ];
   /* Chargement en PARALLÈLE plutôt que séquentiel : chaque dbGetAll() ouvre
      sa propre transaction IndexedDB 'readonly' indépendante (voir dbGetAll
@@ -23432,6 +23542,8 @@ function _filtrerFantomes(table, store, ids) {
 
 /* Correspondance table Supabase ↔ store local (IndexedDB / DATA) */
 var SUPA_STORE_MAP = [
+  ['pi_fiches_engagement_depense',         'fiches_engagement_depense'],
+  ['pi_transferts_budgetaires', 'transferts_budgetaires'],
   ['pi_caisse_budgets',         'caisse_budgets'],
   ['pi_vehicules',              'vehicules'],
   ['pi_vehicule_carburant',     'vehicule_carburant'],
@@ -26172,6 +26284,7 @@ function goTo(page) {
   if (page === 'diaspo') { dspEnter(); }
   if (page === 'lbcft') { lbcRender(); }
   if (page === 'parc-auto') { paEnter(); }
+  if (page === 'budget') { if (typeof budgetRenderPrevisionnel === 'function') budgetRenderPrevisionnel(); }
 }
 
 function switchTab(context, tab) {
@@ -26277,6 +26390,7 @@ function switchTab(context, tab) {
   else if (context === 'modal-apporteur')  prefix = 'tab-modal-apporteur-';
   else if (context === 'modal-visite')     prefix = 'tab-modal-visite-';
   else if (context === 'morcellement')     prefix = 'tab-morcellement-';
+  else if (context === 'budget')           prefix = 'tab-budget-';
   else if (context === 'agr-prom')         prefix = 'tab-agr-prom-';
   else if (context === 'agr-prog')         prefix = 'tab-agr-prog-';
   else if (context === 'am')               prefix = 'tab-am-';
@@ -26312,6 +26426,11 @@ function switchTab(context, tab) {
   if (context === 'chantiers' && tab === 'controle' && typeof renderControleGestion === 'function') renderControleGestion();
   if (context === 'chantiers' && tab === 'cout' && typeof buildCoutRevient === 'function') buildCoutRevient();
   if (context === 'af' && tab === 'proprietaires' && typeof afRenderProprietairesListe === 'function') afRenderProprietairesListe();
+  if (context === 'budget') {
+    if (tab === 'previsionnel' && typeof budgetRenderPrevisionnel === 'function') budgetRenderPrevisionnel();
+    if (tab === 'fed' && typeof budgetRenderFed === 'function') budgetRenderFed();
+    if (tab === 'transferts' && typeof budgetRenderTransferts === 'function') budgetRenderTransferts();
+  }
 
   /* Mettre à jour les boutons .tab-btn du même contexte */
   document.querySelectorAll('.tab-btn').forEach(function(b) {
@@ -40007,7 +40126,7 @@ var ALL_MODULES = [
   'Filiere Fonciere','Acquisition & Amenagement Foncier','Marches Amenagement VRD','Etude de Prix & Debourse',
   'Achats & Commandes','Stock Materiaux','Validations','Reception & Livraison',
   'Portail','Portail Apporteur','Bilan de Promotion','Partenaires Lotissement',
-  'Gestion Locative','Investisseurs Diaspora','Conformite LBC-FT','Parc Auto'
+  'Gestion Locative','Investisseurs Diaspora','Conformite LBC-FT','Parc Auto','Budget'
 ];
 
 // ── Rôles système (non modifiables, non supprimables) ────────────────────────
@@ -40123,7 +40242,8 @@ var PAGE_MODULE = {
   'rh-employes':'Paie', 'rh-paie':'Paie', 'rh-pointage':'Journaliers & Temporaires',
   clients:'Souscripteurs', lots:'Lots & Reservations', programmes:'Programmes',
   locatif:'Gestion Locative', diaspo:'Investisseurs Diaspora',
-  'parc-auto':'Parc Auto'
+  'parc-auto':'Parc Auto',
+  budget:'Budget'
 };
 var ACTIONS_LIB = { c:'Créer', m:'Modifier', s:'Supprimer', v:'Valider' };
 /* Rattachement des stores sensibles à leur module, pour appliquer les droits
@@ -40152,7 +40272,8 @@ var STORE_MODULE = {
   af_relances:'Acquisition & Amenagement Foncier',
   parcelles:'Foncier', terrains:'Foncier',
   conges_rh:'Conges', mobilites_rh:'Paie', documents:'Documents',
-  vehicules:'Parc Auto', vehicule_carburant:'Parc Auto', vehicule_entretiens:'Parc Auto', vehicule_affectations:'Parc Auto'
+  vehicules:'Parc Auto', vehicule_carburant:'Parc Auto', vehicule_entretiens:'Parc Auto', vehicule_affectations:'Parc Auto',
+  caisse_budgets:'Budget', fiches_engagement_depense:'Budget', transferts_budgetaires:'Budget'
 };
 function userPeut(module, action) {
   if (!APP.currentUser) return false;
@@ -82492,7 +82613,8 @@ var PAGE_MODULE_MAP = {
   'copropriete':        'Gestion Locative',
   'diaspo':             'Investisseurs Diaspora',
   'lbcft':              'Conformite LBC-FT',
-  'parc-auto':          'Parc Auto'
+  'parc-auto':          'Parc Auto',
+  'budget':             'Budget'
 };
 
 /* ── 2. hasRole() corrigé — inclut manager + custom roles ── */
@@ -90196,6 +90318,558 @@ async function saveStockRetour(){
    ACHATS — Bon de commande → Réception (BL) → [Facture]
    ══════════════════════════════════════════════════════ */
 var bcLines=[];
+/* ═══════════════════════════════════════════════════════════════════════
+   CIRCUIT BUDGÉTAIRE — budget prévisionnel annuel (validé DG) → Demande
+   d'Achat (décrémente la ligne à la validation) → décaissement Caisse
+   direct depuis la DA validée, sans re-ventilation. Transferts de ligne à
+   ligne soumis à la même validation que les DA. Le contrôle budgétaire se
+   fait désormais EN AMONT (validation DA), plus au niveau de la Caisse —
+   qui se contente d'exécuter un décaissement déjà autorisé.
+   Réutilise le store `caisse_budgets` (v14.54) comme table du budget
+   prévisionnel, étendu avec un statut de validation (brouillon → soumis →
+   valide/rejete) — même finalité (compte × division × période), pas de
+   nouveau store pour ne pas perdre les lignes déjà saisies.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Calcul du disponible sur une ligne (compte + division + exercice) ──
+   disponible = budget alloué (validé) + transferts entrants validés
+              - transferts sortants validés - DA validées/décaissées
+   excludeDaId : lors de la (re)validation d'une DA, on exclut CETTE DA du
+   calcul de l'engagé existant pour éviter de la compter contre elle-même. */
+function _budgetAlloue(compte, divisionId, exercice) {
+  var b = (DATA.caisse_budgets||[]).find(function(x){
+    return x.compte===compte && (x.division_id||'')===(divisionId||'') && x.exercice===exercice && x.statut==='valide';
+  });
+  return b ? (parseFloat(b.montant)||0) : 0;
+}
+function _budgetTransfertsNets(compte, divisionId, exercice) {
+  var td = DATA.transferts_budgetaires||[];
+  var entrants = td.filter(function(t){ return t.compte_dest===compte && (t.division_id||'')===(divisionId||'') && t.exercice===exercice && t.statut==='valide'; })
+    .reduce(function(s,t){ return s+(parseFloat(t.montant)||0); },0);
+  var sortants = td.filter(function(t){ return t.compte_source===compte && (t.division_id||'')===(divisionId||'') && t.exercice===exercice && t.statut==='valide'; })
+    .reduce(function(s,t){ return s+(parseFloat(t.montant)||0); },0);
+  return entrants - sortants;
+}
+function _budgetEngage(compte, divisionId, exercice, excludeDaId) {
+  return (DATA.fiches_engagement_depense||[]).filter(function(d){
+    return d.compte===compte && (d.division_id||'')===(divisionId||'') && d.exercice===exercice
+      && (d.statut==='validee' || d.statut==='decaissee') && d.id !== excludeDaId;
+  }).reduce(function(s,d){ return s+(parseFloat(d.montant)||0); },0);
+}
+function budgetDisponible(compte, divisionId, exercice, excludeDaId) {
+  return _budgetAlloue(compte, divisionId, exercice) + _budgetTransfertsNets(compte, divisionId, exercice) - _budgetEngage(compte, divisionId, exercice, excludeDaId);
+}
+
+/* ── Budget prévisionnel : brouillon (chef de division) → soumis → valide/rejete (DG/habilité) ── */
+async function budgetPrevisionnelSauver(champs) {
+  /* champs = { id, compte, division_id, exercice, montant } — construit par
+     l'écran appelant (voir étape suivante), séparé ici pour rester testable
+     indépendamment du DOM. */
+  if (!exigerDroit('Caisse', champs.id ? 'm' : 'c', 'un budget prévisionnel')) return null;
+  if (!champs.compte || !champs.exercice || !(parseFloat(champs.montant) > 0)) {
+    toast('Compte, exercice et montant (> 0) sont obligatoires.', 'error'); return null;
+  }
+  var existant = champs.id ? (DATA.caisse_budgets||[]).find(function(x){ return x.id===champs.id; }) : null;
+  if (existant && existant.statut === 'valide') {
+    toast('Ce budget est déjà validé — utilisez un transfert pour l\'ajuster, pas une modification directe.', 'error'); return null;
+  }
+  var doublon = (DATA.caisse_budgets||[]).some(function(x){
+    return x.id !== champs.id && x.compte === champs.compte && (x.division_id||'') === (champs.division_id||'') && x.exercice === champs.exercice;
+  });
+  if (doublon) { toast('Un budget existe déjà pour ce compte, cette division et cet exercice.', 'error'); return null; }
+
+  var b = existant || { id: champs.id || uid(), created_at: new Date().toISOString(), statut: 'brouillon' };
+  b.compte = champs.compte; b.division_id = champs.division_id||''; b.exercice = parseInt(champs.exercice,10);
+  b.montant = parseFloat(champs.montant); b.periode = 'annuel'; b.mois = '';
+  b._modifie = new Date().toISOString();
+  if (!existant) DATA.caisse_budgets.push(b);
+  await dbPut('caisse_budgets', b);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_budgets', b);
+  toast('✅ Budget prévisionnel enregistré (brouillon).', 'success');
+  return b;
+}
+async function budgetPrevisionnelSoumettre(id) {
+  var b = (DATA.caisse_budgets||[]).find(function(x){ return x.id===id; }); if (!b) return;
+  if (b.statut !== 'brouillon') { toast('Seul un budget en brouillon peut être soumis.', 'error'); return; }
+  b.statut = 'soumis'; b.soumis_par = (APP.currentUser&&APP.currentUser.nom)||'—'; b.soumis_le = new Date().toISOString(); b._modifie = new Date().toISOString();
+  await dbPut('caisse_budgets', b); if (typeof syncToSupabase==='function') syncToSupabase('pi_caisse_budgets', b);
+  toast('📤 Budget soumis pour validation.', 'success');
+}
+async function budgetPrevisionnelValider(id) {
+  var b = (DATA.caisse_budgets||[]).find(function(x){ return x.id===id; }); if (!b) return;
+  if (b.statut !== 'soumis') { toast('Seul un budget soumis peut être validé.', 'error'); return; }
+  if (!exigerPlafond(b.montant, 'La validation de ce budget prévisionnel')) return;
+  b.statut = 'valide'; b.valide_par = (APP.currentUser&&APP.currentUser.nom)||'—'; b.valide_le = new Date().toISOString(); b._modifie = new Date().toISOString();
+  await dbPut('caisse_budgets', b); if (typeof syncToSupabase==='function') syncToSupabase('pi_caisse_budgets', b);
+  toast('✅ Budget prévisionnel validé — la ligne est maintenant active.', 'success');
+}
+async function budgetPrevisionnelRejeter(id, motif) {
+  var b = (DATA.caisse_budgets||[]).find(function(x){ return x.id===id; }); if (!b) return;
+  if (b.statut !== 'soumis') { toast('Seul un budget soumis peut être rejeté.', 'error'); return; }
+  b.statut = 'rejete'; b.motif_rejet = motif||''; b.valide_par = (APP.currentUser&&APP.currentUser.nom)||'—'; b.valide_le = new Date().toISOString(); b._modifie = new Date().toISOString();
+  await dbPut('caisse_budgets', b); if (typeof syncToSupabase==='function') syncToSupabase('pi_caisse_budgets', b);
+  toast('❌ Budget rejeté.', 'info');
+}
+async function budgetPrevisionnelSupprimer(id) {
+  var b = (DATA.caisse_budgets||[]).find(function(x){ return x.id===id; }); if (!b) return;
+  if (b.statut !== 'brouillon') { toast('Seul un budget en brouillon peut être supprimé — rejetez-le sinon.', 'error'); return; }
+  if (!confirm('Supprimer ce budget prévisionnel ?')) return;
+  await deleteRecord('caisse_budgets', id);
+  DATA.caisse_budgets = (DATA.caisse_budgets||[]).filter(function(x){ return x.id!==id; });
+  toast('Supprimé.', 'info');
+}
+
+/* ── Fiche d'Engagement de Dépense (FED) : brouillon → soumise → validee.
+   À LA VALIDATION, la fiche SE TRANSFORME EN Demande d'Achat — même
+   enregistrement (même id, même historique), mais un numéro DA lui est
+   attribué à cet instant précis et c'est SOUS CE NOUVEAU NOM qu'elle
+   apparaît ensuite à la Caisse. Le numéro FED d'origine reste conservé
+   (numero_fed) pour la traçabilité complète de l'engagement. /rejetee →
+   decaissee (paiement effectué à la Caisse, uniquement possible une fois
+   devenue DA). ── */
+function _fedGenererNumero() {
+  var annee = new Date().getFullYear();
+  var n = (DATA.fiches_engagement_depense||[]).filter(function(d){ return (d.numero_fed||'').indexOf('FED-'+annee)===0; }).length + 1;
+  return 'FED-'+annee+'-'+String(n).padStart(4,'0');
+}
+function _daGenererNumero() {
+  var annee = new Date().getFullYear();
+  var n = (DATA.fiches_engagement_depense||[]).filter(function(d){ return (d.numero_da||'').indexOf('DA-'+annee)===0; }).length + 1;
+  return 'DA-'+annee+'-'+String(n).padStart(4,'0');
+}
+/* Libellé d'affichage courant : le numéro FED tant que la fiche n'est pas
+   encore validée, le numéro DA une fois qu'elle l'est devenue. */
+function fedLabelDocument(d) {
+  return (d.numero_da) ? d.numero_da : d.numero_fed;
+}
+async function daSauver(champs) {
+  /* champs = { id, division_id, exercice, compte, objet, lignes:[{designation,qte,pu}], fournisseur_id, beneficiaire } */
+  if (!exigerDroit('Caisse', champs.id ? 'm' : 'c', 'une fiche d\'engagement de dépense')) return null;
+  var lignes = (champs.lignes||[]).filter(function(l){ return (parseFloat(l.qte)||0) > 0 && l.designation; })
+    .map(function(l){ return { designation: l.designation, qte: parseFloat(l.qte)||0, pu: parseFloat(l.pu)||0 }; });
+  if (!lignes.length) { toast('Ajoutez au moins une ligne valide.', 'error'); return null; }
+  if (!champs.compte) { toast('La ligne budgétaire (compte) est obligatoire.', 'error'); return null; }
+  var montant = Math.round(lignes.reduce(function(s,l){ return s + l.qte*l.pu; }, 0));
+
+  var existant = champs.id ? (DATA.fiches_engagement_depense||[]).find(function(x){ return x.id===champs.id; }) : null;
+  if (existant && existant.statut !== 'brouillon') { toast('Cette fiche n\'est plus modifiable (déjà soumise ou validée).', 'error'); return null; }
+
+  var d = existant || { id: champs.id || uid(), numero_fed: _fedGenererNumero(), numero_da: '', created_at: new Date().toISOString(), statut: 'brouillon' };
+  d.division_id = champs.division_id||''; d.exercice = parseInt(champs.exercice,10)||new Date().getFullYear();
+  d.compte = champs.compte; d.objet = champs.objet||''; d.lignes = lignes; d.montant = montant;
+  d.fournisseur_id = champs.fournisseur_id||''; d.beneficiaire = champs.beneficiaire||'';
+  d._modifie = new Date().toISOString();
+  if (!existant) DATA.fiches_engagement_depense.push(d);
+  await dbPut('fiches_engagement_depense', d);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_fiches_engagement_depense', d);
+  toast('✅ Fiche d\'engagement de dépense ' + d.numero_fed + ' enregistrée (brouillon).', 'success');
+  return d;
+}
+async function daSoumettre(id) {
+  var d = (DATA.fiches_engagement_depense||[]).find(function(x){ return x.id===id; }); if (!d) return;
+  if (d.statut !== 'brouillon') { toast('Seule une fiche en brouillon peut être soumise.', 'error'); return; }
+  d.statut = 'soumise'; d.soumis_par = (APP.currentUser&&APP.currentUser.nom)||'—'; d.soumis_le = new Date().toISOString(); d._modifie = new Date().toISOString();
+  await dbPut('fiches_engagement_depense', d); if (typeof syncToSupabase==='function') syncToSupabase('pi_fiches_engagement_depense', d);
+  toast('📤 Fiche ' + d.numero_fed + ' soumise pour validation.', 'success');
+}
+async function daValider(id) {
+  var d = (DATA.fiches_engagement_depense||[]).find(function(x){ return x.id===id; }); if (!d) return;
+  if (d.statut !== 'soumise') { toast('Seule une fiche soumise peut être validée.', 'error'); return; }
+  if (!exigerPlafond(d.montant, 'La validation de cette fiche d\'engagement de dépense')) return;
+  var dispo = budgetDisponible(d.compte, d.division_id, d.exercice, d.id);
+  if (d.montant > dispo) {
+    toast('🔒 Disponible insuffisant sur la ligne ' + d.compte + ' (' + fmtF(dispo) + ' F disponible, ' + fmtF(d.montant) + ' F demandé). Faites un transfert vers cette ligne avant de valider.', 'error');
+    return;
+  }
+  /* [Transformation FED → DA] C'est ICI, au moment de la validation, que la
+     fiche cesse d'être un simple engagement et devient une vraie Demande
+     d'Achat exécutable — même enregistrement, nouveau numéro DA attribué,
+     numéro FED d'origine conservé pour la traçabilité. */
+  d.statut = 'validee'; d.numero_da = _daGenererNumero();
+  d.valide_par = (APP.currentUser&&APP.currentUser.nom)||'—'; d.valide_le = new Date().toISOString(); d._modifie = new Date().toISOString();
+  await dbPut('fiches_engagement_depense', d); if (typeof syncToSupabase==='function') syncToSupabase('pi_fiches_engagement_depense', d);
+  toast('✅ Engagement validé — ligne budgétaire décrémentée. La fiche ' + d.numero_fed + ' devient la Demande d\'Achat ' + d.numero_da + ', désormais visible à la Caisse.', 'success');
+}
+async function daRejeter(id, motif) {
+  var d = (DATA.fiches_engagement_depense||[]).find(function(x){ return x.id===id; }); if (!d) return;
+  if (d.statut !== 'soumise') { toast('Seule une fiche soumise peut être rejetée.', 'error'); return; }
+  d.statut = 'rejetee'; d.motif_rejet = motif||''; d.valide_par = (APP.currentUser&&APP.currentUser.nom)||'—'; d.valide_le = new Date().toISOString(); d._modifie = new Date().toISOString();
+  await dbPut('fiches_engagement_depense', d); if (typeof syncToSupabase==='function') syncToSupabase('pi_fiches_engagement_depense', d);
+  toast('❌ Fiche ' + d.numero_fed + ' rejetée.', 'info');
+}
+async function daSupprimer(id) {
+  var d = (DATA.fiches_engagement_depense||[]).find(function(x){ return x.id===id; }); if (!d) return;
+  if (d.statut !== 'brouillon') { toast('Seule une fiche en brouillon peut être supprimée — rejetez-la sinon.', 'error'); return; }
+  if (!confirm('Supprimer cette fiche d\'engagement de dépense ?')) return;
+  await deleteRecord('fiches_engagement_depense', id);
+  DATA.fiches_engagement_depense = (DATA.fiches_engagement_depense||[]).filter(function(x){ return x.id!==id; });
+  toast('Supprimée.', 'info');
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   RENDU DES 3 LISTES — Budget prévisionnel, Fiches d'Engagement/DA, Transferts
+   ═══════════════════════════════════════════════════════════════════════ */
+var _BUDGET_STATUT_STYLE = {
+  brouillon: { c:'var(--blanc-dim)', l:'Brouillon' },
+  soumis:    { c:'var(--or,#B87333)', l:'Soumis' },
+  soumise:   { c:'var(--or,#B87333)', l:'Soumise' },
+  valide:    { c:'var(--vert)', l:'Validé' },
+  validee:   { c:'var(--vert)', l:'Validée' },
+  rejete:    { c:'var(--rouge)', l:'Rejeté' },
+  rejetee:   { c:'var(--rouge)', l:'Rejetée' },
+  decaissee: { c:'var(--bleu,#3B82F6)', l:'Décaissée' }
+};
+function _budgetStatutBadge(statut) {
+  var s = _BUDGET_STATUT_STYLE[statut] || { c:'var(--blanc-dim)', l:statut };
+  return '<span style="color:'+s.c+';border:1px solid '+s.c+';border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600;">'+s.l+'</span>';
+}
+
+function budgetRenderPrevisionnel() {
+  var box = document.getElementById('budget-previsionnel-box'); if (!box) return;
+  var lignes = (DATA.caisse_budgets||[]).filter(function(b){ return b.periode==='annuel'; })
+    .sort(function(a,b){ return (b.exercice-a.exercice) || a.compte.localeCompare(b.compte); });
+  if (!lignes.length) { box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Aucun budget prévisionnel. Cliquez « + Nouveau budget » pour en créer un.</div>'; return; }
+
+  box.innerHTML = '<div class="table-wrap"><table class="data-table" style="width:100%;"><thead><tr>'
+    + '<th>Compte</th><th>Division</th><th>Exercice</th><th style="text-align:right;">Alloué</th><th style="text-align:right;">Disponible</th><th>Statut</th><th></th>'
+    + '</tr></thead><tbody>'
+    + lignes.map(function(b) {
+        var libelleCompte = (function(){ var c=(APP.planComptable||[]).find(function(x){return x.code===b.compte;}); return c?c.label:''; })();
+        var divLabel = b.division_id ? escHtml(_nomDivision(b.division_id)) : 'Toutes divisions';
+        var dispo = b.statut==='valide' ? budgetDisponible(b.compte, b.division_id, b.exercice) : null;
+        var actions = '';
+        if (b.statut === 'brouillon') actions = '<button class="btn btn-secondary btn-sm" onclick="budgetPrevisionnelOuvrir(\''+b.id+'\')">✏️</button> '
+          + '<button class="btn btn-primary btn-sm" onclick="budgetPrevisionnelSoumettre(\''+b.id+'\').then(budgetRenderPrevisionnel)">📤 Soumettre</button> '
+          + '<button class="btn btn-danger btn-sm" onclick="budgetPrevisionnelSupprimer(\''+b.id+'\').then(budgetRenderPrevisionnel)">🗑️</button>';
+        else if (b.statut === 'soumis') actions = '<button class="btn btn-primary btn-sm" onclick="budgetPrevisionnelValider(\''+b.id+'\').then(budgetRenderPrevisionnel)">✅ Valider</button> '
+          + '<button class="btn btn-danger btn-sm" onclick="(function(){var m=prompt(\'Motif du rejet :\');if(m!==null)budgetPrevisionnelRejeter(\''+b.id+'\',m).then(budgetRenderPrevisionnel);})()">❌ Rejeter</button>';
+        else if (b.statut === 'rejete') actions = '<span style="font-size:11px;color:var(--blanc-dim);">'+escHtml(b.motif_rejet||'')+'</span>';
+        return '<tr>'
+          + '<td><b>'+escHtml(b.compte)+'</b>'+(libelleCompte?'<div style="font-size:11px;color:var(--blanc-dim);">'+escHtml(libelleCompte)+'</div>':'')+'</td>'
+          + '<td>'+divLabel+'</td><td>'+b.exercice+'</td>'
+          + '<td style="text-align:right;">'+fmtF(b.montant)+' F</td>'
+          + '<td style="text-align:right;'+(dispo!==null && dispo<0 ? 'color:var(--rouge);font-weight:700;' : '')+'">'+(dispo!==null ? fmtF(dispo)+' F' : '—')+'</td>'
+          + '<td>'+_budgetStatutBadge(b.statut)+'</td>'
+          + '<td style="white-space:nowrap;">'+actions+'</td>'
+          + '</tr>';
+      }).join('')
+    + '</tbody></table></div>';
+}
+
+function budgetRenderFed() {
+  var box = document.getElementById('budget-fed-box'); if (!box) return;
+  var fiches = (DATA.fiches_engagement_depense||[]).slice()
+    .sort(function(a,b){ return (b.created_at||'').localeCompare(a.created_at||''); });
+  if (!fiches.length) { box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Aucune fiche d\'engagement. Cliquez « + Nouvelle fiche » pour en créer une.</div>'; return; }
+
+  box.innerHTML = '<div class="table-wrap"><table class="data-table" style="width:100%;"><thead><tr>'
+    + '<th>N°</th><th>Objet</th><th>Ligne</th><th>Division</th><th style="text-align:right;">Montant</th><th>Statut</th><th></th>'
+    + '</tr></thead><tbody>'
+    + fiches.map(function(d) {
+        var divLabel = d.division_id ? escHtml(_nomDivision(d.division_id)) : '—';
+        var actions = '';
+        if (d.statut === 'brouillon') actions = '<button class="btn btn-secondary btn-sm" onclick="fedOuvrir(\''+d.id+'\')">✏️</button> '
+          + '<button class="btn btn-primary btn-sm" onclick="daSoumettre(\''+d.id+'\').then(budgetRenderFed)">📤 Soumettre</button> '
+          + '<button class="btn btn-danger btn-sm" onclick="daSupprimer(\''+d.id+'\').then(budgetRenderFed)">🗑️</button>';
+        else if (d.statut === 'soumise') actions = '<button class="btn btn-primary btn-sm" onclick="daValider(\''+d.id+'\').then(budgetRenderFed)">✅ Valider</button> '
+          + '<button class="btn btn-danger btn-sm" onclick="(function(){var m=prompt(\'Motif du rejet :\');if(m!==null)daRejeter(\''+d.id+'\',m).then(budgetRenderFed);})()">❌ Rejeter</button>';
+        else if (d.statut === 'rejetee') actions = '<span style="font-size:11px;color:var(--blanc-dim);">'+escHtml(d.motif_rejet||'')+'</span>';
+        else if (d.statut === 'validee') actions = '<span style="font-size:11px;color:var(--vert);">→ Caisse</span>';
+        else if (d.statut === 'decaissee') actions = '<span style="font-size:11px;color:var(--blanc-dim);">Payée le '+dateShort(d.decaisse_le)+'</span>';
+        return '<tr>'
+          + '<td><b>'+escHtml(fedLabelDocument(d))+'</b>'+(d.numero_da?'<div style="font-size:10px;color:var(--blanc-dim);">ex-'+escHtml(d.numero_fed)+'</div>':'')+'</td>'
+          + '<td>'+escHtml(d.objet||'')+'</td><td>'+escHtml(d.compte)+'</td><td>'+divLabel+'</td>'
+          + '<td style="text-align:right;">'+fmtF(d.montant)+' F</td>'
+          + '<td>'+_budgetStatutBadge(d.statut)+'</td>'
+          + '<td style="white-space:nowrap;">'+actions+'</td>'
+          + '</tr>';
+      }).join('')
+    + '</tbody></table></div>';
+}
+
+function budgetRenderTransferts() {
+  var box = document.getElementById('budget-transferts-box'); if (!box) return;
+  var transferts = (DATA.transferts_budgetaires||[]).slice()
+    .sort(function(a,b){ return (b.created_at||'').localeCompare(a.created_at||''); });
+  if (!transferts.length) { box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Aucun transfert. Cliquez « + Nouveau transfert » pour en créer un.</div>'; return; }
+
+  box.innerHTML = '<div class="table-wrap"><table class="data-table" style="width:100%;"><thead><tr>'
+    + '<th>De</th><th>Vers</th><th>Division</th><th style="text-align:right;">Montant</th><th>Motif</th><th>Statut</th><th></th>'
+    + '</tr></thead><tbody>'
+    + transferts.map(function(t) {
+        var divLabel = t.division_id ? escHtml(_nomDivision(t.division_id)) : '—';
+        var actions = '';
+        if (t.statut === 'brouillon') actions = '<button class="btn btn-secondary btn-sm" onclick="transfertOuvrir(\''+t.id+'\')">✏️</button> '
+          + '<button class="btn btn-primary btn-sm" onclick="transfertSoumettre(\''+t.id+'\').then(budgetRenderTransferts)">📤 Soumettre</button> '
+          + '<button class="btn btn-danger btn-sm" onclick="transfertSupprimer(\''+t.id+'\').then(budgetRenderTransferts)">🗑️</button>';
+        else if (t.statut === 'soumis') actions = '<button class="btn btn-primary btn-sm" onclick="transfertValider(\''+t.id+'\').then(budgetRenderTransferts)">✅ Valider</button> '
+          + '<button class="btn btn-danger btn-sm" onclick="(function(){var m=prompt(\'Motif du rejet :\');if(m!==null)transfertRejeter(\''+t.id+'\',m).then(budgetRenderTransferts);})()">❌ Rejeter</button>';
+        else if (t.statut === 'rejete') actions = '<span style="font-size:11px;color:var(--blanc-dim);">'+escHtml(t.motif_rejet||'')+'</span>';
+        return '<tr>'
+          + '<td><b>'+escHtml(t.compte_source)+'</b></td><td><b>'+escHtml(t.compte_dest)+'</b></td><td>'+divLabel+'</td>'
+          + '<td style="text-align:right;">'+fmtF(t.montant)+' F</td><td style="font-size:12px;">'+escHtml(t.motif||'')+'</td>'
+          + '<td>'+_budgetStatutBadge(t.statut)+'</td>'
+          + '<td style="white-space:nowrap;">'+actions+'</td>'
+          + '</tr>';
+      }).join('')
+    + '</tbody></table></div>';
+}
+
+/* ── Décaissement d'une DA validée : pré-remplit le bon de sortie de caisse
+   existant, sans jamais redemander de ventilation (le compte est déjà
+   connu). window._daPourDecaissement est lu par caisseSaveBon() (hook) et
+   caisseValiderDecaissement() (cas différé) pour finaliser le lien. ── */
+function daOuvrirDecaissement(daId) {
+  var d = (DATA.fiches_engagement_depense||[]).find(function(x){ return x.id===daId; });
+  if (!d) return;
+  if (d.statut !== 'validee') { toast('Cette DA n\'est plus en attente de décaissement.', 'error'); return; }
+
+  /* Caisse à utiliser : celle de la division de la DA si elle a une session
+     ouverte, sinon la première caisse ouverte disponible pour l'utilisateur
+     — laissé au choix s'il y en a plusieurs (pattern déjà en place ailleurs
+     dans le module Caisse pour la sélection de caisse active). */
+  var caissesOuvertes = (DATA.caisses||[]).filter(function(c){ return c.actif !== false && caisseGetSessionOuverte(c.id); });
+  if (!caissesOuvertes.length) { toast('Aucune caisse n\'est actuellement ouverte pour effectuer ce décaissement.', 'error'); return; }
+  var caisse = caissesOuvertes.find(function(c){ return c.division_id === d.division_id; }) || caissesOuvertes[0];
+  if (caissesOuvertes.length > 1 && caisse.division_id !== d.division_id) {
+    var choix = prompt('Plusieurs caisses sont ouvertes. Indiquez celle à utiliser :\n' + caissesOuvertes.map(function(c,i){ return (i+1)+'. '+c.nom; }).join('\n'), '1');
+    var idx = parseInt(choix,10) - 1;
+    if (idx >= 0 && idx < caissesOuvertes.length) caisse = caissesOuvertes[idx];
+  }
+
+  caisseOuvrirBonModal(caisse.id, 'sortie');
+  document.getElementById('cb-montant').value = d.montant;
+  document.getElementById('cb-motif').value = fedLabelDocument(d) + ' — ' + (d.objet||'');
+  document.getElementById('cb-piece').value = fedLabelDocument(d);
+  var benef = '';
+  if (d.fournisseur_id) { var f = (DATA.fournisseurs||[]).find(function(x){ return x.id===d.fournisseur_id; }); benef = f ? f.nom : ''; }
+  document.getElementById('cb-beneficiaire').value = benef || d.beneficiaire || '';
+  window._daPourDecaissement = daId;
+}
+
+function caisseRenderDecaissementsAFaire() {
+  var box = document.getElementById('caisse-decaissements-box'); if (!box) return;
+  var das = (DATA.fiches_engagement_depense||[]).filter(function(d){ return d.statut === 'validee'; })
+    .sort(function(a,b){ return (a.valide_le||'').localeCompare(b.valide_le||''); });
+  if (!das.length) { box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Aucun décaissement en attente.</div>'; return; }
+
+  box.innerHTML = '<div class="table-wrap"><table class="data-table" style="width:100%;"><thead><tr>'
+    + '<th>N° DA</th><th>Objet</th><th>Division</th><th style="text-align:right;">Montant</th><th>Validée le</th><th></th>'
+    + '</tr></thead><tbody>'
+    + das.map(function(d) {
+        var divLabel = d.division_id ? escHtml(_nomDivision(d.division_id)) : '—';
+        return '<tr>'
+          + '<td><b>'+escHtml(d.numero_da||'')+'</b></td><td>'+escHtml(d.objet||'')+'</td><td>'+divLabel+'</td>'
+          + '<td style="text-align:right;">'+fmtF(d.montant)+' F</td><td>'+dateShort(d.valide_le)+'</td>'
+          + '<td><button class="btn btn-primary btn-sm" onclick="daOuvrirDecaissement(\''+d.id+'\')">💵 Décaisser</button></td>'
+          + '</tr>';
+      }).join('')
+    + '</tbody></table></div>';
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   MODALS — chaque *Ouvrir(id) pré-remplit le formulaire ; chaque
+   *SauverDepuisForm() lit le DOM et délègue à la fonction métier testable
+   (budgetPrevisionnelSauver/daSauver/transfertSauver), qui elle ne touche
+   jamais au DOM — séparation déjà éprouvée sur le reste de l'app.
+   ═══════════════════════════════════════════════════════════════════════ */
+function budgetPrevisionnelOuvrir(id) {
+  var b = id ? (DATA.caisse_budgets||[]).find(function(x){ return x.id===id; }) : null;
+  document.getElementById('cbud-modal-titre').textContent = b ? '✏️ Modifier le budget prévisionnel' : '📊 Nouveau budget prévisionnel';
+  document.getElementById('cbud-id').value = id || '';
+  document.getElementById('cbud-compte').value = b ? b.compte : '';
+  var selDiv = document.getElementById('cbud-division');
+  selDiv.innerHTML = '<option value="">— Toutes divisions (consolidé) —</option>' + (DATA.divisions||[]).map(function(d){
+    return '<option value="'+d.id+'">'+escHtml(d.nom)+'</option>';
+  }).join('');
+  selDiv.value = b ? (b.division_id||'') : '';
+  document.getElementById('cbud-annee').value = b ? b.exercice : new Date().getFullYear();
+  document.getElementById('cbud-montant').value = b ? b.montant : '';
+  document.getElementById('cbud-btn-suppr').style.display = (b && b.statut==='brouillon') ? '' : 'none';
+  openModal('modal-caisse-budget');
+}
+async function budgetPrevisionnelSauverDepuisForm() {
+  var r = await budgetPrevisionnelSauver({
+    id: document.getElementById('cbud-id').value || null,
+    compte: document.getElementById('cbud-compte').value.trim(),
+    division_id: document.getElementById('cbud-division').value,
+    exercice: document.getElementById('cbud-annee').value,
+    montant: document.getElementById('cbud-montant').value
+  });
+  if (r) { closeModal('modal-caisse-budget'); budgetRenderPrevisionnel(); }
+}
+
+/* ── Modal FED : lignes (désignation libre + qté + PU), comme BC mais sans
+   catalogue de ressources — une fiche d'engagement porte un objet global,
+   pas un approvisionnement matières. ── */
+var fedLignes = [];
+function fedRenderLignes() {
+  var box = document.getElementById('fed-lignes-box'); if (!box) return;
+  if (!fedLignes.length) { box.innerHTML = '<div style="text-align:center;color:var(--blanc-dim);padding:10px;font-size:12px;">Ajoutez une ligne.</div>'; }
+  else box.innerHTML = '<table class="data-table" style="width:100%;"><thead><tr><th>Désignation</th><th style="width:90px;">Qté</th><th style="width:120px;">PU</th><th style="width:110px;text-align:right;">Total</th><th style="width:40px;"></th></tr></thead><tbody>'
+    + fedLignes.map(function(l,i){
+        var tot = (parseFloat(l.qte)||0)*(parseFloat(l.pu)||0);
+        return '<tr>'
+          + '<td><input class="form-control" style="font-size:12px;" value="'+escHtml(l.designation||'')+'" onchange="fedLigneSet('+i+',\'designation\',this.value)"></td>'
+          + '<td><input type="number" class="form-control" style="font-size:12px;" min="0" step="any" value="'+(l.qte||1)+'" onchange="fedLigneSet('+i+',\'qte\',this.value)"></td>'
+          + '<td><input type="number" class="form-control" style="font-size:12px;" min="0" step="any" value="'+(l.pu||0)+'" onchange="fedLigneSet('+i+',\'pu\',this.value)"></td>'
+          + '<td style="text-align:right;font-weight:600;">'+fmtF(Math.round(tot))+'</td>'
+          + '<td><button class="btn btn-danger btn-sm btn-icon" onclick="fedRetirerLigne('+i+')">✕</button></td>'
+          + '</tr>';
+      }).join('') + '</tbody></table>';
+  var tot = fedLignes.reduce(function(s,l){ return s+(parseFloat(l.qte)||0)*(parseFloat(l.pu)||0); }, 0);
+  document.getElementById('fed-total').textContent = fmtF(Math.round(tot));
+  fedMajDisponible();
+}
+function fedLigneSet(i, field, val) { if (!fedLignes[i]) return; fedLignes[i][field] = val; fedRenderLignes(); }
+function fedAjouterLigne() { fedLignes.push({ designation:'', qte:1, pu:0 }); fedRenderLignes(); }
+function fedRetirerLigne(i) { fedLignes.splice(i,1); fedRenderLignes(); }
+
+/* Affichage en direct du disponible sur la ligne visée — informatif, jamais
+   bloquant à ce stade (le vrai contrôle a lieu à la validation, cf. daValider).
+   Sert à éviter à l'auteur de la fiche de découvrir le refus seulement après
+   l'avoir soumise. */
+function fedMajDisponible() {
+  var box = document.getElementById('fed-disponible-box'); if (!box) return;
+  var compte = document.getElementById('fed-compte').value.trim();
+  var divisionId = document.getElementById('fed-division').value;
+  var exercice = parseInt(document.getElementById('fed-exercice').value, 10);
+  if (!compte || !exercice) { box.innerHTML = ''; return; }
+  var excludeId = document.getElementById('fed-id').value || null;
+  var dispo = budgetDisponible(compte, divisionId, exercice, excludeId);
+  var montant = fedLignes.reduce(function(s,l){ return s+(parseFloat(l.qte)||0)*(parseFloat(l.pu)||0); }, 0);
+  var couleur = montant > dispo ? 'var(--rouge)' : 'var(--vert)';
+  box.innerHTML = '<span style="color:'+couleur+';">Disponible sur '+escHtml(compte)+' : '+fmtF(dispo)+' F'
+    + (montant > 0 ? ' — cette fiche : '+fmtF(Math.round(montant))+' F' + (montant > dispo ? ' ⚠️ dépasse le disponible' : '') : '')
+    + '</span>';
+}
+
+function fedOuvrir(id) {
+  var d = id ? (DATA.fiches_engagement_depense||[]).find(function(x){ return x.id===id; }) : null;
+  document.getElementById('fed-modal-titre').textContent = d ? ('✏️ ' + fedLabelDocument(d)) : '📝 Nouvelle fiche d\'engagement de dépense';
+  document.getElementById('fed-id').value = id || '';
+  var selDiv = document.getElementById('fed-division');
+  selDiv.innerHTML = '<option value="">— Toutes divisions —</option>' + (DATA.divisions||[]).map(function(dv){
+    return '<option value="'+dv.id+'">'+escHtml(dv.nom)+'</option>';
+  }).join('');
+  selDiv.value = d ? (d.division_id||'') : (userScopeDivision()||'');
+  document.getElementById('fed-exercice').value = d ? d.exercice : new Date().getFullYear();
+  document.getElementById('fed-compte').value = d ? d.compte : '';
+  document.getElementById('fed-objet').value = d ? (d.objet||'') : '';
+  document.getElementById('fed-fournisseur').innerHTML = fournisseurOptions(d ? (d.fournisseur_id||'') : '');
+  document.getElementById('fed-beneficiaire').value = d ? (d.beneficiaire||'') : '';
+  fedLignes = d ? (d.lignes||[]).map(function(l){ return { designation:l.designation, qte:l.qte, pu:l.pu }; }) : [{ designation:'', qte:1, pu:0 }];
+  document.getElementById('fed-btn-suppr').style.display = (d && d.statut==='brouillon') ? '' : 'none';
+  fedRenderLignes();
+  openModal('modal-fed');
+}
+async function fedSauverDepuisForm() {
+  var r = await daSauver({
+    id: document.getElementById('fed-id').value || null,
+    division_id: document.getElementById('fed-division').value,
+    exercice: document.getElementById('fed-exercice').value,
+    compte: document.getElementById('fed-compte').value.trim(),
+    objet: document.getElementById('fed-objet').value.trim(),
+    lignes: fedLignes,
+    fournisseur_id: document.getElementById('fed-fournisseur').value,
+    beneficiaire: document.getElementById('fed-beneficiaire').value.trim()
+  });
+  if (r) { closeModal('modal-fed'); budgetRenderFed(); }
+}
+
+/* ── Modal Transfert budgétaire ── */
+function transfertOuvrir(id) {
+  var t = id ? (DATA.transferts_budgetaires||[]).find(function(x){ return x.id===id; }) : null;
+  document.getElementById('transfert-modal-titre').textContent = t ? '✏️ Modifier le transfert' : '🔀 Nouveau transfert budgétaire';
+  document.getElementById('transfert-id').value = id || '';
+  var selDiv = document.getElementById('transfert-division');
+  selDiv.innerHTML = '<option value="">— Toutes divisions —</option>' + (DATA.divisions||[]).map(function(dv){
+    return '<option value="'+dv.id+'">'+escHtml(dv.nom)+'</option>';
+  }).join('');
+  selDiv.value = t ? (t.division_id||'') : (userScopeDivision()||'');
+  document.getElementById('transfert-exercice').value = t ? t.exercice : new Date().getFullYear();
+  document.getElementById('transfert-montant').value = t ? t.montant : '';
+  document.getElementById('transfert-source').value = t ? t.compte_source : '';
+  document.getElementById('transfert-dest').value = t ? t.compte_dest : '';
+  document.getElementById('transfert-motif').value = t ? (t.motif||'') : '';
+  document.getElementById('transfert-btn-suppr').style.display = (t && t.statut==='brouillon') ? '' : 'none';
+  openModal('modal-transfert');
+}
+async function transfertSauverDepuisForm() {
+  var r = await transfertSauver({
+    id: document.getElementById('transfert-id').value || null,
+    division_id: document.getElementById('transfert-division').value,
+    exercice: document.getElementById('transfert-exercice').value,
+    montant: document.getElementById('transfert-montant').value,
+    compte_source: document.getElementById('transfert-source').value.trim(),
+    compte_dest: document.getElementById('transfert-dest').value.trim(),
+    motif: document.getElementById('transfert-motif').value.trim()
+  });
+  if (r) { closeModal('modal-transfert'); budgetRenderTransferts(); }
+}
+
+/* ── Transfert budgétaire : brouillon → soumis → valide/rejete (même
+   validation que les DA — plafond de rôle) ── */
+async function transfertSauver(champs) {
+  /* champs = { id, division_id, exercice, compte_source, compte_dest, montant, motif } */
+  if (!exigerDroit('Caisse', champs.id ? 'm' : 'c', 'un transfert budgétaire')) return null;
+  if (!champs.compte_source || !champs.compte_dest || champs.compte_source === champs.compte_dest) {
+    toast('Choisissez deux comptes différents (source et destination).', 'error'); return null;
+  }
+  if (!(parseFloat(champs.montant) > 0)) { toast('Le montant doit être supérieur à 0.', 'error'); return null; }
+  var existant = champs.id ? (DATA.transferts_budgetaires||[]).find(function(x){ return x.id===champs.id; }) : null;
+  if (existant && existant.statut !== 'brouillon') { toast('Ce transfert n\'est plus modifiable.', 'error'); return null; }
+
+  var t = existant || { id: champs.id || uid(), created_at: new Date().toISOString(), statut: 'brouillon' };
+  t.division_id = champs.division_id||''; t.exercice = parseInt(champs.exercice,10)||new Date().getFullYear();
+  t.compte_source = champs.compte_source; t.compte_dest = champs.compte_dest;
+  t.montant = Math.round(parseFloat(champs.montant)); t.motif = champs.motif||'';
+  t._modifie = new Date().toISOString();
+  if (!existant) DATA.transferts_budgetaires.push(t);
+  await dbPut('transferts_budgetaires', t);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_transferts_budgetaires', t);
+  toast('✅ Transfert enregistré (brouillon).', 'success');
+  return t;
+}
+async function transfertSoumettre(id) {
+  var t = (DATA.transferts_budgetaires||[]).find(function(x){ return x.id===id; }); if (!t) return;
+  if (t.statut !== 'brouillon') { toast('Seul un transfert en brouillon peut être soumis.', 'error'); return; }
+  t.statut = 'soumis'; t.soumis_par = (APP.currentUser&&APP.currentUser.nom)||'—'; t.soumis_le = new Date().toISOString(); t._modifie = new Date().toISOString();
+  await dbPut('transferts_budgetaires', t); if (typeof syncToSupabase==='function') syncToSupabase('pi_transferts_budgetaires', t);
+  toast('📤 Transfert soumis pour validation.', 'success');
+}
+async function transfertValider(id) {
+  var t = (DATA.transferts_budgetaires||[]).find(function(x){ return x.id===id; }); if (!t) return;
+  if (t.statut !== 'soumis') { toast('Seul un transfert soumis peut être validé.', 'error'); return; }
+  if (!exigerPlafond(t.montant, 'La validation de ce transfert budgétaire')) return;
+  /* La ligne SOURCE doit avoir assez de disponible à donner — calculé AVANT
+     ce transfert (donc pas encore appliqué, statut encore 'soumis' à cet
+     instant précis de la vérification). */
+  var dispoSource = budgetDisponible(t.compte_source, t.division_id, t.exercice);
+  if (t.montant > dispoSource) {
+    toast('🔒 Disponible insuffisant sur la ligne source ' + t.compte_source + ' (' + fmtF(dispoSource) + ' F disponible, ' + fmtF(t.montant) + ' F à transférer).', 'error');
+    return;
+  }
+  t.statut = 'valide'; t.valide_par = (APP.currentUser&&APP.currentUser.nom)||'—'; t.valide_le = new Date().toISOString(); t._modifie = new Date().toISOString();
+  await dbPut('transferts_budgetaires', t); if (typeof syncToSupabase==='function') syncToSupabase('pi_transferts_budgetaires', t);
+  toast('✅ Transfert validé.', 'success');
+}
+async function transfertRejeter(id, motif) {
+  var t = (DATA.transferts_budgetaires||[]).find(function(x){ return x.id===id; }); if (!t) return;
+  if (t.statut !== 'soumis') { toast('Seul un transfert soumis peut être rejeté.', 'error'); return; }
+  t.statut = 'rejete'; t.motif_rejet = motif||''; t.valide_par = (APP.currentUser&&APP.currentUser.nom)||'—'; t.valide_le = new Date().toISOString(); t._modifie = new Date().toISOString();
+  await dbPut('transferts_budgetaires', t); if (typeof syncToSupabase==='function') syncToSupabase('pi_transferts_budgetaires', t);
+  toast('❌ Transfert rejeté.', 'info');
+}
+async function transfertSupprimer(id) {
+  var t = (DATA.transferts_budgetaires||[]).find(function(x){ return x.id===id; }); if (!t) return;
+  if (t.statut !== 'brouillon') { toast('Seul un transfert en brouillon peut être supprimé — rejetez-le sinon.', 'error'); return; }
+  if (!confirm('Supprimer ce transfert ?')) return;
+  await deleteRecord('transferts_budgetaires', id);
+  DATA.transferts_budgetaires = (DATA.transferts_budgetaires||[]).filter(function(x){ return x.id!==id; });
+  toast('Supprimé.', 'info');
+}
+
 function bcNextNum(){ var y=new Date().getFullYear(); var n=(DATA.bons_commande||[]).filter(function(b){return (b.numero||'').indexOf('BC-'+y)===0;}).length+1; return 'BC-'+y+'-'+('000'+n).slice(-3); }
 function recNextNum(){ var y=new Date().getFullYear(); var n=(DATA.receptions||[]).length+1; return 'BL-'+y+'-'+('000'+n).slice(-3); }
 function bcFournisseurName(id){ var f=(DATA.fournisseurs||[]).find(function(x){return x.id===id;}); return f?f.nom:'—'; }
@@ -107363,7 +108037,8 @@ async function caisseEnter() {
      de s'exécuter, y compris ce bloc — d'où l'apparition/disparition au
      fil des tentatives de reconnexion réseau. */
   try { caisseRenderBalanceAgee(); } catch(e) { console.warn('[Caisse] Balance tiers non affichée :', e); }
-  try { caisseRenderBudgets(); } catch(e) { console.warn('[Caisse] Suivi budgétaire non affiché :', e); }
+  try { caisseRenderDecaissementsAFaire(); } catch(e) { console.warn('[Caisse] Décaissements à faire non affichés :', e); }
+  /* [Retiré v14.60] caisseRenderBudgets() — voir note dans le HTML de la page Caisse */
 
   var btnNew = document.getElementById('btn-caisse-nouvelle');
   if (btnNew) btnNew.style.display = caisseRoleAdminLike() ? '' : 'none';
@@ -107918,6 +108593,32 @@ async function caisseSaveBon() {
   DATA.caisse_mouvements.push(nouveau);
   await dbPut('caisse_mouvements', nouveau);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', nouveau);
+  /* [Lien Budget → Caisse] Si ce bon vient du décaissement d'une DA validée
+     (voir daOuvrirDecaissement), on relie le mouvement à la DA — via un
+     champ da_id qui survit même si ce décaissement nécessite lui-même une
+     validation différée (montant au-delà du plafond de l'auteur, cf. plus
+     haut) : la DA n'est marquée décaissée qu'au moment où l'argent sort
+     RÉELLEMENT, pas avant. Hook minimal et isolé : n'intervient que si
+     _daPourDecaissement est défini, n'affecte jamais un bon saisi normalement. */
+  if (window._daPourDecaissement) {
+    nouveau.da_id = window._daPourDecaissement;
+    window._daPourDecaissement = null;
+    var _da = (DATA.fiches_engagement_depense||[]).find(function(x){ return x.id===nouveau.da_id; });
+    if (!nouveau.requiert_validation && _da && _da.statut === 'validee') {
+      _da.statut = 'decaissee'; _da.mouvement_caisse_id = nouveau.id; _da.decaisse_le = new Date().toISOString(); _da._modifie = new Date().toISOString();
+      await dbPut('fiches_engagement_depense', _da);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_fiches_engagement_depense', _da);
+      if (typeof budgetRenderFed === 'function') budgetRenderFed();
+      nouveau.compte_ventile = _da.compte;
+      nouveau.statut = 'ventile'; nouveau.ventile_par = (APP.currentUser&&APP.currentUser.nom)||'—'; nouveau.ventile_le = new Date().toISOString();
+    }
+    /* Si validation différée requise : le mouvement reste 'a_ventiler', la DA
+       reste 'validee' — c'est caisseValiderDecaissement (voir plus bas) qui
+       finalisera les deux à la sortie RÉELLE de l'argent, pas avant. */
+    await dbPut('caisse_mouvements', nouveau);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', nouveau);
+    if (typeof caisseRenderDecaissementsAFaire === 'function') caisseRenderDecaissementsAFaire();
+  }
   await cbCommitDocs(nouveau.id);
   closeModal('modal-caisse-bon');
   if (nouveau.requiert_validation) {
@@ -110010,6 +110711,22 @@ async function caisseValiderDecaissement(mvtId) {
   mvt.valide_par = (APP.currentUser && APP.currentUser.nom) || '—';
   mvt.valide_role = (APP.currentUser && APP.currentUser.role) || '';
   mvt.valide_le = new Date().toISOString();
+  /* [Lien Budget → Caisse] Cas différé : ce mouvement avait été créé depuis
+     une DA validée mais dépassait le plafond de l'auteur (voir caisseSaveBon).
+     C'est maintenant, à la validation réelle, que la DA passe à décaissée —
+     pas avant, pour rester cohérent avec « l'argent n'est réputé décaissé
+     qu'une fois validée ». */
+  if (mvt.da_id) {
+    var _daDiff = (DATA.fiches_engagement_depense||[]).find(function(x){ return x.id===mvt.da_id; });
+    if (_daDiff && _daDiff.statut === 'validee') {
+      _daDiff.statut = 'decaissee'; _daDiff.mouvement_caisse_id = mvt.id; _daDiff.decaisse_le = new Date().toISOString(); _daDiff._modifie = new Date().toISOString();
+      await dbPut('fiches_engagement_depense', _daDiff);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_fiches_engagement_depense', _daDiff);
+      if (typeof budgetRenderFed === 'function') budgetRenderFed();
+    }
+    mvt.compte_ventile = _daDiff ? _daDiff.compte : mvt.compte_ventile;
+    mvt.statut = 'ventile'; mvt.ventile_par = (APP.currentUser&&APP.currentUser.nom)||'—'; mvt.ventile_le = new Date().toISOString();
+  }
   await dbPut('caisse_mouvements', mvt);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', mvt);
   toast('✅ Décaissement de ' + fmtF(montant) + ' FCFA validé.', 'success');
