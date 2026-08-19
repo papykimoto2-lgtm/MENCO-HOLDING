@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.51 · 2026-08-18 — Plan comptable : compte auxiliaire 421 par employé, déclaré ou non déclaré. TROU TROUVÉ : comptabiliserPaie(), même en mode « détail » (1 écriture/employé), créditait le MÊME compte générique « paie_du » pour tout le monde — impossible de faire un lettrage ou une balance âgée individuelle du personnel malgré des écritures nominalement séparées. Nouveau bouton « 🧾 Créer un compte pour chaque employé » (Paramètres → Plan comptable) : génère un sous-compte 421XXX par salarié, numérotation séquentielle persistante (stockée sur la fiche employé, jamais réattribuée même après suppression — vérifié empiriquement avec la double source de vérité employés+plan comptable). S\'applique à tous les employés sans distinction déclaré/non déclaré, comme demandé. INCIDENT DE RÉGRESSION : 3e occurrence du même bug qu\'avec Parc Auto et Moyens Généraux — une déclaration de fonction (loadComptesDefaut) effacée par un remplacement de texte mal ciblé. Détecté et corrigé avant livraison par la vérification systématique désormais appliquée à chaque insertion. Modification de comptabiliserPaie() pour UTILISER ces comptes individuels non faite à ce stade — changement de comportement plus impactant, à confirmer séparément avant de l\'appliquer.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.53 · 2026-08-18 — Lettrage individuel de la paie activé (feu vert donné après le v14.51). comptabiliserPaie() en mode « détail » (1 écriture/employé) utilise désormais le compte auxiliaire 421XXX propre à chaque salarié pour la ligne « Net à payer », au lieu du compte générique partagé par tout le monde — un vrai lettrage/balance âgée individuelle du personnel devient possible. Le mode « agrégat » (une seule ligne multi-employés) reste inchangé, sans quoi la ventilation par compte individuel n\'aurait aucun sens. Auto-création à la volée : un employé sans compte au moment de la comptabilisation en reçoit un automatiquement (même mécanique que le bouton dédié). PERSISTANCE ASSURÉE : sans elle, un compte créé pendant la comptabilisation aurait existé en mémoire seulement — l\'écriture générée aurait référencé un compte disparaissant au prochain rechargement. Params et fiches employés concernées sont désormais sauvegardés explicitement après la boucle. Testé sur les 3 cas (compte existant, création à la volée, mode agrégat) — comportement correct sur chacun. Vérification de non-régression effectuée sur tout le fichier avant livraison.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -10284,8 +10284,9 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                 <input type="text" class="form-control" id="om-objet" placeholder="Ex: Prospection nouveaux clients zone Bingerville / Négociation acquisition parcelle...">
               </div>
               <div class="form-group"><label>Destination / Zone *</label><input type="text" class="form-control" id="om-destination" placeholder="Commune, sous-préfecture, localité..."></div>
-              <div class="form-group"><label>Moyen de transport</label>
-                <select class="form-control" id="om-transport">
+              <div class="form-group" id="om-transport-wrap">
+                <label>Moyen de transport</label>
+                <select class="form-control" id="om-transport" onchange="onChangeOMTransport()">
                   <option value="vehicule_societe">Véhicule de la société</option>
                   <option value="tricycle">Tricycle</option>
                   <option value="moto">Moto</option>
@@ -10293,7 +10294,12 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                   <option value="vehicule_personnel">Véhicule personnel</option>
                 </select>
               </div>
-              <div class="form-group"><label>Immatriculation du véhicule</label><input type="text" class="form-control" id="om-immatriculation" placeholder="Ex: CI-1234-AB"></div>
+              <div class="form-group" id="om-vehicule-wrap" style="display:none;">
+                <label>Véhicule (Parc Auto)</label>
+                <select class="form-control" id="om-vehicule-id" onchange="onChangeOMVehicule()"></select>
+                <div id="om-vehicule-alerte" style="font-size:11px;margin-top:4px;"></div>
+              </div>
+              <div class="form-group" id="om-immat-libre-wrap"><label>Immatriculation / référence du véhicule</label><input type="text" class="form-control" id="om-immatriculation" placeholder="Ex: CI-1234-AB (véhicule personnel, moto...)"></div>
               <div class="form-group"><label>Date de début *</label><input type="date" class="form-control" id="om-date-debut"></div>
               <div class="form-group"><label>Date de fin *</label><input type="date" class="form-control" id="om-date-fin"></div>
               <div class="form-group span-2" style="border-top:1px solid rgba(255,255,255,0.1);padding-top:12px;margin-top:4px;">
@@ -46316,7 +46322,15 @@ function _paieLignes(agg, C){
   var l=[];
   if(agg.brut>0) l.push({compte:C.brut,sens:'D',montant:Math.round(agg.brut),libelle:'Rémunérations brutes'});
   if(agg.patronal>0) l.push({compte:C.pat,sens:'D',montant:Math.round(agg.patronal),libelle:'Charges sociales patronales'});
-  if(agg.net>0) l.push({compte:C.net,sens:'C',montant:Math.round(agg.net),libelle:'Net à payer'});
+  /* [Lettrage individuel — feu vert donné] En mode « détail » (1 écriture/
+     employé), agg.emp est renseigné (voir comptabiliserPaie) : on utilise
+     alors le compte auxiliaire 421XXX propre à ce salarié plutôt que le
+     compte générique C.net, pour permettre un vrai lettrage/balance âgée
+     individuelle. En mode agrégat (plusieurs employés dans une seule
+     ligne), agg.emp est absent — comportement inchangé, compte générique. */
+  var compteNetIndividuel = (agg.emp && typeof _compteAuxiliaireEmploye === 'function') ? _compteAuxiliaireEmploye(agg.emp) : null;
+  var compteNet = compteNetIndividuel || C.net;
+  if(agg.net>0) l.push({compte:compteNet,sens:'C',montant:Math.round(agg.net),libelle:'Net à payer'+(agg.emp?' — '+agg.emp.nom+(agg.emp.prenoms?' '+agg.emp.prenoms:''):'')});
   var itsSal=(agg.itsSal!=null)?agg.itsSal:Math.max(0,(agg.its||0)-(agg.cmuSal||0));
   var patCnps=agg.cnpsPatSocial||0, patIts=agg.itsPat||0, patFdfp=agg.fdfp||0, patCmu=agg.cmuPat||0;
   /* Repli : si la ventilation patronale est absente (anciens agrégats), le
@@ -46391,11 +46405,30 @@ async function comptabiliserPaie(moisKey, opts){
   var suffixe = dept ? '_'+dept : '';
   var created=0;
   if(mode==='detail'){
+    /* [Persistance] _paieLignes()→_compteAuxiliaireEmploye() peut créer un
+       nouveau compte 421XXX à la volée pour un employé qui n'en a pas
+       encore (mutation DATA.params.plan_comptable_custom + emp.compte_
+       auxiliaire_421 EN MÉMOIRE seulement — voir _compteAuxiliaireEmploye).
+       Sans persistance explicite ici, l'écriture générée référencerait un
+       compte qui disparaîtrait au prochain rechargement de page. On repère
+       donc qui n'a pas encore de compte AVANT la boucle, pour ne réécrire
+       que ceux-là après. */
+    var employesSansCompteAvant = list.filter(function(x){ return !x.emp.compte_auxiliaire_421; }).map(function(x){ return x.emp; });
     for(var j=0;j<list.length;j++){
       var x=list[j], lg=_paieLignes(x,C); if(!lg.length) continue;
       await _ecrUpsert({ id:'ecr_paie_'+x.emp.id+'_'+moisKey, ref:'PAIE-'+moisKey+'-'+(x.emp.matricule||''), date:date, piece:'OD-PAIE '+moisKey,
         libelle:'Paie '+moisKey+' — '+x.emp.nom+' '+(x.emp.prenoms||''), lignes:lg, montant:Math.round(x.brut+x.patronal),
         journal:'PA', type:'od', division: x.emp.division||'', _auto:'paie', _paie_mois:moisKey, _paie_dept:deptTag, created_at:today() }); created++;
+    }
+    var employesNouvelleCompte = employesSansCompteAvant.filter(function(e){ return e.compte_auxiliaire_421; });
+    if (employesNouvelleCompte.length) {
+      await dbPut('params', DATA.params);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_params', DATA.params);
+      for (var k=0;k<employesNouvelleCompte.length;k++) {
+        await dbPut('employes', employesNouvelleCompte[k]);
+        if (typeof syncToSupabase === 'function') syncToSupabase('pi_employes', employesNouvelleCompte[k]);
+      }
+      if (typeof populateDatalistPlanComptable === 'function') populateDatalistPlanComptable();
     }
   } else {
     var agg=_sumAgg(list), lg2=_paieLignes(agg,C);
@@ -60478,6 +60511,27 @@ function paRenderVehicules(){
   }).join('');
 }
 
+/* [Liaison Parc Auto ↔ Ordres de Mission] Historique en lecture seule des
+   missions ayant utilisé ce véhicule — utile pour croiser kilométrage
+   déclaré/réel, disponibilité, et savoir qui l'a eu en dernier sans devoir
+   ouvrir le module Ordres de Mission séparément. */
+function _paSectionMissionsVehicule(vehiculeId){
+  var missions = (DATA.ordres_mission||[]).filter(function(o){ return o.vehicule_id === vehiculeId; })
+    .sort(function(a,b){ return (b.date_debut||'').localeCompare(a.date_debut||''); });
+  if (!missions.length) return '';
+  var statutLabel = { planifiee:'Planifiée', en_cours:'En cours', terminee:'Terminée', annulee:'Annulée' };
+  return '<div class="form-section-title" style="margin-top:14px;">📝 Missions ayant utilisé ce véhicule (' + missions.length + ')</div>'
+    + '<div style="max-height:180px;overflow-y:auto;font-size:12px;">'
+    + missions.slice(0,15).map(function(o){
+        return '<div style="padding:5px 0;border-bottom:1px solid var(--bord);">'
+          + '<b>' + escHtml(o.numero||'') + '</b> — ' + escHtml(o.objet||'') + '<br>'
+          + '<span style="color:var(--blanc-dim);">' + dateShort(o.date_debut) + ' → ' + dateShort(o.date_fin) + ' · ' + escHtml(o.destination||'') + ' · ' + (statutLabel[o.statut]||o.statut) + '</span>'
+          + '</div>';
+      }).join('')
+    + (missions.length > 15 ? '<div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">+ ' + (missions.length-15) + ' autre(s)…</div>' : '')
+    + '</div>';
+}
+
 function paOpenVehicule(id){
   _paEditId = id || null;
   var v = id ? paVehicule(id) : null;
@@ -60517,7 +60571,8 @@ function paOpenVehicule(id){
     + '<div class="form-group"><label>Dernière visite</label><input type="date" id="pav-vt-date" class="form-control" value="'+(v?v.visite_technique_date||'':'')+'"></div>'
     + '<div class="form-group"><label>Expiration</label><input type="date" id="pav-vt-expiration" class="form-control" value="'+(v?v.visite_technique_expiration||'':'')+'"></div>'
     + '</div>'
-    + '<div class="form-group" style="margin-top:14px;"><label>Notes</label><textarea id="pav-notes" class="form-control" style="min-height:60px;">'+escHtml(v?v.notes:'')+'</textarea></div>';
+    + '<div class="form-group" style="margin-top:14px;"><label>Notes</label><textarea id="pav-notes" class="form-control" style="min-height:60px;">'+escHtml(v?v.notes:'')+'</textarea></div>'
+    + (v ? _paSectionMissionsVehicule(v.id) : '');
 
   document.getElementById('pa-modal-titre').textContent = (v ? '✏️ Modifier' : '➕ Nouveau') + ' véhicule';
   document.getElementById('pa-modal-corps').innerHTML = body;
@@ -74716,6 +74771,50 @@ function onChangeTypeOM() {
   document.getElementById('om-grp-parcelle').style.display = (type === 'foncier') ? '' : 'none';
 }
 
+/* ── Liaison Ordre de Mission ↔ Parc Auto ──────────────────────────────
+   Le champ « immatriculation » était une saisie libre, sans rapport avec
+   les véhicules réellement enregistrés dans le Parc Auto (module ajouté
+   séparément) — aucune vérification qu'un véhicule choisi soit disponible,
+   pas d'échéance signalée, aucun historique de missions sur la fiche
+   véhicule. On bascule vers le vrai parc quand le moyen de transport est
+   « véhicule de la société », en gardant la saisie libre pour les autres
+   cas (véhicule personnel, moto...) qui n'ont pas de fiche dans l'app. */
+function onChangeOMTransport() {
+  var transport = document.getElementById('om-transport').value;
+  var estVehiculeSociete = (transport === 'vehicule_societe');
+  document.getElementById('om-vehicule-wrap').style.display = estVehiculeSociete ? '' : 'none';
+  document.getElementById('om-immat-libre-wrap').style.display = estVehiculeSociete ? 'none' : '';
+  if (estVehiculeSociete) _omPopulateVehicules();
+}
+
+function _omPopulateVehicules(selectedId) {
+  var sel = document.getElementById('om-vehicule-id');
+  if (!sel) return;
+  var vehicules = (DATA.vehicules||[]).filter(function(v){ return v.statut==='actif'; })
+    .sort(function(a,b){ return (a.immatriculation||'').localeCompare(b.immatriculation||''); });
+  sel.innerHTML = '<option value="">— Sélectionner un véhicule —</option>' + vehicules.map(function(v){
+    return '<option value="'+v.id+'">'+escHtml(v.immatriculation||'')+' — '+escHtml(v.marque||'')+' '+escHtml(v.modele||'')+'</option>';
+  }).join('');
+  sel.value = selectedId || '';
+  onChangeOMVehicule();
+}
+
+/* Alerte non bloquante si le véhicule choisi a une échéance dépassée —
+   on n'empêche jamais d'envoyer un employé en mission (l'app n'a pas à
+   décider ça à la place du responsable), mais on le signale clairement
+   pour que le choix soit informé plutôt qu'accidentel. */
+function onChangeOMVehicule() {
+  var el = document.getElementById('om-vehicule-alerte');
+  var vid = (document.getElementById('om-vehicule-id')||{}).value;
+  if (!el) return;
+  if (!vid || typeof paCalculerAlertes !== 'function') { el.innerHTML = ''; return; }
+  var alertes = paCalculerAlertes().filter(function(a){ return a.vehicule_id === vid; });
+  if (!alertes.length) { el.innerHTML = '<span style="color:var(--vert);">✅ Aucune échéance en cours sur ce véhicule.</span>'; return; }
+  el.innerHTML = alertes.map(function(a){
+    return '<div style="color:'+(a.niveau==='rouge'?'var(--rouge)':'var(--or,#B87333)')+';">'+(a.niveau==='rouge'?'🔴':'🟠')+' '+escHtml(a.texte)+'</div>';
+  }).join('');
+}
+
 function _omGenererNumero() {
   var annee = new Date().getFullYear();
   var n = (DATA.ordres_mission || []).filter(function(o){ return (o.numero||'').indexOf('OM-' + annee) === 0; }).length + 1;
@@ -74768,6 +74867,8 @@ function openOrdreMission(id) {
   document.getElementById('om-destination').value = o ? (o.destination || '') : '';
   document.getElementById('om-transport').value = o ? (o.transport || 'vehicule_societe') : 'vehicule_societe';
   document.getElementById('om-immatriculation').value = o ? (o.immatriculation || '') : '';
+  onChangeOMTransport();
+  if (o && o.vehicule_id) { document.getElementById('om-vehicule-id').value = o.vehicule_id; onChangeOMVehicule(); }
   document.getElementById('om-date-debut').value = o ? (o.date_debut || '') : today();
   document.getElementById('om-date-fin').value = o ? (o.date_fin || '') : today();
   _omRenderFraisDetail(o ? o.frais_detail : null);
@@ -74793,6 +74894,9 @@ async function saveOrdreMission() {
   if (!destination) { toast('La destination / zone est obligatoire.', 'error'); return; }
   if (!dateDebut || !dateFin) { toast('Renseignez la période de mission.', 'error'); return; }
   if (dateFin < dateDebut) { toast('La date de fin ne peut précéder la date de début.', 'error'); return; }
+  var transportChoisi = document.getElementById('om-transport').value;
+  var vehiculeIdChoisi = (transportChoisi === 'vehicule_societe') ? (document.getElementById('om-vehicule-id').value || '') : '';
+  var vehiculeChoisi = vehiculeIdChoisi ? paVehicule(vehiculeIdChoisi) : null;
   var om = {
     id: APP.editingOMId || 'om_' + Date.now(),
     numero: document.getElementById('om-numero').value,
@@ -74803,8 +74907,13 @@ async function saveOrdreMission() {
     parcelle_id: document.getElementById('om-parcelle').value,
     objet: objet,
     destination: destination,
-    transport: document.getElementById('om-transport').value,
-    immatriculation: document.getElementById('om-immatriculation').value.trim(),
+    transport: transportChoisi,
+    vehicule_id: vehiculeIdChoisi,
+    /* [Liaison Parc Auto] Immatriculation dérivée automatiquement du
+       véhicule sélectionné plutôt que ressaisie — reste éditable en clair
+       pour les autres moyens de transport (véhicule personnel, moto...)
+       qui n'ont pas de fiche dans l'app. */
+    immatriculation: vehiculeChoisi ? vehiculeChoisi.immatriculation : document.getElementById('om-immatriculation').value.trim(),
     date_debut: dateDebut,
     date_fin: dateFin,
     frais_detail: _omGetFraisDetail(),
