@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.53 · 2026-08-18 — Lettrage individuel de la paie activé (feu vert donné après le v14.51). comptabiliserPaie() en mode « détail » (1 écriture/employé) utilise désormais le compte auxiliaire 421XXX propre à chaque salarié pour la ligne « Net à payer », au lieu du compte générique partagé par tout le monde — un vrai lettrage/balance âgée individuelle du personnel devient possible. Le mode « agrégat » (une seule ligne multi-employés) reste inchangé, sans quoi la ventilation par compte individuel n\'aurait aucun sens. Auto-création à la volée : un employé sans compte au moment de la comptabilisation en reçoit un automatiquement (même mécanique que le bouton dédié). PERSISTANCE ASSURÉE : sans elle, un compte créé pendant la comptabilisation aurait existé en mémoire seulement — l\'écriture générée aurait référencé un compte disparaissant au prochain rechargement. Params et fiches employés concernées sont désormais sauvegardés explicitement après la boucle. Testé sur les 3 cas (compte existant, création à la volée, mode agrégat) — comportement correct sur chacun. Vérification de non-régression effectuée sur tout le fichier avant livraison.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.54 · 2026-08-18 — NOUVEAU : Suivi budgétaire Caisse. Budget par compte de charge + division (au choix : une division précise, ou consolidé toutes divisions), périodicité mensuelle ou annuelle au choix. Comparé automatiquement aux sorties de caisse déjà ventilées sur le compte (compte_ventile), en réutilisant le résolveur de division du cloisonnement multi-entités déjà en place. Alerte uniquement, jamais de blocage, comme demandé — la caisse ne doit jamais empêcher une opération. Cartes visuelles avec barre de progression (vert <80%, orange ≥80%, rouge ≥100%), raccordées au centre d\'alertes global. Garde anti-doublon (même compte+division+période ne peut pas avoir 2 budgets actifs). Testé empiriquement : 4 scénarios de pourcentage/couleur, et calcul des bornes de mois validé y compris sur année bissextile (février 2028). Vérification systématique de non-régression effectuée sur tout le fichier avant livraison — aucune déclaration de fonction effacée cette fois.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -11391,6 +11391,18 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
 
         <div id="caisse-ventilation-box" style="margin-top:24px;"></div>
 
+        <!-- ══ Suivi budgétaire — compte de charge + division, mensuel ou annuel ══ -->
+        <div class="card" style="margin-top:24px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+            <div>
+              <div class="card-title" style="margin-bottom:2px;">📊 Suivi budgétaire</div>
+              <div style="font-size:11px;color:var(--dim);">Budget par compte de charge et par division — comparé aux sorties de caisse déjà ventilées</div>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="caisseBudgetOuvrir()">➕ Nouveau budget</button>
+          </div>
+          <div id="caisse-budget-box"></div>
+        </div>
+
         <!-- ══ Balance auxiliaire · balance âgée · échéances (pour planifier les paiements depuis la caisse) ══ -->
         <div class="card" style="margin-top:24px;">
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:4px;">
@@ -14407,6 +14419,35 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
       </div>
 
       <!-- Modal : Fiche véhicule (Parc Auto) -->
+      <!-- Modal : Ligne de suivi budgétaire (Caisse) -->
+      <div class="modal-overlay" id="modal-caisse-budget">
+        <div class="modal">
+          <div class="modal-header">
+            <h3 id="cb-modal-titre">📊 Nouveau budget</h3>
+            <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-caisse-budget')">✕</button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="cb-id">
+            <div class="form-grid">
+              <div class="form-group span-2"><label>Compte de charge *</label><input type="text" class="form-control" id="cb-compte" list="dl-plan-comptable" placeholder="Ex : 6055, 6051..."></div>
+              <div class="form-group span-2"><label>Division</label><select class="form-control" id="cb-division"><option value="">— Toutes divisions (consolidé) —</option></select></div>
+              <div class="form-group"><label>Périodicité *</label><select class="form-control" id="cb-periode" onchange="caisseBudgetTogglePeriode()">
+                <option value="mensuel">Mensuel</option><option value="annuel">Annuel</option>
+              </select></div>
+              <div class="form-group"><label>Année *</label><input type="number" class="form-control" id="cb-annee" min="2020" max="2100"></div>
+              <div class="form-group" id="cb-mois-wrap"><label>Mois (si mensuel)</label><input type="month" class="form-control" id="cb-mois"></div>
+              <div class="form-group"><label>Montant budgété (FCFA) *</label><input type="number" class="form-control" id="cb-montant" min="0"></div>
+            </div>
+            <div style="font-size:11px;color:var(--blanc-dim);margin-top:8px;">« Toutes divisions » compare aux sorties de TOUTES les entités confondues sur ce compte — utile pour un budget de groupe ; une division précise isole une seule entité.</div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal('modal-caisse-budget')">Annuler</button>
+            <button class="btn btn-danger" id="cb-btn-suppr" style="display:none;" onclick="caisseBudgetSupprimer()">🗑️ Supprimer</button>
+            <button class="btn btn-primary" onclick="caisseBudgetSauver()">💾 Enregistrer</button>
+          </div>
+        </div>
+      </div>
+
       <div class="modal-overlay" id="modal-pa-vehicule">
         <div class="modal modal-lg">
           <div class="modal-header">
@@ -21418,14 +21459,16 @@ var DATA = {
   vehicules: [],
   vehicule_carburant: [],
   vehicule_entretiens: [],
-  vehicule_affectations: []
+  vehicule_affectations: [],
+  /* v146 — Suivi budgétaire caisse (compte + division, mensuel ou annuel) */
+  caisse_budgets: []
 };
 
 /* ──────────────────────────────────────────────────────
    INDEXEDDB
 ────────────────────────────────────────────────────── */
 var DB_NAME = 'ImmoSuiteDB';
-var DB_VERSION = 145; /* v145: module Parc Auto (vehicules, vehicule_carburant, vehicule_entretiens, vehicule_affectations) */
+var DB_VERSION = 146; /* v146: store 'caisse_budgets' (suivi budgétaire caisse, compte+division, mensuel/annuel) */
 var db = null;
 
 /* Liste COMPLÈTE et définitive de tous les stores */
@@ -21538,7 +21581,9 @@ var ALL_STORES = [
   /* v144 — Factures fournisseurs en attente de ventilation (capture caissière) */
   'factures_fournisseur_attente',
   /* v145 — Parc Auto (logistique) */
-  'vehicules', 'vehicule_carburant', 'vehicule_entretiens', 'vehicule_affectations'
+  'vehicules', 'vehicule_carburant', 'vehicule_entretiens', 'vehicule_affectations',
+  /* v146 — Suivi budgétaire caisse */
+  'caisse_budgets'
 ];
 
 function initDB() {
@@ -21927,7 +21972,9 @@ async function loadAllData() {
   'diaspo_ancrages','signalements','artisans','ordres_travaux','kyc_fiches','lbc_declarations',
   'lbc_alertes','candidatures_loc','biens_locatifs','af_manifestations','masse_dxf_presets','factures_fournisseur_attente',
   /* v145 — Parc Auto (logistique) */
-  'vehicules','vehicule_carburant','vehicule_entretiens','vehicule_affectations'
+  'vehicules','vehicule_carburant','vehicule_entretiens','vehicule_affectations',
+  /* v146 — Suivi budgétaire caisse */
+  'caisse_budgets'
   ];
   /* Chargement en PARALLÈLE plutôt que séquentiel : chaque dbGetAll() ouvre
      sa propre transaction IndexedDB 'readonly' indépendante (voir dbGetAll
@@ -22409,6 +22456,14 @@ function iaaCalculerAlertes() {
     if (nbRougeVeh) alertes.push({ niveau: 'rouge', texte: nbRougeVeh + " échéance(s) véhicule expirée(s) (assurance/visite technique/vidange)" });
     var nbOrangeVeh = alertesVehicules.filter(function(a){ return a.niveau==='orange'; }).length;
     if (nbOrangeVeh) alertes.push({ niveau: 'orange', texte: nbOrangeVeh + " échéance(s) véhicule sous 30j" });
+  }
+  /* Suivi budgétaire caisse — dépassements et seuils atteints */
+  if (typeof caisseBudgetAlertesGlobales === 'function') {
+    var alertesBudget = caisseBudgetAlertesGlobales();
+    var nbRougeBudget = alertesBudget.filter(function(a){ return a.niveau==='rouge'; }).length;
+    if (nbRougeBudget) alertes.push({ niveau: 'rouge', texte: nbRougeBudget + " budget(s) caisse dépassé(s)" });
+    var nbOrangeBudget = alertesBudget.filter(function(a){ return a.niveau==='orange'; }).length;
+    if (nbOrangeBudget) alertes.push({ niveau: 'orange', texte: nbOrangeBudget + " budget(s) caisse proche(s) du seuil (≥80%)" });
   }
   return alertes;
 }
@@ -23377,6 +23432,7 @@ function _filtrerFantomes(table, store, ids) {
 
 /* Correspondance table Supabase ↔ store local (IndexedDB / DATA) */
 var SUPA_STORE_MAP = [
+  ['pi_caisse_budgets',         'caisse_budgets'],
   ['pi_vehicules',              'vehicules'],
   ['pi_vehicule_carburant',     'vehicule_carburant'],
   ['pi_vehicule_entretiens',    'vehicule_entretiens'],
@@ -107019,6 +107075,166 @@ function _caisseCollecterFournisseurs401() {
   return out;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   SUIVI BUDGÉTAIRE CAISSE — budget par compte de charge + division,
+   mensuel ou annuel au choix. Comparé aux sorties de caisse déjà ventilées
+   (compte_ventile) sur la période. Alerte uniquement, jamais de blocage —
+   conforme au choix explicite : la caisse ne doit jamais empêcher une
+   opération, seulement informer.
+   ═══════════════════════════════════════════════════════════════════════ */
+function caisseBudgetOuvrir(id) {
+  var b = id ? (DATA.caisse_budgets||[]).find(function(x){ return x.id===id; }) : null;
+  document.getElementById('cb-modal-titre').textContent = b ? '✏️ Modifier le budget' : '📊 Nouveau budget';
+  document.getElementById('cb-id').value = id || '';
+  document.getElementById('cb-compte').value = b ? b.compte : '';
+  var selDiv = document.getElementById('cb-division');
+  selDiv.innerHTML = '<option value="">— Toutes divisions (consolidé) —</option>' + (DATA.divisions||[]).map(function(d){
+    return '<option value="'+d.id+'">'+escHtml(d.nom)+'</option>';
+  }).join('');
+  selDiv.value = b ? (b.division_id||'') : '';
+  document.getElementById('cb-periode').value = b ? b.periode : 'mensuel';
+  document.getElementById('cb-annee').value = b ? b.annee : new Date().getFullYear();
+  document.getElementById('cb-mois').value = b ? (b.mois || (b.annee + '-' + String(new Date().getMonth()+1).padStart(2,'0'))) : (new Date().getFullYear() + '-' + String(new Date().getMonth()+1).padStart(2,'0'));
+  document.getElementById('cb-montant').value = b ? b.montant : '';
+  document.getElementById('cb-btn-suppr').style.display = b ? '' : 'none';
+  caisseBudgetTogglePeriode();
+  openModal('modal-caisse-budget');
+}
+
+function caisseBudgetTogglePeriode() {
+  var estMensuel = document.getElementById('cb-periode').value === 'mensuel';
+  document.getElementById('cb-mois-wrap').style.display = estMensuel ? '' : 'none';
+}
+
+async function caisseBudgetSauver() {
+  if (!exigerDroit('Caisse', 'm', 'un budget')) return;
+  var compte = (document.getElementById('cb-compte').value||'').trim();
+  var montant = parseFloat(document.getElementById('cb-montant').value)||0;
+  var periode = document.getElementById('cb-periode').value;
+  var annee = parseInt(document.getElementById('cb-annee').value, 10) || new Date().getFullYear();
+  var mois = document.getElementById('cb-mois').value||'';
+  if (!compte) { toast('Le compte de charge est obligatoire.', 'error'); return; }
+  if (!montant || montant <= 0) { toast('Le montant budgété doit être supérieur à 0.', 'error'); return; }
+  if (periode === 'mensuel' && !mois) { toast('Sélectionnez le mois pour un budget mensuel.', 'error'); return; }
+
+  var id = document.getElementById('cb-id').value || uid();
+  var existant = (DATA.caisse_budgets||[]).find(function(x){ return x.id===id; });
+  var divisionId = document.getElementById('cb-division').value||'';
+
+  /* Éviter deux budgets qui se chevauchent exactement sur le même périmètre
+     (même compte, même division, même période) — source de confusion sur
+     lequel fait foi, sans intérêt d'en avoir deux. */
+  var doublon = (DATA.caisse_budgets||[]).some(function(x){
+    return x.id !== id && x.compte === compte && (x.division_id||'') === divisionId
+      && x.periode === periode && x.annee === annee && (periode==='mensuel' ? x.mois === mois : true);
+  });
+  if (doublon) { toast('Un budget existe déjà pour ce compte, cette division et cette période — modifiez-le plutôt que d\'en créer un second.', 'error'); return; }
+
+  var b = existant || { id: id, created_at: new Date().toISOString() };
+  b.compte = compte; b.division_id = divisionId; b.periode = periode; b.annee = annee;
+  b.mois = periode === 'mensuel' ? mois : '';
+  b.montant = montant;
+  b._modifie = new Date().toISOString();
+
+  if (!existant) DATA.caisse_budgets.push(b);
+  await dbPut('caisse_budgets', b);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_budgets', b);
+  closeModal('modal-caisse-budget');
+  toast('✅ Budget enregistré.', 'success');
+  caisseRenderBudgets();
+}
+
+async function caisseBudgetSupprimer() {
+  var id = document.getElementById('cb-id').value;
+  if (!id) return;
+  if (!exigerDroit('Caisse', 's', 'un budget')) return;
+  if (!confirm('Supprimer ce budget ?')) return;
+  await deleteRecord('caisse_budgets', id);
+  DATA.caisse_budgets = (DATA.caisse_budgets||[]).filter(function(x){ return x.id!==id; });
+  closeModal('modal-caisse-budget');
+  toast('Budget supprimé.', 'info');
+  caisseRenderBudgets();
+}
+
+/* Consommé réel : somme des sorties de caisse déjà ventilées sur ce compte,
+   pour la division et la période de la ligne budgétaire. Correspondance de
+   compte STRICTE (pas de préfixe/hiérarchie) — un budget sur "605" ne
+   capte pas automatiquement "6055", pour éviter un double-comptage si les
+   deux sont budgétés séparément. */
+function _caisseBudgetConsomme(budget) {
+  var deb, fin;
+  if (budget.periode === 'mensuel') {
+    deb = budget.mois + '-01';
+    var d = new Date(budget.mois + '-01T00:00:00');
+    fin = budget.mois + '-' + String(new Date(d.getFullYear(), d.getMonth()+1, 0).getDate()).padStart(2,'0');
+  } else {
+    deb = budget.annee + '-01-01'; fin = budget.annee + '-12-31';
+  }
+  return (DATA.caisse_mouvements||[]).filter(function(m){
+    if (m.type !== 'sortie') return false;
+    if (m.compte_ventile !== budget.compte) return false;
+    var d2 = (m.date||'').slice(0,10);
+    if (!d2 || d2 < deb || d2 > fin) return false;
+    if (budget.division_id) {
+      if ((typeof _resolveDivisionEcriture !== 'function') || _resolveDivisionEcriture('caisse_mouvement', m.id) !== budget.division_id) return false;
+    }
+    return true;
+  }).reduce(function(s,m){ return s + (parseFloat(m.montant)||0); }, 0);
+}
+
+function caisseRenderBudgets() {
+  var box = document.getElementById('caisse-budget-box');
+  if (!box) return;
+  var budgets = (DATA.caisse_budgets||[]).slice().sort(function(a,b){
+    var pa = (a.periode==='mensuel'?a.mois:String(a.annee)), pb = (b.periode==='mensuel'?b.mois:String(b.annee));
+    return pb.localeCompare(pa) || a.compte.localeCompare(b.compte);
+  });
+  if (!budgets.length) { box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Aucun budget défini. Cliquez « + Nouveau budget » pour en créer un.</div>'; return; }
+
+  box.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;">'
+    + budgets.map(function(b) {
+        var consomme = _caisseBudgetConsomme(b);
+        var pct = b.montant > 0 ? Math.round((consomme / b.montant) * 100) : 0;
+        var couleur = pct >= 100 ? 'var(--rouge)' : (pct >= 80 ? 'var(--or,#B87333)' : 'var(--vert)');
+        var libelleCompte = (function(){
+          var c = (APP.planComptable||[]).find(function(x){ return x.code === b.compte; });
+          return c ? c.label : '';
+        })();
+        var divLabel = b.division_id ? escHtml(_nomDivision(b.division_id)) : 'Toutes divisions';
+        var periodeLabel = b.periode === 'mensuel'
+          ? new Date(b.mois+'-01T00:00:00').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})
+          : 'Année ' + b.annee;
+        return '<div class="card" style="padding:12px 14px;border-left:3px solid '+couleur+';cursor:pointer;" onclick="caisseBudgetOuvrir(\''+b.id+'\')">'
+          + '<div style="display:flex;justify-content:space-between;"><div style="font-weight:700;">'+escHtml(b.compte)+'</div><div style="font-size:11px;color:var(--blanc-dim);">'+periodeLabel+'</div></div>'
+          + (libelleCompte ? '<div style="font-size:11px;color:var(--blanc-dim);">'+escHtml(libelleCompte)+'</div>' : '')
+          + '<div style="font-size:11px;color:var(--blanc-dim);margin-top:2px;">🏢 '+divLabel+'</div>'
+          + '<div style="margin-top:8px;background:rgba(255,255,255,0.08);border-radius:6px;height:8px;overflow:hidden;">'
+            + '<div style="width:'+Math.min(pct,100)+'%;height:100%;background:'+couleur+';"></div>'
+          + '</div>'
+          + '<div style="display:flex;justify-content:space-between;margin-top:6px;font-size:12px;">'
+            + '<span>'+fmtF(consomme)+' / '+fmtF(b.montant)+' F</span>'
+            + '<span style="font-weight:700;color:'+couleur+';">'+pct+'%</span>'
+          + '</div>'
+          + (pct >= 100 ? '<div style="font-size:11px;color:var(--rouge);margin-top:4px;">🔴 Budget dépassé de '+fmtF(consomme-b.montant)+' F</div>' : (pct >= 80 ? '<div style="font-size:11px;color:var(--or,#B87333);margin-top:4px;">🟠 Seuil d\'alerte atteint</div>' : ''))
+        + '</div>';
+      }).join('')
+    + '</div>';
+}
+
+/* Raccordement au centre d'alertes global — signale les budgets dépassés
+   ou proches (≥80%), sans jamais bloquer une opération de caisse. */
+function caisseBudgetAlertesGlobales() {
+  var alertes = [];
+  (DATA.caisse_budgets||[]).forEach(function(b) {
+    var consomme = _caisseBudgetConsomme(b);
+    var pct = b.montant > 0 ? (consomme / b.montant) * 100 : 0;
+    var periodeLabel = b.periode === 'mensuel' ? b.mois : ('année ' + b.annee);
+    if (pct >= 100) alertes.push({ niveau: 'rouge', texte: 'Budget ' + b.compte + ' dépassé (' + Math.round(pct) + '%, ' + periodeLabel + ')' });
+    else if (pct >= 80) alertes.push({ niveau: 'orange', texte: 'Budget ' + b.compte + ' à ' + Math.round(pct) + '% (' + periodeLabel + ')' });
+  });
+  return alertes;
+}
+
 function _caisseBucketAge(joursRetard) {
   if (joursRetard <= 0) return 'nonEchu';
   if (joursRetard <= 30) return 'j0_30';
@@ -107102,6 +107318,7 @@ async function caisseEnter() {
      de s'exécuter, y compris ce bloc — d'où l'apparition/disparition au
      fil des tentatives de reconnexion réseau. */
   try { caisseRenderBalanceAgee(); } catch(e) { console.warn('[Caisse] Balance tiers non affichée :', e); }
+  try { caisseRenderBudgets(); } catch(e) { console.warn('[Caisse] Suivi budgétaire non affiché :', e); }
 
   var btnNew = document.getElementById('btn-caisse-nouvelle');
   if (btnNew) btnNew.style.display = caisseRoleAdminLike() ? '' : 'none';
