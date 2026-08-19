@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.43 · 2026-08-18 — Suite tempête Realtime : logout() n\'appelait JAMAIS stopRealtime() — le websocket restait ouvert et continuait à se reconnecter en boucle après déconnexion, y compris pendant l\'affichage de l\'écran de login. Conséquence directe : le module de déconnexion à distance (deconnecterAutresPostes) ne pouvait pas éteindre la tempête, les postes déconnectés continuant de marteler le serveur. Corrigé sur les deux chemins (déconnexion manuelle et déconnexion forcée à distance, cette dernière coupant désormais le Realtime avant son rechargement plutôt que 1,5 s après).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.49 · 2026-08-18 — Utilisateurs et accès pour Parc Auto et Moyens Généraux. TROU TROUVÉ : Parc Auto avait été construit sans être raccordé au système de permissions — n\'importe quel utilisateur connecté pouvait y accéder et le modifier, peu importe son rôle, malgré la refonte hasRole() plus tôt cette session. Corrigé : ajouté à ALL_MODULES (admin/manager en héritent automatiquement, comptable/commercial non par défaut — moindre privilège, ajustable via Paramètres → Rôles), PAGE_MODULE_MAP (masquage nav si non autorisé) et STORE_MODULE (droits appliqués aussi au niveau données, pas juste écran). Gardes exigerDroit() posées sur les 6 actions d\'écriture (créer/modifier véhicule, supprimer, carburant, entretien, affectation). Testé empiriquement : admin/manager → accès, comptable → refusé (voit les écritures résultantes dans Comptabilité, pas le module opérationnel). Moyens Généraux n\'a rien nécessité de neuf : réutilise la page Achats existante, déjà correctement rattachée au module Achats & Commandes. Trou annexe signalé mais non corrigé (hors périmètre, préexistant) : saveImmoSociete() elle-même n\'a aucune garde de droit.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -2365,6 +2365,18 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
 ════════════════════════════════════════════════════ -->
 <div id="app">
 
+  <!-- Bandeau « nouvelle version disponible » : masqué par défaut, affiché
+       par _verifierNouvelleVersion(). Placé tout en haut et en position
+       fixe pour rester visible quel que soit l'écran affiché — un onglet
+       resté ouvert sur une version périmée est une source réelle
+       d'incidents (bugs déjà corrigés qui persistent, et comportements
+       obsolètes qui continuent de tourner). -->
+  <div id="maj-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99999;background:#B87333;color:#fff;padding:10px 14px;font-size:13px;box-shadow:0 2px 12px rgba(0,0,0,.3);align-items:center;gap:12px;flex-wrap:wrap;">
+    <span style="flex:1;min-width:200px;">🔄 <b>Nouvelle version disponible</b> — rechargez l'application pour en bénéficier. <span id="maj-banner-detail" style="opacity:.85;"></span></span>
+    <button onclick="_rechargerPourMaj()" style="background:#fff;color:#B87333;border:none;padding:6px 14px;border-radius:6px;font-weight:700;cursor:pointer;">Recharger maintenant</button>
+    <button onclick="document.getElementById('maj-banner').style.display='none';" title="Masquer (le rappel réapparaîtra plus tard)" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.5);padding:6px 10px;border-radius:6px;cursor:pointer;">Plus tard</button>
+  </div>
+
   <!-- Topbar mobile -->
   <div class="topbar">
     <button class="topbar-menu-btn" onclick="toggleSidebar()" aria-label="Menu">☰</button>
@@ -2703,6 +2715,19 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="nav-item" onclick="goTo('diaspo')" data-page="diaspo" title="Confiance vérifiable à distance">
         <span class="nav-icon">🌍</span><span>Investisseurs Diaspora</span>
         <span class="nav-badge" id="badge-diaspo" style="display:none;">0</span>
+      </div>
+        </div>
+      </div>
+
+      <div class="nav-group" id="navgrp-14" data-group="14">
+        <div class="nav-section" onclick="toggleNavGroup(14)"><span class="nav-group-badge" id="grpbadge-14"></span><span class="nav-step">14</span><span>Logistique</span><span class="nav-toggle"></span></div>
+        <div class="nav-group-body">
+          <div class="nav-item" onclick="goTo('parc-auto')" data-page="parc-auto">
+        <span class="nav-icon">🚗</span><span>Parc Auto</span>
+        <span class="nav-badge" id="badge-parc-auto" style="display:none;">0</span>
+      </div>
+          <div class="nav-item" onclick="mgOuvrir()" data-page="achats">
+        <span class="nav-icon">🛒</span><span>Moyens Généraux</span>
       </div>
         </div>
       </div>
@@ -5065,8 +5090,12 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <div class="form-group"><label>Date</label><input type="date" class="form-control" id="bc-date"></div>
               <div class="form-group"><label>Fournisseur *</label><select class="form-control" id="bc-fournisseur"></select></div>
               <div class="form-group"><label>Chantier (convention)</label><select class="form-control" id="bc-chantier"></select></div>
+              <div class="form-group"><label>Division (si sans chantier)</label><select class="form-control" id="bc-division"><option value="">— déduite du chantier —</option></select></div>
               <div class="form-group"><label>Dépôt de réception</label><select class="form-control" id="bc-depot"></select></div>
               <div class="form-group"><label>Délai souhaité</label><input type="date" class="form-control" id="bc-delai"></div>
+            </div>
+            <div style="font-size:11px;color:var(--blanc-dim);margin-top:-6px;margin-bottom:6px;">
+              Un achat sans chantier (fournitures, moyens généraux…) n'a pas de division déduite automatiquement — choisissez-la ici pour que la comptabilité reste correctement rattachée à l'entité juridique.
             </div>
             <div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0 6px;">
               <strong style="color:var(--or);">Lignes de commande</strong>
@@ -7193,6 +7222,9 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <div class="form-group"><label>Chantier — Immobilisation en cours</label><input class="form-control" id="cd-chantier-immo-encours" list="dl-plan-comptable" placeholder="231"></div>
               <div class="form-group"><label>Chantier — Achats matériaux</label><input class="form-control" id="cd-chantier-materiaux" list="dl-plan-comptable" placeholder="601"></div>
               <div class="form-group"><label>Chantier — Sous-traitance / location matériel</label><input class="form-control" id="cd-chantier-sous-traitance" list="dl-plan-comptable" placeholder="622"></div>
+              <div class="form-group"><label>Parc auto — Carburant (charge)</label><input class="form-control" id="cd-parc-carburant" list="dl-plan-comptable" placeholder="6051"></div>
+              <div class="form-group"><label>Parc auto — Entretien/réparations (charge)</label><input class="form-control" id="cd-parc-entretien" list="dl-plan-comptable" placeholder="6156"></div>
+              <div class="form-group"><label>Parc auto — Immobilisation véhicules</label><input class="form-control" id="cd-parc-immobilisation" list="dl-plan-comptable" placeholder="2451"></div>
 
               <div class="form-group"><label>Taux Impôt sur les Sociétés (%)</label><input type="number" step="0.1" class="form-control" id="cd-taux-is" placeholder="25"></div>
               <div class="form-group"></div>
@@ -14243,6 +14275,137 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         </div>
       </div>
 
+      <!-- ═══ PARC AUTO (Logistique) ═══════════════════════════════════ -->
+      <div class="page" id="page-parc-auto">
+        <div class="page-header">
+          <div>
+            <h1 class="page-title">🚗 Parc Auto</h1>
+            <div class="page-sub">Véhicules · Carburant · Entretien · Affectations · Échéances</div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn btn-primary" onclick="paOpenVehicule()">+ Véhicule</button>
+          </div>
+        </div>
+
+        <div id="pa-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px;"></div>
+        <div id="pa-alertes-box" style="margin-bottom:14px;"></div>
+
+        <div class="tab-nav" style="margin-bottom:14px;">
+          <button class="tab-btn active" onclick="switchTab('parc-auto','vehicules')"><i>🚗</i>Véhicules</button>
+          <button class="tab-btn" onclick="switchTab('parc-auto','carburant')"><i>⛽</i>Carburant</button>
+          <button class="tab-btn" onclick="switchTab('parc-auto','entretien')"><i>🔧</i>Entretien</button>
+          <button class="tab-btn" onclick="switchTab('parc-auto','affectations')"><i>👤</i>Affectations</button>
+        </div>
+
+        <!-- TAB : Véhicules -->
+        <div class="tab-pane active" id="tab-parc-auto-vehicules">
+          <div class="filters-bar" style="flex-wrap:wrap;">
+            <input type="text" class="search-input" id="pa-search" placeholder="🔍 Immatriculation, marque, modèle..." oninput="paRenderVehicules()">
+            <select class="form-control" id="pa-filter-type" onchange="paRenderVehicules()" style="max-width:180px;">
+              <option value="">— Tous types —</option>
+              <option value="voiture">Voiture particulière</option>
+              <option value="pickup">Camionnette/Pickup</option>
+              <option value="camion">Camion</option>
+              <option value="engin">Engin de chantier</option>
+              <option value="autre">Autre</option>
+            </select>
+            <select class="form-control" id="pa-filter-statut" onchange="paRenderVehicules()" style="max-width:160px;">
+              <option value="">— Tous statuts —</option>
+              <option value="actif">Actif</option>
+              <option value="en_reparation">En réparation</option>
+              <option value="hors_service">Hors service</option>
+              <option value="vendu">Vendu</option>
+            </select>
+            <select class="form-control" id="pa-filter-division" onchange="paRenderVehicules()" style="max-width:180px;"><option value="">— Toutes divisions —</option></select>
+          </div>
+          <div id="pa-vehicules-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;margin-top:14px;"></div>
+        </div>
+
+        <!-- TAB : Carburant -->
+        <div class="tab-pane" id="tab-parc-auto-carburant">
+          <div class="card" style="border:1px solid var(--or);margin-bottom:14px;">
+            <div class="form-section-title">⛽ Enregistrer un plein</div>
+            <div class="form-grid" style="margin-top:10px;">
+              <div class="form-group"><label>Véhicule *</label><select id="pac-vehicule" class="form-control"></select></div>
+              <div class="form-group"><label>Date *</label><input type="date" id="pac-date" class="form-control"></div>
+              <div class="form-group"><label>Litres *</label><input type="number" id="pac-litres" class="form-control" step="0.01" min="0"></div>
+              <div class="form-group"><label>Montant (FCFA) *</label><input type="number" id="pac-montant" class="form-control" min="0"></div>
+              <div class="form-group"><label>Km compteur *</label><input type="number" id="pac-km" class="form-control" min="0"></div>
+              <div class="form-group"><label>Station</label><input type="text" id="pac-station" class="form-control"></div>
+              <div class="form-group"><label>Chauffeur</label><select id="pac-chauffeur" class="form-control"><option value="">—</option></select></div>
+              <div class="form-group"><label>Mode de paiement</label><select id="pac-mode" class="form-control">
+                <option value="especes">Espèces</option><option value="carte">Carte carburant</option><option value="virement">Virement</option><option value="mobile_money">Mobile Money</option>
+              </select></div>
+            </div>
+            <button class="btn btn-primary" style="margin-top:10px;" onclick="paSaveCarburant()">💾 Enregistrer</button>
+          </div>
+          <div class="filters-bar" style="flex-wrap:wrap;">
+            <select class="form-control" id="pac-filter-vehicule" onchange="paRenderCarburant()" style="max-width:220px;"><option value="">— Tous véhicules —</option></select>
+            <input type="month" class="form-control" id="pac-filter-mois" onchange="paRenderCarburant()" style="max-width:160px;">
+          </div>
+          <div class="table-wrap" style="margin-top:12px;"><div id="pa-carburant-table"></div></div>
+        </div>
+
+        <!-- TAB : Entretien -->
+        <div class="tab-pane" id="tab-parc-auto-entretien">
+          <div class="card" style="border:1px solid var(--or);margin-bottom:14px;">
+            <div class="form-section-title">🔧 Enregistrer un entretien / une réparation</div>
+            <div class="form-grid" style="margin-top:10px;">
+              <div class="form-group"><label>Véhicule *</label><select id="pae-vehicule" class="form-control"></select></div>
+              <div class="form-group"><label>Date *</label><input type="date" id="pae-date" class="form-control"></div>
+              <div class="form-group"><label>Type *</label><select id="pae-type" class="form-control">
+                <option value="vidange">Vidange</option><option value="revision">Révision</option><option value="pneus">Pneus</option>
+                <option value="reparation">Réparation</option><option value="carrosserie">Carrosserie</option><option value="autre">Autre</option>
+              </select></div>
+              <div class="form-group"><label>Atelier / Garage</label><input type="text" id="pae-atelier" class="form-control"></div>
+              <div class="form-group"><label>Coût (FCFA) *</label><input type="number" id="pae-cout" class="form-control" min="0"></div>
+              <div class="form-group"><label>Km compteur *</label><input type="number" id="pae-km" class="form-control" min="0"></div>
+              <div class="form-group"><label>Prochaine échéance — km</label><input type="number" id="pae-prochain-km" class="form-control" min="0" placeholder="Ex : km + 5000"></div>
+              <div class="form-group"><label>Prochaine échéance — date</label><input type="date" id="pae-prochaine-date" class="form-control"></div>
+              <div class="form-group"><label>Mode de paiement</label><select id="pae-mode" class="form-control">
+                <option value="especes">Espèces</option><option value="virement">Virement</option><option value="mobile_money">Mobile Money</option><option value="a_credit">À crédit (fournisseur)</option>
+              </select></div>
+              <div class="form-group span-2"><label>Description</label><textarea id="pae-description" class="form-control" style="min-height:50px;"></textarea></div>
+            </div>
+            <button class="btn btn-primary" style="margin-top:10px;" onclick="paSaveEntretien()">💾 Enregistrer</button>
+          </div>
+          <div class="filters-bar" style="flex-wrap:wrap;">
+            <select class="form-control" id="pae-filter-vehicule" onchange="paRenderEntretien()" style="max-width:220px;"><option value="">— Tous véhicules —</option></select>
+          </div>
+          <div class="table-wrap" style="margin-top:12px;"><div id="pa-entretien-table"></div></div>
+        </div>
+
+        <!-- TAB : Affectations -->
+        <div class="tab-pane" id="tab-parc-auto-affectations">
+          <div class="card" style="border:1px solid var(--or);margin-bottom:14px;">
+            <div class="form-section-title">👤 Affecter un véhicule</div>
+            <div class="form-grid" style="margin-top:10px;">
+              <div class="form-group"><label>Véhicule *</label><select id="paa-vehicule" class="form-control"></select></div>
+              <div class="form-group"><label>Employé *</label><select id="paa-employe" class="form-control"></select></div>
+              <div class="form-group"><label>Date de début *</label><input type="date" id="paa-date-debut" class="form-control"></div>
+              <div class="form-group"><label>Motif</label><input type="text" id="paa-motif" class="form-control" placeholder="Ex : mission chantier, usage permanent..."></div>
+            </div>
+            <button class="btn btn-primary" style="margin-top:10px;" onclick="paSaveAffectation()">💾 Affecter</button>
+          </div>
+          <div class="table-wrap"><div id="pa-affectations-table"></div></div>
+        </div>
+      </div>
+
+      <!-- Modal : Fiche véhicule (Parc Auto) -->
+      <div class="modal-overlay" id="modal-pa-vehicule">
+        <div class="modal modal-lg">
+          <div class="modal-header">
+            <h3 id="pa-modal-titre">🚗 Véhicule</h3>
+            <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-pa-vehicule')">✕</button>
+          </div>
+          <div class="modal-body" id="pa-modal-corps"></div>
+          <div class="modal-footer" id="pa-modal-boutons">
+            <button class="btn btn-secondary" onclick="closeModal('modal-pa-vehicule')">Annuler</button>
+            <button class="btn btn-primary" onclick="paSaveVehicule()">💾 Enregistrer</button>
+          </div>
+        </div>
+      </div>
+
       <div class="page" id="page-locatif">
         <div class="page-header">
           <div>
@@ -21235,14 +21398,19 @@ var DATA = {
   /* v136 — Caisse (brouillard journalier, bons E/S, ouverture/clôture, ventilation comptable) */
   caisses: [],
   caisse_sessions: [],
-  caisse_mouvements: []
+  caisse_mouvements: [],
+  /* v145 — Parc Auto (logistique) : véhicules, carburant, entretien, affectations */
+  vehicules: [],
+  vehicule_carburant: [],
+  vehicule_entretiens: [],
+  vehicule_affectations: []
 };
 
 /* ──────────────────────────────────────────────────────
    INDEXEDDB
 ────────────────────────────────────────────────────── */
 var DB_NAME = 'ImmoSuiteDB';
-var DB_VERSION = 144; /* v144: store 'factures_fournisseur_attente' (capture caissière, ventilation comptable différée) */
+var DB_VERSION = 145; /* v145: module Parc Auto (vehicules, vehicule_carburant, vehicule_entretiens, vehicule_affectations) */
 var db = null;
 
 /* Liste COMPLÈTE et définitive de tous les stores */
@@ -21353,7 +21521,9 @@ var ALL_STORES = [
   /* v143 — Préréglages de mapping de calques DXF (import plan de masse, multi-conventions) */
   'masse_dxf_presets',
   /* v144 — Factures fournisseurs en attente de ventilation (capture caissière) */
-  'factures_fournisseur_attente'
+  'factures_fournisseur_attente',
+  /* v145 — Parc Auto (logistique) */
+  'vehicules', 'vehicule_carburant', 'vehicule_entretiens', 'vehicule_affectations'
 ];
 
 function initDB() {
@@ -21740,7 +21910,9 @@ async function loadAllData() {
   'conges_rh','candidats_rh','postes_ouverts','formations_rh','paiements_online','baux',
   'quittances','loc_relances','diaspo_dossiers','diaspo_preuves','diaspo_jalons','diaspo_parts',
   'diaspo_ancrages','signalements','artisans','ordres_travaux','kyc_fiches','lbc_declarations',
-  'lbc_alertes','candidatures_loc','biens_locatifs','af_manifestations','masse_dxf_presets','factures_fournisseur_attente'
+  'lbc_alertes','candidatures_loc','biens_locatifs','af_manifestations','masse_dxf_presets','factures_fournisseur_attente',
+  /* v145 — Parc Auto (logistique) */
+  'vehicules','vehicule_carburant','vehicule_entretiens','vehicule_affectations'
   ];
   /* Chargement en PARALLÈLE plutôt que séquentiel : chaque dbGetAll() ouvre
      sa propre transaction IndexedDB 'readonly' indépendante (voir dbGetAll
@@ -22215,6 +22387,14 @@ function iaaCalculerAlertes() {
     return !isNaN(d) && (Date.now() - d.getTime()) > 30 * 24 * 3600 * 1000;
   });
   if (reservesAnciennes.length) alertes.push({ niveau: 'orange', texte: reservesAnciennes.length + " lot(s) réservé(s) depuis +30j sans vente" });
+  /* Parc Auto — échéances véhicules (assurance, visite technique, vidange) */
+  if (typeof paCalculerAlertes === 'function') {
+    var alertesVehicules = paCalculerAlertes();
+    var nbRougeVeh = alertesVehicules.filter(function(a){ return a.niveau==='rouge'; }).length;
+    if (nbRougeVeh) alertes.push({ niveau: 'rouge', texte: nbRougeVeh + " échéance(s) véhicule expirée(s) (assurance/visite technique/vidange)" });
+    var nbOrangeVeh = alertesVehicules.filter(function(a){ return a.niveau==='orange'; }).length;
+    if (nbOrangeVeh) alertes.push({ niveau: 'orange', texte: nbOrangeVeh + " échéance(s) véhicule sous 30j" });
+  }
   return alertes;
 }
 function iaaRefreshAlertes() {
@@ -23182,6 +23362,10 @@ function _filtrerFantomes(table, store, ids) {
 
 /* Correspondance table Supabase ↔ store local (IndexedDB / DATA) */
 var SUPA_STORE_MAP = [
+  ['pi_vehicules',              'vehicules'],
+  ['pi_vehicule_carburant',     'vehicule_carburant'],
+  ['pi_vehicule_entretiens',    'vehicule_entretiens'],
+  ['pi_vehicule_affectations',  'vehicule_affectations'],
   ['pi_masse_dxf_presets', 'masse_dxf_presets'],
   ['pi_factures_fournisseur_attente', 'factures_fournisseur_attente'],
   ['pi_cout_gestion_exercices', 'cout_gestion_exercices'],
@@ -24221,9 +24405,75 @@ function renderSyncQueue(){
 }
 
 /* Démarre la synchro automatique : envoi des changements toutes les 30 s + reprise de la file. */
+/* ══ DÉTECTION DE NOUVELLE VERSION DÉPLOYÉE ═══════════════════════════════
+   Un onglet resté ouvert continue d'exécuter indéfiniment la version chargée
+   au moment de son ouverture — même après un déploiement. C'est une source
+   réelle d'incidents : bugs déjà corrigés qui persistent chez l'utilisateur,
+   et comportements obsolètes qui continuent de tourner (l'incident de
+   tempête Realtime d'août 2026 s'est prolongé pour cette raison précise,
+   les postes ouverts continuant à marteler le serveur malgré le correctif
+   déployé).
+   Coût de la vérification : la constante IMMOSUITE_VERSION se trouve dans
+   les 700 premiers octets du fichier. On demande donc uniquement les 4 premiers
+   Ko via un en-tête Range, au lieu de retélécharger les 7,4 Mo du fichier. */
+var _MAJ = { versionDistante: null, rappelTimer: null };
+
+async function _verifierNouvelleVersion() {
+  /* Ne s'applique pas en local (file://) ni hors ligne */
+  if (location.protocol === 'file:' || !navigator.onLine) return;
+  try {
+    var url = location.pathname + '?_v=' + Date.now();   /* cache-bust : on veut l'état réel du serveur */
+    var resp = await fetch(url, { headers: { 'Range': 'bytes=0-4095' }, cache: 'no-store' });
+    if (!resp.ok && resp.status !== 206) return;
+    var tete = await resp.text();
+    var m = /IMMOSUITE_VERSION\s*=\s*['"]([^'"]{1,40})/.exec(tete);
+    if (!m) return;                                       /* format inattendu : on s'abstient plutôt que d'alerter à tort */
+    var distante = m[1].trim();
+    var locale = String(window.IMMOSUITE_VERSION || '').slice(0, distante.length).trim();
+    if (distante && locale && distante !== locale) {
+      _MAJ.versionDistante = distante;
+      _afficherBanniereMaj(distante, locale);
+    }
+  } catch(e) { /* réseau instable : silencieux, on retentera au prochain tick */ }
+}
+
+function _afficherBanniereMaj(distante, locale) {
+  var b = document.getElementById('maj-banner');
+  if (!b) return;
+  var d = document.getElementById('maj-banner-detail');
+  if (d) d.textContent = '(installée : ' + locale + ' → disponible : ' + distante + ')';
+  b.style.display = 'flex';
+  /* Si l'utilisateur repousse, on réaffiche au bout de 15 min : insister
+     sans bloquer son travail en cours (une saisie de caisse ou un DQE en
+     cours ne doit jamais être interrompu de force par un rechargement). */
+  if (_MAJ.rappelTimer) clearTimeout(_MAJ.rappelTimer);
+  _MAJ.rappelTimer = setTimeout(function(){
+    var bb = document.getElementById('maj-banner');
+    if (bb && bb.style.display === 'none') bb.style.display = 'flex';
+  }, 900000);
+}
+
+function _rechargerPourMaj() {
+  /* Vidage du cache du Service Worker si présent, sinon le rechargement
+     peut resservir l'ancienne version depuis le cache. */
+  try {
+    if ('caches' in window) {
+      caches.keys().then(function(cles){ return Promise.all(cles.map(function(c){ return caches.delete(c); })); })
+        .finally(function(){ location.reload(true); });
+      return;
+    }
+  } catch(e) {}
+  location.reload(true);
+}
+
 function demarrerSyncAuto() {
   try{ staffCharger(); }catch(e){}
   try { if (typeof payOnlineStartPolling === 'function') payOnlineStartPolling(); } catch(e){}
+  /* Première vérification 20 s après le démarrage : un poste qui vient
+     d'ouvrir l'application alors qu'un déploiement a eu lieu entre-temps
+     (page servie depuis un cache navigateur) doit le savoir tout de suite,
+     pas dans 10 minutes. */
+  try { setTimeout(function(){ _verifierNouvelleVersion(); }, 20000); } catch(e){}
   if (window._autoSyncTimer) return;
   var _tickAutoSync = 0;
   window._autoSyncTimer = setInterval(function(){
@@ -24240,6 +24490,11 @@ function demarrerSyncAuto() {
        passes (~2 min) suffit : ce ne sont pas des réglages qui changent
        à la seconde. */
     _tickAutoSync++;
+    /* Vérification d'une nouvelle version déployée toutes les ~10 min
+       (20 passes de 30 s). Coût négligeable : 4 Ko par contrôle. */
+    if (_tickAutoSync % 20 === 0) {
+      try { _verifierNouvelleVersion(); } catch(e){}
+    }
     if (_tickAutoSync % 4 === 0) {
       try { if (typeof _pullPlanComptableCloud === 'function') _pullPlanComptableCloud(); } catch(e){}
     }
@@ -25845,6 +26100,7 @@ function goTo(page) {
   if (page === 'copropriete') { coproEnter(); }
   if (page === 'diaspo') { dspEnter(); }
   if (page === 'lbcft') { lbcRender(); }
+  if (page === 'parc-auto') { paEnter(); }
 }
 
 function switchTab(context, tab) {
@@ -32148,7 +32404,9 @@ var LIBELLES_COMPTES_DEFAUT = {
   stock_lots_variation:'Stock lots (part entreprise) — Variation', stock_lots_compte:'Stock lots (part entreprise) — Compte de stock',
   chantier_immo_encours:'Chantier — Immobilisation en cours', chantier_materiaux:'Chantier — Achats matériaux', chantier_sous_traitance:'Chantier — Sous-traitance / location matériel',
   travaux_interne_produit:'Travaux (dépt. interne) — Produit', travaux_externe_charge:'Travaux (constructeur externe) — Charge', penalites_produit:'Pénalités de retard — Produit accessoire',
-  ecart_caisse_excedent:'Écart de caisse — Excédent (produit)', ecart_caisse_manquant:'Écart de caisse — Manquant (charge)'
+  ecart_caisse_excedent:'Écart de caisse — Excédent (produit)', ecart_caisse_manquant:'Écart de caisse — Manquant (charge)',
+  parc_carburant:'Parc auto — Carburant (charge)', parc_entretien:'Parc auto — Entretien/réparations (charge)',
+  parc_immobilisation:'Parc auto — Immobilisation (véhicules, compte 245X)'
 };
 
 /* Alimente la <datalist> partagée par tous les champs « cd-* » : saisie prédictive
@@ -32249,6 +32507,9 @@ function loadComptesDefaut() {
   var _cie=document.getElementById('cd-chantier-immo-encours'); if(_cie)_cie.value=cd.chantier_immo_encours|| '';
   var _cma=document.getElementById('cd-chantier-materiaux'); if(_cma)_cma.value=cd.chantier_materiaux|| '';
   var _cst=document.getElementById('cd-chantier-sous-traitance'); if(_cst)_cst.value=cd.chantier_sous_traitance|| '';
+  var _pac=document.getElementById('cd-parc-carburant'); if(_pac)_pac.value=cd.parc_carburant|| '';
+  var _pae=document.getElementById('cd-parc-entretien'); if(_pae)_pae.value=cd.parc_entretien|| '';
+  var _pai=document.getElementById('cd-parc-immobilisation'); if(_pai)_pai.value=cd.parc_immobilisation|| '';
   document.getElementById('cd-taux-is').value = (DATA.params && DATA.params.taux_is != null) ? DATA.params.taux_is : 25;
   renderConflitsSync();
 }
@@ -32333,7 +32594,10 @@ function saveComptesDefaut() {
     stock_lots_compte:    (document.getElementById('cd-stock-lots-compte')||{}).value ? document.getElementById('cd-stock-lots-compte').value.trim() : '',
     chantier_immo_encours:(document.getElementById('cd-chantier-immo-encours')||{}).value ? document.getElementById('cd-chantier-immo-encours').value.trim() : '',
     chantier_materiaux:   (document.getElementById('cd-chantier-materiaux')||{}).value ? document.getElementById('cd-chantier-materiaux').value.trim() : '',
-    chantier_sous_traitance:(document.getElementById('cd-chantier-sous-traitance')||{}).value ? document.getElementById('cd-chantier-sous-traitance').value.trim() : ''
+    chantier_sous_traitance:(document.getElementById('cd-chantier-sous-traitance')||{}).value ? document.getElementById('cd-chantier-sous-traitance').value.trim() : '',
+    parc_carburant:      (document.getElementById('cd-parc-carburant')||{}).value ? document.getElementById('cd-parc-carburant').value.trim() : ((DATA.params&&DATA.params.comptes_defaut&&DATA.params.comptes_defaut.parc_carburant)|| ''),
+    parc_entretien:       (document.getElementById('cd-parc-entretien')||{}).value ? document.getElementById('cd-parc-entretien').value.trim() : ((DATA.params&&DATA.params.comptes_defaut&&DATA.params.comptes_defaut.parc_entretien)|| ''),
+    parc_immobilisation:  (document.getElementById('cd-parc-immobilisation')||{}).value ? document.getElementById('cd-parc-immobilisation').value.trim() : ((DATA.params&&DATA.params.comptes_defaut&&DATA.params.comptes_defaut.parc_immobilisation)|| '')
   };
   DATA.params.taux_is = parseFloat(document.getElementById('cd-taux-is').value) || 25;
 
@@ -39587,7 +39851,7 @@ var ALL_MODULES = [
   'Filiere Fonciere','Acquisition & Amenagement Foncier','Marches Amenagement VRD','Etude de Prix & Debourse',
   'Achats & Commandes','Stock Materiaux','Validations','Reception & Livraison',
   'Portail','Portail Apporteur','Bilan de Promotion','Partenaires Lotissement',
-  'Gestion Locative','Investisseurs Diaspora','Conformite LBC-FT'
+  'Gestion Locative','Investisseurs Diaspora','Conformite LBC-FT','Parc Auto'
 ];
 
 // ── Rôles système (non modifiables, non supprimables) ────────────────────────
@@ -39702,7 +39966,8 @@ var PAGE_MODULE = {
   tresorerie:'Tresorerie', 'tresorerie-page':'Tresorerie',
   'rh-employes':'Paie', 'rh-paie':'Paie', 'rh-pointage':'Journaliers & Temporaires',
   clients:'Souscripteurs', lots:'Lots & Reservations', programmes:'Programmes',
-  locatif:'Gestion Locative', diaspo:'Investisseurs Diaspora'
+  locatif:'Gestion Locative', diaspo:'Investisseurs Diaspora',
+  'parc-auto':'Parc Auto'
 };
 var ACTIONS_LIB = { c:'Créer', m:'Modifier', s:'Supprimer', v:'Valider' };
 /* Rattachement des stores sensibles à leur module, pour appliquer les droits
@@ -39730,7 +39995,8 @@ var STORE_MODULE = {
   af_agents:'Acquisition & Amenagement Foncier',
   af_relances:'Acquisition & Amenagement Foncier',
   parcelles:'Foncier', terrains:'Foncier',
-  conges_rh:'Conges', mobilites_rh:'Paie', documents:'Documents'
+  conges_rh:'Conges', mobilites_rh:'Paie', documents:'Documents',
+  vehicules:'Parc Auto', vehicule_carburant:'Parc Auto', vehicule_entretiens:'Parc Auto', vehicule_affectations:'Parc Auto'
 };
 function userPeut(module, action) {
   if (!APP.currentUser) return false;
@@ -56278,7 +56544,7 @@ function openImmoSocieteModal(id) {
     document.getElementById('modal-immo-soc-title').textContent = 'Modifier immobilisation';
   } else {
     ['is-designation','is-compte','is-valeur','is-date','is-duree','is-residuelle','is-division'].forEach(function(i){ sv(i,''); });
-    sv('is-date', today()); sv('is-compte','21'); sv('is-residuelle','0'); sv('is-methode','lineaire');
+    sv('is-date', today()); sv('is-compte','21'); sv('is-residuelle','0'); sv('is-methode','lineaire'); sv('is-mode-paiement','banque');
     document.getElementById('modal-immo-soc-title').textContent = 'Nouvelle immobilisation';
   }
   document.getElementById('modal-immo-soc').classList.add('open');
@@ -56305,7 +56571,46 @@ async function saveImmoSociete() {
   im.division_id = gv('is-division') || '';
   await dbPut('immobilisations', im);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_immobilisations', im);
+
+  /* [Fix] Aucune écriture d'ACQUISITION n'était générée ici — seules les
+     dotations annuelles d'amortissement l'étaient, plus tard. Le bien
+     entrait donc dans le suivi d'amortissement sans jamais avoir été
+     réellement porté au bilan (débit compte d'immobilisation / crédit
+     trésorerie ou fournisseur). Une seule fois, à la création — pas de
+     doublon si on modifie ensuite une immobilisation existante. */
+  if (!APP._immoSocEdit && !im.ecriture_acquisition_id) {
+    try {
+      var cptContrepartieImmo = gv('is-mode-paiement') === 'a_credit' ? requireCompteDefaut('fournisseur') : requireCompteDefaut('treso_banque');
+      var ecrAcqImmo = {
+        id: 'ecr_immosoc_'+im.id, ref: 'IMMOSOC-'+im.id.slice(-6).toUpperCase(), piece: 'IMMO/'+designation.slice(0,20),
+        date: im.date_acquisition, libelle: 'Acquisition immobilisation — '+designation,
+        compte: im.compte, compte_debit: im.compte, compte_credit: cptContrepartieImmo, montant: valeur,
+        type: gv('is-mode-paiement')==='a_credit' ? 'dette' : 'actif', mode: gv('is-mode-paiement')||'banque',
+        division: im.division_id||'', source: 'immobilisation_societe', immobilisation_id: im.id, created_at: today()
+      };
+      DATA.ecritures.push(ecrAcqImmo);
+      await dbPut('ecritures', ecrAcqImmo);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecrAcqImmo);
+      if (typeof buildBalance === 'function') buildBalance();
+      im.ecriture_acquisition_id = ecrAcqImmo.id;
+      await dbPut('immobilisations', im);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_immobilisations', im);
+    } catch(eCompta) { /* requireCompteDefaut a déjà affiché le message — l'immobilisation reste enregistrée, l'écriture pourra être repassée manuellement */ }
+  }
   closeModal('modal-immo-soc');
+  /* Pont Parc Auto → Immobilisations : si cette immobilisation vient d'être
+     créée depuis la fiche véhicule (paCreerImmobilisation), reporter son id
+     sur le véhicule pour empêcher toute double création et afficher le
+     lien dans la fiche. */
+  if (window._paImmoLienVehicule) {
+    var vLie = (typeof paVehicule === 'function') ? paVehicule(window._paImmoLienVehicule) : null;
+    if (vLie) {
+      vLie.immobilisation_id = im.id; vLie._modifie = new Date().toISOString();
+      await dbPut('vehicules', vLie);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_vehicules', vLie);
+    }
+    window._paImmoLienVehicule = null;
+  }
   toast('Immobilisation enregistrée.', 'success');
   renderImmoSociete();
 }
@@ -59897,6 +60202,540 @@ function dspRenderKPIs(){
   var bd=document.getElementById('badge-diaspo');
   if(bd){ bd.textContent=actifs.length; bd.style.display=actifs.length?'inline-block':'none'; }
 }
+/* ═══════════════════════════════════════════════════════════════════════
+   PARC AUTO (LOGISTIQUE) — véhicules, carburant, entretien, affectations
+   Fiche véhicule (immatriculation, carte grise, assurance, visite technique),
+   suivi carburant, historique entretien/réparations, affectation chauffeur,
+   alertes d'échéances (assurance, visite technique, vidange due).
+   ═══════════════════════════════════════════════════════════════════════ */
+var PA_TYPES  = { voiture:'Voiture particulière', pickup:'Camionnette/Pickup', camion:'Camion', engin:'Engin de chantier', autre:'Autre' };
+var PA_STATUTS = { actif:'Actif', en_reparation:'En réparation', hors_service:'Hors service', vendu:'Vendu' };
+var PA_ENTRETIEN_TYPES = { vidange:'Vidange', revision:'Révision', pneus:'Pneus', reparation:'Réparation', carrosserie:'Carrosserie', autre:'Autre' };
+var _paEditId = null;
+
+function paEnter(){
+  paFillSelects();
+  paRenderKPIs();
+  paRenderAlertes();
+  paRenderVehicules();
+  paRenderCarburant();
+  paRenderEntretien();
+  paRenderAffectations();
+}
+
+/* ── Helpers ────────────────────────────────────────────────────────── */
+function paVehicule(id){ return (DATA.vehicules||[]).find(function(v){ return v.id===id; }); }
+function paLabelVehicule(v){
+  if (!v) return '—';
+  return (v.immatriculation||'—') + ' — ' + escHtml(v.marque||'') + ' ' + escHtml(v.modele||'');
+}
+function paChauffeurActuel(vehiculeId){
+  var aff = (DATA.vehicule_affectations||[]).filter(function(a){ return a.vehicule_id===vehiculeId && a.statut==='active'; })
+    .sort(function(a,b){ return (b.date_debut||'').localeCompare(a.date_debut||''); });
+  if (!aff.length) return null;
+  return (DATA.employes||[]).find(function(e){ return e.id===aff[0].employe_id; }) || null;
+}
+function paNomEmploye(id){
+  var e = (DATA.employes||[]).find(function(x){ return x.id===id; });
+  return e ? ((e.prenoms?e.prenoms+' ':'')+e.nom) : '—';
+}
+
+function paFillSelects(){
+  var vehiculesActifs = (DATA.vehicules||[]).filter(function(v){ return v.statut!=='vendu'; })
+    .sort(function(a,b){ return (a.immatriculation||'').localeCompare(b.immatriculation||''); });
+  var optsV = '<option value="">— Sélectionner —</option>' + vehiculesActifs.map(function(v){
+    return '<option value="'+v.id+'">'+escHtml(v.immatriculation||'')+' — '+escHtml(v.marque||'')+' '+escHtml(v.modele||'')+'</option>';
+  }).join('');
+  ['pac-vehicule','pae-vehicule','paa-vehicule'].forEach(function(id){
+    var el=document.getElementById(id); if(el){ var cur=el.value; el.innerHTML=optsV; el.value=cur; }
+  });
+  var optsVFiltre = '<option value="">— Tous véhicules —</option>' + vehiculesActifs.map(function(v){
+    return '<option value="'+v.id+'">'+escHtml(v.immatriculation||'')+'</option>';
+  }).join('');
+  ['pac-filter-vehicule','pae-filter-vehicule'].forEach(function(id){
+    var el=document.getElementById(id); if(el){ var cur=el.value; el.innerHTML=optsVFiltre; el.value=cur; }
+  });
+
+  var employesActifs = (DATA.employes||[]).filter(function(e){ return typeof empEstActif!=='function' || empEstActif(e); })
+    .sort(function(a,b){ return (a.nom||'').localeCompare(b.nom||''); });
+  var optsE = '<option value="">—</option>' + employesActifs.map(function(e){
+    return '<option value="'+e.id+'">'+escHtml((e.prenoms?e.prenoms+' ':'')+e.nom)+'</option>';
+  }).join('');
+  var elChauf = document.getElementById('pac-chauffeur'); if (elChauf) { var c1=elChauf.value; elChauf.innerHTML=optsE; elChauf.value=c1; }
+  var elEmp = document.getElementById('paa-employe'); if (elEmp) { var c2=elEmp.value; elEmp.innerHTML='<option value="">— Sélectionner —</option>'+employesActifs.map(function(e){
+    return '<option value="'+e.id+'">'+escHtml((e.prenoms?e.prenoms+' ':'')+e.nom)+'</option>';
+  }).join(''); elEmp.value=c2; }
+
+  var selDiv = document.getElementById('pa-filter-division');
+  if (selDiv && !selDiv.options.length) selDiv.innerHTML = '<option value="">— Toutes divisions —</option>' + (DATA.divisions||[]).map(function(d){
+    return '<option value="'+d.id+'">'+escHtml(d.nom)+'</option>';
+  }).join('');
+}
+
+/* ── Alertes d'échéances ────────────────────────────────────────────── */
+function paCalculerAlertes(){
+  var alertes = [];
+  var t = today();
+  var dans30j = new Date(); dans30j.setDate(dans30j.getDate()+30);
+  var dans30jStr = dans30j.toISOString().slice(0,10);
+
+  (DATA.vehicules||[]).filter(function(v){ return v.statut!=='vendu'; }).forEach(function(v){
+    var label = v.immatriculation || 'Véhicule sans plaque';
+    if (v.assurance_fin) {
+      if (v.assurance_fin < t) alertes.push({ vehicule_id:v.id, niveau:'rouge', texte: label+' — assurance expirée depuis le '+dateShort(v.assurance_fin) });
+      else if (v.assurance_fin <= dans30jStr) alertes.push({ vehicule_id:v.id, niveau:'orange', texte: label+' — assurance expire le '+dateShort(v.assurance_fin) });
+    }
+    if (v.visite_technique_expiration) {
+      if (v.visite_technique_expiration < t) alertes.push({ vehicule_id:v.id, niveau:'rouge', texte: label+' — visite technique expirée depuis le '+dateShort(v.visite_technique_expiration) });
+      else if (v.visite_technique_expiration <= dans30jStr) alertes.push({ vehicule_id:v.id, niveau:'orange', texte: label+' — visite technique expire le '+dateShort(v.visite_technique_expiration) });
+    }
+    /* Vidange due par km : dernier entretien de type vidange + son seuil km */
+    var derniereVidange = (DATA.vehicule_entretiens||[]).filter(function(e){ return e.vehicule_id===v.id && e.type==='vidange'; })
+      .sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); })[0];
+    if (derniereVidange && derniereVidange.prochaine_echeance_km && v.km_actuel) {
+      var ecart = derniereVidange.prochaine_echeance_km - v.km_actuel;
+      if (ecart <= 0) alertes.push({ vehicule_id:v.id, niveau:'rouge', texte: label+' — vidange dépassée de '+Math.abs(ecart)+' km' });
+      else if (ecart <= 500) alertes.push({ vehicule_id:v.id, niveau:'orange', texte: label+' — vidange due dans '+ecart+' km' });
+    }
+    if (derniereVidange && derniereVidange.prochaine_echeance_date) {
+      if (derniereVidange.prochaine_echeance_date < t) alertes.push({ vehicule_id:v.id, niveau:'rouge', texte: label+' — vidange (date) dépassée depuis le '+dateShort(derniereVidange.prochaine_echeance_date) });
+      else if (derniereVidange.prochaine_echeance_date <= dans30jStr) alertes.push({ vehicule_id:v.id, niveau:'orange', texte: label+' — vidange (date) prévue le '+dateShort(derniereVidange.prochaine_echeance_date) });
+    }
+  });
+  return alertes;
+}
+
+function paRenderAlertes(){
+  var box = document.getElementById('pa-alertes-box');
+  if (!box) return;
+  var alertes = paCalculerAlertes();
+  var badge = document.getElementById('badge-parc-auto');
+  var nbRouge = alertes.filter(function(a){ return a.niveau==='rouge'; }).length;
+  if (badge) { badge.textContent = String(alertes.length); badge.style.display = alertes.length ? 'inline-block' : 'none'; }
+  if (!alertes.length) { box.innerHTML = '<div class="alert alert-success" style="font-size:12px;">✅ Aucune échéance urgente sur le parc.</div>'; return; }
+  box.innerHTML = '<div class="card" style="padding:12px 16px;'+(nbRouge?'border-left:3px solid var(--rouge);':'border-left:3px solid var(--or);')+'">'
+    + '<div style="font-weight:700;font-size:13px;margin-bottom:8px;">⚠️ '+alertes.length+' alerte(s) échéance(s)</div>'
+    + alertes.slice(0,8).map(function(a){
+        return '<div style="font-size:12px;padding:3px 0;color:'+(a.niveau==='rouge'?'var(--rouge)':'var(--or,#B87333)')+';cursor:pointer;" onclick="paOuvrirFicheDepuisAlerte(\''+a.vehicule_id+'\')">'
+          + (a.niveau==='rouge'?'🔴':'🟠') + ' ' + escHtml(a.texte) + '</div>';
+      }).join('')
+    + (alertes.length>8 ? '<div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">+ '+(alertes.length-8)+' autre(s)…</div>' : '')
+    + '</div>';
+}
+function paOuvrirFicheDepuisAlerte(vehiculeId){ paOpenVehicule(vehiculeId); }
+
+/* ── KPIs ───────────────────────────────────────────────────────────── */
+function paRenderKPIs(){
+  var box = document.getElementById('pa-kpis');
+  if (!box) return;
+  var vehicules = (DATA.vehicules||[]).filter(function(v){ return v.statut!=='vendu'; });
+  var actifs = vehicules.filter(function(v){ return v.statut==='actif'; }).length;
+  var enRepar = vehicules.filter(function(v){ return v.statut==='en_reparation'; }).length;
+  var moisEnCours = today().slice(0,7);
+  var carbMois = (DATA.vehicule_carburant||[]).filter(function(c){ return (c.date||'').slice(0,7)===moisEnCours; })
+    .reduce(function(s,c){ return s+(parseFloat(c.montant)||0); },0);
+  var entretienMois = (DATA.vehicule_entretiens||[]).filter(function(e){ return (e.date||'').slice(0,7)===moisEnCours; })
+    .reduce(function(s,e){ return s+(parseFloat(e.cout)||0); },0);
+  var alertes = paCalculerAlertes().length;
+  box.innerHTML =
+    _cdKpi('Véhicules', String(vehicules.length), '', 'var(--or,#B87333)', actifs+' actif(s) · '+enRepar+' en réparation')
+    + _cdKpi('Carburant (mois)', fmtF(carbMois), 'FCFA', 'var(--rouge)', '')
+    + _cdKpi('Entretien (mois)', fmtF(entretienMois), 'FCFA', 'var(--rouge)', '')
+    + _cdKpi('Alertes échéances', String(alertes), '', (alertes?'var(--rouge)':'var(--vert)'), '');
+}
+
+/* ── VÉHICULES : liste + CRUD ──────────────────────────────────────── */
+function paRenderVehicules(){
+  var grid = document.getElementById('pa-vehicules-grid');
+  if (!grid) return;
+  var search = (document.getElementById('pa-search')||{}).value||''; search = search.toLowerCase();
+  var fType = (document.getElementById('pa-filter-type')||{}).value||'';
+  var fStatut = (document.getElementById('pa-filter-statut')||{}).value||'';
+  var fDiv = (document.getElementById('pa-filter-division')||{}).value||'';
+
+  var liste = (DATA.vehicules||[]).filter(function(v){
+    if (fType && v.type!==fType) return false;
+    if (fStatut && v.statut!==fStatut) return false;
+    if (fDiv && v.division_id!==fDiv) return false;
+    if (search && !((v.immatriculation||'')+' '+(v.marque||'')+' '+(v.modele||'')).toLowerCase().includes(search)) return false;
+    return true;
+  }).sort(function(a,b){ return (a.immatriculation||'').localeCompare(b.immatriculation||''); });
+
+  if (!liste.length) { grid.innerHTML = '<div class="alert alert-info" style="grid-column:1/-1;">Aucun véhicule. Cliquez « + Véhicule » pour en créer un.</div>'; return; }
+
+  var t = today();
+  grid.innerHTML = liste.map(function(v){
+    var chauffeur = paChauffeurActuel(v.id);
+    var statutCouleur = { actif:'var(--vert)', en_reparation:'var(--or,#B87333)', hors_service:'var(--rouge)', vendu:'var(--blanc-dim)' }[v.statut] || 'var(--blanc-dim)';
+    var alerteAssurance = v.assurance_fin && v.assurance_fin < t;
+    var alerteVisite = v.visite_technique_expiration && v.visite_technique_expiration < t;
+    return '<div class="card" style="padding:14px;border-left:3px solid '+statutCouleur+';cursor:pointer;" onclick="paOpenVehicule(\''+v.id+'\')">'
+      + '<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
+        + '<div><div style="font-weight:800;font-size:15px;">'+escHtml(v.immatriculation||'—')+'</div>'
+        + '<div style="font-size:12px;color:var(--blanc-dim);">'+escHtml(v.marque||'')+' '+escHtml(v.modele||'')+(v.annee?' · '+v.annee:'')+'</div></div>'
+        + '<span class="badge" style="background:'+statutCouleur+';color:#fff;">'+ (PA_STATUTS[v.statut]||v.statut) +'</span>'
+      + '</div>'
+      + '<div style="font-size:11px;color:var(--blanc-dim);margin-top:6px;">'+ (PA_TYPES[v.type]||v.type) + (v.division_id ? ' · '+escHtml(_nomDivision(v.division_id)) : '') + '</div>'
+      + '<div style="font-size:12px;margin-top:8px;">👤 '+(chauffeur ? escHtml((chauffeur.prenoms?chauffeur.prenoms+' ':'')+chauffeur.nom) : '<span style="color:var(--blanc-dim);">Non affecté</span>')+'</div>'
+      + '<div style="font-size:12px;margin-top:2px;">🛣️ '+ (v.km_actuel ? fmtF(v.km_actuel)+' km' : '—') + '</div>'
+      + (alerteAssurance ? '<div style="font-size:11px;color:var(--rouge);margin-top:4px;">🔴 Assurance expirée</div>' : '')
+      + (alerteVisite ? '<div style="font-size:11px;color:var(--rouge);margin-top:2px;">🔴 Visite technique expirée</div>' : '')
+    + '</div>';
+  }).join('');
+}
+
+function paOpenVehicule(id){
+  _paEditId = id || null;
+  var v = id ? paVehicule(id) : null;
+  var body = '<input type="hidden" id="pav-id" value="'+(id||'')+'">'
+    + '<div class="form-grid">'
+    + '<div class="form-group"><label>Immatriculation *</label><input type="text" id="pav-immat" class="form-control" value="'+escHtml(v?v.immatriculation:'')+'"></div>'
+    + '<div class="form-group"><label>Type *</label><select id="pav-type" class="form-control">'
+        + Object.keys(PA_TYPES).map(function(k){ return '<option value="'+k+'"'+(v&&v.type===k?' selected':'')+'>'+PA_TYPES[k]+'</option>'; }).join('')
+      + '</select></div>'
+    + '<div class="form-group"><label>Marque</label><input type="text" id="pav-marque" class="form-control" value="'+escHtml(v?v.marque:'')+'"></div>'
+    + '<div class="form-group"><label>Modèle</label><input type="text" id="pav-modele" class="form-control" value="'+escHtml(v?v.modele:'')+'"></div>'
+    + '<div class="form-group"><label>Année</label><input type="number" id="pav-annee" class="form-control" value="'+(v?v.annee||'':'')+'"></div>'
+    + '<div class="form-group"><label>Statut</label><select id="pav-statut" class="form-control">'
+        + Object.keys(PA_STATUTS).map(function(k){ return '<option value="'+k+'"'+(v&&v.statut===k?' selected':(!v&&k==='actif'?' selected':''))+'>'+PA_STATUTS[k]+'</option>'; }).join('')
+      + '</select></div>'
+    + '<div class="form-group"><label>Division</label><select id="pav-division" class="form-control"><option value="">—</option>'
+        + (DATA.divisions||[]).map(function(d){ return '<option value="'+d.id+'"'+(v&&v.division_id===d.id?' selected':'')+'>'+escHtml(d.nom)+'</option>'; }).join('')
+      + '</select></div>'
+    + '<div class="form-group"><label>Km actuel</label><input type="number" id="pav-km" class="form-control" value="'+(v?v.km_actuel||'':'')+'"></div>'
+    + '<div class="form-group"><label>Date d\'acquisition</label><input type="date" id="pav-date-acq" class="form-control" value="'+(v?v.date_acquisition||'':'')+'"></div>'
+    + '<div class="form-group"><label>Valeur d\'acquisition (FCFA)</label><input type="number" id="pav-valeur-acq" class="form-control" value="'+(v?v.valeur_acquisition||'':'')+'"></div>'
+    + '</div>'
+    + '<div class="form-section-title" style="margin-top:14px;">📄 Carte grise</div>'
+    + '<div class="form-grid">'
+    + '<div class="form-group"><label>Numéro</label><input type="text" id="pav-cg-numero" class="form-control" value="'+escHtml(v?v.carte_grise_numero:'')+'"></div>'
+    + '<div class="form-group"><label>Date d\'établissement</label><input type="date" id="pav-cg-date" class="form-control" value="'+(v?v.carte_grise_date||'':'')+'"></div>'
+    + '</div>'
+    + '<div class="form-section-title" style="margin-top:14px;">🛡️ Assurance</div>'
+    + '<div class="form-grid">'
+    + '<div class="form-group"><label>Compagnie</label><input type="text" id="pav-assur-compagnie" class="form-control" value="'+escHtml(v?v.assurance_compagnie:'')+'"></div>'
+    + '<div class="form-group"><label>N° police</label><input type="text" id="pav-assur-police" class="form-control" value="'+escHtml(v?v.assurance_police:'')+'"></div>'
+    + '<div class="form-group"><label>Début</label><input type="date" id="pav-assur-debut" class="form-control" value="'+(v?v.assurance_debut||'':'')+'"></div>'
+    + '<div class="form-group"><label>Fin (échéance)</label><input type="date" id="pav-assur-fin" class="form-control" value="'+(v?v.assurance_fin||'':'')+'"></div>'
+    + '</div>'
+    + '<div class="form-section-title" style="margin-top:14px;">🔍 Visite technique</div>'
+    + '<div class="form-grid">'
+    + '<div class="form-group"><label>Dernière visite</label><input type="date" id="pav-vt-date" class="form-control" value="'+(v?v.visite_technique_date||'':'')+'"></div>'
+    + '<div class="form-group"><label>Expiration</label><input type="date" id="pav-vt-expiration" class="form-control" value="'+(v?v.visite_technique_expiration||'':'')+'"></div>'
+    + '</div>'
+    + '<div class="form-group" style="margin-top:14px;"><label>Notes</label><textarea id="pav-notes" class="form-control" style="min-height:60px;">'+escHtml(v?v.notes:'')+'</textarea></div>';
+
+  document.getElementById('pa-modal-titre').textContent = (v ? '✏️ Modifier' : '➕ Nouveau') + ' véhicule';
+  document.getElementById('pa-modal-corps').innerHTML = body;
+  document.getElementById('pa-modal-boutons').innerHTML =
+    '<button class="btn btn-secondary" onclick="closeModal(\'modal-pa-vehicule\')">Annuler</button>'
+    + (v ? '<button class="btn btn-danger" onclick="paDeleteVehicule(\''+v.id+'\')">🗑️ Supprimer</button>' : '')
+    + (v && v.valeur_acquisition && !v.immobilisation_id ? '<button class="btn btn-secondary" onclick="paCreerImmobilisation(\''+v.id+'\')" title="Enregistrer ce véhicule comme immobilisation comptable (amortissement)">🧾 Créer l\'immobilisation comptable</button>' : '')
+    + (v && v.immobilisation_id ? '<span style="font-size:11px;color:var(--vert);align-self:center;">✅ Immobilisation liée</span>' : '')
+    + '<button class="btn btn-primary" onclick="paSaveVehicule()">💾 Enregistrer</button>';
+  openModal('modal-pa-vehicule');
+}
+
+/* Pont Parc Auto → Immobilisations société : pré-remplit le formulaire
+   d'immobilisation avec les données déjà saisies sur le véhicule (compte
+   véhicules paramétré en Comptes par défaut, ou 245 SYSCOHADA à défaut),
+   pour éviter une double saisie. La génération de l'écriture d'acquisition
+   est ensuite gérée par saveImmoSociete() (voir fix ci-dessus). */
+function paCreerImmobilisation(vehiculeId){
+  var v = paVehicule(vehiculeId);
+  if (!v) return;
+  if (!v.valeur_acquisition) { toast('Renseignez d\'abord la valeur d\'acquisition sur la fiche véhicule.', 'error'); return; }
+  closeModal('modal-pa-vehicule');
+  openImmoSocieteModal(null);
+  setTimeout(function(){
+    var sv = function(id,val){ var el=document.getElementById(id); if(el) el.value=val; };
+    sv('is-designation', (v.marque||'')+' '+(v.modele||'')+' — '+v.immatriculation);
+    sv('is-compte', ((DATA.params||{}).comptes_defaut||{}).parc_immobilisation || '245');
+    sv('is-valeur', v.valeur_acquisition);
+    sv('is-date', v.date_acquisition || today());
+    sv('is-duree', 5);   /* durée usuelle véhicule léger SYSCOHADA — modifiable */
+    var selDiv = document.getElementById('is-division'); if (selDiv) selDiv.value = v.division_id || '';
+    /* Mémorise le véhicule d'origine pour lier immobilisation_id en retour une fois enregistrée */
+    window._paImmoLienVehicule = vehiculeId;
+  }, 150);
+}
+
+async function paSaveVehicule(){
+  if (!exigerDroit('Parc Auto', _paEditId ? 'm' : 'c', _paEditId ? 'ce véhicule' : 'un véhicule')) return;
+  var immat = (document.getElementById('pav-immat')||{}).value||'';
+  if (!immat.trim()) { toast('Immatriculation obligatoire.', 'error'); return; }
+  var id = (document.getElementById('pav-id')||{}).value || uid();
+  var existant = paVehicule(id);
+  var v = existant || { id: id, created_at: new Date().toISOString() };
+  v.immatriculation = immat.trim().toUpperCase();
+  v.type = (document.getElementById('pav-type')||{}).value || 'voiture';
+  v.marque = (document.getElementById('pav-marque')||{}).value || '';
+  v.modele = (document.getElementById('pav-modele')||{}).value || '';
+  v.annee = parseInt((document.getElementById('pav-annee')||{}).value, 10) || null;
+  v.statut = (document.getElementById('pav-statut')||{}).value || 'actif';
+  v.division_id = (document.getElementById('pav-division')||{}).value || '';
+  v.km_actuel = parseFloat((document.getElementById('pav-km')||{}).value) || 0;
+  v.date_acquisition = (document.getElementById('pav-date-acq')||{}).value || '';
+  v.valeur_acquisition = parseFloat((document.getElementById('pav-valeur-acq')||{}).value) || 0;
+  v.carte_grise_numero = (document.getElementById('pav-cg-numero')||{}).value || '';
+  v.carte_grise_date = (document.getElementById('pav-cg-date')||{}).value || '';
+  v.assurance_compagnie = (document.getElementById('pav-assur-compagnie')||{}).value || '';
+  v.assurance_police = (document.getElementById('pav-assur-police')||{}).value || '';
+  v.assurance_debut = (document.getElementById('pav-assur-debut')||{}).value || '';
+  v.assurance_fin = (document.getElementById('pav-assur-fin')||{}).value || '';
+  v.visite_technique_date = (document.getElementById('pav-vt-date')||{}).value || '';
+  v.visite_technique_expiration = (document.getElementById('pav-vt-expiration')||{}).value || '';
+  v.notes = (document.getElementById('pav-notes')||{}).value || '';
+  v._modifie = new Date().toISOString();
+
+  if (!existant) DATA.vehicules.push(v);
+  await dbPut('vehicules', v);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_vehicules', v);
+  closeModal('modal-pa-vehicule');
+  toast('✅ Véhicule enregistré.', 'success');
+  paFillSelects(); paRenderVehicules(); paRenderKPIs(); paRenderAlertes();
+}
+
+async function paDeleteVehicule(id){
+  if (!exigerDroit('Parc Auto', 's', 'un véhicule')) return;
+  if (!confirm('Supprimer ce véhicule ? Son historique (carburant, entretien, affectations) sera conservé mais ne référencera plus de véhicule actif.')) return;
+  await deleteRecord('vehicules', id);
+  DATA.vehicules = (DATA.vehicules||[]).filter(function(v){ return v.id!==id; });
+  closeModal('modal-pa-vehicule');
+  toast('Véhicule supprimé.', 'info');
+  paFillSelects(); paRenderVehicules(); paRenderKPIs(); paRenderAlertes();
+}
+
+/* ── CARBURANT ──────────────────────────────────────────────────────── */
+async function paSaveCarburant(){
+  if (!exigerDroit('Parc Auto', 'c', 'un plein de carburant')) return;
+  var vehiculeId = (document.getElementById('pac-vehicule')||{}).value||'';
+  var date = (document.getElementById('pac-date')||{}).value||'';
+  var litres = parseFloat((document.getElementById('pac-litres')||{}).value)||0;
+  var montant = parseFloat((document.getElementById('pac-montant')||{}).value)||0;
+  var km = parseFloat((document.getElementById('pac-km')||{}).value)||0;
+  if (!vehiculeId || !date || !litres || !montant || !km) { toast('Véhicule, date, litres, montant et km sont obligatoires.', 'error'); return; }
+
+  var c = {
+    id: uid(), vehicule_id: vehiculeId, date: date, litres: litres, montant: montant, km_compteur: km,
+    station: (document.getElementById('pac-station')||{}).value||'',
+    chauffeur_id: (document.getElementById('pac-chauffeur')||{}).value||'',
+    mode_paiement: (document.getElementById('pac-mode')||{}).value||'especes',
+    created_at: new Date().toISOString()
+  };
+  DATA.vehicule_carburant.push(c);
+  await dbPut('vehicule_carburant', c);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_vehicule_carburant', c);
+
+  /* Mettre à jour le km du véhicule si celui-ci est plus récent */
+  var v = paVehicule(vehiculeId);
+  if (v && km > (v.km_actuel||0)) { v.km_actuel = km; v._modifie = new Date().toISOString(); await dbPut('vehicules', v); if (typeof syncToSupabase==='function') syncToSupabase('pi_vehicules', v); }
+
+  /* Comptabilisation SYSCOHADA : charge carburant / trésorerie selon mode
+     de paiement. requireCompteDefaut() refuse plutôt que deviner un compte —
+     si non paramétré, l'écriture n'est pas générée mais le plein reste
+     enregistré (l'opérationnel n'est jamais bloqué par la compta). */
+  try {
+    var cptCharge = requireCompteDefaut('parc_carburant');
+    /* [Hypothèse à valider] "carte" (carte carburant type Total/Shell) est
+       traité ici comme un paiement immédiat (compte banque), pas comme un
+       fournisseur à facturation différée — aucun mode équivalent n'existait
+       ailleurs dans l'app pour trancher. Si ces cartes sont en réalité
+       facturées mensuellement (comme un fournisseur, compte 401), il
+       faudra ajouter une branche dédiée ici + un compte "carte carburant à
+       payer" en Paramètres → Comptes par défaut. */
+    var cptTreso = c.mode_paiement === 'especes' ? requireCompteDefaut('treso_caisse')
+                 : c.mode_paiement === 'mobile_money' ? requireCompteDefaut('treso_mobile')
+                 : requireCompteDefaut('treso_banque');
+    var ecrCarb = {
+      id: 'ecr_parc_carb_'+c.id, ref: 'CARB-'+c.id.slice(-6).toUpperCase(), date: c.date, piece: 'CARB/'+(v?v.immatriculation:''),
+      libelle: 'Carburant — '+(v?v.immatriculation:'')+' — '+c.litres+' L'+(c.station?' — '+c.station:''),
+      compte: cptCharge, compte_debit: cptCharge, compte_credit: cptTreso, montant: montant,
+      type: 'charge', mode: c.mode_paiement, division: v ? (v.division_id||'') : '',
+      source: 'parc_auto_carburant', vehicule_id: vehiculeId, created_at: today()
+    };
+    DATA.ecritures.push(ecrCarb);
+    await dbPut('ecritures', ecrCarb);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecrCarb);
+    if (typeof buildBalance === 'function') buildBalance();
+  } catch(eCompta) { /* requireCompteDefaut a déjà affiché le message — le plein reste enregistré */ }
+
+  ['pac-litres','pac-montant','pac-km','pac-station'].forEach(function(id){ var el=document.getElementById(id); if(el) el.value=''; });
+  toast('✅ Plein enregistré.', 'success');
+  paRenderCarburant(); paRenderVehicules(); paRenderKPIs(); paRenderAlertes();
+}
+
+function paRenderCarburant(){
+  var box = document.getElementById('pa-carburant-table');
+  if (!box) return;
+  var fV = (document.getElementById('pac-filter-vehicule')||{}).value||'';
+  var fM = (document.getElementById('pac-filter-mois')||{}).value||'';
+  var liste = (DATA.vehicule_carburant||[]).filter(function(c){
+    if (fV && c.vehicule_id!==fV) return false;
+    if (fM && (c.date||'').slice(0,7)!==fM) return false;
+    return true;
+  }).sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); });
+
+  if (!liste.length) { box.innerHTML = '<div class="alert alert-info">Aucun plein enregistré.</div>'; return; }
+  var total = liste.reduce(function(s,c){ return s+(parseFloat(c.montant)||0); },0);
+  box.innerHTML = '<table class="data-table"><thead><tr><th>Date</th><th>Véhicule</th><th>Litres</th><th style="text-align:right;">Montant</th><th>Km</th><th>Station</th><th>Chauffeur</th></tr></thead><tbody>'
+    + liste.map(function(c){
+        var v = paVehicule(c.vehicule_id);
+        return '<tr><td>'+dateShort(c.date)+'</td><td>'+escHtml(v?v.immatriculation:'—')+'</td><td>'+c.litres+' L</td>'
+          + '<td style="text-align:right;">'+fmtF(c.montant)+'</td><td>'+fmtF(c.km_compteur)+'</td>'
+          + '<td>'+escHtml(c.station||'—')+'</td><td>'+(c.chauffeur_id?escHtml(paNomEmploye(c.chauffeur_id)):'—')+'</td></tr>';
+      }).join('')
+    + '</tbody><tfoot><tr style="font-weight:700;"><td colspan="3">Total</td><td style="text-align:right;">'+fmtF(total)+'</td><td colspan="3"></td></tr></tfoot></table>';
+}
+
+/* ── ENTRETIEN ──────────────────────────────────────────────────────── */
+async function paSaveEntretien(){
+  if (!exigerDroit('Parc Auto', 'c', 'un entretien')) return;
+  var vehiculeId = (document.getElementById('pae-vehicule')||{}).value||'';
+  var date = (document.getElementById('pae-date')||{}).value||'';
+  var cout = parseFloat((document.getElementById('pae-cout')||{}).value)||0;
+  var km = parseFloat((document.getElementById('pae-km')||{}).value)||0;
+  if (!vehiculeId || !date || !km) { toast('Véhicule, date et km sont obligatoires.', 'error'); return; }
+
+  var e = {
+    id: uid(), vehicule_id: vehiculeId, date: date,
+    type: (document.getElementById('pae-type')||{}).value||'autre',
+    atelier: (document.getElementById('pae-atelier')||{}).value||'',
+    cout: cout, km_compteur: km,
+    prochaine_echeance_km: parseFloat((document.getElementById('pae-prochain-km')||{}).value)||null,
+    prochaine_echeance_date: (document.getElementById('pae-prochaine-date')||{}).value||'',
+    mode_paiement: (document.getElementById('pae-mode')||{}).value||'especes',
+    description: (document.getElementById('pae-description')||{}).value||'',
+    created_at: new Date().toISOString()
+  };
+  DATA.vehicule_entretiens.push(e);
+  await dbPut('vehicule_entretiens', e);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_vehicule_entretiens', e);
+
+  var v = paVehicule(vehiculeId);
+  if (v && km > (v.km_actuel||0)) { v.km_actuel = km; v._modifie = new Date().toISOString(); await dbPut('vehicules', v); if (typeof syncToSupabase==='function') syncToSupabase('pi_vehicules', v); }
+  if (v && (document.getElementById('pae-type')||{}).value === 'en_reparation') { /* pas d'auto-statut ici : laissé au choix manuel */ }
+
+  /* Comptabilisation SYSCOHADA : charge entretien / trésorerie ou fournisseur
+     (401) selon mode de paiement — un atelier facture souvent à crédit,
+     contrairement au carburant généralement réglé comptant. */
+  if (cout > 0) {
+    try {
+      var cptChargeEnt = requireCompteDefaut('parc_entretien');
+      var cptContrepartie = e.mode_paiement === 'a_credit' ? requireCompteDefaut('fournisseur')
+                           : e.mode_paiement === 'especes' ? requireCompteDefaut('treso_caisse')
+                           : e.mode_paiement === 'mobile_money' ? requireCompteDefaut('treso_mobile')
+                           : requireCompteDefaut('treso_banque');
+      var ecrEnt = {
+        id: 'ecr_parc_ent_'+e.id, ref: 'ENT-'+e.id.slice(-6).toUpperCase(), date: e.date, piece: 'ENT/'+(v?v.immatriculation:''),
+        libelle: (PA_ENTRETIEN_TYPES[e.type]||e.type)+' — '+(v?v.immatriculation:'')+(e.atelier?' — '+e.atelier:''),
+        compte: cptChargeEnt, compte_debit: cptChargeEnt, compte_credit: cptContrepartie, montant: cout,
+        type: e.mode_paiement==='a_credit' ? 'dette' : 'charge', mode: e.mode_paiement, division: v ? (v.division_id||'') : '',
+        source: 'parc_auto_entretien', vehicule_id: vehiculeId, created_at: today()
+      };
+      DATA.ecritures.push(ecrEnt);
+      await dbPut('ecritures', ecrEnt);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecrEnt);
+      if (typeof buildBalance === 'function') buildBalance();
+    } catch(eCompta) { /* requireCompteDefaut a déjà affiché le message — l'entretien reste enregistré */ }
+  }
+
+  ['pae-atelier','pae-cout','pae-km','pae-prochain-km','pae-prochaine-date','pae-description'].forEach(function(id){ var el=document.getElementById(id); if(el) el.value=''; });
+  toast('✅ Entretien enregistré.', 'success');
+  paRenderEntretien(); paRenderVehicules(); paRenderKPIs(); paRenderAlertes();
+}
+
+function paRenderEntretien(){
+  var box = document.getElementById('pa-entretien-table');
+  if (!box) return;
+  var fV = (document.getElementById('pae-filter-vehicule')||{}).value||'';
+  var liste = (DATA.vehicule_entretiens||[]).filter(function(e){ return !fV || e.vehicule_id===fV; })
+    .sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); });
+
+  if (!liste.length) { box.innerHTML = '<div class="alert alert-info">Aucun entretien enregistré.</div>'; return; }
+  var total = liste.reduce(function(s,e){ return s+(parseFloat(e.cout)||0); },0);
+  box.innerHTML = '<table class="data-table"><thead><tr><th>Date</th><th>Véhicule</th><th>Type</th><th>Atelier</th><th style="text-align:right;">Coût</th><th>Km</th><th>Prochaine échéance</th></tr></thead><tbody>'
+    + liste.map(function(e){
+        var v = paVehicule(e.vehicule_id);
+        var prochaine = [e.prochaine_echeance_km ? fmtF(e.prochaine_echeance_km)+' km' : '', e.prochaine_echeance_date ? dateShort(e.prochaine_echeance_date) : ''].filter(Boolean).join(' / ') || '—';
+        return '<tr><td>'+dateShort(e.date)+'</td><td>'+escHtml(v?v.immatriculation:'—')+'</td><td>'+(PA_ENTRETIEN_TYPES[e.type]||e.type)+'</td>'
+          + '<td>'+escHtml(e.atelier||'—')+'</td><td style="text-align:right;">'+fmtF(e.cout)+'</td><td>'+fmtF(e.km_compteur)+'</td><td>'+prochaine+'</td></tr>';
+      }).join('')
+    + '</tbody><tfoot><tr style="font-weight:700;"><td colspan="4">Total</td><td style="text-align:right;">'+fmtF(total)+'</td><td colspan="2"></td></tr></tfoot></table>';
+}
+
+/* ── AFFECTATIONS ───────────────────────────────────────────────────── */
+async function paSaveAffectation(){
+  if (!exigerDroit('Parc Auto', 'c', 'une affectation')) return;
+  var vehiculeId = (document.getElementById('paa-vehicule')||{}).value||'';
+  var employeId = (document.getElementById('paa-employe')||{}).value||'';
+  var dateDebut = (document.getElementById('paa-date-debut')||{}).value||'';
+  if (!vehiculeId || !employeId || !dateDebut) { toast('Véhicule, employé et date de début sont obligatoires.', 'error'); return; }
+
+  /* Terminer toute affectation active existante pour ce véhicule — un
+     véhicule n'a qu'un seul chauffeur affecté à la fois. */
+  var actives = (DATA.vehicule_affectations||[]).filter(function(a){ return a.vehicule_id===vehiculeId && a.statut==='active'; });
+  for (var i=0;i<actives.length;i++) {
+    actives[i].statut = 'terminee'; actives[i].date_fin = dateDebut; actives[i]._modifie = new Date().toISOString();
+    await dbPut('vehicule_affectations', actives[i]);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_vehicule_affectations', actives[i]);
+  }
+
+  var a = {
+    id: uid(), vehicule_id: vehiculeId, employe_id: employeId, date_debut: dateDebut, date_fin: '',
+    motif: (document.getElementById('paa-motif')||{}).value||'', statut: 'active',
+    created_at: new Date().toISOString()
+  };
+  DATA.vehicule_affectations.push(a);
+  await dbPut('vehicule_affectations', a);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_vehicule_affectations', a);
+
+  document.getElementById('paa-motif').value = '';
+  toast('✅ Véhicule affecté.', 'success');
+  paRenderAffectations(); paRenderVehicules();
+}
+
+async function paTerminerAffectation(id){
+  if (!exigerDroit('Parc Auto', 'm', 'cette affectation')) return;
+  var a = (DATA.vehicule_affectations||[]).find(function(x){ return x.id===id; });
+  if (!a) return;
+  if (!confirm('Terminer cette affectation à la date d\'aujourd\'hui ?')) return;
+  a.statut = 'terminee'; a.date_fin = today(); a._modifie = new Date().toISOString();
+  await dbPut('vehicule_affectations', a);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_vehicule_affectations', a);
+  toast('Affectation terminée.', 'info');
+  paRenderAffectations(); paRenderVehicules();
+}
+
+function paRenderAffectations(){
+  var box = document.getElementById('pa-affectations-table');
+  if (!box) return;
+  var liste = (DATA.vehicule_affectations||[]).slice().sort(function(a,b){ return (b.date_debut||'').localeCompare(a.date_debut||''); });
+  if (!liste.length) { box.innerHTML = '<div class="alert alert-info">Aucune affectation enregistrée.</div>'; return; }
+  box.innerHTML = '<table class="data-table"><thead><tr><th>Véhicule</th><th>Employé</th><th>Début</th><th>Fin</th><th>Motif</th><th>Statut</th><th></th></tr></thead><tbody>'
+    + liste.map(function(a){
+        var v = paVehicule(a.vehicule_id);
+        return '<tr><td>'+escHtml(v?v.immatriculation:'—')+'</td><td>'+escHtml(paNomEmploye(a.employe_id))+'</td>'
+          + '<td>'+dateShort(a.date_debut)+'</td><td>'+(a.date_fin?dateShort(a.date_fin):'—')+'</td>'
+          + '<td>'+escHtml(a.motif||'—')+'</td>'
+          + '<td><span class="badge" style="background:'+(a.statut==='active'?'var(--vert)':'var(--blanc-dim)')+';color:#fff;">'+(a.statut==='active'?'Active':'Terminée')+'</span></td>'
+          + '<td>'+(a.statut==='active' ? '<button class="btn btn-secondary btn-sm" onclick="paTerminerAffectation(\''+a.id+'\')">Terminer</button>' : '')+'</td></tr>';
+      }).join('')
+    + '</tbody></table>';
+}
+
+/* Raccourci « Moyens Généraux » : ne duplique rien, ouvre le module Achats
+   existant avec un nouveau bon de commande pré-réglé sur le dépôt
+   Fournitures — le circuit (validation, réception, stock, facture,
+   comptabilisation) reste strictement celui déjà en place. */
+function mgOuvrir(){
+  goTo('achats');
+  setTimeout(function(){
+    openBC();
+    setTimeout(function(){ var el=document.getElementById('bc-depot'); if(el) el.value='dep_fournitures'; }, 50);
+  }, 200);
+}
+
 function dspFillSelects(){
   var cl=(DATA.clients||[]).slice().sort(function(a,b){return (a.nom||'').localeCompare(b.nom||'');});
   var sc=document.getElementById('dd-client');
@@ -81361,7 +82200,8 @@ var PAGE_MODULE_MAP = {
   'locatif':            'Gestion Locative',
   'copropriete':        'Gestion Locative',
   'diaspo':             'Investisseurs Diaspora',
-  'lbcft':              'Conformite LBC-FT'
+  'lbcft':              'Conformite LBC-FT',
+  'parc-auto':          'Parc Auto'
 };
 
 /* ── 2. hasRole() corrigé — inclut manager + custom roles ── */
@@ -88697,6 +89537,14 @@ function stockEnsureDepots(){
     var d={id:'dep_central',nom:'Magasin central',actif:true,created_at:today()};
     DATA.depots.unshift(d); dbPut('depots',d); if(typeof syncToSupabase==='function')syncToSupabase('pi_depots',d);
   }
+  /* [Moyens Généraux] Dépôt dédié aux achats divers (fournitures de bureau,
+     équipement non-chantier) — même moteur de stock que le magasin central
+     (CUMP par mouvements, déjà générique), simplement un dépôt distinct
+     pour ne pas mélanger visuellement fournitures et matériaux de chantier. */
+  if(!DATA.depots.some(function(d){return d.id==='dep_fournitures';})){
+    var d2={id:'dep_fournitures',nom:'Fournitures / Moyens Généraux',actif:true,created_at:today()};
+    DATA.depots.push(d2); dbPut('depots',d2); if(typeof syncToSupabase==='function')syncToSupabase('pi_depots',d2);
+  }
 }
 function depotName(id){ var d=(DATA.depots||[]).find(function(x){return x.id===id;}); return d?d.nom:(id==='dep_central'?'Magasin central':'—'); }
 function depotOptions(sel,includeAll){
@@ -89131,6 +89979,7 @@ function openBC(id){
   document.getElementById('bc-fournisseur').innerHTML=fournisseurOptions('');
   document.getElementById('bc-depot').innerHTML=depotOptions('dep_central',false);
   document.getElementById('bc-chantier').innerHTML=stockChantierOptions();
+  document.getElementById('bc-division').innerHTML='<option value="">— déduite du chantier —</option>'+(DATA.divisions||[]).map(function(d){ return '<option value="'+d.id+'">'+escHtml(d.nom)+'</option>'; }).join('');
   APP.editingId=id||null;
   if(id){
     var b=(DATA.bons_commande||[]).find(function(x){return x.id===id;});
@@ -89140,6 +89989,7 @@ function openBC(id){
     document.getElementById('bc-date').value=b.date||today();
     document.getElementById('bc-fournisseur').value=b.fournisseur_id||'';
     document.getElementById('bc-chantier').value=b.chantier_id||'';
+    document.getElementById('bc-division').value=b.division_id||'';
     document.getElementById('bc-depot').value=b.depot_id||'dep_central';
     document.getElementById('bc-delai').value=b.delai||'';
     document.getElementById('bc-notes').value=b.notes||'';
@@ -89148,7 +89998,7 @@ function openBC(id){
     document.getElementById('bc-modal-title').textContent='➕ Bon de commande';
     document.getElementById('bc-numero').value=bcNextNum();
     document.getElementById('bc-date').value=today();
-    document.getElementById('bc-chantier').value=''; document.getElementById('bc-depot').value='dep_central';
+    document.getElementById('bc-chantier').value=''; document.getElementById('bc-division').value=''; document.getElementById('bc-depot').value='dep_central';
     document.getElementById('bc-delai').value=''; document.getElementById('bc-notes').value='';
     bcLines=[{res_id:'',designation:'',unite:'',qte:1,pu:0}];
   }
@@ -89162,9 +90012,15 @@ async function saveBC(){
     return { res_id:(l.res_id&&l.res_id!=='__libre__')?l.res_id:null, designation:(l.res_id==='__libre__')?(l.designation||''):'', unite:l.unite||'', qte:parseFloat(l.qte)||0, pu:parseFloat(l.pu)||0 };
   });
   if(!lignes.length){ toast('Ajoutez au moins une ligne valide.','error'); return; }
+  var _chantierChoisi = document.getElementById('bc-chantier').value||'';
+  var _divisionChoisie = document.getElementById('bc-division').value||'';
+  if (!_chantierChoisi && !_divisionChoisie && (DATA.divisions||[]).length) {
+    if (!confirm('Aucun chantier ni division sélectionné(e) — cette commande n\'apparaîtra dans aucune comptabilité par entité (vue consolidée uniquement).\n\nContinuer quand même ?')) return;
+  }
   var b={ id:APP.editingId||uid(), numero:document.getElementById('bc-numero').value.trim()||bcNextNum(),
     fournisseur_id:fid, date:document.getElementById('bc-date').value||today(),
     chantier_id:document.getElementById('bc-chantier').value||null,
+    division_id:document.getElementById('bc-division').value||'',
     depot_id:document.getElementById('bc-depot').value||'dep_central',
     delai:document.getElementById('bc-delai').value||'',
     notes:document.getElementById('bc-notes').value.trim(),
@@ -89255,7 +90111,7 @@ async function saveReception(){
   var cfg=stockComptaCfgRequired(totalHT>0?['c_achat','c_fnp']:[]);
   if(totalHT>0){
     if(cfg.methode==='permanent')stockComptaCfgRequired(['c_stock','c_variation']);
-    var _divRec = b.chantier_id ? _resolveDivisionEcriture('convention', b.chantier_id) : '';   /* [Cloisonnement] */
+    var _divRec = b.division_id ? b.division_id : (b.chantier_id ? _resolveDivisionEcriture('convention', b.chantier_id) : '');   /* [Cloisonnement] priorité à la division saisie directement sur le BC — nécessaire pour les achats sans chantier (moyens généraux) */
     var e1={ id:'ecr_rec_'+recId, ref:recNum, date:dat, piece:recNum, libelle:'Réception '+recNum+' (BC '+b.numero+') — '+bcFournisseurName(b.fournisseur_id), compte:cfg.c_achat, compte_debit:cfg.c_achat, compte_credit:cfg.c_fnp, montant:totalHT, type:'charge', mode:'', division:_divRec, created_at:today() };
     DATA.ecritures.push(e1); await dbPut('ecritures',e1); if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',e1);
     if(cfg.methode==='permanent'){
@@ -108836,7 +109692,22 @@ async function caisseVentilationAuto() {
 /* ══════════════════════════════════════════════════════════════════════════
    TABLEAU DE BORD CAISSE (natif SVG, sans dépendance)
 ══════════════════════════════════════════════════════════════════════════ */
-var CAISSE_DASH = { periode: 'mois', division: '' }; /* periode: 'jour' | 'mois' | 'annee' ; division: '' = toutes */
+var CAISSE_DASH = { periode: 'mois', division: '', ancre: today() }; /* periode: 'jour' | 'mois' | 'annee' ; division: '' = toutes ; ancre : date de référence navigable (défaut aujourd'hui) */
+
+/* [Mise à niveau] Jusqu'ici _cdBornes() était systématiquement calée sur
+   `new Date()` — impossible de consulter un mois ou une année passée : les
+   pills Jour/Mois/Année ne faisaient que changer la GRANULARITÉ, jamais la
+   période elle-même. On introduit une ancre navigable (CAISSE_DASH.ancre),
+   déplacée par ces fonctions selon l'unité de la période active. */
+function caisseNavPeriode(sens){
+  var d = new Date(CAISSE_DASH.ancre + 'T00:00:00');
+  if (CAISSE_DASH.periode === 'jour') d.setDate(d.getDate() + sens);
+  else if (CAISSE_DASH.periode === 'annee') d.setFullYear(d.getFullYear() + sens);
+  else d.setMonth(d.getMonth() + sens);
+  CAISSE_DASH.ancre = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  caisseRenderDashboard();
+}
+function caisseNavAujourdhui(){ CAISSE_DASH.ancre = today(); caisseRenderDashboard(); }
 
 function caisseSetPeriode(p){ CAISSE_DASH.periode = p; caisseRenderDashboard(); }
 function caisseSetDivisionFilter(v){ CAISSE_DASH.division = v; caisseRenderDashboard(); }
@@ -108851,8 +109722,8 @@ function _caisseDivCouleur(divisionId){
 }
 
 function _cdBornes(){
-  var d = new Date(), y = d.getFullYear(), m = d.getMonth();
-  if (CAISSE_DASH.periode === 'jour')  return { deb: today(), fin: today(), label: 'Aujourd’hui' };
+  var d = new Date(CAISSE_DASH.ancre + 'T00:00:00'), y = d.getFullYear(), m = d.getMonth();
+  if (CAISSE_DASH.periode === 'jour')  return { deb: CAISSE_DASH.ancre, fin: CAISSE_DASH.ancre, label: (CAISSE_DASH.ancre === today() ? 'Aujourd’hui' : d.toLocaleDateString('fr-FR',{day:'numeric',month:'long',year:'numeric'})) };
   if (CAISSE_DASH.periode === 'annee') return { deb: y+'-01-01', fin: y+'-12-31', label: 'Année '+y };
   var mm = String(m+1).padStart(2,'0'), last = new Date(y, m+1, 0).getDate();
   return { deb: y+'-'+mm+'-01', fin: y+'-'+mm+'-'+String(last).padStart(2,'0'),
@@ -109056,13 +109927,20 @@ function caisseRenderDashboard(){
   /* [Fix lenteur] Cette fonction tourne à CHAQUE sauvegarde de bon. Avant :
      12 passages complets sur DATA.caisse_mouvements (un par mois de la
      série), qui grossit avec l'historique de la caisse. Maintenant : un
-     seul passage, regroupé par clé mois dans une map. */
-  var now=new Date();
+     seul passage, regroupé par clé mois dans une map.
+     [Mise à niveau] La série se calait auparavant toujours sur `new Date()`,
+     donc les 12 derniers mois GLISSANTS depuis aujourd'hui — totalement
+     déconnectée de la période effectivement consultée via les pills et la
+     navigation (ex. en train de regarder « Année 2024 », le graphique
+     montrait quand même sept.2025→août 2026). Elle se cale maintenant sur
+     l'ancre du tableau de bord (les 12 mois se terminant à cette date). */
+  var now=new Date(CAISSE_DASH.ancre + 'T00:00:00');
   var moisCles = [];
   for (var i=11;i>=0;i--){
     var d=new Date(now.getFullYear(),now.getMonth()-i,1);
     moisCles.push({ key: d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'),
-                     label: d.toLocaleDateString('fr-FR',{month:'short'}).replace('.','') });
+                     label: d.toLocaleDateString('fr-FR',{month:'short'}).replace('.',''),
+                     labelAnnee: d.toLocaleDateString('fr-FR',{month:'short',year:'2-digit'}).replace('.','') });
   }
   var parMois = {};
   moisCles.forEach(function(mc){ parMois[mc.key] = { e:0, d:0 }; });
@@ -109073,7 +109951,7 @@ function caisseRenderDashboard(){
     if (!bucket) return;   /* hors des 12 derniers mois affichés */
     if (x.type==='entree') bucket.e += (+x.montant||0); else bucket.d += (+x.montant||0);
   });
-  var serie = moisCles.map(function(mc){ return { k: mc.label, e: parMois[mc.key].e, d: parMois[mc.key].d }; });
+  var serie = moisCles.map(function(mc){ return { k: mc.label, kAnnee: mc.labelAnnee, e: parMois[mc.key].e, d: parMois[mc.key].d }; });
 
   var postes={};
   clot.filter(function(m){ return m.type==='sortie' && m.compte_ventile; }).forEach(function(m){
@@ -109094,10 +109972,21 @@ function caisseRenderDashboard(){
     ? '<select class="form-control btn-sm" style="width:auto;padding:6px 10px;font-size:12px;font-weight:700;" onchange="caisseSetDivisionFilter(this.value)">'+divOptions+'</select>'
     : '';
 
+  /* [Mise à niveau] Navigation temporelle — auparavant totalement absente,
+     le tableau de bord ne pouvait montrer QUE la période en cours (jour/mois/
+     année actuels). Flèches +/- selon la granularité active, et un retour
+     rapide à aujourd'hui affiché seulement quand on s'en est éloigné. */
+  var estAujourdhui = (CAISSE_DASH.ancre === today());
+  var navHtml = '<div style="display:flex;gap:4px;align-items:center;">'
+    + '<button class="btn btn-secondary btn-sm btn-icon" onclick="caisseNavPeriode(-1)" title="Période précédente">◀</button>'
+    + (estAujourdhui ? '' : '<button class="btn btn-secondary btn-sm" onclick="caisseNavAujourdhui()" title="Revenir à aujourd\'hui">📍 Aujourd\'hui</button>')
+    + '<button class="btn btn-secondary btn-sm btn-icon" onclick="caisseNavPeriode(1)" title="Période suivante" '+(estAujourdhui?'disabled':'')+'>▶</button>'
+    + '</div>';
+
   box.innerHTML =
     '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:4px;">'
       + '<div style="font-weight:800;font-size:16px;">📊 Tableau de bord — Caisse <span style="font-size:12px;color:var(--blanc-dim);font-weight:600;">· '+b.label+'</span></div>'
-      + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'+divisionSelectHtml+'<div style="display:flex;gap:6px;">'+pill('jour','Jour')+pill('mois','Mois')+pill('annee','Année')+'</div></div>'
+      + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'+divisionSelectHtml+navHtml+'<div style="display:flex;gap:6px;">'+pill('jour','Jour')+pill('mois','Mois')+pill('annee','Année')+'</div></div>'
     + '</div>'
     + '<div style="font-size:11px;color:var(--blanc-dim);margin-bottom:12px;">'+totalCaisses+' caisse(s) créée(s)'+(CAISSE_DASH.division?' dans cette division':' au total')+' · '+ouvertes+' ouverte(s) actuellement</div>'
     + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px;">'
@@ -109112,7 +110001,7 @@ function caisseRenderDashboard(){
     + '<div style="display:grid;grid-template-columns:2fr 1fr;gap:14px;align-items:stretch;">'
       + '<div class="card" style="padding:16px;">'
         + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
-          + '<div style="font-weight:700;font-size:13px;">Flux de caisse — 12 mois</div>'
+          + '<div style="font-weight:700;font-size:13px;">Flux de caisse — 12 mois <span style="color:var(--blanc-dim);font-weight:400;">('+serie[0].kAnnee+' → '+serie[serie.length-1].kAnnee+')</span></div>'
           + '<div style="font-size:11px;color:var(--blanc-dim);"><span style="color:var(--vert);">■</span> Entrées <span style="color:var(--rouge);margin-left:8px;">■</span> Sorties</div>'
         + '</div>' + _cdBarChart(serie)
       + '</div>'
@@ -111525,6 +112414,9 @@ goTo = function(page) {
         </div>
         <div class="form-group span-2"><label>Valeur résiduelle (FCFA)</label><input type="number" class="form-control" id="is-residuelle" value="0"></div>
         <div class="form-group span-2"><label>Division (entité juridique)</label><select class="form-control" id="is-division"><option value="">— Non affecté —</option></select></div>
+        <div class="form-group span-2"><label>Mode de paiement (acquisition)</label><select class="form-control" id="is-mode-paiement">
+          <option value="banque">Banque (comptant)</option><option value="a_credit">À crédit (fournisseur)</option>
+        </select></div>
       </div>
     </div>
     <div class="modal-footer">
