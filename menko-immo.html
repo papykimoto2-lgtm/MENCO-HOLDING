@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.54 · 2026-08-18 — NOUVEAU : Suivi budgétaire Caisse. Budget par compte de charge + division (au choix : une division précise, ou consolidé toutes divisions), périodicité mensuelle ou annuelle au choix. Comparé automatiquement aux sorties de caisse déjà ventilées sur le compte (compte_ventile), en réutilisant le résolveur de division du cloisonnement multi-entités déjà en place. Alerte uniquement, jamais de blocage, comme demandé — la caisse ne doit jamais empêcher une opération. Cartes visuelles avec barre de progression (vert <80%, orange ≥80%, rouge ≥100%), raccordées au centre d\'alertes global. Garde anti-doublon (même compte+division+période ne peut pas avoir 2 budgets actifs). Testé empiriquement : 4 scénarios de pourcentage/couleur, et calcul des bornes de mois validé y compris sur année bissextile (février 2028). Vérification systématique de non-régression effectuée sur tout le fichier avant livraison — aucune déclaration de fonction effacée cette fois.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.56 · 2026-08-18 — Limite vidéo Médias publiables : 25→100 Mo (décision explicite, pas 500 Mo comme proposé initialement — base64+JSONB Supabase rendrait 500 Mo/~665 Mo réels très fragile sur réseau ivoirien). BUG TROUVÉ EN VÉRIFIANT, indépendant de la taille mais bien plus dommageable à 100 Mo : syncToSupabase() n\'était pas attendu — le message « ✅ publié au portail » s\'affichait immédiatement après la seule écriture LOCALE, sans savoir si l\'envoi cloud avait réussi. Sur un fichier plus gros, la fenêtre d\'échec s\'élargit d\'autant : l\'utilisateur croirait avoir publié à tout le monde alors que la vidéo resterait coincée en local. Corrigé : confirmation réelle attendue, message honnête selon le résultat effectif (succès cloud vs en attente réseau, reprise automatique). Timeout dédié de 3 min ajouté (sbFetch n\'en a aucun) pour éviter de figer l\'interface indéfiniment sur réseau très lent — limite assumée : n\'annule pas la requête sous-jacente (pas d\'AbortController dans sbFetch), la donnée finit quand même par se synchroniser si elle aboutit après le délai.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -64147,7 +64147,7 @@ async function pmAjouterVideo(){
 function pmOuvrirPhotos(){ var i=document.getElementById('pm-input-photos'); if(i){ i.value=''; i.click(); } }
 function pmOuvrirDocument(){ var i=document.getElementById('pm-input-doc'); if(i){ i.value=''; i.click(); } }
 function pmOuvrirVideoFichier(){ var i=document.getElementById('pm-input-video'); if(i){ i.value=''; i.click(); } }
-var PM_VIDEO_MAX_MO = 25;
+var PM_VIDEO_MAX_MO = 100;   /* [Ajusté] 25→100 Mo, décision explicite — voir garde ci-dessous sur la confirmation réelle de synchro, indispensable à cette taille */
 async function pmAjouterVideoFichier(input){
   var f = (input.files||[])[0];
   if(!f){ return; }
@@ -64157,7 +64157,7 @@ async function pmAjouterVideoFichier(input){
   if (cat === 'document') cat = 'eden';
   var titre = (document.getElementById('pm-titre')||{}).value || '';
   var commentaire = (document.getElementById('pm-commentaire')||{}).value || '';
-  toast('⏳ Téléversement de la vidéo…','info');
+  toast('⏳ Lecture du fichier (' + (f.size/1024/1024).toFixed(1) + ' Mo)…','info');
   var dataUrl;
   try {
     dataUrl = await new Promise(function(res, rej){ var r=new FileReader(); r.onload=function(e){res(e.target.result);}; r.onerror=function(){rej(new Error('read failed'));}; r.readAsDataURL(f); });
@@ -64166,9 +64166,41 @@ async function pmAjouterVideoFichier(input){
     { provider:'upload', video_id:'', url:'', data:dataUrl, mime:f.type||'video/mp4', nom:f.name, taille:f.size, visible:true, date:new Date().toISOString() });
   DATA.portail_medias.push(media);
   await dbPut('portail_medias', media);
-  if(typeof syncToSupabase==='function') syncToSupabase('pi_portail_medias', media);
+  /* [Fix] syncToSupabase() n'était pas attendu — le message de succès
+     s'affichait immédiatement après la seule écriture LOCALE, sans savoir
+     si l'envoi au cloud avait réussi. Avec une limite passée à 100 Mo, le
+     temps de transfert devient significatif sur un réseau mobile instable
+     (documenté à plusieurs reprises dans ce projet) : la fenêtre d'échec
+     s'élargit d'autant, et l'utilisateur croirait avoir « publié au
+     portail » alors que la vidéo resterait coincée en local, invisible
+     pour quiconque d'autre tant que la synchro différée ne finit pas par
+     réussir. On attend maintenant réellement le résultat, avec un message
+     honnête selon ce qui s'est vraiment passé. */
+  toast('⏳ Envoi au serveur (' + (f.size/1024/1024).toFixed(1) + ' Mo — peut prendre plusieurs minutes sur réseau lent)…','info');
+  /* [Fix] sbFetch() n'a aucun timeout propre — sur un réseau très lent, un
+     fichier de 100 Mo pourrait bloquer l'interface indéfiniment sans le
+     moindre retour. Timeout dédié à CET appel (pas une modification globale
+     de sbFetch, qui affecterait d'autres appels plus légers ayant des
+     besoins différents) : au-delà de 3 min, on abandonne l'attente et on
+     bascule sur le message « en attente réseau » — l'enregistrement reste
+     en file d'attente locale (_outboxEnqueue côté syncToSupabase) et sera
+     réessayé automatiquement, ce timeout ne fait qu'éviter de figer l'écran. */
+  var syncOk = false;
+  if (typeof syncToSupabase === 'function') {
+    try {
+      syncOk = await Promise.race([
+        syncToSupabase('pi_portail_medias', media),
+        new Promise(function(resolve){ setTimeout(function(){ resolve('TIMEOUT'); }, 180000); })
+      ]);
+      if (syncOk === 'TIMEOUT') syncOk = false;
+    } catch(eSync) { syncOk = false; }
+  }
   input.value='';
-  toast('✅ Vidéo téléversée et publiée au portail.','success');
+  if (syncOk) {
+    toast('✅ Vidéo téléversée et publiée au portail.','success');
+  } else {
+    toast('⚠️ Vidéo enregistrée localement, mais pas encore publiée au portail (réseau indisponible ou trop lent) — la synchronisation reprendra automatiquement dès que la connexion sera meilleure.','error');
+  }
   pmRender();
 }
 function _pmLabelCat(c){ return ({eden:'Programme',chantier:'Chantier',catalogue:'Catalogue',location:'Location',document:'Document',investir:'Investir'})[c]||c; }
@@ -112043,10 +112075,10 @@ function portplRenderAvancement() {
           }).join('') + '</div></div>' : '';
     var videoHtml = videos.length
       ? '<div style="margin-top:10px;">' + videos.map(function(v){
-          if (v.provider==='youtube') return '<div style="margin-bottom:8px;"><iframe width="100%" height="220" style="border:none;border-radius:8px;" src="https://www.youtube.com/embed/'+v.video_id+'" allowfullscreen></iframe></div>';
-          if (v.provider==='vimeo') return '<div style="margin-bottom:8px;"><iframe width="100%" height="220" style="border:none;border-radius:8px;" src="https://player.vimeo.com/video/'+v.video_id+'" allowfullscreen></iframe></div>';
-          if (v.provider==='upload') return '<div style="margin-bottom:8px;"><video controls style="width:100%;border-radius:8px;max-height:260px;" src="'+v.data+'"></video></div>';
-          return '<div style="margin-bottom:8px;"><video controls style="width:100%;border-radius:8px;max-height:260px;" src="'+v.url+'"></video></div>';
+          if (v.provider==='youtube') return '<div style="margin-bottom:10px;"><iframe width="100%" height="340" style="border:none;border-radius:8px;max-width:640px;display:block;" src="https://www.youtube.com/embed/'+v.video_id+'" allowfullscreen></iframe></div>';
+          if (v.provider==='vimeo') return '<div style="margin-bottom:10px;"><iframe width="100%" height="340" style="border:none;border-radius:8px;max-width:640px;display:block;" src="https://player.vimeo.com/video/'+v.video_id+'" allowfullscreen></iframe></div>';
+          if (v.provider==='upload') return '<div style="margin-bottom:10px;"><video controls style="width:100%;border-radius:8px;max-height:480px;" src="'+v.data+'"></video></div>';
+          return '<div style="margin-bottom:10px;"><video controls style="width:100%;border-radius:8px;max-height:480px;" src="'+v.url+'"></video></div>';
         }).join('') + '</div>' : '';
     return '<div class="portal-tl-item">'
       + '<div class="portal-tl-dot" style="background:linear-gradient(135deg,var(--or),var(--or-dark));">'+_plEtapeIcon(r.etape_cle)+'</div>'
