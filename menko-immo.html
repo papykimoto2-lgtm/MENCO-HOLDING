@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.60 · 2026-08-18 — NOUVEAU : Circuit budgétaire complet. Budget prévisionnel annuel (compte×division, brouillon→soumis→validé DG) → Fiche d\'Engagement de Dépense (FED, avec disponible affiché en direct) → validation (contrôle du disponible, décrémente la ligne) → LA FICHE SE TRANSFORME EN Demande d\'Achat (numéro DA attribué, numéro FED conservé pour traçabilité) → apparaît à la Caisse dans « Décaissements à faire » → décaissement pré-rempli sans re-ventilation (compte déjà connu). Transferts de ligne à ligne, même validation (plafond de rôle réutilisé via exigerPlafond/userPlafond, aucun nouveau mécanisme). Ancien « Suivi budgétaire » (alerte sur sorties déjà faites, v14.54) retiré de la Caisse comme demandé — le contrôle se fait désormais en amont, la Caisse exécute un décaissement déjà autorisé. BUG GRAVE TROUVÉ ET CORRIGÉ AVANT LIVRAISON : mon propre modal budget (v14.54) partageait l\'ID « cb-montant » avec le modal de bon de caisse pré-existant — un vrai bug de collision DOM qui aurait pu casser la saisie des sorties/entrées de caisse, fonctionnalité vitale. Repéré en construisant l\'écran de décaissement, corrigé par renommage complet (cb-→cbud-). Cas de décaissement différé (montant au-delà du plafond de l\'auteur) traité explicitement : la DA ne passe à « décaissée » qu\'au moment où l\'argent sort réellement, pas avant. Circuit complet testé empiriquement de bout en bout (budget→FED→DA→décaissement, y compris le refus d\'une 2e fiche dépassant le disponible). Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.63 · 2026-08-18 — Budget prévisionnel : saisie multi-lignes. Le modal « Nouveau budget prévisionnel » ne permettait qu\'un seul compte à la fois — remplacé par un tableau de lignes (compte de charge + montant chacune, sous-compte compris via le même champ), avec total calculé en direct. Division et Exercice restent partagés en haut du formulaire, communs à toutes les lignes. Chaque ligne devient un budget distinct à l\'enregistrement. En édition d\'un budget existant, une seule ligne reste modifiable (ajout désactivé) pour ne jamais créer d\'ambiguïté sur quel enregistrement correspond à quelle ligne. Testé empiriquement : détection de doublon interne au lot (deux lignes avec le même compte dans la même saisie — la 2e est refusée, cohérent avec la protection déjà en place), calcul du total en cours de saisie, filtrage correct des lignes incomplètes. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -14477,12 +14477,14 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="modal-body">
             <input type="hidden" id="cbud-id">
             <div class="form-grid">
-              <div class="form-group span-2"><label>Compte de charge *</label><input type="text" class="form-control" id="cbud-compte" list="dl-plan-comptable" placeholder="Ex : 6055, 6051..."></div>
               <div class="form-group span-2"><label>Division</label><select class="form-control" id="cbud-division"><option value="">— Toutes divisions (consolidé) —</option></select></div>
-              <div class="form-group"><label>Exercice *</label><input type="number" class="form-control" id="cbud-annee" min="2020" max="2100"></div>
-              <div class="form-group"><label>Montant alloué (FCFA) *</label><input type="number" class="form-control" id="cbud-montant" min="0"></div>
+              <div class="form-group span-2"><label>Exercice *</label><input type="number" class="form-control" id="cbud-annee" min="2020" max="2100"></div>
             </div>
-            <div style="font-size:11px;color:var(--blanc-dim);margin-top:8px;">Enregistré en brouillon — soumettez-le ensuite pour validation par le DG (ou tout rôle habilité). « Toutes divisions » compare à toutes les entités confondues sur ce compte.</div>
+            <div class="form-section-title" style="margin-top:12px;">Lignes budgétaires (compte de charge, sous-compte compris)</div>
+            <div id="cbud-lignes-box"></div>
+            <button class="btn btn-secondary btn-sm" id="cbud-btn-ajouter-ligne" style="margin-top:6px;" onclick="cbudAjouterLigne()">➕ Ajouter une ligne</button>
+            <div style="text-align:right;font-weight:700;margin-top:10px;font-size:15px;">Total : <span id="cbud-total">0</span> F</div>
+            <div style="font-size:11px;color:var(--blanc-dim);margin-top:8px;">Chaque ligne devient un budget distinct, enregistré en brouillon — soumettez-les ensuite pour validation par le DG (ou tout rôle habilité). « Toutes divisions » compare à toutes les entités confondues sur ce compte.</div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal('modal-caisse-budget')">Annuler</button>
@@ -90365,7 +90367,7 @@ async function budgetPrevisionnelSauver(champs) {
   /* champs = { id, compte, division_id, exercice, montant } — construit par
      l'écran appelant (voir étape suivante), séparé ici pour rester testable
      indépendamment du DOM. */
-  if (!exigerDroit('Caisse', champs.id ? 'm' : 'c', 'un budget prévisionnel')) return null;
+  if (!exigerDroit('Budget', champs.id ? 'm' : 'c', 'un budget prévisionnel')) return null;
   if (!champs.compte || !champs.exercice || !(parseFloat(champs.montant) > 0)) {
     toast('Compte, exercice et montant (> 0) sont obligatoires.', 'error'); return null;
   }
@@ -90381,6 +90383,10 @@ async function budgetPrevisionnelSauver(champs) {
   var b = existant || { id: champs.id || uid(), created_at: new Date().toISOString(), statut: 'brouillon' };
   b.compte = champs.compte; b.division_id = champs.division_id||''; b.exercice = parseInt(champs.exercice,10);
   b.montant = parseFloat(champs.montant); b.periode = 'annuel'; b.mois = '';
+  /* Remise à brouillon si on corrige un budget rejeté — sans ça, une fois
+     rejeté, un enregistrement restait bloqué à vie sans moyen de le
+     corriger et resoumettre, malgré l'intention claire de l'utilisateur. */
+  if (b.statut === 'rejete') { b.statut = 'brouillon'; b.motif_rejet = ''; }
   b._modifie = new Date().toISOString();
   if (!existant) DATA.caisse_budgets.push(b);
   await dbPut('caisse_budgets', b);
@@ -90444,7 +90450,7 @@ function fedLabelDocument(d) {
 }
 async function daSauver(champs) {
   /* champs = { id, division_id, exercice, compte, objet, lignes:[{designation,qte,pu}], fournisseur_id, beneficiaire } */
-  if (!exigerDroit('Caisse', champs.id ? 'm' : 'c', 'une fiche d\'engagement de dépense')) return null;
+  if (!exigerDroit('Budget', champs.id ? 'm' : 'c', 'une fiche d\'engagement de dépense')) return null;
   var lignes = (champs.lignes||[]).filter(function(l){ return (parseFloat(l.qte)||0) > 0 && l.designation; })
     .map(function(l){ return { designation: l.designation, qte: parseFloat(l.qte)||0, pu: parseFloat(l.pu)||0 }; });
   if (!lignes.length) { toast('Ajoutez au moins une ligne valide.', 'error'); return null; }
@@ -90452,12 +90458,15 @@ async function daSauver(champs) {
   var montant = Math.round(lignes.reduce(function(s,l){ return s + l.qte*l.pu; }, 0));
 
   var existant = champs.id ? (DATA.fiches_engagement_depense||[]).find(function(x){ return x.id===champs.id; }) : null;
-  if (existant && existant.statut !== 'brouillon') { toast('Cette fiche n\'est plus modifiable (déjà soumise ou validée).', 'error'); return null; }
+  if (existant && existant.statut !== 'brouillon' && existant.statut !== 'rejetee') { toast('Cette fiche n\'est plus modifiable (déjà soumise ou validée).', 'error'); return null; }
 
   var d = existant || { id: champs.id || uid(), numero_fed: _fedGenererNumero(), numero_da: '', created_at: new Date().toISOString(), statut: 'brouillon' };
   d.division_id = champs.division_id||''; d.exercice = parseInt(champs.exercice,10)||new Date().getFullYear();
   d.compte = champs.compte; d.objet = champs.objet||''; d.lignes = lignes; d.montant = montant;
   d.fournisseur_id = champs.fournisseur_id||''; d.beneficiaire = champs.beneficiaire||'';
+  /* Remise à brouillon si on corrige une fiche rejetée — voir même
+     justification que pour le budget prévisionnel ci-dessus. */
+  if (d.statut === 'rejetee') { d.statut = 'brouillon'; d.motif_rejet = ''; }
   d._modifie = new Date().toISOString();
   if (!existant) DATA.fiches_engagement_depense.push(d);
   await dbPut('fiches_engagement_depense', d);
@@ -90543,7 +90552,8 @@ function budgetRenderPrevisionnel() {
           + '<button class="btn btn-danger btn-sm" onclick="budgetPrevisionnelSupprimer(\''+b.id+'\').then(budgetRenderPrevisionnel)">🗑️</button>';
         else if (b.statut === 'soumis') actions = '<button class="btn btn-primary btn-sm" onclick="budgetPrevisionnelValider(\''+b.id+'\').then(budgetRenderPrevisionnel)">✅ Valider</button> '
           + '<button class="btn btn-danger btn-sm" onclick="(function(){var m=prompt(\'Motif du rejet :\');if(m!==null)budgetPrevisionnelRejeter(\''+b.id+'\',m).then(budgetRenderPrevisionnel);})()">❌ Rejeter</button>';
-        else if (b.statut === 'rejete') actions = '<span style="font-size:11px;color:var(--blanc-dim);">'+escHtml(b.motif_rejet||'')+'</span>';
+        else if (b.statut === 'rejete') actions = '<span style="font-size:11px;color:var(--blanc-dim);">'+escHtml(b.motif_rejet||'')+'</span> '
+          + '<button class="btn btn-secondary btn-sm" onclick="budgetPrevisionnelOuvrir(\''+b.id+'\')">✏️ Modifier et resoumettre</button>';
         return '<tr>'
           + '<td><b>'+escHtml(b.compte)+'</b>'+(libelleCompte?'<div style="font-size:11px;color:var(--blanc-dim);">'+escHtml(libelleCompte)+'</div>':'')+'</td>'
           + '<td>'+divLabel+'</td><td>'+b.exercice+'</td>'
@@ -90573,7 +90583,8 @@ function budgetRenderFed() {
           + '<button class="btn btn-danger btn-sm" onclick="daSupprimer(\''+d.id+'\').then(budgetRenderFed)">🗑️</button>';
         else if (d.statut === 'soumise') actions = '<button class="btn btn-primary btn-sm" onclick="daValider(\''+d.id+'\').then(budgetRenderFed)">✅ Valider</button> '
           + '<button class="btn btn-danger btn-sm" onclick="(function(){var m=prompt(\'Motif du rejet :\');if(m!==null)daRejeter(\''+d.id+'\',m).then(budgetRenderFed);})()">❌ Rejeter</button>';
-        else if (d.statut === 'rejetee') actions = '<span style="font-size:11px;color:var(--blanc-dim);">'+escHtml(d.motif_rejet||'')+'</span>';
+        else if (d.statut === 'rejetee') actions = '<span style="font-size:11px;color:var(--blanc-dim);">'+escHtml(d.motif_rejet||'')+'</span> '
+          + '<button class="btn btn-secondary btn-sm" onclick="fedOuvrir(\''+d.id+'\')">✏️ Modifier et resoumettre</button>';
         else if (d.statut === 'validee') actions = '<span style="font-size:11px;color:var(--vert);">→ Caisse</span>';
         else if (d.statut === 'decaissee') actions = '<span style="font-size:11px;color:var(--blanc-dim);">Payée le '+dateShort(d.decaisse_le)+'</span>';
         return '<tr>'
@@ -90604,7 +90615,8 @@ function budgetRenderTransferts() {
           + '<button class="btn btn-danger btn-sm" onclick="transfertSupprimer(\''+t.id+'\').then(budgetRenderTransferts)">🗑️</button>';
         else if (t.statut === 'soumis') actions = '<button class="btn btn-primary btn-sm" onclick="transfertValider(\''+t.id+'\').then(budgetRenderTransferts)">✅ Valider</button> '
           + '<button class="btn btn-danger btn-sm" onclick="(function(){var m=prompt(\'Motif du rejet :\');if(m!==null)transfertRejeter(\''+t.id+'\',m).then(budgetRenderTransferts);})()">❌ Rejeter</button>';
-        else if (t.statut === 'rejete') actions = '<span style="font-size:11px;color:var(--blanc-dim);">'+escHtml(t.motif_rejet||'')+'</span>';
+        else if (t.statut === 'rejete') actions = '<span style="font-size:11px;color:var(--blanc-dim);">'+escHtml(t.motif_rejet||'')+'</span> '
+          + '<button class="btn btn-secondary btn-sm" onclick="transfertOuvrir(\''+t.id+'\')">✏️ Modifier et resoumettre</button>';
         return '<tr>'
           + '<td><b>'+escHtml(t.compte_source)+'</b></td><td><b>'+escHtml(t.compte_dest)+'</b></td><td>'+divLabel+'</td>'
           + '<td style="text-align:right;">'+fmtF(t.montant)+' F</td><td style="font-size:12px;">'+escHtml(t.motif||'')+'</td>'
@@ -90673,31 +90685,73 @@ function caisseRenderDecaissementsAFaire() {
    (budgetPrevisionnelSauver/daSauver/transfertSauver), qui elle ne touche
    jamais au DOM — séparation déjà éprouvée sur le reste de l'app.
    ═══════════════════════════════════════════════════════════════════════ */
+/* ── Modal Budget prévisionnel : plusieurs lignes (compte + montant) sous
+   une même Division/Exercice partagés — chaque ligne devient un budget
+   distinct à l'enregistrement. En ÉDITION d'un budget existant, une seule
+   ligne est modifiable (pas d'ajout), pour ne jamais créer d'ambiguïté sur
+   quel enregistrement correspond à quelle ligne. ── */
+var cbudLignes = [];
+function cbudRenderLignes() {
+  var box = document.getElementById('cbud-lignes-box'); if (!box) return;
+  var enEdition = !!document.getElementById('cbud-id').value;
+  if (!cbudLignes.length) { box.innerHTML = '<div style="text-align:center;color:var(--blanc-dim);padding:10px;font-size:12px;">Ajoutez une ligne.</div>'; }
+  else box.innerHTML = '<table class="data-table" style="width:100%;"><thead><tr><th>Compte de charge</th><th style="width:160px;">Montant (FCFA)</th>'+(enEdition?'':'<th style="width:40px;"></th>')+'</tr></thead><tbody>'
+    + cbudLignes.map(function(l,i){
+        return '<tr>'
+          + '<td><input type="text" class="form-control" list="dl-plan-comptable" placeholder="Ex : 6055, 6051..." value="'+escHtml(l.compte||'')+'" onchange="cbudLigneSet('+i+',\'compte\',this.value)"></td>'
+          + '<td><input type="number" class="form-control" min="0" value="'+(l.montant||'')+'" onchange="cbudLigneSet('+i+',\'montant\',this.value)"></td>'
+          + (enEdition ? '' : '<td><button class="btn btn-danger btn-sm btn-icon" onclick="cbudRetirerLigne('+i+')">✕</button></td>')
+          + '</tr>';
+      }).join('') + '</tbody></table>';
+  var tot = cbudLignes.reduce(function(s,l){ return s+(parseFloat(l.montant)||0); }, 0);
+  document.getElementById('cbud-total').textContent = fmtF(Math.round(tot));
+}
+function cbudLigneSet(i, field, val) { if (!cbudLignes[i]) return; cbudLignes[i][field] = val; cbudRenderLignes(); }
+function cbudAjouterLigne() { cbudLignes.push({ compte:'', montant:'' }); cbudRenderLignes(); }
+function cbudRetirerLigne(i) { cbudLignes.splice(i,1); cbudRenderLignes(); }
+
 function budgetPrevisionnelOuvrir(id) {
   var b = id ? (DATA.caisse_budgets||[]).find(function(x){ return x.id===id; }) : null;
   document.getElementById('cbud-modal-titre').textContent = b ? '✏️ Modifier le budget prévisionnel' : '📊 Nouveau budget prévisionnel';
   document.getElementById('cbud-id').value = id || '';
-  document.getElementById('cbud-compte').value = b ? b.compte : '';
   var selDiv = document.getElementById('cbud-division');
   selDiv.innerHTML = '<option value="">— Toutes divisions (consolidé) —</option>' + (DATA.divisions||[]).map(function(d){
     return '<option value="'+d.id+'">'+escHtml(d.nom)+'</option>';
   }).join('');
   selDiv.value = b ? (b.division_id||'') : '';
   document.getElementById('cbud-annee').value = b ? b.exercice : new Date().getFullYear();
-  document.getElementById('cbud-montant').value = b ? b.montant : '';
   document.getElementById('cbud-btn-suppr').style.display = (b && b.statut==='brouillon') ? '' : 'none';
+  /* Ajout de lignes désactivé en édition (une seule ligne = un enregistrement précis) */
+  document.getElementById('cbud-btn-ajouter-ligne').style.display = b ? 'none' : '';
+  cbudLignes = b ? [{ compte: b.compte, montant: b.montant }] : [{ compte:'', montant:'' }];
+  cbudRenderLignes();
   openModal('modal-caisse-budget');
 }
 async function budgetPrevisionnelSauverDepuisForm() {
-  var r = await budgetPrevisionnelSauver({
-    id: document.getElementById('cbud-id').value || null,
-    compte: document.getElementById('cbud-compte').value.trim(),
-    division_id: document.getElementById('cbud-division').value,
-    exercice: document.getElementById('cbud-annee').value,
-    montant: document.getElementById('cbud-montant').value
-  });
-  if (r) { closeModal('modal-caisse-budget'); budgetRenderPrevisionnel(); }
+  var divisionId = document.getElementById('cbud-division').value;
+  var exercice = document.getElementById('cbud-annee').value;
+  var idExistant = document.getElementById('cbud-id').value || null;
+  var lignesValides = cbudLignes.filter(function(l){ return (l.compte||'').trim() && (parseFloat(l.montant)||0) > 0; });
+  if (!lignesValides.length) { toast('Ajoutez au moins une ligne avec un compte et un montant.', 'error'); return; }
+
+  var reussies = 0, echecs = 0;
+  for (var i = 0; i < lignesValides.length; i++) {
+    var r = await budgetPrevisionnelSauver({
+      id: (i === 0) ? idExistant : null,   /* seule la 1re ligne réutilise l'id en édition — les suivantes sont toujours de nouveaux budgets */
+      compte: lignesValides[i].compte.trim(),
+      division_id: divisionId,
+      exercice: exercice,
+      montant: lignesValides[i].montant
+    });
+    if (r) reussies++; else echecs++;
+  }
+  if (reussies > 0) {
+    closeModal('modal-caisse-budget');
+    budgetRenderPrevisionnel();
+    toast('✅ ' + reussies + ' ligne(s) budgétaire(s) enregistrée(s)' + (echecs ? ' · ' + echecs + ' refusée(s), voir messages ci-dessus' : '') + '.', 'success');
+  }
 }
+
 
 /* ── Modal FED : lignes (désignation libre + qté + PU), comme BC mais sans
    catalogue de ressources — une fiche d'engagement porte un objet global,
@@ -90812,18 +90866,21 @@ async function transfertSauverDepuisForm() {
    validation que les DA — plafond de rôle) ── */
 async function transfertSauver(champs) {
   /* champs = { id, division_id, exercice, compte_source, compte_dest, montant, motif } */
-  if (!exigerDroit('Caisse', champs.id ? 'm' : 'c', 'un transfert budgétaire')) return null;
+  if (!exigerDroit('Budget', champs.id ? 'm' : 'c', 'un transfert budgétaire')) return null;
   if (!champs.compte_source || !champs.compte_dest || champs.compte_source === champs.compte_dest) {
     toast('Choisissez deux comptes différents (source et destination).', 'error'); return null;
   }
   if (!(parseFloat(champs.montant) > 0)) { toast('Le montant doit être supérieur à 0.', 'error'); return null; }
   var existant = champs.id ? (DATA.transferts_budgetaires||[]).find(function(x){ return x.id===champs.id; }) : null;
-  if (existant && existant.statut !== 'brouillon') { toast('Ce transfert n\'est plus modifiable.', 'error'); return null; }
+  if (existant && existant.statut !== 'brouillon' && existant.statut !== 'rejete') { toast('Ce transfert n\'est plus modifiable.', 'error'); return null; }
 
   var t = existant || { id: champs.id || uid(), created_at: new Date().toISOString(), statut: 'brouillon' };
   t.division_id = champs.division_id||''; t.exercice = parseInt(champs.exercice,10)||new Date().getFullYear();
   t.compte_source = champs.compte_source; t.compte_dest = champs.compte_dest;
   t.montant = Math.round(parseFloat(champs.montant)); t.motif = champs.motif||'';
+  /* Remise à brouillon si on corrige un transfert rejeté — même
+     justification que pour le budget prévisionnel et les fiches. */
+  if (t.statut === 'rejete') { t.statut = 'brouillon'; t.motif_rejet = ''; }
   t._modifie = new Date().toISOString();
   if (!existant) DATA.transferts_budgetaires.push(t);
   await dbPut('transferts_budgetaires', t);
@@ -108324,6 +108381,14 @@ async function caisseOuvrir() {
 
 /* ── Bons d'entrée / de sortie ────────────────────────────────────────── */
 function caisseOuvrirBonModal(caisseId, type) {
+  /* [Sécurité] Efface systématiquement le lien DA en attente d'un éventuel
+     décaissement précédent annulé (clic « Annuler »/✕ sans sauvegarde) —
+     sans ça, une saisie de caisse ORDINAIRE juste après pourrait hériter à
+     tort du lien vers une DA abandonnée : elle serait marquée « décaissée »
+     par erreur et le mouvement forcé sur le compte de cette DA au lieu
+     d'être ventilé normalement, sans aucune erreur visible. Seul
+     daOuvrirDecaissement() refixe ce flag, juste après cet appel. */
+  window._daPourDecaissement = null;
   var session = caisseGetSessionOuverte(caisseId);
   if (!session) { toast('Cette caisse n\'est pas ouverte.', 'error'); return; }
   var c = (DATA.caisses || []).find(function(x){ return x.id === caisseId; });
@@ -108418,6 +108483,7 @@ function caisseCanEditBon(mvt) {
 }
 
 function caisseEditBonModal(mvtId) {
+  window._daPourDecaissement = null; /* [Sécurité] même précaution qu'à l'ouverture — voir caisseOuvrirBonModal */
   var m = (DATA.caisse_mouvements||[]).find(function(x){ return x.id===mvtId; });
   if (!m) return;
   if (!caisseCanEditBon(m)) { toast('Modification non autorisée pour ce mouvement.', 'error'); return; }
