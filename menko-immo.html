@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.49 · 2026-08-18 — Utilisateurs et accès pour Parc Auto et Moyens Généraux. TROU TROUVÉ : Parc Auto avait été construit sans être raccordé au système de permissions — n\'importe quel utilisateur connecté pouvait y accéder et le modifier, peu importe son rôle, malgré la refonte hasRole() plus tôt cette session. Corrigé : ajouté à ALL_MODULES (admin/manager en héritent automatiquement, comptable/commercial non par défaut — moindre privilège, ajustable via Paramètres → Rôles), PAGE_MODULE_MAP (masquage nav si non autorisé) et STORE_MODULE (droits appliqués aussi au niveau données, pas juste écran). Gardes exigerDroit() posées sur les 6 actions d\'écriture (créer/modifier véhicule, supprimer, carburant, entretien, affectation). Testé empiriquement : admin/manager → accès, comptable → refusé (voit les écritures résultantes dans Comptabilité, pas le module opérationnel). Moyens Généraux n\'a rien nécessité de neuf : réutilise la page Achats existante, déjà correctement rattachée au module Achats & Commandes. Trou annexe signalé mais non corrigé (hors périmètre, préexistant) : saveImmoSociete() elle-même n\'a aucune garde de droit.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.51 · 2026-08-18 — Plan comptable : compte auxiliaire 421 par employé, déclaré ou non déclaré. TROU TROUVÉ : comptabiliserPaie(), même en mode « détail » (1 écriture/employé), créditait le MÊME compte générique « paie_du » pour tout le monde — impossible de faire un lettrage ou une balance âgée individuelle du personnel malgré des écritures nominalement séparées. Nouveau bouton « 🧾 Créer un compte pour chaque employé » (Paramètres → Plan comptable) : génère un sous-compte 421XXX par salarié, numérotation séquentielle persistante (stockée sur la fiche employé, jamais réattribuée même après suppression — vérifié empiriquement avec la double source de vérité employés+plan comptable). S\'applique à tous les employés sans distinction déclaré/non déclaré, comme demandé. INCIDENT DE RÉGRESSION : 3e occurrence du même bug qu\'avec Parc Auto et Moyens Généraux — une déclaration de fonction (loadComptesDefaut) effacée par un remplacement de texte mal ciblé. Détecté et corrigé avant livraison par la vérification systématique désormais appliquée à chaque insertion. Modification de comptabiliserPaie() pour UTILISER ces comptes individuels non faite à ce stade — changement de comportement plus impactant, à confirmer séparément avant de l\'appliquer.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -5014,7 +5014,8 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="modal-body">
             <div class="form-grid" style="grid-template-columns:1fr 1fr;">
               <div class="form-group span-2"><label>Méthode d'inventaire</label><select class="form-control" id="sc-methode"><option value="permanent">Inventaire permanent (stock au bilan en temps réel)</option><option value="intermittent">Inventaire intermittent (variation à la clôture)</option></select></div>
-              <div class="form-group"><label>Compte achats</label><input class="form-control" id="sc-achat" placeholder="601"></div>
+              <div class="form-group"><label>Compte achats (matériaux)</label><input class="form-control" id="sc-achat" placeholder="601"></div>
+              <div class="form-group"><label>Compte achats — Fournitures / Moyens Généraux</label><input class="form-control" id="sc-achat-fournitures" placeholder="6053"></div>
               <div class="form-group"><label>Compte stock</label><input class="form-control" id="sc-stock" placeholder="31"></div>
               <div class="form-group"><label>Compte variation</label><input class="form-control" id="sc-variation" placeholder="6031"></div>
               <div class="form-group"><label>TVA déductible</label><input class="form-control" id="sc-tva" placeholder="4452"></div>
@@ -7109,6 +7110,14 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div style="font-size:12px;color:var(--blanc-dim);line-height:1.6;">
               ℹ️ Gérez ici le <strong>plan comptable SYSCOHADA révisé</strong> utilisé dans tout le module Comptabilité (journal, bilan, compte de résultat, écritures automatiques…). Vous pouvez <strong>ajouter</strong> de nouveaux comptes, <strong>modifier</strong> le libellé d'un compte existant, ou <strong>supprimer</strong> un compte qui ne vous sert pas. Cette section est réservée aux rôles ayant accès aux Paramètres.
             </div>
+          </div>
+
+          <div class="card" style="margin-bottom:16px;border:1px solid var(--or);">
+            <div class="form-section-title">👤 Comptes auxiliaires — Personnel (compte 421)</div>
+            <div style="font-size:12px;color:var(--blanc-dim);margin:6px 0 12px;line-height:1.6;">
+              Crée un sous-compte 421 individuel pour chaque employé (déclaré ou non déclaré), pour permettre un lettrage et une balance âgée du personnel par salarié — jusqu'ici, toute la paie créditait le même compte générique, quel que soit l'employé. Sans effet sur les employés qui ont déjà un compte ; les nouveaux embauchés ultérieurs peuvent être traités à nouveau sans risque de doublon.
+            </div>
+            <button class="btn btn-primary" onclick="creerComptesAuxiliairesEmployes()">🧾 Créer un compte pour chaque employé</button>
           </div>
 
           <div id="pc-alerte-horsplan" style="margin-bottom:4px;"></div>
@@ -32454,6 +32463,91 @@ function _autoCreerCompteDefaut(code, libelleChamp){
   DATA.params.plan_comptable_custom.push({ code: code, label: label, classe: classe, nature: nature });
   rebuildPlanComptable();
   return code;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   COMPTES AUXILIAIRES PERSONNEL — un sous-compte 421 par employé
+   Jusqu'ici, TOUTE la paie (comptabiliserPaie, même en mode « détail »
+   1 écriture/employé) créditait/débitait le MÊME compte générique
+   « paie_du » pour tout le monde — impossible de faire un lettrage ou
+   une balance âgée individuelle du personnel, même avec des écritures
+   séparées par salarié (le compte, lui, ne l'était pas).
+   Le matricule (souvent alphanumérique, ex. « MS024 ») n'est pas
+   utilisable tel quel comme code de compte SYSCOHADA (numérique
+   uniquement) — on attribue donc un numéro séquentiel 421XXX, stocké
+   de façon persistante sur la fiche employé pour qu'il ne change
+   jamais, même si l'ordre ou le contenu de la liste évolue ensuite.
+   S'applique à TOUS les employés, déclarés ET non déclarés — la
+   distinction CNPS ne change rien au besoin de traçabilité individuelle
+   des sommes dues. ══════════════════════════════════════════════════ */
+function _compteAuxiliaireEmploye(emp){
+  if (!emp) return null;
+  if (emp.compte_auxiliaire_421) return emp.compte_auxiliaire_421;
+
+  var racine = requireCompteDefaut('paie_du');   /* ex. 421 — refuse plutôt que deviner si non paramétré */
+  if (!racine) return null;
+
+  /* Prochain numéro libre : on regarde ce qui existe déjà (autres employés
+     + plan comptable), pour ne jamais réattribuer un numéro déjà pris même
+     après suppression d'un employé entre-temps. */
+  var dejaPris = {};
+  (DATA.employes||[]).forEach(function(e){ if (e.compte_auxiliaire_421) dejaPris[e.compte_auxiliaire_421] = true; });
+  (APP.planComptable||[]).forEach(function(c){ if (String(c.code||'').indexOf(racine) === 0 && String(c.code).length === racine.length+3) dejaPris[c.code] = true; });
+
+  var n = 1, code;
+  do { code = racine + String(n).padStart(3, '0'); n++; } while (dejaPris[code] && n < 1000);
+
+  var parent = (typeof compteParentDe === 'function') ? compteParentDe(racine) : null;
+  var classe = racine.charAt(0);
+  var nature = parent ? parent.nature : ((typeof _natureHeritee === 'function') ? _natureHeritee(racine) : 'variable');
+  var nomComplet = (emp.nom||'') + (emp.prenoms ? ' ' + emp.prenoms : '');
+  var label = (parent ? parent.label : 'Personnel') + ' — ' + nomComplet + (emp.matricule ? ' (' + emp.matricule + ')' : '');
+
+  DATA.params = DATA.params || {};
+  DATA.params.plan_comptable_custom = DATA.params.plan_comptable_custom || [];
+  DATA.params.plan_comptable_custom.push({ code: code, label: label, classe: classe, nature: nature, employe_id: emp.id });
+  rebuildPlanComptable();
+
+  emp.compte_auxiliaire_421 = code;
+  return code;
+}
+
+/* Action groupée : parcourt TOUS les employés (déclarés et non déclarés,
+   actifs et inactifs — un employé parti garde son compte pour le lettrage
+   historique) et crée le compte auxiliaire manquant. Sauvegarde en une
+   fois à la fin plutôt qu'à chaque employé, pour ne pas multiplier les
+   écritures IndexedDB/sync sur une liste qui peut compter des centaines
+   de personnes. */
+async function creerComptesAuxiliairesEmployes(){
+  if (!exigerDroit('Comptabilite', 'm', 'les comptes auxiliaires du personnel')) return;
+  var employes = DATA.employes || [];
+  if (!employes.length) { toast('Aucun employé enregistré.', 'info'); return; }
+
+  var racineTest = (DATA.params && DATA.params.comptes_defaut && DATA.params.comptes_defaut.paie_du) || '';
+  if (!racineTest) { requireCompteDefaut('paie_du'); return; }   /* affiche le message standard et s'arrête */
+
+  var crees = 0, dejaExistants = 0, employesModifies = [];
+  employes.forEach(function(emp){
+    if (emp.compte_auxiliaire_421) { dejaExistants++; return; }
+    var code = _compteAuxiliaireEmploye(emp);
+    if (code) { crees++; employesModifies.push(emp); }
+  });
+
+  await dbPut('params', DATA.params);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_params', DATA.params);
+  /* Persister le champ compte_auxiliaire_421 uniquement sur les fiches qui
+     viennent réellement d'en recevoir un — pas la peine de réécrire les
+     employés déjà pourvus (dejaExistants), ni de le faire à chaque
+     itération de la boucle du dessus (IndexedDB/sync coûteux sur une liste
+     de centaines de personnes). */
+  for (var i=0;i<employesModifies.length;i++){
+    await dbPut('employes', employesModifies[i]);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_employes', employesModifies[i]);
+  }
+  populateDatalistPlanComptable();
+  toast('✅ ' + crees + ' compte(s) auxiliaire(s) créé(s)' + (dejaExistants ? ' · ' + dejaExistants + ' existaient déjà' : '') + '.', 'success');
+  if (typeof renderEmployes === 'function') renderEmployes();
+  if (typeof rebuildPlanComptable === 'function') rebuildPlanComptable();
 }
 
 function loadComptesDefaut() {
@@ -89736,13 +89830,16 @@ async function saveStockEntree(){
   var sv=document.getElementById('se-seuil').value;
   if(sv!==''){ stockSeuils()[stockKeyOf(m)]=parseFloat(sv)||0; DATA.params.id='main'; await dbPut('params',DATA.params); if(typeof syncToSupabase==='function')syncToSupabase('pi_params',DATA.params); }
   if(document.getElementById('se-ecriture').checked && coutAcq>0){
-    var _reqA=['c_achat']; if(tvaDeduct>0)_reqA.push('c_tva'); if(airsi>0)_reqA.push('c_airsi');
+    var _depSE = document.getElementById('se-depot').value||'dep_central';
+    var _cleCompteSE = (_depSE==='dep_fournitures' && stockComptaCfg().c_achat_fournitures) ? 'c_achat_fournitures' : 'c_achat';
+    var _reqA=[_cleCompteSE]; if(tvaDeduct>0)_reqA.push('c_tva'); if(airsi>0)_reqA.push('c_airsi');
     var cfg=stockComptaCfgRequired(_reqA); if(cfg.methode==='permanent')stockComptaCfgRequired(['c_stock','c_variation']);
     var info=stockResInfo(m); var num='ACH-'+(m.id.slice(-5));
+    var compteAchatSE = cfg[_cleCompteSE];
     var creditCompte = mode==='comptant' ? compteTreso : (four&&four.compte?four.compte:requireCompteDefaut('fournisseur'));
     var libFour = four?(' ('+four.nom+')'):'';
     var libFrais = frais>0?(' [dont frais '+fmtF(frais)+']'):'';
-    var e1={ id:'ecr_stk_'+m.id, ref:num, date:m.date, piece:num, libelle:'Achat matériaux — '+info.libelle+libFour+libFrais, compte:cfg.c_achat, compte_debit:cfg.c_achat, compte_credit:creditCompte, montant:coutAcq, type:'charge', mode:mode, created_at:today() };
+    var e1={ id:'ecr_stk_'+m.id, ref:num, date:m.date, piece:num, libelle:(_depSE==='dep_fournitures'?'Achat fournitures — ':'Achat matériaux — ')+info.libelle+libFour+libFrais, compte:compteAchatSE, compte_debit:compteAchatSE, compte_credit:creditCompte, montant:coutAcq, type:'charge', mode:mode, created_at:today() };
     DATA.ecritures.push(e1); await dbPut('ecritures',e1); if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',e1);
     if(tvaDeduct>0){
       var e2={ id:'ecr_tva_'+m.id, ref:'TVA-'+num, date:m.date, piece:num, libelle:'TVA déductible s/ achat '+info.libelle, compte:cfg.c_tva, compte_debit:cfg.c_tva, compte_credit:creditCompte, montant:tvaDeduct, type:'charge', mode:mode, created_at:today() };
@@ -89761,7 +89858,12 @@ async function saveStockEntree(){
 }
 function stockComptaCfg(){
   if(!DATA.params) DATA.params={};
-  if(!DATA.params.stock_compta) DATA.params.stock_compta={methode:'permanent',c_achat:'',c_stock:'',c_variation:'',c_tva:'',airsi_taux:0,c_airsi:'',c_perte:'',c_fnp:''};
+  if(!DATA.params.stock_compta) DATA.params.stock_compta={methode:'permanent',c_achat:'',c_achat_fournitures:'',c_stock:'',c_variation:'',c_tva:'',airsi_taux:0,c_airsi:'',c_perte:'',c_fnp:''};
+  /* [Moyens Généraux] Compte d'achat distinct pour les fournitures — sans ça,
+     tout passait sur c_achat (matériaux de chantier, typiquement compte 601),
+     mélangeant deux natures de charge pourtant différentes en SYSCOHADA
+     (matériaux 601 vs fournitures/matières consommables 6053 ou équivalent). */
+  if (DATA.params.stock_compta.c_achat_fournitures === undefined) DATA.params.stock_compta.c_achat_fournitures = '';
   return DATA.params.stock_compta;
 }
 /* Retourne le compte demandé, ou bloque avec une alerte si non paramétré
@@ -89775,7 +89877,7 @@ function requireStockCompteDefaut(cle, libelle){
   }
   return val;
 }
-var LIBELLES_STOCK_COMPTA = { c_achat:'Compte achats', c_stock:'Compte stock', c_variation:'Compte variation de stock', c_tva:'TVA déductible sur achats', c_airsi:'AIRSI — compte', c_perte:'Compte pertes/casse', c_fnp:'Fournisseurs — Factures non parvenues' };
+var LIBELLES_STOCK_COMPTA = { c_achat:'Compte achats (matériaux)', c_achat_fournitures:'Compte achats — Fournitures / Moyens Généraux', c_stock:'Compte stock', c_variation:'Compte variation de stock', c_tva:'TVA déductible sur achats', c_airsi:'AIRSI — compte', c_perte:'Compte pertes/casse', c_fnp:'Fournisseurs — Factures non parvenues' };
 /* Vérifie que les comptes listés sont bien paramétrés avant de générer une
    écriture de stock ; bloque avec une alerte sinon. Retourne la config. */
 function stockComptaCfgRequired(cles){
@@ -89793,6 +89895,7 @@ function openStockCompta(){
   var c=stockComptaCfg();
   document.getElementById('sc-methode').value=c.methode||'permanent';
   document.getElementById('sc-achat').value=c.c_achat||'';
+  document.getElementById('sc-achat-fournitures').value=c.c_achat_fournitures||'';
   document.getElementById('sc-stock').value=c.c_stock||'';
   document.getElementById('sc-variation').value=c.c_variation||'';
   document.getElementById('sc-tva').value=c.c_tva||'';
@@ -89805,6 +89908,7 @@ async function saveStockCompta(){
   var c=stockComptaCfg();
   c.methode=document.getElementById('sc-methode').value;
   c.c_achat=document.getElementById('sc-achat').value.trim()||'';
+  c.c_achat_fournitures=document.getElementById('sc-achat-fournitures').value.trim()||'';
   c.c_stock=document.getElementById('sc-stock').value.trim()||'';
   c.c_variation=document.getElementById('sc-variation').value.trim()||'';
   c.c_tva=document.getElementById('sc-tva').value.trim()||'';
@@ -89858,12 +89962,14 @@ async function saveStockRetour(){
   DATA.stock_mouvements.push(m); await dbPut('stock_mouvements',m);
   if(typeof syncToSupabase==='function')syncToSupabase('pi_stock_mouvements',m);
   if(document.getElementById('sr-ecriture').checked && htRet>0){
-    var _reqR=['c_achat']; if(tva>0)_reqR.push('c_tva');
+    var _cleCompteSR = (dep==='dep_fournitures' && stockComptaCfg().c_achat_fournitures) ? 'c_achat_fournitures' : 'c_achat';
+    var _reqR=[_cleCompteSR]; if(tva>0)_reqR.push('c_tva');
     var cfg=stockComptaCfgRequired(_reqR); if(cfg.methode==='permanent')stockComptaCfgRequired(['c_stock','c_variation']);
+    var compteAchatSR = cfg[_cleCompteSR];
     var info=stockResInfo(m); var num='AV-'+(m.id.slice(-5));
     var debitCompte = mode==='comptant' ? compteTreso : (four&&four.compte?four.compte:requireCompteDefaut('fournisseur'));
     var libFour = four?(' ('+four.nom+')'):'';
-    var e1={ id:'ecr_ret_'+m.id, ref:num, date:m.date, piece:num, libelle:'Avoir / retour matériaux — '+info.libelle+libFour, compte:debitCompte, compte_debit:debitCompte, compte_credit:cfg.c_achat, montant:htRet, type:'charge', mode:mode, created_at:today() };
+    var e1={ id:'ecr_ret_'+m.id, ref:num, date:m.date, piece:num, libelle:(dep==='dep_fournitures'?'Avoir / retour fournitures — ':'Avoir / retour matériaux — ')+info.libelle+libFour, compte:debitCompte, compte_debit:debitCompte, compte_credit:compteAchatSR, montant:htRet, type:'charge', mode:mode, created_at:today() };
     DATA.ecritures.push(e1); await dbPut('ecritures',e1); if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',e1);
     if(tva>0){
       var e2={ id:'ecr_rettva_'+m.id, ref:'TVA-'+num, date:m.date, piece:num, libelle:'TVA déductible annulée s/ retour '+info.libelle, compte:cfg.c_tva, compte_debit:debitCompte, compte_credit:cfg.c_tva, montant:tva, type:'charge', mode:mode, created_at:today() };
@@ -90108,11 +90214,18 @@ async function saveReception(){
   var rec={ id:recId, numero:recNum, bc_id:b.id, fournisseur_id:b.fournisseur_id, depot_id:dep, date:dat, lignes:lignes, total_ht:totalHT, facture_id:null, created_at:today() };
   DATA.receptions.push(rec); await dbPut('receptions',rec); if(typeof syncToSupabase==='function')syncToSupabase('pi_receptions',rec);
   // comptabilisation provisoire : achat / FNP 408 + stock permanent
-  var cfg=stockComptaCfgRequired(totalHT>0?['c_achat','c_fnp']:[]);
+  /* [Fix rétrocompatibilité] Si le compte fournitures dédié n'est pas encore
+     paramétré, on retombe sur le compte achats général plutôt que de
+     bloquer une réception qui fonctionnait déjà avant l'introduction de ce
+     champ — la distinction comptable est une amélioration, pas une
+     exigence bloquante tant que Papi n'a pas configuré le nouveau compte. */
+  var _cleCompteRec = (dep==='dep_fournitures' && stockComptaCfg().c_achat_fournitures) ? 'c_achat_fournitures' : 'c_achat';
+  var cfg=stockComptaCfgRequired(totalHT>0?[_cleCompteRec,'c_fnp']:[]);
   if(totalHT>0){
     if(cfg.methode==='permanent')stockComptaCfgRequired(['c_stock','c_variation']);
+    var compteAchatRec = cfg[_cleCompteRec];
     var _divRec = b.division_id ? b.division_id : (b.chantier_id ? _resolveDivisionEcriture('convention', b.chantier_id) : '');   /* [Cloisonnement] priorité à la division saisie directement sur le BC — nécessaire pour les achats sans chantier (moyens généraux) */
-    var e1={ id:'ecr_rec_'+recId, ref:recNum, date:dat, piece:recNum, libelle:'Réception '+recNum+' (BC '+b.numero+') — '+bcFournisseurName(b.fournisseur_id), compte:cfg.c_achat, compte_debit:cfg.c_achat, compte_credit:cfg.c_fnp, montant:totalHT, type:'charge', mode:'', division:_divRec, created_at:today() };
+    var e1={ id:'ecr_rec_'+recId, ref:recNum, date:dat, piece:recNum, libelle:(dep==='dep_fournitures'?'Réception fournitures ':'Réception ')+recNum+' (BC '+b.numero+') — '+bcFournisseurName(b.fournisseur_id), compte:compteAchatRec, compte_debit:compteAchatRec, compte_credit:cfg.c_fnp, montant:totalHT, type:'charge', mode:'', division:_divRec, created_at:today() };
     DATA.ecritures.push(e1); await dbPut('ecritures',e1); if(typeof syncToSupabase==='function')syncToSupabase('pi_ecritures',e1);
     if(cfg.methode==='permanent'){
       var e2={ id:'ecr_recstk_'+recId, ref:'STK-'+recNum, date:dat, piece:recNum, libelle:'Entrée en stock '+recNum, compte:cfg.c_stock, compte_debit:cfg.c_stock, compte_credit:cfg.c_variation, montant:totalHT, type:'charge', mode:'', division:_divRec, created_at:today() };
