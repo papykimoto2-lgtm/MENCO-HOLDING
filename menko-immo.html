@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.65 · 2026-08-18 — Injection du plan (image) rendue conforme, éditeur ouvert automatiquement. Deux corrections demandées après le v14.64. (1) L\'injection échouait purement et simplement si l\'éditeur n\'était pas déjà ouvert manuellement — il s\'ouvre désormais automatiquement (même séquence qu\'un clic manuel sur l\'onglet Éditeur de plans), sans rien changer à la sauvegarde du plan qui reste, comme avant, déclenchée par l\'utilisateur. (2) Les murs/cloisons étaient injectés comme des segments flottants sans rapport avec les pièces — remplacé par une vraie géométrie : pièces collées bord à bord, cloison réellement intercalée entre chaque paire de pièces adjacentes, périmètre de murs porteurs généré autour de l\'ensemble (convention architecturale standard : extérieur porteur, séparations intérieures cloison). BUG DE CALCUL TROUVÉ ET CORRIGÉ AVANT LIVRAISON : la largeur de la cloison de fin de rangée débordait de l\'épaisseur d\'espacement dans le mur de périmètre droit — repéré en testant rigoureusement la géométrie générée (détection programmatique de chevauchement, pas une simple relecture). Testé empiriquement sur 3 scénarios (multi-rangées avec wrap, pièce unique, rangée unique) : zéro chevauchement réel, toutes les pièces correctement contenues dans le périmètre généré. Les chevauchements aux 4 coins du périmètre sont normaux et voulus — même pattern déjà utilisé partout ailleurs dans l\'app pour dessiner un rectangle de murs. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.66 · 2026-08-18 — Bouton « 🧱 3. Tracer un mur » ajouté à la cotation manuelle d\'un plan (image), symétrique à « ▭ 2. Tracer une pièce » déjà existant, absent jusqu\'ici. Cliquer-glisser un trait allongé sur l\'image, puis choisir le type (porteur/cloison) — la plus grande dimension du tracé devient la longueur, la plus petite l\'épaisseur, quelle que soit l\'orientation (horizontale ou verticale) du geste. Rendu visuel en temps réel sur le canvas (rouge=porteur, bleu=cloison), liste des murs cotés affichée sous le canvas avec suppression individuelle. Fusionne avec une éventuelle détection IA déjà faite, exactement comme la cotation manuelle de pièces. Garde-fou : un trait quasi filiforme (imprécision de clic) reçoit une épaisseur par défaut de 10 cm plutôt qu\'une valeur non fiable — seuil ajusté à 5 cm après un premier test empirique l\'ayant montré un peu bas. Testé empiriquement : calcul longueur/épaisseur correct dans les deux orientations de tracé. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -87396,12 +87396,15 @@ var _dqeScanPlanFichierData = null;
    automatiquement du nombre de pixels selon cette échelle. */
 var _dqeCotation = {
   img: null, canvas: null, ctx: null,
-  mode: 'idle',              // idle | echelle | piece
+  mode: 'idle',              // idle | echelle | piece | mur
   echellePxParM: null,       // pixels par mètre, une fois définie
   echellePoints: [],         // points temporaires en cours de clic (mode echelle)
   pieceDebut: null,          // point de départ du rectangle en cours (mode piece)
   pieceEnCours: null,        // {x,y,w,h} pendant le drag
-  pieces: []                 // pièces cotées manuellement : {label,longueur,largeur,surface,rect:{x,y,w,h}}
+  pieces: [],                // pièces cotées manuellement : {label,longueur,largeur,surface,rect:{x,y,w,h}}
+  murDebut: null,            // point de départ du rectangle en cours (mode mur)
+  murEnCours: null,          // {x,y,w,h} pendant le drag
+  murs: []                   // murs cotés manuellement : {type,longueur,epaisseur,rect:{x,y,w,h}}
 };
 var _dqeCotationLastPt = null;
 
@@ -87413,7 +87416,7 @@ function dqeOuvrirScanPlan() {
   document.getElementById('btn-scan-plan-dqe-analyser').disabled = true;
   _dqeScanPlanFichierData = null;
   _dqeCotation.img = null; _dqeCotation.mode = 'idle'; _dqeCotation.echellePxParM = null;
-  _dqeCotation.echellePoints = []; _dqeCotation.pieces = [];
+  _dqeCotation.echellePoints = []; _dqeCotation.pieces = []; _dqeCotation.murs = [];
   openModal('modal-scan-plan-dqe');
 }
 
@@ -87440,7 +87443,7 @@ function dqeScanPlanFichier(input) {
 
 function _dqeCotationInitCanvas(img) {
   _dqeCotation.img = img; _dqeCotation.mode = 'idle'; _dqeCotation.echellePxParM = null;
-  _dqeCotation.echellePoints = []; _dqeCotation.pieces = [];
+  _dqeCotation.echellePoints = []; _dqeCotation.pieces = []; _dqeCotation.murs = [];
   var c = document.getElementById('scan-plan-dqe-canvas');
   _dqeCotation.canvas = c; _dqeCotation.ctx = c.getContext('2d');
   /* Limite raisonnable de largeur d'affichage — le ratio px/m reste cohérent
@@ -87452,6 +87455,7 @@ function _dqeCotationInitCanvas(img) {
   document.getElementById('scan-plan-dqe-cotation-tools').style.display = '';
   document.getElementById('btn-cotation-echelle').disabled = false;
   document.getElementById('btn-cotation-piece').disabled = true;
+  document.getElementById('btn-cotation-mur').disabled = true;
   document.getElementById('cotation-echelle-info').textContent = 'Échelle non définie — cliquez 2 points d\'une cote connue sur le plan (ex. deux extrémités d\'un mur), puis indiquez la distance réelle.';
   _dqeCotationRedraw();
   if (!c._bound) {
@@ -87507,6 +87511,20 @@ function _dqeCotationRedraw() {
     ctx.strokeRect(r.x, r.y, r.w, r.h);
     ctx.setLineDash([]);
   }
+  /* Murs déjà cotés : trait plein, couleur selon le type (rouge=porteur, bleu=cloison) */
+  _dqeCotation.murs.forEach(function(m) {
+    ctx.strokeStyle = (m.type === 'porteur') ? '#DC2626' : '#2563EB'; ctx.lineWidth = 2;
+    ctx.strokeRect(m.rect.x, m.rect.y, m.rect.w, m.rect.h);
+    ctx.fillStyle = (m.type === 'porteur') ? 'rgba(220,38,38,0.18)' : 'rgba(37,99,235,0.18)';
+    ctx.fillRect(m.rect.x, m.rect.y, m.rect.w, m.rect.h);
+  });
+  /* Mur en cours de tracé */
+  if (_dqeCotation.mode === 'mur' && _dqeCotation.murEnCours) {
+    var rm = _dqeCotation.murEnCours;
+    ctx.strokeStyle = '#B87333'; ctx.lineWidth = 2; ctx.setLineDash([5,3]);
+    ctx.strokeRect(rm.x, rm.y, rm.w, rm.h);
+    ctx.setLineDash([]);
+  }
   /* Points/ligne d'échelle */
   if (_dqeCotation.echellePoints.length) {
     ctx.fillStyle = '#2563EB';
@@ -87528,6 +87546,11 @@ function dqeCotationModeEchelle() {
 function dqeCotationModePiece() {
   if (!_dqeCotation.echellePxParM) { toast('Définissez d\'abord l\'échelle.', 'error'); return; }
   _dqeCotation.mode = 'piece';
+}
+
+function dqeCotationModeMur() {
+  if (!_dqeCotation.echellePxParM) { toast('Définissez d\'abord l\'échelle.', 'error'); return; }
+  _dqeCotation.mode = 'mur';
 }
 
 function _dqeCotationDown(e) {
@@ -87564,6 +87587,7 @@ function _dqeCotationDown(e) {
       _dqeCotation.mode = 'idle';
       document.getElementById('cotation-echelle-info').textContent = '✅ Échelle définie : ' + Math.round(_dqeCotation.echellePxParM) + ' px/m (' + distM + ' m mesurés). Vous pouvez maintenant tracer les pièces.';
       document.getElementById('btn-cotation-piece').disabled = false;
+      document.getElementById('btn-cotation-mur').disabled = false;
       toast('Échelle définie — tracez maintenant vos pièces.', 'success');
     }
     return;
@@ -87571,32 +87595,67 @@ function _dqeCotationDown(e) {
   if (_dqeCotation.mode === 'piece') {
     _dqeCotation.pieceDebut = { x: x, y: y };
   }
+  if (_dqeCotation.mode === 'mur') {
+    _dqeCotation.murDebut = { x: x, y: y };
+  }
 }
 
 function _dqeCotationMove(e) {
-  if (_dqeCotation.mode !== 'piece' || !_dqeCotation.pieceDebut) return;
-  var p = _dqeCotationPt(e);
-  var x = p.x, y = p.y;
-  _dqeCotation.pieceEnCours = {
-    x: Math.min(x, _dqeCotation.pieceDebut.x), y: Math.min(y, _dqeCotation.pieceDebut.y),
-    w: Math.abs(x - _dqeCotation.pieceDebut.x), h: Math.abs(y - _dqeCotation.pieceDebut.y)
-  };
-  _dqeCotationRedraw();
+  if (_dqeCotation.mode === 'piece' && _dqeCotation.pieceDebut) {
+    var p = _dqeCotationPt(e);
+    var x = p.x, y = p.y;
+    _dqeCotation.pieceEnCours = {
+      x: Math.min(x, _dqeCotation.pieceDebut.x), y: Math.min(y, _dqeCotation.pieceDebut.y),
+      w: Math.abs(x - _dqeCotation.pieceDebut.x), h: Math.abs(y - _dqeCotation.pieceDebut.y)
+    };
+    _dqeCotationRedraw();
+    return;
+  }
+  if (_dqeCotation.mode === 'mur' && _dqeCotation.murDebut) {
+    var pm = _dqeCotationPt(e);
+    var xm = pm.x, ym = pm.y;
+    _dqeCotation.murEnCours = {
+      x: Math.min(xm, _dqeCotation.murDebut.x), y: Math.min(ym, _dqeCotation.murDebut.y),
+      w: Math.abs(xm - _dqeCotation.murDebut.x), h: Math.abs(ym - _dqeCotation.murDebut.y)
+    };
+    _dqeCotationRedraw();
+    return;
+  }
 }
 
 function _dqeCotationUp(e) {
-  if (_dqeCotation.mode !== 'piece' || !_dqeCotation.pieceDebut) return;
-  var r = _dqeCotation.pieceEnCours;
-  _dqeCotation.pieceDebut = null; _dqeCotation.pieceEnCours = null;
-  if (!r || r.w < 8 || r.h < 8) { _dqeCotationRedraw(); return; }   /* rectangle trop petit — clic accidentel */
-  var longueur = Math.round((r.w / _dqeCotation.echellePxParM) * 100) / 100;
-  var largeur = Math.round((r.h / _dqeCotation.echellePxParM) * 100) / 100;
-  var label = prompt('Nom de cette pièce ?', 'Pièce ' + (_dqeCotation.pieces.length + 1));
-  if (!label) { _dqeCotationRedraw(); return; }
-  _dqeCotation.pieces.push({ label: label, longueur: longueur, largeur: largeur, surface: Math.round(longueur*largeur*100)/100, rect: r });
-  _dqeCotationRedraw();
-  _dqeCotationMajListe();
-  toast('Pièce ajoutée : ' + label + ' — ' + Math.round(longueur*largeur*100)/100 + ' m².', 'success');
+  if (_dqeCotation.mode === 'piece' && _dqeCotation.pieceDebut) {
+    var r = _dqeCotation.pieceEnCours;
+    _dqeCotation.pieceDebut = null; _dqeCotation.pieceEnCours = null;
+    if (!r || r.w < 8 || r.h < 8) { _dqeCotationRedraw(); return; }   /* rectangle trop petit — clic accidentel */
+    var longueur = Math.round((r.w / _dqeCotation.echellePxParM) * 100) / 100;
+    var largeur = Math.round((r.h / _dqeCotation.echellePxParM) * 100) / 100;
+    var label = prompt('Nom de cette pièce ?', 'Pièce ' + (_dqeCotation.pieces.length + 1));
+    if (!label) { _dqeCotationRedraw(); return; }
+    _dqeCotation.pieces.push({ label: label, longueur: longueur, largeur: largeur, surface: Math.round(longueur*largeur*100)/100, rect: r });
+    _dqeCotationRedraw();
+    _dqeCotationMajListe();
+    toast('Pièce ajoutée : ' + label + ' — ' + Math.round(longueur*largeur*100)/100 + ' m².', 'success');
+    return;
+  }
+  if (_dqeCotation.mode === 'mur' && _dqeCotation.murDebut) {
+    var rm = _dqeCotation.murEnCours;
+    _dqeCotation.murDebut = null; _dqeCotation.murEnCours = null;
+    if (!rm || (rm.w < 8 && rm.h < 8)) { _dqeCotationRedraw(); return; }   /* trait trop court — clic accidentel */
+    /* Un mur tracé est un rectangle très allongé : la plus grande dimension
+       est la longueur, la plus petite l'épaisseur — quelle que soit
+       l'orientation du tracé (horizontal ou vertical à l'écran). */
+    var dimPxGrande = Math.max(rm.w, rm.h), dimPxPetite = Math.min(rm.w, rm.h);
+    var longueurM = Math.round((dimPxGrande / _dqeCotation.echellePxParM) * 100) / 100;
+    var epaisseurM = Math.round((dimPxPetite / _dqeCotation.echellePxParM) * 100) / 100;
+    if (epaisseurM < 0.05) epaisseurM = 0.10; /* tracé quasi filiforme — épaisseur non mesurable finement au pixel, valeur par défaut raisonnable */
+    var estPorteur = confirm('Type de ce mur ?\n\nOK = 🧱 Porteur (structure)\nAnnuler = ▭ Cloison (distribution intérieure)');
+    _dqeCotation.murs.push({ type: estPorteur ? 'porteur' : 'cloison', longueur: longueurM, epaisseur: epaisseurM, rect: rm });
+    _dqeCotationRedraw();
+    _dqeCotationMajListeMurs();
+    toast((estPorteur ? '🧱 Mur porteur' : '▭ Cloison') + ' ajouté(e) — ' + longueurM + ' m.', 'success');
+    return;
+  }
 }
 
 function _dqeCotationMajListe() {
@@ -87608,13 +87667,27 @@ function _dqeCotationMajListe() {
       }).join(' · ');
 }
 
+function _dqeCotationMajListeMurs() {
+  var el = document.getElementById('cotation-murs-liste');
+  if (!el) return;
+  if (!_dqeCotation.murs.length) { el.innerHTML = ''; return; }
+  el.innerHTML = '<b>' + _dqeCotation.murs.length + ' mur(s)/cloison(s) coté(s) manuellement :</b> '
+    + _dqeCotation.murs.map(function(m, i) {
+        return (m.type === 'porteur' ? '🧱' : '▭') + ' ' + m.longueur + ' m <a href="#" onclick="event.preventDefault();_dqeCotation.murs.splice(' + i + ',1);_dqeCotationRedraw();_dqeCotationMajListeMurs();" style="color:var(--rouge);">✕</a>';
+      }).join(' · ');
+}
+
 /* Bascule les pièces cotées manuellement vers le tableau de vérification,
    sans passer par l'IA — utilisable seule ou en complément d'une analyse IA
    déjà faite (les deux sources fusionnent dans _dqeScanPlanTmp.pieces). */
 function dqeScanPlanValiderCotationManuelle() {
-  if (!_dqeCotation.pieces.length) { toast('Aucune pièce cotée manuellement.', 'error'); return; }
+  if (!_dqeCotation.pieces.length && !_dqeCotation.murs.length) { toast('Aucune pièce ni mur coté manuellement.', 'error'); return; }
   _dqeCotation.pieces.forEach(function(p) {
     _dqeScanPlanTmp.pieces.push({ label: p.label, longueur: p.longueur, largeur: p.largeur, surface: p.surface, estime: false });
+  });
+  _dqeScanPlanTmp.murs = _dqeScanPlanTmp.murs || [];
+  _dqeCotation.murs.forEach(function(m) {
+    _dqeScanPlanTmp.murs.push({ type: m.type, longueur: m.longueur, epaisseur: m.epaisseur });
   });
   closeModal('modal-scan-plan-dqe');
   _dqeRenderScanPlanReview();
@@ -113586,8 +113659,13 @@ goTo = function(page) {
           <button class="btn btn-secondary btn-sm" onclick="dqeCotationModePiece()" id="btn-cotation-piece" disabled>▭ 2. Tracer une pièce</button>
           <span style="font-size:11px;color:var(--blanc-dim);">Cliquez-glissez un rectangle <b>au nu intérieur des murs</b> (surface habitable, pas surface œuvre). ⚠️ Outil rectangle uniquement — pour une pièce en L ou irrégulière, décomposez-la en 2-3 rectangles ajoutés séparément.</span>
         </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+          <button class="btn btn-secondary btn-sm" onclick="dqeCotationModeMur()" id="btn-cotation-mur" disabled>🧱 3. Tracer un mur</button>
+          <span style="font-size:11px;color:var(--blanc-dim);">Cliquez-glissez le long du mur (un trait fin et allongé) puis choisissez le type. Utile si l'IA n'a pas bien distingué porteurs et cloisons.</span>
+        </div>
         <canvas id="scan-plan-dqe-canvas" style="max-width:100%;margin-top:10px;border:1px solid var(--bord);border-radius:8px;cursor:crosshair;touch-action:none;"></canvas>
         <div id="cotation-pieces-liste" style="margin-top:8px;font-size:12px;"></div>
+        <div id="cotation-murs-liste" style="margin-top:4px;font-size:12px;"></div>
       </div>
 
       <div id="scan-plan-dqe-status" style="margin-top:10px;font-size:12px;"></div>
