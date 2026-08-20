@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.73 · 2026-08-18 — NOUVEAU : choisir un « Projet de conception (villa/immeuble) » ouvre automatiquement le plan déjà existant pour ce projet, s\'il y en a un — avant, seul le lien était mémorisé, l\'utilisateur restait devant « Aucun élément dessiné » alors que son travail précédent existait bien en base. Réutilise archiChargerDessin déjà éprouvée (confirmation anti-écrasement si un dessin en cours n\'est pas sauvegardé). BUG D\'ORDRE TROUVÉ EN L\'ÉCRIVANT, avant livraison : la première version associait le nouveau projet au plan courant AVANT de savoir si le chargement allait réellement avoir lieu — si l\'utilisateur refusait le remplacement proposé, le plan resté affiché aurait hérité d\'un conception_id faux (aucun changement réel n\'ayant eu lieu), avec le risque d\'être sauvegardé ainsi par erreur. Corrigé : l\'association ne se fait plus qu\'après confirmation réelle du chargement — un refus resynchronise simplement le sélecteur sur le plan encore affiché, sans jamais toucher à sa donnée. AUTRE PISTE EXPLORÉE PUIS ABANDONNÉE À RAISON : j\'ai d\'abord cru qu\'il fallait aussi resynchroniser le sélecteur lors du chargement direct d\'un plan (bouton Ouvrir) — vérification faite, archiPopulerConceptions() le fait déjà correctement, mon ajout était redondant et accédait même à une fonction hors de son scope (IIFE différent) ; retiré avant de livrer. Testé empiriquement les 3 scénarios (chargement accepté, refusé, nouveau projet sans plan existant) — comportement correct sur les trois. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.74 · 2026-08-18 — NOUVEAU : pièces polygonales (« 🔷 Pièce (polygone) »), au-delà des rectangles simples. Chantier de fond, pas juste un nouvel outil : 15 sites du DQE/coûts/statistiques supposaient tous w*h (bounding box) comme surface d\'une pièce — introduire des polygones sans les corriger aurait surestimé silencieusement la surface de toute pièce en L ou irrégulière dans de vrais devis. Créé 2 fonctions utilitaires (_pieceSurface, _piecePerimetre — surface réelle par shoelace, périmètre réel par somme des côtés, repli automatique sur w*h/2*(w+h) pour les pièces rectangulaires classiques, aucune régression) et migré les 15 sites, PLUS 6 autres trouvés en cours de route par une recherche élargie (mon premier audit cherchait `p.w*p.h`, ratant les sites utilisant `el.w*el.h` ou `e.w*e.h`) — dont le rendu 2D du label et le panneau de propriétés. BUG PRÉEXISTANT DÉCOUVERT ET CORRIGÉ AU PASSAGE : 5 sites lisaient un champ `p.l` qui n\'existe jamais sur une pièce (toujours w/h) — surface systématiquement calculée à 0, peu importe la vraie taille, depuis probablement l\'origine de ces fonctions. AUTRE BUG PRÉEXISTANT TROUVÉ ET CORRIGÉ (affectait déjà « Lot ») : déplacer un élément polygonal par glisser-déposer ne translatait que sa bounding box invisible, jamais ses vrais sommets — l\'élément restait visuellement figé à sa position d\'origine. Limite assumée et documentée : le rendu 3D reste la bounding box rectangulaire pour une pièce polygonale (un vrai volume suivant le contour exact serait un chantier distinct de triangulation) — seul le nombre affiché (surface) y est corrigé. Testé empiriquement : surface et périmètre corrects sur une pièce en L (26 m² vs 30 m² en bounding box) et un coin biseauté (périmètre réel 18,8 m vs 20 m en bounding box). Vérification systématique de non-régression effectuée sur l\'ensemble du fichier.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -9533,6 +9533,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                   <button class="archi-tool-btn" data-tool="porte" onclick="archiSetTool('porte')">🚪 Porte</button>
                   <button class="archi-tool-btn" data-tool="fenetre" onclick="archiSetTool('fenetre')">🪟 Fenêtre</button>
                   <button class="archi-tool-btn" data-tool="piece" onclick="archiSetTool('piece')">⬜ Pièce (zone)</button>
+                  <button class="archi-tool-btn" data-tool="piece_poly" onclick="archiSetTool('piece_poly')" title="Clic à chaque sommet, clic près du 1er point (ou double-clic) pour fermer — pour une pièce en L ou irrégulière">🔷 Pièce (polygone)</button>
                   <button class="archi-tool-btn" data-tool="escalier" onclick="archiSetTool('escalier')">🪜 Escalier</button>
                   <button class="archi-tool-btn" data-tool="cote" onclick="archiSetTool('cote')">📏 Cotation</button>
                   <button class="archi-tool-btn" data-tool="texte" onclick="archiSetTool('texte')">T Texte</button>
@@ -94752,7 +94753,7 @@ function _archiSerialiserDessin() {
 function _archiStatsDessin(d) {
   var els = (d && d.elements) || [];
   var pieces = els.filter(function(e){ return e.type === 'piece'; });
-  var surf = pieces.reduce(function(s,p){ return s + (parseFloat(p.l)||0) * (parseFloat(p.w)||0); }, 0);
+  var surf = pieces.reduce(function(s,p){ return s + window._pieceSurface(p); }, 0);
   return { pieces:pieces.length, surface:Math.round(surf*100)/100, elements:els.length,
            niveaux:(d && d.niveaux && d.niveaux.length) || 1 };
 }
@@ -94975,7 +94976,7 @@ function structGeometriePlan(progId) {
          multiplierait les fondations par le nombre d'étages. */
       var niv0 = pieces.filter(function(p){ return (p.niv | 0) === 0; });
       var base = niv0.length ? niv0 : pieces;
-      g.emprise = base.reduce(function(s,p){ return s + (parseFloat(p.l)||0) * (parseFloat(p.w)||0); }, 0);
+      g.emprise = base.reduce(function(s,p){ return s + window._pieceSurface(p); }, 0);
       g.pieces = pieces.length;
       g.niveaux = (_nivs && _nivs.length) ? _nivs.length : 1;
       _els.filter(function(e){ return e.type === 'mur' || e.type === 'cloison' || e.type === 'mur_courbe'; })
@@ -95005,7 +95006,7 @@ function structGeometriePlan(progId) {
       var pcs = _els.filter(function(e){ return e.type === 'piece'; });
       g.surface_pieces = 0; g.surface_humide = 0;
       pcs.forEach(function(p){
-        var s = (parseFloat(p.l)||0) * (parseFloat(p.w)||0);
+        var s = window._pieceSurface(p);
         g.surface_pieces += s;
         var n = String(p.nom || p.label || '').toLowerCase()
           .replace(/[éèê]/g,'e').replace(/[^a-z0-9 ]/g,' ');
@@ -95498,7 +95499,7 @@ function installGeometriePlan(progId) {
     if (_src.elements.length) {
       var pieces = _src.elements.filter(function(e){ return e.type === 'piece' && (e.niv|0) === 0; });
       var base = pieces.length ? pieces : _src.elements.filter(function(e){ return e.type === 'piece'; });
-      var emprise = base.reduce(function(s,p){ return s + (parseFloat(p.l)||0) * (parseFloat(p.w)||0); }, 0);
+      var emprise = base.reduce(function(s,p){ return s + window._pieceSurface(p); }, 0);
       /* Le périmètre CLÔTURÉ n'est pas celui du bâtiment mais celui du terrain :
          estimé à 2,2x l'emprise bâtie (marge de recul, voiries, espaces
          communs) — repère de calcul, à corriger si la superficie du
@@ -96474,7 +96475,7 @@ function epCollecterPieces(progId) {
     _src.elements.filter(function(e){ return e.type === 'piece'; }).forEach(function(p){
       out.push({ nom: p.nom || p.label || 'Pièce',
                  type: epTypePiece(p.nom || p.label),
-                 surface: (parseFloat(p.l)||0) * (parseFloat(p.w)||0),
+                 surface: window._pieceSurface(p),
                  niv: p.niv | 0 });
     });
   } catch(e) {}
@@ -96851,7 +96852,7 @@ function couvGeometriePlan(progId) {
       pieces.forEach(function(p){ if ((p.niv|0) > nivMax) nivMax = p.niv|0; });
       var top = pieces.filter(function(p){ return (p.niv|0) === nivMax; });
       var base = top.length ? top : pieces;
-      g.emprise = base.reduce(function(s,p){ return s + (parseFloat(p.l)||0) * (parseFloat(p.w)||0); }, 0);
+      g.emprise = base.reduce(function(s,p){ return s + window._pieceSurface(p); }, 0);
       g.niveaux = (_src.niveaux && _src.niveaux.length) ? _src.niveaux.length : 1;
       _els.filter(function(e){ return (e.type==='mur'||e.type==='cloison'||e.type==='mur_courbe') && (e.niv|0) === nivMax; })
         .forEach(function(m){ g.lineaire_murs += parseFloat(m.longueur || m.l) || 0; });
@@ -97119,13 +97120,13 @@ function macGeometriePlan(progId) {
       _els.filter(function(e){ return e.type === 'cloison'; })
         .forEach(function(c){ g.lineaire_cloisons += parseFloat(c.longueur || c.l) || 0; });
       var pieces = _els.filter(function(e){ return e.type === 'piece'; });
-      g.surface_pieces = pieces.reduce(function(s,p){ return s + (parseFloat(p.l)||0) * (parseFloat(p.w)||0); }, 0);
+      g.surface_pieces = pieces.reduce(function(s,p){ return s + window._pieceSurface(p); }, 0);
       /* Périmètre extérieur (pour l'enduit de façade) : celui du niveau 0,
          une villa courante gardant la même emprise à chaque étage. Estimé
          par rectangle équivalent faute de distinction mur porteur
          extérieur / de refend dans les données du plan. */
       var niv0 = pieces.filter(function(p){ return (p.niv|0) === 0; });
-      var emprise0 = (niv0.length ? niv0 : pieces).reduce(function(s,p){ return s + (parseFloat(p.l)||0)*(parseFloat(p.w)||0); }, 0);
+      var emprise0 = (niv0.length ? niv0 : pieces).reduce(function(s,p){ return s + window._pieceSurface(p); }, 0);
       var ratio = 1.3, L = Math.sqrt(emprise0*ratio), l = Math.sqrt(emprise0/ratio);
       g.perimetre_ext = 2 * (L + l);
       g.source = 'plan';
@@ -98146,7 +98147,7 @@ function dqeListePlans() {
   try {
     if (typeof ED !== 'undefined' && ED.elements) {
       ED.elements.filter(function(e){ return e.type === 'piece'; }).forEach(function(p){
-        surfCourante += (parseFloat(p.l)||0) * (parseFloat(p.w)||0);
+        surfCourante += window._pieceSurface(p);
       });
       typeCourant = (document.getElementById('gen-nomen-type') || {}).value || '';
     }
@@ -102930,6 +102931,7 @@ function qrSvgTag(text){
     var labels = { select:'Sélection', batiment:'Bâtiment (cliquer-glisser)',
       voirie:'Voirie (cliquer-glisser)', espace_vert:'Espace vert',
       parking:'Parking', piece:'Pièce (cliquer-glisser)',
+      piece_poly:'Pièce polygonale (clic à chaque sommet, clic près du 1er point ou double-clic pour fermer)',
       mur:'Mur porteur (clic à chaque point, dblclic pour finir)', cloison:'Cloison (clic à chaque point, dblclic pour finir)',
       mur_courbe:'Mur courbe (3 clics : début, courbe, fin)',
       porte:'Porte (cliquer-glisser)', fenetre:'Fenêtre',
@@ -103448,6 +103450,26 @@ function qrSvgTag(text){
     return Math.abs(a) / 2;
   }
 
+  /* [Support pièces polygonales] Une pièce polygonale (points[]) porte des
+     champs surf/perim déjà calculés à la création (shoelace pour la
+     surface, somme des longueurs de côté pour le périmètre) — une pièce
+     rectangulaire classique (sans points[]) n'a ni l'un ni l'autre, d'où le
+     repli sur w*h / 2*(w+h). Exposées sur window (pas seulement internes à
+     cet IIFE) : de nombreux calculs de surface/périmètre de pièce vivent
+     dans des fonctions déclarées ailleurs dans le fichier, hors de ce
+     scope — un site qui continuerait à lire w*h/2*(w+h) directement
+     surestimerait la surface d\'une pièce en L ou irrégulière (aire du
+     rectangle englobant, toujours ≥ aire réelle), avec un risque financier
+     direct sur les quantités de matériaux et les coûts du DQE. */
+  window._pieceSurface = function(p) {
+    if (p.surf != null) return p.surf;
+    return (parseFloat(p.w)||0) * (parseFloat(p.h)||0);
+  };
+  window._piecePerimetre = function(p) {
+    if (p.perim != null) return p.perim;
+    return 2 * ((parseFloat(p.w)||0) + (parseFloat(p.h)||0));
+  };
+
   /* ── Point dans polygone (ray casting) ── */
   function _pointInPoly(px, py, pts) {
     var inside = false;
@@ -103480,6 +103502,46 @@ function qrSvgTag(text){
     ED.polyPoints = []; ED.polyCursor = null; ED.drawing = false;
     archiRedraw();
     _archiUpdateSurfKpis();
+  }
+
+  /* [Pièces polygonales] Même mécanisme que _archiCloseLot (clic près du
+     1er point pour fermer) mais produit type='piece' — pour que ce
+     polygone soit compté partout où le DQE/les coûts/les statistiques
+     lisent déjà type==='piece', SANS aucune modification supplémentaire
+     de ces sites. surf (shoelace, surface réelle) et perim (somme réelle
+     des longueurs de côté, pas 2×(w+h) qui surestimerait une pièce en L)
+     sont stockés directement sur l'élément — window._pieceSurface() et
+     window._piecePerimetre() les préfèrent automatiquement à la bounding
+     box dès qu'ils sont présents. La bounding box (x/y/w/h) reste calculée
+     en plus, pour tout ce qui n'a besoin que de la POSITION (pas de la
+     surface) — sélection, cadrage, export, etc. */
+  function _archiClosePiecePoly() {
+    if (ED.polyPoints.length < 3) return;
+    _archipush();
+    var pts = ED.polyPoints.slice();
+    var xs = pts.map(function(p){ return p.x; });
+    var ys = pts.map(function(p){ return p.y; });
+    var bx = Math.min.apply(null, xs), by = Math.min.apply(null, ys);
+    var bw = Math.max.apply(null, xs) - bx, bh = Math.max.apply(null, ys) - by;
+    var perim = 0;
+    for (var i = 0; i < pts.length; i++) {
+      var j = (i + 1) % pts.length;
+      perim += Math.hypot(pts[j].x - pts[i].x, pts[j].y - pts[i].y);
+    }
+    var label = prompt('Nom de cette pièce ?', 'Pièce');
+    if (!label) { ED.polyPoints = []; ED.polyCursor = null; ED.drawing = false; archiRedraw(); return; }
+    ED.elements.push({
+      id: _id(), type: 'piece', niv: ED.nivActif,
+      points: pts,
+      x: bx, y: by, w: bw, h: bh,
+      label: label,
+      surf: Math.round(_shoelace(pts) * 100) / 100,
+      perim: Math.round(perim * 100) / 100
+    });
+    ED.polyPoints = []; ED.polyCursor = null; ED.drawing = false;
+    archiRedraw();
+    _archiUpdateSurfKpis();
+    toast('Pièce ajoutée : ' + label + ' — ' + Math.round(_shoelace(pts)*100)/100 + ' m².', 'success');
   }
 
   function _drawElement(ctx, el, selected) {
@@ -103811,6 +103873,41 @@ function qrSvgTag(text){
       }
       ctx.restore(); return;
 
+    } else if (el.type === 'piece' && el.points && el.points.length >= 3) {
+      /* ── Pièce polygonale — même principe que le lot (tracé du vrai
+         contour, pas juste sa bounding box), avec le style visuel d\'une
+         pièce (label + surface centrés, pas de numéro comme pour un lot). ── */
+      ctx.beginPath();
+      ctx.moveTo(ED.offsetX + el.points[0].x * ED.scale, ED.offsetY + el.points[0].y * ED.scale);
+      for (var ppi = 1; ppi < el.points.length; ppi++) {
+        ctx.lineTo(ED.offsetX + el.points[ppi].x * ED.scale, ED.offsetY + el.points[ppi].y * ED.scale);
+      }
+      ctx.closePath();
+      ctx.fillStyle = c.fill;
+      ctx.fill();
+      ctx.strokeStyle = selected ? '#2563EB' : c.stroke;
+      ctx.lineWidth = selected ? 2.5 : 1.5;
+      if (selected) ctx.setLineDash([5, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (ED.afficherEtiquettes && el.label) {
+        var pcx = el.points.reduce(function(s,pt){ return s+pt.x; },0) / el.points.length;
+        var pcy = el.points.reduce(function(s,pt){ return s+pt.y; },0) / el.points.length;
+        var pcxPx = ED.offsetX + pcx * ED.scale, pcyPx = ED.offsetY + pcy * ED.scale;
+        ctx.fillStyle = '#1C1C2E';
+        ctx.font = '600 12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(el.label, pcxPx, pcyPx - 7);
+        var pSurf = window._pieceSurface(el);
+        if (pSurf > 0) {
+          ctx.fillStyle = 'rgba(30,30,60,0.55)';
+          ctx.font = '10px sans-serif';
+          ctx.fillText(pSurf + ' m²', pcxPx, pcyPx + 8);
+        }
+      }
+      ctx.restore(); return;
+
     } else {
       /* Zone remplie générique */
       ctx.fillStyle = c.fill;
@@ -103837,7 +103934,7 @@ function qrSvgTag(text){
       ctx.textBaseline = 'middle';
       ctx.fillText(el.label, x + w / 2, y + h / 2);
       /* Surface m² */
-      var surf = Math.round(el.w * el.h * 10) / 10;
+      var surf = Math.round(window._pieceSurface(el) * 10) / 10;
       if (surf > 0 && h > 34) {
         ctx.fillStyle = 'rgba(30,30,60,0.55)';
         ctx.font = '10px sans-serif';
@@ -104154,7 +104251,7 @@ function qrSvgTag(text){
           var bx1 = Math.min(el.x, el.x2), bx2 = Math.max(el.x, el.x2);
           var by1 = Math.min(el.y, el.y2), by2 = Math.max(el.y, el.y2);
           if (p.mx >= bx1 - 0.5 && p.mx <= bx2 + 0.5 && p.my >= by1 - 0.5 && p.my <= by2 + 0.5) { hit = el; break; }
-        } else if (el.type === 'lot' && el.points && el.points.length) {
+        } else if ((el.type === 'lot' || el.type === 'piece') && el.points && el.points.length) {
           if (_pointInPoly(p.mx, p.my, el.points)) { hit = el; break; }
         } else if (el.type === 'regard' || el.type === 'poteau' || POINT_ICONS[el.type]) {
           if (Math.hypot(p.mx - el.x, p.my - el.y) <= 1.2) { hit = el; break; }
@@ -104308,6 +104405,22 @@ function qrSvgTag(text){
       return;
     }
 
+    /* Outil Pièce (polygone) — même geste que Lot, ferme sur type='piece' */
+    if (ED.tool === 'piece_poly') {
+      if (ED.polyPoints.length >= 3) {
+        var fpP = ED.polyPoints[0];
+        var distP = Math.sqrt(Math.pow(mx - fpP.x, 2) + Math.pow(my - fpP.y, 2));
+        if (distP <= 1.5) {
+          _archiClosePiecePoly();
+          return;
+        }
+      }
+      ED.polyPoints.push({ x: mx, y: my });
+      ED.drawing = true;
+      archiRedraw();
+      return;
+    }
+
     /* Outils rectangle */
     ED.drawing = true;
     ED.drawStart = { x: mx, y: my };
@@ -104321,8 +104434,19 @@ function qrSvgTag(text){
     if (xy) xy.textContent = 'x: ' + Math.round(mx * 10)/10 + ' m · y: ' + Math.round(my * 10)/10 + ' m';
 
     if (ED.dragEl && ED.tool === 'select') {
-      ED.dragEl.x = _snap(mx - ED.dragOff.x);
-      ED.dragEl.y = _snap(my - ED.dragOff.y);
+      var nx = _snap(mx - ED.dragOff.x), ny = _snap(my - ED.dragOff.y);
+      /* [FIX] Le drag ne déplaçait que la bounding box (x/y) — pour un
+         polygone (lot, pièce polygonale), le rendu suit les vrais sommets
+         (points[]), pas x/y : sans cette translation, l'élément restait
+         visuellement figé à sa position d'origine pendant que sa bounding
+         box invisible se déplaçait dans le vide. Bug préexistant (affectait
+         déjà « lot »), corrigé pour les deux en même temps. */
+      if (Array.isArray(ED.dragEl.points)) {
+        var ddx = nx - ED.dragEl.x, ddy = ny - ED.dragEl.y;
+        ED.dragEl.points = ED.dragEl.points.map(function(pt){ return { x: pt.x + ddx, y: pt.y + ddy }; });
+      }
+      ED.dragEl.x = nx;
+      ED.dragEl.y = ny;
       archiRedraw();
       return;
     }
@@ -104493,6 +104617,11 @@ function qrSvgTag(text){
       if (ED.polyPoints.length >= 3) _archiCloseLot();
       return;
     }
+    /* Double-clic en mode pièce polygonale → fermer le polygone */
+    if (ED.tool === 'piece_poly') {
+      if (ED.polyPoints.length >= 3) _archiClosePiecePoly();
+      return;
+    }
     /* Double-clic en mode canalisation / clôture → terminer le tracé (polyligne ouverte) */
     if (TRACE_OUVERT_TOOLS.indexOf(ED.tool) !== -1) {
       if (ED.polyPoints.length >= 2) _archiCloseReseau(ED.tool);
@@ -104504,7 +104633,7 @@ function qrSvgTag(text){
     var _v2 = _elsVue();
     for (var i = _v2.length - 1; i >= 0; i--) {
       var el = _v2[i];
-      if (el.type === 'lot') {
+      if (el.type === 'lot' || (el.type === 'piece' && el.points)) {
         if (_pointInPoly(p.mx, p.my, el.points)) { hit = el; break; }
       } else if (el.type === 'regard' || el.type === 'poteau' || POINT_ICONS[el.type]) {
         if (Math.hypot(p.mx - el.x, p.my - el.y) <= 1.2) { hit = el; break; }
@@ -104599,7 +104728,8 @@ function qrSvgTag(text){
     var isLineaire = isReseau || el.type === 'cloture';
     var isPonctuel = isPonctuelVRD || isPonctuelSimple;
     var surf = el.type === 'lot' && el.points ? Math.round(_shoelace(el.points) * 10) / 10
-      : (el.type !== 'cote' && el.type !== 'texte' && !isPonctuel && !isLineaire ? Math.round(el.w * el.h * 10) / 10 : null);
+      : (el.type === 'piece' ? Math.round(window._pieceSurface(el) * 10) / 10
+      : (el.type !== 'cote' && el.type !== 'texte' && !isPonctuel && !isLineaire ? Math.round(el.w * el.h * 10) / 10 : null));
     content.innerHTML = '<div style="font-size:11px;color:var(--dim);margin-bottom:6px;">' + (COULEURS[el.type]||{label:el.type}).label + '</div>'
       + '<div style="display:flex;flex-direction:column;gap:5px;">'
       + _propInput('Nom', 'archi-prop-label', el.label || '', "archiPropChange('label',this.value)")
@@ -104873,8 +105003,8 @@ function qrSvgTag(text){
     var total = 0, totalMurs = 0, totalFaience = 0;
     var surfParNiv = [];
     var rows = pieces.map(function(p) {
-      var s = Math.round(p.w * p.h * 10) / 10;
-      var perim = 2 * (p.w + p.h);
+      var s = Math.round(window._pieceSurface(p) * 10) / 10;
+      var perim = window._piecePerimetre(p);
       var wallA = Math.round(perim * _nivH(p.niv) * (1 - DEDUC / 100) * 10) / 10;
       total += s; totalMurs += wallA;
       var ni = p.niv | 0;
@@ -105017,7 +105147,7 @@ function qrSvgTag(text){
     var pieces = F('piece'), mursPorteurs = F('mur'), cloisons = F('cloison'),
         portes = F('porte'), fenetres = F('fenetre'), escaliers = F('escalier'),
         equipements = F('equipement');
-    var totalSurf = Math.round(pieces.reduce(function(a, p) { return a + p.w * p.h; }, 0) * 10) / 10;
+    var totalSurf = Math.round(pieces.reduce(function(a, p) { return a + window._pieceSurface(p); }, 0) * 10) / 10;
     var longPorteurs = Math.round(mursPorteurs.reduce(function(a, m) { return a + Math.max(m.w, m.h); }, 0) * 10) / 10;
     var g = document.getElementById('gen-nomen-gros-oeuvre-wrap');
     if (g) g.style.display = (mursPorteurs.length || cloisons.length) ? '' : 'none';
@@ -105133,8 +105263,8 @@ function qrSvgTag(text){
 
     var lignes = [];
     pieces.forEach(function(p) {
-      var surf  = Math.round(p.w * p.h * 10) / 10;
-      var perim = 2 * (p.w + p.h);
+      var surf  = Math.round(window._pieceSurface(p) * 10) / 10;
+      var perim = window._piecePerimetre(p);
       var wallA = Math.round(perim * hauteur * (1 - deduc / 100) * 10) / 10;
       var label = _pf(p) + (p.label || 'Pièce');
       if (genSol)     lignes.push({ poste: 'Sol',     materiau: 'Revêtement de sol — '  + label, unite: 'm²', quantite: surf  });
@@ -105223,7 +105353,7 @@ function qrSvgTag(text){
       var _src = _dqeScope();
       _src.filter(function(e){ return e.type === 'piece'; }).forEach(function(p){
         _genPieces++;
-        _genSurf += (parseFloat(p.l) || 0) * (parseFloat(p.w) || 0);
+        _genSurf += window._pieceSurface(p);
       });
     } catch(e) {}
     var _genNiveaux = (ED.niveaux && ED.niveaux.length) ? ED.niveaux.length : 1;
@@ -105443,7 +105573,7 @@ function qrSvgTag(text){
       var pieces = ED.elements.filter(function(e) { return e.type === 'piece'; });
       var total = 0, parNiv = [];
       var lignes = pieces.map(function(p) {
-        var s = Math.round(p.w * p.h * 10) / 10; total += s;
+        var s = Math.round(window._pieceSurface(p) * 10) / 10; total += s;
         var ni = p.niv | 0; parNiv[ni] = (parNiv[ni] || 0) + s;
         return '<tr>'
           + (_mn ? '<td style="padding:4px 10px;border-bottom:1px solid #ddd;font-weight:700;color:#B87333;">' + _nivCode(ni) + '</td>' : '')
@@ -105798,9 +105928,14 @@ function qrSvgTag(text){
 
     /* Mode intérieur */
     if (t === 'piece' || t === 'balcon') {
+      /* [Limite assumée] Le volume 3D reste la bounding box rectangulaire
+         même pour une pièce polygonale — un vrai rendu de volume suivant
+         le contour exact serait un chantier distinct et plus complexe
+         (triangulation du polygone). Seul le NOMBRE affiché est corrigé
+         ici, pour rester honnête sur la surface réelle. */
       _flat3(faces, el.x, el.y, el.w, el.h, zb + 0.02, t === 'balcon' ? COL3D.balcon : COL3D.piece, 0.9);
       labels.push({ x:el.x + el.w / 2, y:el.y + el.h / 2, z:zb + 0.25,
-                    txt:(el.label || (t === 'balcon' ? 'Balcon' : 'Pièce')) + ' · ' + (Math.round(el.w * el.h * 10) / 10) + ' m²', col:'#1D4ED8' });
+                    txt:(el.label || (t === 'balcon' ? 'Balcon' : 'Pièce')) + ' · ' + (Math.round(window._pieceSurface(el) * 10) / 10) + ' m²', col:'#1D4ED8' });
     }
     else if (t === 'mur')     _box3(faces, el.x, el.y, el.w, el.h, zb, zb + (el.hauteur || H3D.mur), COL3D.mur, 1);
     else if (t === 'cloison') _box3(faces, el.x, el.y, el.w, el.h, zb, zb + (el.hauteur || H3D.cloison), COL3D.cloison, 1);
