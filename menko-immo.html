@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.71 · 2026-08-18 — NOUVEAU : bouton « 🎯 Centrer le plan », à côté de « Ajuster au contenu ». Décale tout le plan pour que son centre coïncide avec celui du champ de dessin actuel — utile après une injection dont les éléments atterrissent parfois loin de l\'origine. Le même décalage s\'applique à TOUS les niveaux ensemble (pas seulement le niveau actif), pour préserver l\'alignement RDC/étage — sans ça, un mur au RDC se serait désaligné de son homologue à l\'étage. AUDIT DE COMPLÉTUDE FAIT AVANT LIVRAISON : recensé les 16 points de création d\'élément dans l\'éditeur pour identifier TOUS les formats de coordonnées réellement utilisés — pas seulement x/y. Trouvé et géré : x2/y2 (cotes), points[] (lot, clôture, mur/cloison oblique, réseau), et surtout cx/cy (mur courbe — son centre de cercle, distinct de sa bounding box x/y ; sans cette translation, un mur courbe se serait affiché décalé de sa propre bounding box après centrage, un bug visuel qui serait passé inaperçu jusqu\'à ce qu\'un utilisateur trace un mur courbe puis centre son plan). Testé empiriquement sur les 4 formats simultanément — le décalage relatif cx-x reste identique avant/après translation, confirmant qu\'aucune géométrie interne n\'est faussée. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.72 · 2026-08-18 — FIX : l\'outil de cotation (📏) affichait des mesures fausses. Confirmé par le screenshot fourni : une distance réelle de 4 m affichée « 0.2 m ». Cause exacte trouvée : le label divisait la distance par ED.scale (facteur pixels-par-mètre), alors que cette distance était déjà calculée en mètres depuis les coordonnées monde de la cote — une division entre deux unités incompatibles, qui faisait varier la valeur AFFICHÉE selon le niveau de zoom, sans rapport avec la vraie mesure. Confirmé mathématiquement avant correction : 4 m ÷ 20 px/m = 0.2, exactement la valeur observée. Corrigé — la distance est maintenant affichée telle quelle. Vérifié que ce bug n\'affectait QUE l\'affichage visuel : le type « cote » n\'intervient nulle part dans le calcul des quantités du DQE (matériaux, coûts), qui utilisent uniquement pièces/murs/cloisons — aucun devis n\'a donc été faussé par ce bug, seul l\'outil de mesure à l\'écran était inexploitable. L\'aperçu en cours de tracé (avant validation du 2e clic) réutilise la même fonction de rendu, corrigé automatiquement sans duplication de code. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -103842,7 +103842,16 @@ function qrSvgTag(text){
     ctx.textBaseline = 'bottom';
     var mx = (x1 + x2) / 2 + nx * (offset + 6);
     var my = (y1 + y2) / 2 + ny * (offset + 6);
-    ctx.fillText(Math.round(dist / ED.scale * 10) / 10 + ' m', mx, my);
+    /* [FIX] dist est calculé depuis el.x/el.x2 (coordonnées MONDE, déjà en
+       mètres) — diviser par ED.scale (pixels par mètre) mélangeait deux
+       unités incompatibles : mètres ÷ (pixels/mètre) donne un résultat
+       sans aucun sens physique. Confirmé avec les valeurs réellement
+       observées : une distance réelle de 4 m affichée « 0.2 m » à un zoom
+       de 20 px/m (4/20=0.2), rendant l'outil de cotation inexploitable —
+       la valeur affichée changeait même selon le niveau de zoom, sans
+       rapport avec la vraie mesure. dist EST déjà la bonne valeur, à
+       afficher telle quelle. */
+    ctx.fillText(Math.round(dist * 10) / 10 + ' m', mx, my);
     ctx.restore();
   }
 
