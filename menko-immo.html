@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.68 · 2026-08-18 — Éditeur de plans : nouveau bouton « 🔍 Zoomer sur zone ». Le zoom molette/boutons existait déjà mais restait centré et imprécis pour examiner un détail technique précis (cotations serrées, coin d\'un plan complexe). Nouvel outil (cliquer-glisser un cadre) qui recentre et zoome exactement sur la zone tracée — réutilise la même relation scale/offset que le zoom molette existant (mêmes bornes min/max), pas un mécanisme parallèle. RISQUE ÉVITÉ AVANT LIVRAISON : l\'aperçu du cadre en cours de tracé passait par défaut par le rendu générique d\'élément architectural (type inconnu « zoom_zone » retombant sur la couleur « bâtiment ») — pas de plantage, mais un rendu visuel trompeur (verdâtre, comme une construction) pour ce qui n\'est qu\'un cadrage temporaire. Corrigé par un rendu dédié (pointillés bleus), cohérent avec les autres aperçus de sélection déjà présents dans l\'app. Testé empiriquement : le rectangle tracé apparaît bien centré et entièrement contenu dans le canvas après zoom, sur un scénario réaliste.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.69 · 2026-08-18 — « Analyser un plan (image) » : détermination et tracé automatique des murs individuels, plus des totaux agrégés. L\'IA détecte désormais chaque segment de mur avec sa position sur l\'image (pas juste un linéaire total par type), et l\'échelle image→mètres est calibrée automatiquement depuis les pièces déjà dimensionnées (au moins 2 pièces cohérentes, avec un garde-fou qui refuse la calibration si les estimations divergent trop entre elles). VRAI PROBLÈME TROUVÉ ET RÉSOLU EN COURS DE CONCEPTION, avant livraison : positionner les pièces (bbox IA) ET les murs (segments IA) indépendamment produit des chevauchements réels entre eux — confirmé par simulation, deux extractions séparées par l\'IA ne s\'alignent jamais parfaitement. Compromis retenu après consultation : les pièces restent sur la grille déjà éprouvée (fiable, dimensions jamais altérées), les murs sont tracés à leur VRAIE forme géométrique relative (angles, retours — testé sur une forme en L, correctement reconstruite) mais dans une zone séparée sous les pièces, jamais superposés. Repli automatique sur le périmètre synthétique (v14.65-68) si la calibration échoue. Les murs cotés MANUELLEMENT (v14.66, sans position sur image) restent toujours injectés séparément — trou trouvé et comblé avant livraison, ils auraient été silencieusement perdus si le mode vraie forme se déclenchait pour d\'autres murs. Contrôle croisé d\'échelle (v14.67) adapté au nouveau format segment (l\'ancien champ agrégé n\'étant plus rempli, le contrôle se serait tu silencieusement sans cette correction). Nouvelle indication dans l\'écran de vérification : annonce à l\'avance quel mode sera utilisé à l\'injection. INCIDENT DE RÉGRESSION (récurrent cette session) : une déclaration de fonction (_dqeCalculerLayout) effacée par un remplacement de texte mal ciblé — détecté et corrigé avant livraison par la vérification systématique. Testé empiriquement à chaque étape : calibration (5 scénarios dont incohérence et données insuffisantes), reconstruction géométrique en L, absence de chevauchement anormal sur le résultat final complet à 3 zones.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -87719,15 +87719,17 @@ async function dqeScanPlanAnalyser() {
       + 'Si une surface en m² est annotée sur le plan pour cette pièce, utilise-la exactement. '
       + 'Si seules des cotes (longueur × largeur) sont visibles, calcule la surface à partir d\'elles et renvoie aussi longueur/largeur. '
       + 'Si ni surface ni cotes ne sont visibles pour une pièce, estime une surface plausible selon le type de pièce et la taille apparente sur le dessin (ex. chambre standard ~10-14 m², salon ~20-28 m², cuisine ~9-12 m², SDB/WC ~2-5 m²) — indique alors "estime":true. '
-      + 'Identifie ensuite séparément les MURS, en distinguant deux types : '
+      + 'Pour CHAQUE pièce, donne aussi sa position approximative sur l\'image sous forme de rectangle englobant en pourcentage de la largeur/hauteur totale de l\'image ("bbox":[gauche,haut,droite,bas], chaque valeur de 0 à 100 — 0,0 = coin supérieur gauche de l\'image, 100,100 = coin inférieur droit). '
+      + 'Identifie ensuite chaque MUR INDIVIDUELLEMENT (pas un total agrégé) — chaque segment de mur ou cloison visible, avec ses deux extrémités en coordonnées pourcentage sur l\'image (même repère que les pièces : "x1","y1","x2","y2", de 0 à 100), en distinguant deux types : '
       + '"porteur" — murs de structure (généralement en périphérie du bâtiment, aux intersections principales, trait épais ou hachuré plein, épaisseur habituelle 15-25 cm) '
       + 'et "cloison" — cloisons de distribution intérieure non porteuses (trait plus fin, souvent en simple ligne ou hachure légère, épaisseur habituelle 7-12 cm). '
-      + 'Regroupe-les par type (pas mur par mur) : donne le linéaire total en mètres et l\'épaisseur moyenne typique pour chaque type détecté sur ce plan. Si le type d\'un mur est ambigu, classe-le "porteur" par prudence (sous-évaluer la structure serait plus risqué que la sur-évaluer). '
+      + 'Si le type d\'un mur est ambigu, classe-le "porteur" par prudence (sous-évaluer la structure serait plus risqué que la sur-évaluer). '
+      + 'Ne fusionne pas plusieurs murs en un seul segment : un mur qui change de direction (angle, retour) doit être décrit comme plusieurs segments distincts, chacun avec ses propres extrémités. '
       + 'Renvoie UNIQUEMENT un JSON strict, sans texte hors JSON : '
-      + '{"pieces":[{"label":"Chambre 2","longueur":3.5,"largeur":3.2,"surface":11.20,"estime":false}], '
-      + '"murs":[{"type":"porteur","longueur":45.0,"epaisseur":0.20},{"type":"cloison","longueur":18.0,"epaisseur":0.10}], '
+      + '{"pieces":[{"label":"Chambre 2","longueur":3.5,"largeur":3.2,"surface":11.20,"estime":false,"bbox":[10,15,35,40]}], '
+      + '"murs":[{"type":"porteur","x1":5,"y1":10,"x2":60,"y2":10,"epaisseur":0.20},{"type":"cloison","x1":35,"y1":15,"x2":35,"y2":40,"epaisseur":0.10}], '
       + '"surface_totale_habitable":0, "nb_chambres":0}. '
-      + 'Longueur/largeur/épaisseur en mètres, surface en m². N\'inclus PAS les portes, fenêtres — uniquement les pièces et les murs.';
+      + 'Longueur/largeur/épaisseur en mètres, surface en m², bbox et x1/y1/x2/y2 en pourcentage (0-100) de l\'image — jamais en mètres ni en pixels. N\'inclus PAS les portes, fenêtres — uniquement les pièces et les murs.';
     var resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type':'application/json', 'x-api-key':IA.key, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' },
@@ -87759,15 +87761,28 @@ async function dqeScanPlanAnalyser() {
         lgg = Math.sqrt(surf / 1.2);
         lg = surf / lgg;
       }
+      /* [Positions réelles] bbox en % image (0-100), utilisé pour calibrer
+         l'échelle et positionner pièces/murs à leur vraie position relative
+         — voir _dqeCalibrerEchelleImage(). Ignoré silencieusement si absent
+         ou invalide : le mode grille (existant, sans position réelle)
+         prend alors le relais automatiquement. */
+      var bbox = Array.isArray(p.bbox) && p.bbox.length === 4 ? p.bbox.map(function(v){ return parseFloat(v)||0; }) : null;
+      if (bbox && (bbox[2] <= bbox[0] || bbox[3] <= bbox[1])) bbox = null; /* bbox dégénéré (largeur/hauteur nulle ou négative) */
       return { label: p.label || 'Pièce', longueur: Math.round(lg*100)/100, largeur: Math.round(lgg*100)/100,
-               surface: surf || Math.round(lg*lgg*100)/100, estime: !!p.estime };
+               surface: surf || Math.round(lg*lgg*100)/100, estime: !!p.estime, bbox: bbox };
     }).filter(function(p){ return p.longueur > 0 && p.largeur > 0; });
 
     _dqeScanPlanTmp.murs = (obj.murs || []).map(function(m) {
       var type = (String(m.type||'').toLowerCase().indexOf('cloison') !== -1) ? 'cloison' : 'porteur';
-      return { type: type, longueur: Math.round((parseFloat(m.longueur)||0)*100)/100,
+      var segment = null;
+      if (m.x1 != null && m.y1 != null && m.x2 != null && m.y2 != null) {
+        var sx1 = parseFloat(m.x1)||0, sy1 = parseFloat(m.y1)||0, sx2 = parseFloat(m.x2)||0, sy2 = parseFloat(m.y2)||0;
+        if (Math.hypot(sx2-sx1, sy2-sy1) > 0.5) segment = { x1: sx1, y1: sy1, x2: sx2, y2: sy2 }; /* écarte un segment quasi ponctuel (bruit) */
+      }
+      var longueurAgregee = parseFloat(m.longueur) || 0; /* ancien format agrégé — rétrocompatibilité si l'IA le renvoie encore ou pour la fusion avec la cotation manuelle */
+      return { type: type, longueur: Math.round(longueurAgregee*100)/100, segment: segment,
                epaisseur: Math.round((parseFloat(m.epaisseur)||(type==='porteur'?0.20:0.10))*100)/100 };
-    }).filter(function(m){ return m.longueur > 0; });
+    }).filter(function(m){ return m.longueur > 0 || m.segment; });
 
     if (!_dqeScanPlanTmp.pieces.length) { statusEl.innerHTML = '❌ Aucune pièce détectée. Plan peu lisible ?'; btn.disabled = false; return; }
     closeModal('modal-scan-plan-dqe');
@@ -87842,7 +87857,18 @@ function _dqeRenderScanPlanReview() {
       var epPRev = (function(){ var m=mursDetectes.filter(function(x){return x.type==='porteur';}); return m.length ? (m.reduce(function(s,x){return s+x.epaisseur;},0)/m.length) : 0.20; })();
       var epCRev = (function(){ var m=mursDetectes.filter(function(x){return x.type==='cloison';}); return m.length ? (m.reduce(function(s,x){return s+x.epaisseur;},0)/m.length) : 0.10; })();
       var layoutPrevu = _dqeCalculerLayout(pcs, epPRev, epCRev, 20);
-      var linPorteurDetecte = Math.round(mursDetectes.filter(function(m){return m.type==='porteur';}).reduce(function(s,m){return s+m.longueur;},0) * 10) / 10;
+      /* [Compatible nouveau ET ancien format] Un mur détecté par l'IA porte
+         désormais un "segment" (position réelle en % image), sans le champ
+         "longueur" agrégé d'avant — sans cette adaptation, ce contrôle
+         resterait silencieusement désactivé (toujours 0) pour toute
+         nouvelle détection. Un mur coté manuellement, lui, n'a jamais de
+         segment mais donne directement sa longueur en mètres — les deux
+         se combinent ici selon ce qui est disponible pour chacun. */
+      var mPerPctRev = _dqeCalibrerEchelleImage(pcs);
+      var linPorteurDetecte = Math.round(mursDetectes.filter(function(m){return m.type==='porteur';}).reduce(function(s,m){
+        if (m.segment && mPerPctRev) return s + Math.hypot(m.segment.x2-m.segment.x1, m.segment.y2-m.segment.y1) * mPerPctRev;
+        return s + (m.longueur||0);
+      }, 0) * 10) / 10;
       if (linPorteurDetecte > 0) {
         var ratioMurs = linPorteurDetecte / layoutPrevu.linPerimetre;
         if (ratioMurs < 0.5 || ratioMurs > 2.0) {
@@ -87856,11 +87882,28 @@ function _dqeRenderScanPlanReview() {
       }
     }
   } catch(e) {}
+
+  /* [Indication du mode prévu] Calculée avec la même fonction que
+     l'injection elle-même utilisera — l'utilisateur sait AVANT de cliquer
+     « Injecter » si les murs seront tracés à leur position réelle ou
+     génération synthétique de repli, jamais une surprise après coup. */
+  var indicationMode = '';
+  try {
+    var mursRev = _dqeScanPlanTmp.murs || [];
+    var epPTest = (function(){ var m=mursRev.filter(function(x){return x.type==='porteur';}); return m.length ? (m.reduce(function(s,x){return s+x.epaisseur;},0)/m.length) : 0.20; })();
+    var epCTest = (function(){ var m=mursRev.filter(function(x){return x.type==='cloison';}); return m.length ? (m.reduce(function(s,x){return s+x.epaisseur;},0)/m.length) : 0.10; })();
+    var testReel = _dqeCalculerLayoutReel(pcs, mursRev, epPTest, epCTest);
+    if (testReel) {
+      indicationMode = '<div style="margin-top:8px;font-size:11px;color:var(--vert);">🧱 ' + testReel.mursReels.length + ' mur(s) seront tracés à leur position réelle détectée sur l\'image, sous les pièces.</div>';
+    } else if (mursRev.length) {
+      indicationMode = '<div style="margin-top:8px;font-size:11px;color:var(--blanc-dim);">🧱 Position réelle non calculable (données insuffisantes ou incohérentes) — un périmètre sera généré automatiquement autour des pièces à l\'injection.</div>';
+    }
+  } catch(e) {}
   document.getElementById('scan-plan-dqe-review-info').innerHTML =
     pcs.length + ' pièce(s) détectée(s) · ' + Math.round(total*10)/10 + ' m² habitables au total'
     + (nbEstimees ? ' · ⚠️ ' + nbEstimees + ' surface(s) estimée(s) (non annotée(s) sur le plan — à vérifier)' : '')
     + (anomalies.length ? ' · <span style="color:var(--rouge);font-weight:700;">🚩 ' + anomalies.length + ' surface(s) hors plage plausible pour leur type — probable erreur, à revérifier</span>' : '')
-    + alerteEchelle + alerteLineaireMurs;
+    + alerteEchelle + alerteLineaireMurs + indicationMode;
   document.getElementById('tbody-scan-plan-dqe-review').innerHTML = pcs.map(function(p, i) {
     var plageAnormale = _dqeSurfacePlausible(p.label, p.surface);
     var style = plageAnormale ? 'background:rgba(220,38,38,0.10);' : (p.estime ? 'background:rgba(234,88,12,0.06);' : '');
@@ -87913,6 +87956,110 @@ function _dqeScanPlanMajDim(i, champ, val) {
    injection) et par dqeScanPlanInjecter (pour créer les vrais éléments),
    garantissant que les deux utilisent EXACTEMENT le même calcul, sans
    jamais pouvoir diverger l'un de l'autre. */
+/* ═══════════════════════════════════════════════════════════════════════
+   POSITIONS RÉELLES — quand l'IA fournit la position de chaque pièce
+   (bbox) et de chaque mur (segment x1,y1,x2,y2) sur l'image, on peut
+   calibrer une échelle image→mètres à partir des pièces (dont les
+   dimensions réelles sont déjà connues, annotées ou estimées de façon
+   fiable) et positionner murs et pièces à leur VRAIE position relative —
+   plutôt que la grille artificielle utilisée en repli quand cette donnée
+   manque. Jamais de géométrie produite sur une calibration douteuse : tout
+   contrôle de plausibilité échoué retombe silencieusement sur le mode
+   grille déjà éprouvé, jamais un plantage ni un plan absurde.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Médiane simple — plus robuste que la moyenne face à une pièce dont le
+   bbox serait mal évalué par l'IA (résiste à quelques valeurs aberrantes). */
+function _dqeMediane(valeurs) {
+  var v = valeurs.slice().sort(function(a,b){ return a-b; });
+  var n = v.length;
+  if (!n) return null;
+  return n % 2 ? v[(n-1)/2] : (v[n/2-1] + v[n/2]) / 2;
+}
+
+/* Retourne mPerPct (mètres réels par point de pourcentage image) ou null si
+   la calibration est impossible ou trop incohérente pour être fiable. */
+function _dqeCalibrerEchelleImage(pieces) {
+  var estimations = [];
+  var piecesContributrices = 0;
+  (pieces||[]).forEach(function(p) {
+    if (!p.bbox || !(p.longueur > 0) || !(p.largeur > 0)) return;
+    var wPct = p.bbox[2] - p.bbox[0], hPct = p.bbox[3] - p.bbox[1];
+    if (wPct <= 0 || hPct <= 0) return;
+    var grandCoteM = Math.max(p.longueur, p.largeur), grandCotePct = Math.max(wPct, hPct);
+    var petitCoteM = Math.min(p.longueur, p.largeur), petitCotePct = Math.min(wPct, hPct);
+    var avant = estimations.length;
+    if (grandCotePct > 0.5) estimations.push(grandCoteM / grandCotePct);
+    if (petitCotePct > 0.5) estimations.push(petitCoteM / petitCotePct);
+    if (estimations.length > avant) piecesContributrices++;
+  });
+  /* Au moins 2 PIÈCES DISTINCTES (pas juste 2 estimations, qui peuvent
+     provenir d'une seule pièce comptée deux fois — grand et petit côté) :
+     sans ça, une seule pièce mal évaluée par l'IA suffirait à calibrer
+     toute la géométrie sur une base non vérifiable. */
+  if (piecesContributrices < 2) return null;
+  var mPerPct = _dqeMediane(estimations);
+  if (!(mPerPct > 0)) return null;
+  /* Cohérence : si les estimations individuelles s'écartent trop de la
+     médiane (facteur > 3 dans un sens ou l'autre), l'IA n'a probablement
+     pas donné des bbox fiables pour toutes les pièces — trop risqué de
+     construire une géométrie dessus. */
+  var incoherent = estimations.some(function(e){ return e > mPerPct*3 || e < mPerPct/3; });
+  if (incoherent) return null;
+  return mPerPct;
+}
+
+/* Convertit pièces (bbox) et murs (segment) en positions réelles, mètres,
+   avec une origine commune (le point le plus haut-gauche parmi TOUT ce qui
+   est converti) décalée d'une petite marge pour ne jamais produire de
+   coordonnée négative. Retourne null si aucun mur n'a de segment exploitable
+   (dans ce cas, le mode positions réelles n'apporte rien de plus que le
+   mode grille — autant garder ce dernier, plus simple et déjà éprouvé). */
+function _dqeCalculerLayoutReel(pieces, murs, epDefautP, epDefautC) {
+  var mPerPct = _dqeCalibrerEchelleImage(pieces);
+  if (!mPerPct) return null;
+  var mursAvecSegment = (murs||[]).filter(function(m){ return m.segment; });
+  if (!mursAvecSegment.length) return null;
+
+  /* [Compromis retenu après un vrai test empirique ayant révélé le
+     problème] Positionner les pièces selon leur bbox ET les murs selon
+     leur segment, indépendamment, produit des CHEVAUCHEMENTS réels entre
+     pièces et murs — confirmé par simulation avant livraison : le bbox
+     d'une pièce et le segment du mur qui la borde sont deux extractions
+     séparées par l'IA, jamais parfaitement alignées entre elles. Corriger
+     ça proprement demanderait un vrai solveur géométrique (reconstruire
+     les polygones fermés entre pièces et murs adjacents), hors de portée
+     raisonnable ici. On garde donc les pièces sur la grille déjà éprouvée
+     (fiable, jamais de chevauchement, dimensions jamais altérées), et on
+     positionne UNIQUEMENT les murs — mais à leur VRAIE forme géométrique
+     relative les uns aux autres (angles, retours, position relative),
+     pas des segments alignés arbitrairement comme le mode grille classique
+     le ferait. L'origine est calculée sur les MURS SEULEMENT (pas mélangée
+     aux bbox de pièces), pour que leur forme interne reste correcte même
+     si l'ensemble est ensuite translaté ailleurs sur le plan à l'injection. */
+  var minXpct = Infinity, minYpct = Infinity;
+  mursAvecSegment.forEach(function(m){ minXpct = Math.min(minXpct, m.segment.x1, m.segment.x2); minYpct = Math.min(minYpct, m.segment.y1, m.segment.y2); });
+  var MARGE = 0.3; /* absorbe un léger débord dû à la demi-épaisseur d'un mur proche du bord */
+
+  var maxXm = 0, maxYm = 0;
+  var mursReels = mursAvecSegment.map(function(m) {
+    var X1 = (m.segment.x1-minXpct)*mPerPct+MARGE, Y1 = (m.segment.y1-minYpct)*mPerPct+MARGE;
+    var X2 = (m.segment.x2-minXpct)*mPerPct+MARGE, Y2 = (m.segment.y2-minYpct)*mPerPct+MARGE;
+    var ep = m.epaisseur || (m.type==='porteur' ? epDefautP : epDefautC);
+    var estHorizontal = Math.abs(X2-X1) >= Math.abs(Y2-Y1);
+    var seg = estHorizontal
+      ? { x: Math.min(X1,X2), y: (Y1+Y2)/2 - ep/2, w: Math.abs(X2-X1), h: ep }
+      : { x: (X1+X2)/2 - ep/2, y: Math.min(Y1,Y2), w: ep, h: Math.abs(Y2-Y1) };
+    if (seg.w < 0.05 || seg.h < 0.05) return null; /* segment quasi ponctuel après conversion — bruit, pas un vrai mur */
+    maxXm = Math.max(maxXm, seg.x + seg.w); maxYm = Math.max(maxYm, seg.y + seg.h);
+    return { type: m.type, x: Math.round(seg.x*100)/100, y: Math.round(seg.y*100)/100, w: Math.round(Math.max(seg.w,ep)*100)/100, h: Math.round(Math.max(seg.h,ep)*100)/100 };
+  }).filter(Boolean);
+  if (!mursReels.length) return null;
+
+  var linTotalDetecte = Math.round(mursReels.reduce(function(s,m){ return s + Math.max(m.w,m.h); }, 0) * 10) / 10;
+  return { mursReels: mursReels, mPerPct: mPerPct, largeurZone: Math.round(maxXm*100)/100, hauteurZone: Math.round(maxYm*100)/100, linTotalDetecte: linTotalDetecte };
+}
+
 function _dqeCalculerLayout(pieces, epP, epC, largeurMax) {
   var placements = [], cloisonsV = [], cloisonsH = [];
   var x = epP, y = epP, ligneH = 0, largeurAtteinte = 0;
@@ -88019,24 +88166,68 @@ function dqeScanPlanInjecter() {
   var ajoutes = 0, ajoutesMurs = 0;
   var layout = _dqeCalculerLayout(_dqeScanPlanTmp.pieces, epP, epC, 20);
 
+  /* Les pièces restent TOUJOURS sur la grille — fiable, jamais de
+     chevauchement, dimensions jamais altérées (voir décision documentée
+     dans _dqeCalculerLayoutReel). */
   layout.placements.forEach(function(pl) {
     ED.elements.push({ id: 'ae_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
       type: 'piece', niv: ED.nivActif || 0, x: Math.round(pl.x*100)/100, y: Math.round(pl.y*100)/100,
       w: pl.w, h: pl.h, label: pl.label, _source_scan_ia: true });
     ajoutes++;
   });
-  layout.cloisonsV.concat(layout.cloisonsH).forEach(function(c) {
-    ED.elements.push({ id: 'ae_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
-      type: 'cloison', niv: ED.nivActif || 0, x: Math.round(c.x*100)/100, y: Math.round(c.y*100)/100,
-      w: Math.round(c.w*100)/100, h: Math.round(c.h*100)/100, label: '', _source_scan_ia: true });
-    ajoutesMurs++;
-  });
-  layout.perimetre.forEach(function(seg) {
-    ED.elements.push({ id: 'ae_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
-      type: 'mur', niv: ED.nivActif || 0, x: Math.round(seg.x*100)/100, y: Math.round(seg.y*100)/100,
-      w: Math.round(seg.w*100)/100, h: Math.round(seg.h*100)/100, label: '', _source_scan_ia: true });
-    ajoutesMurs++;
-  });
+
+  /* [Murs — vraie forme si possible, sinon repli sur le périmètre
+     synthétique déjà éprouvé] Quand l'IA a fourni la position de chaque
+     mur individuel ET que la calibration d'échelle réussit (au moins 2
+     pièces cohérentes), on trace les murs à leur vraie géométrie relative
+     — translatés dans une zone dédiée sous la grille de pièces, séparée
+     pour ne jamais chevaucher les pièces (voir le vrai chevauchement
+     démontré et évité pendant la conception). Sinon, comportement inchangé
+     depuis le v14.65 : périmètre + cloisons synthétiques autour de la
+     grille de pièces. */
+  var layoutReel = _dqeCalculerLayoutReel(_dqeScanPlanTmp.pieces, _dqeScanPlanTmp.murs, epP, epC);
+  var zoneYSuivante = layout.hauteurTotale + 2*epP + 1.5; /* juste sous la grille de pièces */
+  if (layoutReel) {
+    layoutReel.mursReels.forEach(function(seg) {
+      ED.elements.push({ id: 'ae_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
+        type: (seg.type === 'cloison') ? 'cloison' : 'mur', niv: ED.nivActif || 0,
+        x: Math.round(seg.x*100)/100, y: Math.round((seg.y+zoneYSuivante)*100)/100,
+        w: seg.w, h: seg.h, label: '', _source_scan_ia: true });
+      ajoutesMurs++;
+    });
+    zoneYSuivante += layoutReel.hauteurZone + 1.5;
+  } else {
+    layout.cloisonsV.concat(layout.cloisonsH).forEach(function(c) {
+      ED.elements.push({ id: 'ae_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
+        type: 'cloison', niv: ED.nivActif || 0, x: Math.round(c.x*100)/100, y: Math.round(c.y*100)/100,
+        w: Math.round(c.w*100)/100, h: Math.round(c.h*100)/100, label: '', _source_scan_ia: true });
+      ajoutesMurs++;
+    });
+    layout.perimetre.forEach(function(seg) {
+      ED.elements.push({ id: 'ae_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
+        type: 'mur', niv: ED.nivActif || 0, x: Math.round(seg.x*100)/100, y: Math.round(seg.y*100)/100,
+        w: Math.round(seg.w*100)/100, h: Math.round(seg.h*100)/100, label: '', _source_scan_ia: true });
+      ajoutesMurs++;
+    });
+  }
+
+  /* [Murs sans position connue — toujours injectés, jamais perdus] Un mur
+     coté MANUELLEMENT (v14.66) n'a jamais de segment (pas de position sur
+     l'image) — sans ce bloc séparé, il aurait été silencieusement ignoré
+     dès que le mode « vraie forme » se déclenche pour d'AUTRES murs
+     détectés par IA. Placés en ligne simple, sous tout le reste. */
+  var mursSansSegment = (_dqeScanPlanTmp.murs || []).filter(function(m){ return !m.segment && m.longueur > 0; });
+  if (mursSansSegment.length) {
+    var xm2 = 0;
+    mursSansSegment.forEach(function(m) {
+      ED.elements.push({ id: 'ae_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
+        type: (m.type === 'cloison') ? 'cloison' : 'mur', niv: ED.nivActif || 0,
+        x: Math.round(xm2*100)/100, y: Math.round(zoneYSuivante*100)/100,
+        w: m.longueur, h: m.epaisseur, label: (m.type==='cloison'?'Cloison':'Mur porteur')+' (cotation manuelle)', _source_scan_ia: true });
+      xm2 += m.longueur + 0.5;
+      ajoutesMurs++;
+    });
+  }
 
   if (typeof archiRedraw === 'function') archiRedraw();
   closeModal('modal-scan-plan-dqe-review');
@@ -88045,7 +88236,7 @@ function dqeScanPlanInjecter() {
   _dqeScanPlanTmp.pieces = [];
   _dqeScanPlanTmp.murs = [];
   _dqeCotation.pieces = [];
-  toast('✅ ' + ajoutes + ' pièce(s) et ' + ajoutesMurs + ' mur(s)/cloison(s) injecté(s) — périmètre et séparations générés automatiquement, vérifiez et ajustez dans l\'éditeur avant de chiffrer.', 'success');
+  toast('✅ ' + ajoutes + ' pièce(s) et ' + ajoutesMurs + ' mur(s)/cloison(s) injecté(s)' + (layoutReel ? ' — murs tracés à leur position réelle détectée sur l\'image, sous les pièces' : ' — périmètre et séparations générés automatiquement') + '. Vérifiez et ajustez dans l\'éditeur avant de chiffrer.', 'success');
   if (typeof window.archiOuvrirGenNomenclature === 'function') {
     setTimeout(function(){ window.archiOuvrirGenNomenclature(); }, 400);
   }
