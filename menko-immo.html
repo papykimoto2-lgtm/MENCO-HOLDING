@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.72 · 2026-08-18 — FIX : l\'outil de cotation (📏) affichait des mesures fausses. Confirmé par le screenshot fourni : une distance réelle de 4 m affichée « 0.2 m ». Cause exacte trouvée : le label divisait la distance par ED.scale (facteur pixels-par-mètre), alors que cette distance était déjà calculée en mètres depuis les coordonnées monde de la cote — une division entre deux unités incompatibles, qui faisait varier la valeur AFFICHÉE selon le niveau de zoom, sans rapport avec la vraie mesure. Confirmé mathématiquement avant correction : 4 m ÷ 20 px/m = 0.2, exactement la valeur observée. Corrigé — la distance est maintenant affichée telle quelle. Vérifié que ce bug n\'affectait QUE l\'affichage visuel : le type « cote » n\'intervient nulle part dans le calcul des quantités du DQE (matériaux, coûts), qui utilisent uniquement pièces/murs/cloisons — aucun devis n\'a donc été faussé par ce bug, seul l\'outil de mesure à l\'écran était inexploitable. L\'aperçu en cours de tracé (avant validation du 2e clic) réutilise la même fonction de rendu, corrigé automatiquement sans duplication de code. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.73 · 2026-08-18 — NOUVEAU : choisir un « Projet de conception (villa/immeuble) » ouvre automatiquement le plan déjà existant pour ce projet, s\'il y en a un — avant, seul le lien était mémorisé, l\'utilisateur restait devant « Aucun élément dessiné » alors que son travail précédent existait bien en base. Réutilise archiChargerDessin déjà éprouvée (confirmation anti-écrasement si un dessin en cours n\'est pas sauvegardé). BUG D\'ORDRE TROUVÉ EN L\'ÉCRIVANT, avant livraison : la première version associait le nouveau projet au plan courant AVANT de savoir si le chargement allait réellement avoir lieu — si l\'utilisateur refusait le remplacement proposé, le plan resté affiché aurait hérité d\'un conception_id faux (aucun changement réel n\'ayant eu lieu), avec le risque d\'être sauvegardé ainsi par erreur. Corrigé : l\'association ne se fait plus qu\'après confirmation réelle du chargement — un refus resynchronise simplement le sélecteur sur le plan encore affiché, sans jamais toucher à sa donnée. AUTRE PISTE EXPLORÉE PUIS ABANDONNÉE À RAISON : j\'ai d\'abord cru qu\'il fallait aussi resynchroniser le sélecteur lors du chargement direct d\'un plan (bouton Ouvrir) — vérification faite, archiPopulerConceptions() le fait déjà correctement, mon ajout était redondant et accédait même à une fonction hors de son scope (IIFE différent) ; retiré avant de livrer. Testé empiriquement les 3 scénarios (chargement accepté, refusé, nouveau projet sans plan existant) — comportement correct sur les trois. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -102832,8 +102832,46 @@ function qrSvgTag(text){
   /* Change le rattachement du plan courant. Le lien est persisté au prochain
      archiEnregistrerDessin() ; s'il n'y a pas encore de plan enregistré,
      il ne sert que de pense-bête jusqu'au premier enregistrement. */
-  window.archiLierConception = function(conceptionId) {
-    if (window._archiPlanCourant) window._archiPlanCourant.conception_id = conceptionId || '';
+  window.archiLierConception = async function(conceptionId) {
+    /* [Ouverture automatique du plan lié] Avant, choisir un projet de
+       conception ne faisait que mémoriser le lien — un plan déjà existant
+       pour ce projet restait invisible, l'utilisateur se retrouvant devant
+       « Aucun élément dessiné » alors que son travail précédent était bien
+       en base. Recherche et charge maintenant ce plan automatiquement, via
+       archiChargerDessin (déjà éprouvée, avec sa propre confirmation
+       anti-écrasement si un dessin en cours n'est pas encore sauvegardé).
+       [Ordre important — bug trouvé en écrivant ceci] conception_id ne doit
+       JAMAIS être fixé sur le plan courant AVANT de savoir si un
+       chargement va réellement avoir lieu : si l'utilisateur refuse le
+       remplacement proposé par archiChargerDessin, le plan resté affiché
+       n'a RÉELLEMENT PAS changé — lui attribuer quand même le nouveau
+       conception_id aurait été une donnée fausse en mémoire, avec le
+       risque d'être sauvegardée par erreur ensuite. */
+    if (!conceptionId) {
+      if (window._archiPlanCourant) window._archiPlanCourant.conception_id = '';
+      archiMajHintConception();
+      return;
+    }
+    var planExistant = (DATA.plans_arch || []).find(function(p){ return p.conception_id === conceptionId; });
+    var dejaOuvertIci = window._archiPlanCourant && planExistant && window._archiPlanCourant.id === planExistant.id;
+    if (planExistant && planExistant.dessin && !dejaOuvertIci) {
+      await archiChargerDessin(planExistant.id);
+      /* Si le chargement a réellement eu lieu, _archiPlanCourant EST
+         maintenant planExistant (conception_id déjà correct par
+         construction du find() ci-dessus) — rien de plus à faire. Sinon
+         (refus de la confirmation), on resynchronise le sélecteur sur
+         l'ancien plan encore affiché plutôt que de le laisser mentir sur
+         quel plan est réellement à l'écran. */
+      if (!(window._archiPlanCourant && window._archiPlanCourant.id === planExistant.id)) {
+        var selRevert = document.getElementById('archi-conception-liee');
+        if (selRevert) selRevert.value = (window._archiPlanCourant && window._archiPlanCourant.conception_id) || '';
+        archiMajHintConception();
+      }
+      return;
+    }
+    /* Aucun plan existant pour cette conception (nouveau projet), ou c'est
+       déjà le plan actuellement ouvert : comportement d'origine. */
+    if (window._archiPlanCourant) window._archiPlanCourant.conception_id = conceptionId;
     archiMajHintConception();
   };
 
