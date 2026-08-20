@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.69 · 2026-08-18 — « Analyser un plan (image) » : détermination et tracé automatique des murs individuels, plus des totaux agrégés. L\'IA détecte désormais chaque segment de mur avec sa position sur l\'image (pas juste un linéaire total par type), et l\'échelle image→mètres est calibrée automatiquement depuis les pièces déjà dimensionnées (au moins 2 pièces cohérentes, avec un garde-fou qui refuse la calibration si les estimations divergent trop entre elles). VRAI PROBLÈME TROUVÉ ET RÉSOLU EN COURS DE CONCEPTION, avant livraison : positionner les pièces (bbox IA) ET les murs (segments IA) indépendamment produit des chevauchements réels entre eux — confirmé par simulation, deux extractions séparées par l\'IA ne s\'alignent jamais parfaitement. Compromis retenu après consultation : les pièces restent sur la grille déjà éprouvée (fiable, dimensions jamais altérées), les murs sont tracés à leur VRAIE forme géométrique relative (angles, retours — testé sur une forme en L, correctement reconstruite) mais dans une zone séparée sous les pièces, jamais superposés. Repli automatique sur le périmètre synthétique (v14.65-68) si la calibration échoue. Les murs cotés MANUELLEMENT (v14.66, sans position sur image) restent toujours injectés séparément — trou trouvé et comblé avant livraison, ils auraient été silencieusement perdus si le mode vraie forme se déclenchait pour d\'autres murs. Contrôle croisé d\'échelle (v14.67) adapté au nouveau format segment (l\'ancien champ agrégé n\'étant plus rempli, le contrôle se serait tu silencieusement sans cette correction). Nouvelle indication dans l\'écran de vérification : annonce à l\'avance quel mode sera utilisé à l\'injection. INCIDENT DE RÉGRESSION (récurrent cette session) : une déclaration de fonction (_dqeCalculerLayout) effacée par un remplacement de texte mal ciblé — détecté et corrigé avant livraison par la vérification systématique. Testé empiriquement à chaque étape : calibration (5 scénarios dont incohérence et données insuffisantes), reconstruction géométrique en L, absence de chevauchement anormal sur le résultat final complet à 3 zones.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.70 · 2026-08-18 — 2 corrections + 1 nouveauté sur l\'éditeur de plans. SIGNALÉ : « des murs déjà dessinés se sont déplacés » après injection — deux vraies causes trouvées, aucune n\'était un vrai déplacement de données. (1) L\'ouverture automatique de l\'éditeur (v14.65) forçait toujours le mode « masse » (plan de masse/terrain), jamais « intérieur » où vivent pièces et murs — un utilisateur ayant déjà dessiné des murs en mode intérieur ne les voyait plus après l\'injection (mauvais mode affiché), donnant l\'illusion trompeuse qu\'ils avaient bougé. Corrigé : le mode intérieur est désormais forcé après l\'auto-ouverture. (2) Plus grave : ED.elements démarre VIDE tant qu\'aucun plan n\'est explicitement rechargé dans la session — si l\'auto-ouverture se déclenchait sans recharger de plan existant, l\'utilisateur se serait retrouvé sur un plan VIERGE (contenant uniquement les éléments injectés), avec un risque réel d\'écraser silencieusement son ancien plan à la prochaine sauvegarde. Corrigé prudemment : un seul plan existant est rechargé automatiquement (aucune ambiguïté) ; plusieurs plans bloquent l\'injection avec un message clair invitant à choisir explicitement, plutôt que de deviner et risquer d\'écraser le mauvais travail. NOUVEAU : bouton « ⤢ Ajuster au contenu » sur les dimensions du champ de dessin (Terrain en mode masse, Logement en mode intérieur) — recalcule Long/Larg depuis la vraie bounding box des éléments dessinés, utile après une injection dont les murs peuvent dépasser les dimensions par défaut (15×10 m). Le champ de dessin paramétrable (Long/Larg + rectangle de limite coté) existait déjà — vérifié avant de reconstruire quoi que ce soit inutilement. Testé empiriquement le calcul de bounding box, y compris le cas particulier des cotes (x2/y2, distinct de w/h).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -9510,6 +9510,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                     <label style="width:60px;color:var(--dim);">Larg (m)</label>
                     <input type="number" id="archi-terrain-w" class="form-control" style="font-size:12px;padding:4px 6px;" value="60" oninput="archiSetTerrain()">
                   </div>
+                  <button class="btn btn-secondary btn-sm" style="font-size:11px;padding:4px 6px;" title="Recalcule Long/Larg depuis les éléments réellement dessinés" onclick="archiAjusterChampDessin()">⤢ Ajuster au contenu</button>
                   <div style="display:flex;gap:6px;align-items:center;font-size:12px;">
                     <label style="width:60px;color:var(--dim);">Échelle</label>
                     <select id="archi-echelle" class="form-control" style="font-size:12px;padding:4px 6px;" onchange="archiRedraw()">
@@ -9564,6 +9565,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                     <label style="width:60px;color:var(--dim);">Larg (m)</label>
                     <input type="number" id="archi-lgt-w" class="form-control" style="font-size:12px;padding:4px 6px;" value="10" oninput="archiRedraw()">
                   </div>
+                  <button class="btn btn-secondary btn-sm" style="font-size:11px;padding:4px 6px;" title="Recalcule Long/Larg depuis les éléments réellement dessinés — utile après une injection qui dépasse les dimensions actuelles" onclick="archiAjusterChampDessin()">⤢ Ajuster au contenu</button>
                   <select id="archi-type-lgt" class="form-control" style="font-size:12px;padding:4px 6px;margin-top:4px;" onchange="archiLoadTemplate()">
                     <option value="">— Gabarit —</option>
                     <option value="f2">F2 (2 pièces)</option>
@@ -88114,11 +88116,53 @@ function dqeScanPlanInjecter() {
      reproduit maintenant exactement la même séquence qu'un clic manuel sur
      l'onglet Éditeur de plans (goTo puis switchTab puis archiEditorInit) —
      sans rien changer au comportement de sauvegarde du plan, qui reste,
-     comme avant, déclenché par l'utilisateur lui-même dans l'éditeur. */
+     comme avant, déclenché par l'utilisateur lui-même dans l'éditeur.
+     [FIX — signalé après livraison] Deux problèmes trouvés dans cette
+     auto-ouverture : (1) archiEditorInit() bascule toujours sur le mode
+     « masse » (plan de masse/terrain) par défaut, jamais « intérieur » où
+     vivent les pièces et murs — un utilisateur qui avait déjà dessiné des
+     murs manuellement en mode intérieur ne les voyait plus après
+     l'injection (mode basculé), donnant l'impression trompeuse qu'ils
+     avaient « bougé » alors que leurs données n'avaient jamais changé.
+     (2) Plus grave : ED.elements démarre VIDE tant qu'aucun plan n'est
+     explicitement chargé dans la session — si l'auto-ouverture se
+     déclenche sans qu'un plan existant ait été rechargé, l'utilisateur se
+     retrouve sur un plan VIERGE contenant uniquement les éléments
+     injectés, pas son ancien travail. Un « Enregistrer » ultérieur
+     écraserait alors silencieusement l'ancien plan en base — un vrai
+     risque de perte de données, pas juste un affichage trompeur. */
   if (typeof window.ED === 'undefined' || !window.ED.canvas) {
     if (typeof goTo === 'function') goTo('conception');
     if (typeof switchTab === 'function') switchTab('conception', 'editeur');
     if (typeof archiEditorInit === 'function') archiEditorInit();
+    if (typeof archiSetMode === 'function') archiSetMode('interieur');
+
+    if (window.ED && !ED.elements.length) {
+      var plansExistants = DATA.plans_arch || [];
+      if (plansExistants.length === 1) {
+        /* Un seul plan possible, aucune ambiguïté : le charger directement
+           plutôt que de forcer une étape manuelle inutile. */
+        var pUnique = plansExistants[0];
+        if (pUnique.dessin) {
+          ED.elements = JSON.parse(JSON.stringify(pUnique.dessin.elements || []));
+          ED.niveaux = JSON.parse(JSON.stringify(pUnique.dessin.niveaux || ED.niveaux));
+          if (pUnique.dessin.lgt) ED.lgt = pUnique.dessin.lgt;
+          window._archiPlanCourant = pUnique;
+          if (typeof archiSetMode === 'function') archiSetMode('interieur');
+          toast('ℹ️ Plan existant « ' + (pUnique.nom||pUnique.id) + ' » chargé automatiquement avant injection.', 'info');
+        }
+      } else if (plansExistants.length > 1) {
+        /* Plusieurs plans possibles : deviner lequel charger serait risqué
+           (écraser le mauvais plan à la prochaine sauvegarde). On bloque et
+           on demande explicitement à l'utilisateur de choisir — vos pièces
+           détectées restent en mémoire, rien n'est perdu en attendant. */
+        toast('⚠️ Plusieurs plans existent déjà — ouvrez d\'abord celui à compléter (bouton « Ouvrir » dans l\'éditeur) avant d\'injecter, pour ne pas créer un nouveau plan vide par erreur. Vos pièces détectées restent en mémoire.', 'error');
+        return;
+      }
+      /* Si plansExistants.length === 0 : aucun plan n'existe encore nulle
+         part, un plan vide est légitimement le point de départ normal —
+         rien à charger, l'injection peut continuer sans risque. */
+    }
   }
   if (typeof window.ED === 'undefined' || !window.ED.canvas) {
     toast('❌ Impossible d\'ouvrir l\'éditeur de plans automatiquement — ouvrez-le manuellement (Conception → Éditeur de plans) puis rouvrez cette fenêtre, vos pièces détectées restent en mémoire.', 'error');
@@ -103017,6 +103061,40 @@ function qrSvgTag(text){
     ED.terrain.l = parseFloat(document.getElementById('archi-terrain-l').value) || 100;
     ED.terrain.w = parseFloat(document.getElementById('archi-terrain-w').value) || 60;
     archiRedraw();
+  };
+
+  /* [Ajuster au contenu] Le champ « Long/Larg » (terrain en mode masse,
+     logement en mode intérieur) existait déjà et dessine bien un rectangle
+     de limite coté (_drawPerimetre) — mais restait à la charge de
+     l'utilisateur de deviner la bonne valeur. Recalcule directement depuis
+     la vraie bounding box des éléments du niveau actif — utile en
+     particulier après une injection de plan scanné (murs placés dans une
+     zone séparée, potentiellement au-delà des dimensions par défaut). */
+  window.archiAjusterChampDessin = function() {
+    var els = _elsVue();
+    if (!els.length) { toast('Rien à ajuster — ce niveau est vide.', 'info'); return; }
+    var maxX = 0, maxY = 0;
+    els.forEach(function(e) {
+      /* Les cotes (type='cote') portent x2/y2, avec w/h toujours à 0 — sans
+         ce cas particulier, une cote qui dépasse le reste du plan serait
+         ignorée et le champ resterait trop petit pour la contenir. */
+      if (e.x2 != null && e.y2 != null) {
+        maxX = Math.max(maxX, e.x||0, e.x2);
+        maxY = Math.max(maxY, e.y||0, e.y2);
+      } else {
+        maxX = Math.max(maxX, (e.x||0) + (e.w||0));
+        maxY = Math.max(maxY, (e.y||0) + (e.h||0));
+      }
+    });
+    var MARGE = 1; /* respiration visuelle, pour ne pas coller les éléments au bord du cadre */
+    var L = Math.ceil(maxX + MARGE), W = Math.ceil(maxY + MARGE);
+    var idL = ED.mode === 'masse' ? 'archi-terrain-l' : 'archi-lgt-l';
+    var idW = ED.mode === 'masse' ? 'archi-terrain-w' : 'archi-lgt-w';
+    document.getElementById(idL).value = L;
+    document.getElementById(idW).value = W;
+    if (ED.mode === 'masse' && typeof archiSetTerrain === 'function') archiSetTerrain();
+    else archiRedraw();
+    toast('✅ Champ de dessin ajusté au contenu : ' + L + ' × ' + W + ' m.', 'success');
   };
 
   window.archiNouveauPlan = function() {
