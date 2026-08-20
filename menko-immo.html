@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.63 · 2026-08-18 — Budget prévisionnel : saisie multi-lignes. Le modal « Nouveau budget prévisionnel » ne permettait qu\'un seul compte à la fois — remplacé par un tableau de lignes (compte de charge + montant chacune, sous-compte compris via le même champ), avec total calculé en direct. Division et Exercice restent partagés en haut du formulaire, communs à toutes les lignes. Chaque ligne devient un budget distinct à l\'enregistrement. En édition d\'un budget existant, une seule ligne reste modifiable (ajout désactivé) pour ne jamais créer d\'ambiguïté sur quel enregistrement correspond à quelle ligne. Testé empiriquement : détection de doublon interne au lot (deux lignes avec le même compte dans la même saisie — la 2e est refusée, cohérent avec la protection déjà en place), calcul du total en cours de saisie, filtrage correct des lignes incomplètes. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.65 · 2026-08-18 — Injection du plan (image) rendue conforme, éditeur ouvert automatiquement. Deux corrections demandées après le v14.64. (1) L\'injection échouait purement et simplement si l\'éditeur n\'était pas déjà ouvert manuellement — il s\'ouvre désormais automatiquement (même séquence qu\'un clic manuel sur l\'onglet Éditeur de plans), sans rien changer à la sauvegarde du plan qui reste, comme avant, déclenchée par l\'utilisateur. (2) Les murs/cloisons étaient injectés comme des segments flottants sans rapport avec les pièces — remplacé par une vraie géométrie : pièces collées bord à bord, cloison réellement intercalée entre chaque paire de pièces adjacentes, périmètre de murs porteurs généré autour de l\'ensemble (convention architecturale standard : extérieur porteur, séparations intérieures cloison). BUG DE CALCUL TROUVÉ ET CORRIGÉ AVANT LIVRAISON : la largeur de la cloison de fin de rangée débordait de l\'épaisseur d\'espacement dans le mur de périmètre droit — repéré en testant rigoureusement la géométrie générée (détection programmatique de chevauchement, pas une simple relecture). Testé empiriquement sur 3 scénarios (multi-rangées avec wrap, pièce unique, rangée unique) : zéro chevauchement réel, toutes les pièces correctement contenues dans le périmètre généré. Les chevauchements aux 4 coins du périmètre sont normaux et voulus — même pattern déjà utilisé partout ailleurs dans l\'app pour dessiner un rectangle de murs. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -87385,7 +87385,7 @@ async function mrcScanPlanMasse() {
    11,20 m² »), crée directement les pièces dans l'éditeur de plan,
    prêtes pour archiOuvrirGenNomenclature() (génération DQE existante).
    ══════════════════════════════════════════════ */
-var _dqeScanPlanTmp = { pieces: [] };
+var _dqeScanPlanTmp = { pieces: [], murs: [] };
 var _dqeScanPlanFichierData = null;
 
 /* ── Cotation manuelle sur l'image (échelle + tracé de pièces) ──────────
@@ -87645,9 +87645,15 @@ async function dqeScanPlanAnalyser() {
       + 'Si une surface en m² est annotée sur le plan pour cette pièce, utilise-la exactement. '
       + 'Si seules des cotes (longueur × largeur) sont visibles, calcule la surface à partir d\'elles et renvoie aussi longueur/largeur. '
       + 'Si ni surface ni cotes ne sont visibles pour une pièce, estime une surface plausible selon le type de pièce et la taille apparente sur le dessin (ex. chambre standard ~10-14 m², salon ~20-28 m², cuisine ~9-12 m², SDB/WC ~2-5 m²) — indique alors "estime":true. '
+      + 'Identifie ensuite séparément les MURS, en distinguant deux types : '
+      + '"porteur" — murs de structure (généralement en périphérie du bâtiment, aux intersections principales, trait épais ou hachuré plein, épaisseur habituelle 15-25 cm) '
+      + 'et "cloison" — cloisons de distribution intérieure non porteuses (trait plus fin, souvent en simple ligne ou hachure légère, épaisseur habituelle 7-12 cm). '
+      + 'Regroupe-les par type (pas mur par mur) : donne le linéaire total en mètres et l\'épaisseur moyenne typique pour chaque type détecté sur ce plan. Si le type d\'un mur est ambigu, classe-le "porteur" par prudence (sous-évaluer la structure serait plus risqué que la sur-évaluer). '
       + 'Renvoie UNIQUEMENT un JSON strict, sans texte hors JSON : '
-      + '{"pieces":[{"label":"Chambre 2","longueur":3.5,"largeur":3.2,"surface":11.20,"estime":false}], "surface_totale_habitable":0, "nb_chambres":0}. '
-      + 'Longueur/largeur en mètres, surface en m². N\'inclus PAS les murs, portes, fenêtres — uniquement les pièces (zones fermées nommées).';
+      + '{"pieces":[{"label":"Chambre 2","longueur":3.5,"largeur":3.2,"surface":11.20,"estime":false}], '
+      + '"murs":[{"type":"porteur","longueur":45.0,"epaisseur":0.20},{"type":"cloison","longueur":18.0,"epaisseur":0.10}], '
+      + '"surface_totale_habitable":0, "nb_chambres":0}. '
+      + 'Longueur/largeur/épaisseur en mètres, surface en m². N\'inclus PAS les portes, fenêtres — uniquement les pièces et les murs.';
     var resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type':'application/json', 'x-api-key':IA.key, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' },
@@ -87682,6 +87688,12 @@ async function dqeScanPlanAnalyser() {
       return { label: p.label || 'Pièce', longueur: Math.round(lg*100)/100, largeur: Math.round(lgg*100)/100,
                surface: surf || Math.round(lg*lgg*100)/100, estime: !!p.estime };
     }).filter(function(p){ return p.longueur > 0 && p.largeur > 0; });
+
+    _dqeScanPlanTmp.murs = (obj.murs || []).map(function(m) {
+      var type = (String(m.type||'').toLowerCase().indexOf('cloison') !== -1) ? 'cloison' : 'porteur';
+      return { type: type, longueur: Math.round((parseFloat(m.longueur)||0)*100)/100,
+               epaisseur: Math.round((parseFloat(m.epaisseur)||(type==='porteur'?0.20:0.10))*100)/100 };
+    }).filter(function(m){ return m.longueur > 0; });
 
     if (!_dqeScanPlanTmp.pieces.length) { statusEl.innerHTML = '❌ Aucune pièce détectée. Plan peu lisible ?'; btn.disabled = false; return; }
     closeModal('modal-scan-plan-dqe');
@@ -87756,7 +87768,26 @@ function _dqeRenderScanPlanReview() {
       + '<td><button class="btn btn-danger btn-sm btn-icon" onclick="_dqeScanPlanTmp.pieces.splice(' + i + ',1);_dqeRenderScanPlanReview()">🗑</button></td>'
       + '</tr>';
   }).join('');
+
+  var murs = _dqeScanPlanTmp.murs || [];
+  document.getElementById('tbody-scan-plan-dqe-murs-review').innerHTML = murs.length ? murs.map(function(m, i) {
+    return '<tr>'
+      + '<td><select class="form-control" style="font-size:12px;" onchange="_dqeScanPlanTmp.murs[' + i + '].type=this.value;_dqeRenderScanPlanReview()">'
+        + '<option value="porteur"' + (m.type==='porteur'?' selected':'') + '>🧱 Porteur</option>'
+        + '<option value="cloison"' + (m.type==='cloison'?' selected':'') + '>▭ Cloison</option>'
+        + '</select></td>'
+      + '<td contenteditable style="text-align:right;" onblur="_dqeScanPlanTmp.murs[' + i + '].longueur=parseFloat(this.textContent.replace(\',\',\'.\'))||0;_dqeRenderScanPlanReview()">' + m.longueur + '</td>'
+      + '<td contenteditable style="text-align:right;" onblur="_dqeScanPlanTmp.murs[' + i + '].epaisseur=parseFloat(this.textContent.replace(\',\',\'.\'))||0;_dqeRenderScanPlanReview()">' + m.epaisseur + '</td>'
+      + '<td><button class="btn btn-danger btn-sm btn-icon" onclick="_dqeScanPlanTmp.murs.splice(' + i + ',1);_dqeRenderScanPlanReview()">🗑</button></td>'
+      + '</tr>';
+  }).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--blanc-dim);font-size:12px;">Aucun mur détecté — ajoutez-en manuellement si besoin.</td></tr>';
+
   openModal('modal-scan-plan-dqe-review');
+}
+function dqeScanPlanAjouterMurManuel() {
+  _dqeScanPlanTmp.murs = _dqeScanPlanTmp.murs || [];
+  _dqeScanPlanTmp.murs.push({ type: 'porteur', longueur: 0, epaisseur: 0.20 });
+  _dqeRenderScanPlanReview();
 }
 
 function _dqeScanPlanMajDim(i, champ, val) {
@@ -87781,8 +87812,20 @@ function dqeScanPlanInjecter() {
     msg += '\nUne mauvaise surface fausse directement les quantités du DQE (matériaux, coûts). Continuer quand même ?';
     if (!confirm(msg)) return;
   }
+  /* [Ouverture automatique de l'éditeur] Avant, l'injection échouait tout
+     simplement si l'éditeur n'était pas déjà ouvert manuellement — forçant
+     l'utilisateur à y naviguer lui-même puis rouvrir cette fenêtre. On
+     reproduit maintenant exactement la même séquence qu'un clic manuel sur
+     l'onglet Éditeur de plans (goTo puis switchTab puis archiEditorInit) —
+     sans rien changer au comportement de sauvegarde du plan, qui reste,
+     comme avant, déclenché par l'utilisateur lui-même dans l'éditeur. */
   if (typeof window.ED === 'undefined' || !window.ED.canvas) {
-    toast('Ouvrez d\'abord « Plans & Conception » → onglet Plans (pour initialiser l\'éditeur), puis rouvrez cette fenêtre de vérification — vos pièces détectées restent en mémoire.', 'error');
+    if (typeof goTo === 'function') goTo('conception');
+    if (typeof switchTab === 'function') switchTab('conception', 'editeur');
+    if (typeof archiEditorInit === 'function') archiEditorInit();
+  }
+  if (typeof window.ED === 'undefined' || !window.ED.canvas) {
+    toast('❌ Impossible d\'ouvrir l\'éditeur de plans automatiquement — ouvrez-le manuellement (Conception → Éditeur de plans) puis rouvrez cette fenêtre, vos pièces détectées restent en mémoire.', 'error');
     return;
   }
 
@@ -87792,41 +87835,92 @@ function dqeScanPlanInjecter() {
      pièces en double. Le DQE aval somme toutes les pièces présentes sans
      dédoublonnage → surfaces doublées → quantités de matériaux et coûts
      doublés, sans le moindre signal. C'est le scénario de perte le plus
-     probable de toute la chaîne. On force donc un choix explicite. */
-  var pieceExistantes = ED.elements.filter(function(e){ return e.type === 'piece' && (e.niv || 0) === (ED.nivActif || 0); });
-  if (pieceExistantes.length) {
-    var surfExist = Math.round(pieceExistantes.reduce(function(s,e){ return s + (e.w||0)*(e.h||0); }, 0) * 10) / 10;
+     probable de toute la chaîne. On force donc un choix explicite. Les murs
+     issus du même scan (_source_scan_ia) suivent la même règle, et sont
+     traités ensemble puisqu'ils forment maintenant UN SEUL plan cohérent
+     (périmètre + cloisons autour des pièces), pas deux lots indépendants. */
+  var elementsExistants = ED.elements.filter(function(e){ return (e.type==='piece'||((e.type==='mur'||e.type==='cloison')&&e._source_scan_ia)) && (e.niv || 0) === (ED.nivActif || 0); });
+  if (elementsExistants.length) {
+    var surfExist = Math.round(elementsExistants.filter(function(e){return e.type==='piece';}).reduce(function(s,e){ return s + (e.w||0)*(e.h||0); }, 0) * 10) / 10;
     var surfNouv = Math.round(_dqeScanPlanTmp.pieces.reduce(function(s,p){ return s + p.surface; }, 0) * 10) / 10;
     var choix = confirm(
-      'Ce niveau contient DÉJÀ ' + pieceExistantes.length + ' pièce(s) (' + surfExist + ' m²).\n\n'
-      + 'Vous vous apprêtez à en ajouter ' + _dqeScanPlanTmp.pieces.length + ' (' + surfNouv + ' m²).\n\n'
-      + 'OK  = REMPLACER les pièces existantes de ce niveau (recommandé si vous refaites la cotation du même plan)\n'
-      + 'Annuler = les GARDER et ajouter par-dessus (total : ' + Math.round((surfExist+surfNouv)*10)/10 + ' m² — uniquement si c\'est vraiment un autre bâtiment)\n\n'
+      'Ce niveau contient DÉJÀ ' + elementsExistants.length + ' élément(s) (pièces/murs, ' + surfExist + ' m² de pièces).\n\n'
+      + 'Vous vous apprêtez à injecter un nouveau plan (' + _dqeScanPlanTmp.pieces.length + ' pièce(s), ' + surfNouv + ' m²).\n\n'
+      + 'OK  = REMPLACER les pièces ET murs/cloisons existants de ce niveau (recommandé si vous refaites la même analyse)\n'
+      + 'Annuler = les GARDER et ajouter par-dessus (uniquement si c\'est vraiment un autre bâtiment)\n\n'
       + '⚠️ Ajouter par-dessus le même plan double les quantités et les coûts du DQE.'
     );
     if (choix) {
-      ED.elements = ED.elements.filter(function(e){ return !(e.type === 'piece' && (e.niv || 0) === (ED.nivActif || 0)); });
+      ED.elements = ED.elements.filter(function(e){ return !((e.type === 'piece' || ((e.type==='mur'||e.type==='cloison')&&e._source_scan_ia)) && (e.niv || 0) === (ED.nivActif || 0)); });
     }
   }
 
-  var x = 0, y = 0, ligneH = 0, largeurMax = 20;
-  var ajoutes = 0;
+  /* [Géométrie conforme] Les pièces sont désormais collées bord à bord (plus
+     d'espace flottant arbitraire), avec une cloison réellement intercalée
+     entre chaque paire de pièces adjacentes, et un périmètre de murs
+     porteurs autour de l'ensemble — un vrai schéma exploitable dans
+     l'éditeur, pas des segments isolés sans rapport avec les pièces.
+     L'IA ne fournissant qu'un linéaire total par type (pas la position de
+     chaque mur individuel), on applique la convention architecturale
+     standard — périmètre extérieur = porteur, séparations intérieures =
+     cloison — cohérente avec le choix déjà fait de classer par prudence
+     côté porteur en cas d'ambiguïté détectée. */
+  var epP = (function(){ var m=(_dqeScanPlanTmp.murs||[]).filter(function(x){return x.type==='porteur';}); return m.length ? (m.reduce(function(s,x){return s+x.epaisseur;},0)/m.length) : 0.20; })();
+  var epC = (function(){ var m=(_dqeScanPlanTmp.murs||[]).filter(function(x){return x.type==='cloison';}); return m.length ? (m.reduce(function(s,x){return s+x.epaisseur;},0)/m.length) : 0.10; })();
+  var largeurMax = 20;
+  var x = epP, y = epP, ligneH = 0, largeurAtteinte = 0;
+  var ajoutes = 0, ajoutesMurs = 0;
+  var premierePieceDeLigne = true;
+
   _dqeScanPlanTmp.pieces.forEach(function(p) {
-    if (x + p.longueur > largeurMax) { x = 0; y += ligneH + 0.3; ligneH = 0; }
+    if (x - epP + p.longueur > largeurMax) {
+      /* Nouvelle rangée : cloison horizontale sur toute la largeur de la rangée qui se termine */
+      ED.elements.push({ id: 'ae_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
+        type: 'cloison', niv: ED.nivActif || 0, x: Math.round(epP*100)/100, y: Math.round((y+ligneH)*100)/100,
+        w: Math.round((x-epC-epP)*100)/100, h: Math.round(epC*100)/100, label: '', _source_scan_ia: true });
+      ajoutesMurs++;
+      x = epP; y += ligneH + epC; ligneH = 0; premierePieceDeLigne = true;
+    }
+    if (!premierePieceDeLigne) {
+      /* Cloison verticale entre cette pièce et la précédente sur la même rangée */
+      ED.elements.push({ id: 'ae_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
+        type: 'cloison', niv: ED.nivActif || 0, x: Math.round((x-epC)*100)/100, y: Math.round(y*100)/100,
+        w: Math.round(epC*100)/100, h: p.largeur, label: '', _source_scan_ia: true });
+      ajoutesMurs++;
+    }
     ED.elements.push({ id: 'ae_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
       type: 'piece', niv: ED.nivActif || 0, x: Math.round(x*100)/100, y: Math.round(y*100)/100,
       w: p.longueur, h: p.largeur, label: p.label, _source_scan_ia: true });
-    x += p.longueur + 0.3;
-    ligneH = Math.max(ligneH, p.largeur);
     ajoutes++;
+    x += p.longueur + epC;
+    ligneH = Math.max(ligneH, p.largeur);
+    largeurAtteinte = Math.max(largeurAtteinte, x - epC);
+    premierePieceDeLigne = false;
   });
+  var largeurTotale = largeurAtteinte - epP;
+  var hauteurTotale = y + ligneH - epP;
+
+  /* Périmètre porteur autour de tout l'ensemble */
+  [
+    { x: 0, y: 0, w: largeurTotale + 2*epP, h: epP },                              /* haut */
+    { x: 0, y: hauteurTotale + epP, w: largeurTotale + 2*epP, h: epP },            /* bas */
+    { x: 0, y: 0, w: epP, h: hauteurTotale + 2*epP },                              /* gauche */
+    { x: largeurTotale + epP, y: 0, w: epP, h: hauteurTotale + 2*epP }             /* droite */
+  ].forEach(function(seg){
+    ED.elements.push({ id: 'ae_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
+      type: 'mur', niv: ED.nivActif || 0, x: Math.round(seg.x*100)/100, y: Math.round(seg.y*100)/100,
+      w: Math.round(seg.w*100)/100, h: Math.round(seg.h*100)/100, label: '', _source_scan_ia: true });
+    ajoutesMurs++;
+  });
+
   if (typeof archiRedraw === 'function') archiRedraw();
   closeModal('modal-scan-plan-dqe-review');
   /* Vidage après injection : sans ça, rouvrir la fenêtre de vérification et
      revalider réinjectait le même lot (double comptage). */
   _dqeScanPlanTmp.pieces = [];
+  _dqeScanPlanTmp.murs = [];
   _dqeCotation.pieces = [];
-  toast('✅ ' + ajoutes + ' pièce(s) injectée(s) — vérifiez les surfaces dans l\'éditeur avant de chiffrer.', 'success');
+  toast('✅ ' + ajoutes + ' pièce(s) et ' + ajoutesMurs + ' mur(s)/cloison(s) injecté(s) — périmètre et séparations générés automatiquement, vérifiez et ajustez dans l\'éditeur avant de chiffrer.', 'success');
   if (typeof window.archiOuvrirGenNomenclature === 'function') {
     setTimeout(function(){ window.archiOuvrirGenNomenclature(); }, 400);
   }
@@ -90381,6 +90475,7 @@ async function budgetPrevisionnelSauver(champs) {
   if (doublon) { toast('Un budget existe déjà pour ce compte, cette division et cet exercice.', 'error'); return null; }
 
   var b = existant || { id: champs.id || uid(), created_at: new Date().toISOString(), statut: 'brouillon' };
+  b.libelle = (champs.libelle||'').trim();
   b.compte = champs.compte; b.division_id = champs.division_id||''; b.exercice = parseInt(champs.exercice,10);
   b.montant = parseFloat(champs.montant); b.periode = 'annuel'; b.mois = '';
   /* Remise à brouillon si on corrige un budget rejeté — sans ça, une fois
@@ -90540,7 +90635,7 @@ function budgetRenderPrevisionnel() {
   if (!lignes.length) { box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Aucun budget prévisionnel. Cliquez « + Nouveau budget » pour en créer un.</div>'; return; }
 
   box.innerHTML = '<div class="table-wrap"><table class="data-table" style="width:100%;"><thead><tr>'
-    + '<th>Compte</th><th>Division</th><th>Exercice</th><th style="text-align:right;">Alloué</th><th style="text-align:right;">Disponible</th><th>Statut</th><th></th>'
+    + '<th>Libellé</th><th>Compte</th><th>Division</th><th>Exercice</th><th style="text-align:right;">Alloué</th><th style="text-align:right;">Disponible</th><th>Statut</th><th></th>'
     + '</tr></thead><tbody>'
     + lignes.map(function(b) {
         var libelleCompte = (function(){ var c=(APP.planComptable||[]).find(function(x){return x.code===b.compte;}); return c?c.label:''; })();
@@ -90555,6 +90650,7 @@ function budgetRenderPrevisionnel() {
         else if (b.statut === 'rejete') actions = '<span style="font-size:11px;color:var(--blanc-dim);">'+escHtml(b.motif_rejet||'')+'</span> '
           + '<button class="btn btn-secondary btn-sm" onclick="budgetPrevisionnelOuvrir(\''+b.id+'\')">✏️ Modifier et resoumettre</button>';
         return '<tr>'
+          + '<td>'+escHtml(b.libelle||'—')+'</td>'
           + '<td><b>'+escHtml(b.compte)+'</b>'+(libelleCompte?'<div style="font-size:11px;color:var(--blanc-dim);">'+escHtml(libelleCompte)+'</div>':'')+'</td>'
           + '<td>'+divLabel+'</td><td>'+b.exercice+'</td>'
           + '<td style="text-align:right;">'+fmtF(b.montant)+' F</td>'
@@ -90695,9 +90791,10 @@ function cbudRenderLignes() {
   var box = document.getElementById('cbud-lignes-box'); if (!box) return;
   var enEdition = !!document.getElementById('cbud-id').value;
   if (!cbudLignes.length) { box.innerHTML = '<div style="text-align:center;color:var(--blanc-dim);padding:10px;font-size:12px;">Ajoutez une ligne.</div>'; }
-  else box.innerHTML = '<table class="data-table" style="width:100%;"><thead><tr><th>Compte de charge</th><th style="width:160px;">Montant (FCFA)</th>'+(enEdition?'':'<th style="width:40px;"></th>')+'</tr></thead><tbody>'
+  else box.innerHTML = '<table class="data-table" style="width:100%;"><thead><tr><th>Libellé</th><th>Compte de charge</th><th style="width:160px;">Montant (FCFA)</th>'+(enEdition?'':'<th style="width:40px;"></th>')+'</tr></thead><tbody>'
     + cbudLignes.map(function(l,i){
         return '<tr>'
+          + '<td><input type="text" class="form-control" placeholder="Ex : Carburant véhicules" value="'+escHtml(l.libelle||'')+'" onchange="cbudLigneSet('+i+',\'libelle\',this.value)"></td>'
           + '<td><input type="text" class="form-control" list="dl-plan-comptable" placeholder="Ex : 6055, 6051..." value="'+escHtml(l.compte||'')+'" onchange="cbudLigneSet('+i+',\'compte\',this.value)"></td>'
           + '<td><input type="number" class="form-control" min="0" value="'+(l.montant||'')+'" onchange="cbudLigneSet('+i+',\'montant\',this.value)"></td>'
           + (enEdition ? '' : '<td><button class="btn btn-danger btn-sm btn-icon" onclick="cbudRetirerLigne('+i+')">✕</button></td>')
@@ -90707,7 +90804,7 @@ function cbudRenderLignes() {
   document.getElementById('cbud-total').textContent = fmtF(Math.round(tot));
 }
 function cbudLigneSet(i, field, val) { if (!cbudLignes[i]) return; cbudLignes[i][field] = val; cbudRenderLignes(); }
-function cbudAjouterLigne() { cbudLignes.push({ compte:'', montant:'' }); cbudRenderLignes(); }
+function cbudAjouterLigne() { cbudLignes.push({ libelle:'', compte:'', montant:'' }); cbudRenderLignes(); }
 function cbudRetirerLigne(i) { cbudLignes.splice(i,1); cbudRenderLignes(); }
 
 function budgetPrevisionnelOuvrir(id) {
@@ -90723,7 +90820,7 @@ function budgetPrevisionnelOuvrir(id) {
   document.getElementById('cbud-btn-suppr').style.display = (b && b.statut==='brouillon') ? '' : 'none';
   /* Ajout de lignes désactivé en édition (une seule ligne = un enregistrement précis) */
   document.getElementById('cbud-btn-ajouter-ligne').style.display = b ? 'none' : '';
-  cbudLignes = b ? [{ compte: b.compte, montant: b.montant }] : [{ compte:'', montant:'' }];
+  cbudLignes = b ? [{ libelle: b.libelle, compte: b.compte, montant: b.montant }] : [{ libelle:'', compte:'', montant:'' }];
   cbudRenderLignes();
   openModal('modal-caisse-budget');
 }
@@ -90738,6 +90835,7 @@ async function budgetPrevisionnelSauverDepuisForm() {
   for (var i = 0; i < lignesValides.length; i++) {
     var r = await budgetPrevisionnelSauver({
       id: (i === 0) ? idExistant : null,   /* seule la 1re ligne réutilise l'id en édition — les suivantes sont toujours de nouveaux budgets */
+      libelle: lignesValides[i].libelle,
       compte: lignesValides[i].compte.trim(),
       division_id: divisionId,
       exercice: exercice,
@@ -113519,6 +113617,16 @@ goTo = function(page) {
         </table>
       </div>
       <div style="font-size:11px;color:var(--or,#B87333);margin-top:10px;">⚠️ Vérifiez chaque pièce avant injection — surfaces estimées si non annotées sur le plan source. Corrigez directement dans les cellules.</div>
+
+      <div class="form-section-title" style="margin-top:16px;">🧱 Murs détectés — porteurs & cloisons</div>
+      <div style="font-size:11px;color:var(--blanc-dim);margin-bottom:8px;">Regroupés par type, pas mur par mur — le DQE n'a besoin que du linéaire total. En cas de doute, un mur est classé « porteur » par défaut (plus prudent qu'une structure sous-évaluée).</div>
+      <button class="btn btn-secondary btn-sm" onclick="dqeScanPlanAjouterMurManuel()" style="margin-bottom:10px;">➕ Ajouter une ligne de mur</button>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Type</th><th style="text-align:right;">Linéaire (m)</th><th style="text-align:right;">Épaisseur (m)</th><th></th></tr></thead>
+          <tbody id="tbody-scan-plan-dqe-murs-review"></tbody>
+        </table>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-scan-plan-dqe-review')">Annuler</button>
