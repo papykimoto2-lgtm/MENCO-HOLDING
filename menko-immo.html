@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.74 · 2026-08-18 — NOUVEAU : pièces polygonales (« 🔷 Pièce (polygone) »), au-delà des rectangles simples. Chantier de fond, pas juste un nouvel outil : 15 sites du DQE/coûts/statistiques supposaient tous w*h (bounding box) comme surface d\'une pièce — introduire des polygones sans les corriger aurait surestimé silencieusement la surface de toute pièce en L ou irrégulière dans de vrais devis. Créé 2 fonctions utilitaires (_pieceSurface, _piecePerimetre — surface réelle par shoelace, périmètre réel par somme des côtés, repli automatique sur w*h/2*(w+h) pour les pièces rectangulaires classiques, aucune régression) et migré les 15 sites, PLUS 6 autres trouvés en cours de route par une recherche élargie (mon premier audit cherchait `p.w*p.h`, ratant les sites utilisant `el.w*el.h` ou `e.w*e.h`) — dont le rendu 2D du label et le panneau de propriétés. BUG PRÉEXISTANT DÉCOUVERT ET CORRIGÉ AU PASSAGE : 5 sites lisaient un champ `p.l` qui n\'existe jamais sur une pièce (toujours w/h) — surface systématiquement calculée à 0, peu importe la vraie taille, depuis probablement l\'origine de ces fonctions. AUTRE BUG PRÉEXISTANT TROUVÉ ET CORRIGÉ (affectait déjà « Lot ») : déplacer un élément polygonal par glisser-déposer ne translatait que sa bounding box invisible, jamais ses vrais sommets — l\'élément restait visuellement figé à sa position d\'origine. Limite assumée et documentée : le rendu 3D reste la bounding box rectangulaire pour une pièce polygonale (un vrai volume suivant le contour exact serait un chantier distinct de triangulation) — seul le nombre affiché (surface) y est corrigé. Testé empiriquement : surface et périmètre corrects sur une pièce en L (26 m² vs 30 m² en bounding box) et un coin biseauté (périmètre réel 18,8 m vs 20 m en bounding box). Vérification systématique de non-régression effectuée sur l\'ensemble du fichier.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.76 · 2026-08-18 — Budget prévisionnel : vraie hiérarchie ligne budgétaire (compte principal) / sous-comptes. Le modal « Nouveau budget » a désormais un champ « Ligne budgétaire » partagé (ex : 605), sous lequel on saisit plusieurs sous-comptes (ex : 6051, 6055) chacun avec son montant — validation en direct que chaque sous-compte commence bien par le code de sa ligne et va plus loin (sinon signalé en rouge avant même d\'enregistrer). L\'écran de suivi regroupe désormais les sous-comptes sous leur ligne, avec un total automatiquement calculé (jamais saisi indépendamment) et un disponible consolidé sur la ligne entière. TRANSFERTS DÉSORMAIS CONTRAINTS : un transfert ne peut plus se faire qu\'entre deux sous-comptes déjà budgétés partageant la même ligne parente — refusé avec message explicite sinon (comptes de lignes différentes, ou sous-compte sans budget existant). En édition, la ligne budgétaire d\'un sous-compte déjà créé est verrouillée — la changer romprait sa hiérarchie et fausserait le total du groupe dont il faisait partie. Rétrocompatible : les budgets créés avant cette mise à jour (sans ligne_compte) restent affichés normalement, chacun formant son propre groupe d\'un seul sous-compte, aucune perte de donnée. Testé empiriquement : validation de préfixe (4 cas), regroupement/total par ligne, et les 3 scénarios de contrainte de transfert (même ligne accepté, lignes différentes refusé, sous-compte sans budget refusé). Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -2602,6 +2602,10 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="nav-item" onclick="goTo('previsionnel')" data-page="previsionnel">
         <span class="nav-icon">📈</span><span>Prévisionnel / BP</span>
       </div>
+          <div class="nav-item" onclick="goTo('budget')" data-page="budget">
+        <span class="nav-icon">💰</span><span>Budget</span>
+        <span class="nav-badge" id="badge-budget" style="display:none;">0</span>
+      </div>
         </div>
       </div>
 
@@ -2725,10 +2729,6 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="nav-item" onclick="goTo('parc-auto')" data-page="parc-auto">
         <span class="nav-icon">🚗</span><span>Parc Auto</span>
         <span class="nav-badge" id="badge-parc-auto" style="display:none;">0</span>
-      </div>
-          <div class="nav-item" onclick="goTo('budget')" data-page="budget">
-        <span class="nav-icon">💰</span><span>Budget</span>
-        <span class="nav-badge" id="badge-budget" style="display:none;">0</span>
       </div>
           <div class="nav-item" onclick="mgOuvrir()" data-page="achats">
         <span class="nav-icon">🛒</span><span>Moyens Généraux</span>
@@ -14482,14 +14482,16 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="modal-body">
             <input type="hidden" id="cbud-id">
             <div class="form-grid">
+              <div class="form-group span-2"><label>Ligne budgétaire (compte principal) *</label><input type="text" class="form-control" id="cbud-ligne-compte" list="dl-plan-comptable" placeholder="Ex : 605" oninput="cbudRenderLignes()"></div>
               <div class="form-group span-2"><label>Division</label><select class="form-control" id="cbud-division"><option value="">— Toutes divisions (consolidé) —</option></select></div>
               <div class="form-group span-2"><label>Exercice *</label><input type="number" class="form-control" id="cbud-annee" min="2020" max="2100"></div>
             </div>
-            <div class="form-section-title" style="margin-top:12px;">Lignes budgétaires (compte de charge, sous-compte compris)</div>
+            <div class="form-section-title" style="margin-top:12px;">Sous-comptes de cette ligne</div>
+            <div style="font-size:11px;color:var(--blanc-dim);margin-bottom:6px;">Le montant de la ligne budgétaire est automatiquement le total des sous-comptes ci-dessous — les transferts ne se font qu'entre sous-comptes d'une même ligne.</div>
             <div id="cbud-lignes-box"></div>
-            <button class="btn btn-secondary btn-sm" id="cbud-btn-ajouter-ligne" style="margin-top:6px;" onclick="cbudAjouterLigne()">➕ Ajouter une ligne</button>
-            <div style="text-align:right;font-weight:700;margin-top:10px;font-size:15px;">Total : <span id="cbud-total">0</span> F</div>
-            <div style="font-size:11px;color:var(--blanc-dim);margin-top:8px;">Chaque ligne devient un budget distinct, enregistré en brouillon — soumettez-les ensuite pour validation par le DG (ou tout rôle habilité). « Toutes divisions » compare à toutes les entités confondues sur ce compte.</div>
+            <button class="btn btn-secondary btn-sm" id="cbud-btn-ajouter-ligne" style="margin-top:6px;" onclick="cbudAjouterLigne()">➕ Ajouter un sous-compte</button>
+            <div style="text-align:right;font-weight:700;margin-top:10px;font-size:15px;">Total de la ligne : <span id="cbud-total">0</span> F</div>
+            <div style="font-size:11px;color:var(--blanc-dim);margin-top:8px;">Chaque sous-compte devient un budget distinct, enregistré en brouillon — soumettez-les ensuite pour validation par le DG (ou tout rôle habilité). « Toutes divisions » compare à toutes les entités confondues sur ce compte.</div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal('modal-caisse-budget')">Annuler</button>
@@ -90820,12 +90822,23 @@ function budgetDisponible(compte, divisionId, exercice, excludeDaId) {
 
 /* ── Budget prévisionnel : brouillon (chef de division) → soumis → valide/rejete (DG/habilité) ── */
 async function budgetPrevisionnelSauver(champs) {
-  /* champs = { id, compte, division_id, exercice, montant } — construit par
-     l'écran appelant (voir étape suivante), séparé ici pour rester testable
-     indépendamment du DOM. */
+  /* champs = { id, ligne_compte, compte, division_id, exercice, montant, libelle }
+     ligne_compte = compte principal (ex: "605"), compte = sous-compte
+     réel où l'argent est réellement dépensé (ex: "6055") — construit par
+     l'écran appelant, séparé ici pour rester testable indépendamment du DOM. */
   if (!exigerDroit('Budget', champs.id ? 'm' : 'c', 'un budget prévisionnel')) return null;
-  if (!champs.compte || !champs.exercice || !(parseFloat(champs.montant) > 0)) {
-    toast('Compte, exercice et montant (> 0) sont obligatoires.', 'error'); return null;
+  if (!champs.compte || !champs.ligne_compte || !champs.exercice || !(parseFloat(champs.montant) > 0)) {
+    toast('Ligne budgétaire, sous-compte, exercice et montant (> 0) sont obligatoires.', 'error'); return null;
+  }
+  /* [Hiérarchie] Un sous-compte doit réellement être un enfant de sa ligne
+     budgétaire — un compte plus précis, plus long, qui en commence le code.
+     Sans ce contrôle, un « sous-compte » sans rapport avec sa ligne
+     casserait la logique de regroupement/total, et le calcul du disponible
+     par ligne (somme des sous-comptes) deviendrait incohérent. */
+  var ligneC = String(champs.ligne_compte).trim(), sousC = String(champs.compte).trim();
+  if (sousC.indexOf(ligneC) !== 0 || sousC.length <= ligneC.length) {
+    toast('Le sous-compte "' + sousC + '" doit commencer par le code de la ligne budgétaire "' + ligneC + '" et être plus précis (ex : ligne 605 → sous-compte 6055).', 'error');
+    return null;
   }
   var existant = champs.id ? (DATA.caisse_budgets||[]).find(function(x){ return x.id===champs.id; }) : null;
   if (existant && existant.statut === 'valide') {
@@ -90834,11 +90847,11 @@ async function budgetPrevisionnelSauver(champs) {
   var doublon = (DATA.caisse_budgets||[]).some(function(x){
     return x.id !== champs.id && x.compte === champs.compte && (x.division_id||'') === (champs.division_id||'') && x.exercice === champs.exercice;
   });
-  if (doublon) { toast('Un budget existe déjà pour ce compte, cette division et cet exercice.', 'error'); return null; }
+  if (doublon) { toast('Un budget existe déjà pour ce sous-compte, cette division et cet exercice.', 'error'); return null; }
 
   var b = existant || { id: champs.id || uid(), created_at: new Date().toISOString(), statut: 'brouillon' };
   b.libelle = (champs.libelle||'').trim();
-  b.compte = champs.compte; b.division_id = champs.division_id||''; b.exercice = parseInt(champs.exercice,10);
+  b.ligne_compte = ligneC; b.compte = sousC; b.division_id = champs.division_id||''; b.exercice = parseInt(champs.exercice,10);
   b.montant = parseFloat(champs.montant); b.periode = 'annuel'; b.mois = '';
   /* Remise à brouillon si on corrige un budget rejeté — sans ça, une fois
      rejeté, un enregistrement restait bloqué à vie sans moyen de le
@@ -90992,34 +91005,60 @@ function _budgetStatutBadge(statut) {
 
 function budgetRenderPrevisionnel() {
   var box = document.getElementById('budget-previsionnel-box'); if (!box) return;
-  var lignes = (DATA.caisse_budgets||[]).filter(function(b){ return b.periode==='annuel'; })
-    .sort(function(a,b){ return (b.exercice-a.exercice) || a.compte.localeCompare(b.compte); });
+  var lignes = (DATA.caisse_budgets||[]).filter(function(b){ return b.periode==='annuel'; });
   if (!lignes.length) { box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Aucun budget prévisionnel. Cliquez « + Nouveau budget » pour en créer un.</div>'; return; }
 
+  /* [Hiérarchie] Regroupe les sous-comptes par ligne budgétaire (compte
+     principal) + division + exercice — un même compte principal peut avoir
+     des totaux distincts par division/exercice. Repli sur le compte
+     lui-même pour les enregistrements créés avant cette hiérarchie (aucune
+     perte de donnée, ils forment simplement un groupe d'un seul élément). */
+  var groupes = {};
+  lignes.forEach(function(b){
+    var ligneC = b.ligne_compte || b.compte;
+    var cle = ligneC + '|' + (b.division_id||'') + '|' + b.exercice;
+    groupes[cle] = groupes[cle] || { ligne_compte: ligneC, division_id: b.division_id||'', exercice: b.exercice, sousLignes: [] };
+    groupes[cle].sousLignes.push(b);
+  });
+  var listeGroupes = Object.keys(groupes).map(function(k){ return groupes[k]; })
+    .sort(function(a,b){ return (b.exercice-a.exercice) || a.ligne_compte.localeCompare(b.ligne_compte); });
+
   box.innerHTML = '<div class="table-wrap"><table class="data-table" style="width:100%;"><thead><tr>'
-    + '<th>Libellé</th><th>Compte</th><th>Division</th><th>Exercice</th><th style="text-align:right;">Alloué</th><th style="text-align:right;">Disponible</th><th>Statut</th><th></th>'
+    + '<th>Compte / Libellé</th><th>Division</th><th>Exercice</th><th style="text-align:right;">Alloué</th><th style="text-align:right;">Disponible</th><th>Statut</th><th></th>'
     + '</tr></thead><tbody>'
-    + lignes.map(function(b) {
-        var libelleCompte = (function(){ var c=(APP.planComptable||[]).find(function(x){return x.code===b.compte;}); return c?c.label:''; })();
-        var divLabel = b.division_id ? escHtml(_nomDivision(b.division_id)) : 'Toutes divisions';
-        var dispo = b.statut==='valide' ? budgetDisponible(b.compte, b.division_id, b.exercice) : null;
-        var actions = '';
-        if (b.statut === 'brouillon') actions = '<button class="btn btn-secondary btn-sm" onclick="budgetPrevisionnelOuvrir(\''+b.id+'\')">✏️</button> '
-          + '<button class="btn btn-primary btn-sm" onclick="budgetPrevisionnelSoumettre(\''+b.id+'\').then(budgetRenderPrevisionnel)">📤 Soumettre</button> '
-          + '<button class="btn btn-danger btn-sm" onclick="budgetPrevisionnelSupprimer(\''+b.id+'\').then(budgetRenderPrevisionnel)">🗑️</button>';
-        else if (b.statut === 'soumis') actions = '<button class="btn btn-primary btn-sm" onclick="budgetPrevisionnelValider(\''+b.id+'\').then(budgetRenderPrevisionnel)">✅ Valider</button> '
-          + '<button class="btn btn-danger btn-sm" onclick="(function(){var m=prompt(\'Motif du rejet :\');if(m!==null)budgetPrevisionnelRejeter(\''+b.id+'\',m).then(budgetRenderPrevisionnel);})()">❌ Rejeter</button>';
-        else if (b.statut === 'rejete') actions = '<span style="font-size:11px;color:var(--blanc-dim);">'+escHtml(b.motif_rejet||'')+'</span> '
-          + '<button class="btn btn-secondary btn-sm" onclick="budgetPrevisionnelOuvrir(\''+b.id+'\')">✏️ Modifier et resoumettre</button>';
-        return '<tr>'
-          + '<td>'+escHtml(b.libelle||'—')+'</td>'
-          + '<td><b>'+escHtml(b.compte)+'</b>'+(libelleCompte?'<div style="font-size:11px;color:var(--blanc-dim);">'+escHtml(libelleCompte)+'</div>':'')+'</td>'
-          + '<td>'+divLabel+'</td><td>'+b.exercice+'</td>'
-          + '<td style="text-align:right;">'+fmtF(b.montant)+' F</td>'
-          + '<td style="text-align:right;'+(dispo!==null && dispo<0 ? 'color:var(--rouge);font-weight:700;' : '')+'">'+(dispo!==null ? fmtF(dispo)+' F' : '—')+'</td>'
-          + '<td>'+_budgetStatutBadge(b.statut)+'</td>'
-          + '<td style="white-space:nowrap;">'+actions+'</td>'
+    + listeGroupes.map(function(g) {
+        var libelleLigne = (function(){ var c=(APP.planComptable||[]).find(function(x){return x.code===g.ligne_compte;}); return c?c.label:''; })();
+        var divLabel = g.division_id ? escHtml(_nomDivision(g.division_id)) : 'Toutes divisions';
+        var totalAlloue = g.sousLignes.reduce(function(s,b){ return s+b.montant; }, 0);
+        var totalDispo = g.sousLignes.reduce(function(s,b){ return s + (b.statut==='valide' ? budgetDisponible(b.compte, b.division_id, b.exercice) : 0); }, 0);
+        var uneValidee = g.sousLignes.some(function(b){ return b.statut==='valide'; });
+        var enTete = '<tr style="background:rgba(184,115,51,0.08);font-weight:700;">'
+          + '<td>'+escHtml(g.ligne_compte)+(libelleLigne?' — '+escHtml(libelleLigne):'')+'</td>'
+          + '<td>'+divLabel+'</td><td>'+g.exercice+'</td>'
+          + '<td style="text-align:right;">'+fmtF(totalAlloue)+' F</td>'
+          + '<td style="text-align:right;'+(uneValidee && totalDispo<0 ? 'color:var(--rouge);' : '')+'">'+(uneValidee ? fmtF(totalDispo)+' F' : '—')+'</td>'
+          + '<td colspan="2" style="font-size:11px;color:var(--blanc-dim);font-weight:400;">'+g.sousLignes.length+' sous-compte(s)</td>'
           + '</tr>';
+        var sousLignesHtml = g.sousLignes.sort(function(a,b){ return a.compte.localeCompare(b.compte); }).map(function(b) {
+          var dispo = b.statut==='valide' ? budgetDisponible(b.compte, b.division_id, b.exercice) : null;
+          var actions = '';
+          if (b.statut === 'brouillon') actions = '<button class="btn btn-secondary btn-sm" onclick="budgetPrevisionnelOuvrir(\''+b.id+'\')">✏️</button> '
+            + '<button class="btn btn-primary btn-sm" onclick="budgetPrevisionnelSoumettre(\''+b.id+'\').then(budgetRenderPrevisionnel)">📤 Soumettre</button> '
+            + '<button class="btn btn-danger btn-sm" onclick="budgetPrevisionnelSupprimer(\''+b.id+'\').then(budgetRenderPrevisionnel)">🗑️</button>';
+          else if (b.statut === 'soumis') actions = '<button class="btn btn-primary btn-sm" onclick="budgetPrevisionnelValider(\''+b.id+'\').then(budgetRenderPrevisionnel)">✅ Valider</button> '
+            + '<button class="btn btn-danger btn-sm" onclick="(function(){var m=prompt(\'Motif du rejet :\');if(m!==null)budgetPrevisionnelRejeter(\''+b.id+'\',m).then(budgetRenderPrevisionnel);})()">❌ Rejeter</button>';
+          else if (b.statut === 'rejete') actions = '<span style="font-size:11px;color:var(--blanc-dim);">'+escHtml(b.motif_rejet||'')+'</span> '
+            + '<button class="btn btn-secondary btn-sm" onclick="budgetPrevisionnelOuvrir(\''+b.id+'\')">✏️ Modifier et resoumettre</button>';
+          return '<tr>'
+            + '<td style="padding-left:24px;">↳ <b>'+escHtml(b.compte)+'</b>'+(b.libelle?' — '+escHtml(b.libelle):'')+'</td>'
+            + '<td colspan="2" style="font-size:11px;color:var(--blanc-dim);"></td>'
+            + '<td style="text-align:right;">'+fmtF(b.montant)+' F</td>'
+            + '<td style="text-align:right;'+(dispo!==null && dispo<0 ? 'color:var(--rouge);font-weight:700;' : '')+'">'+(dispo!==null ? fmtF(dispo)+' F' : '—')+'</td>'
+            + '<td>'+_budgetStatutBadge(b.statut)+'</td>'
+            + '<td style="white-space:nowrap;">'+actions+'</td>'
+            + '</tr>';
+        }).join('');
+        return enTete + sousLignesHtml;
       }).join('')
     + '</tbody></table></div>';
 }
@@ -91152,12 +91191,16 @@ var cbudLignes = [];
 function cbudRenderLignes() {
   var box = document.getElementById('cbud-lignes-box'); if (!box) return;
   var enEdition = !!document.getElementById('cbud-id').value;
-  if (!cbudLignes.length) { box.innerHTML = '<div style="text-align:center;color:var(--blanc-dim);padding:10px;font-size:12px;">Ajoutez une ligne.</div>'; }
-  else box.innerHTML = '<table class="data-table" style="width:100%;"><thead><tr><th>Libellé</th><th>Compte de charge</th><th style="width:160px;">Montant (FCFA)</th>'+(enEdition?'':'<th style="width:40px;"></th>')+'</tr></thead><tbody>'
+  var ligneC = (document.getElementById('cbud-ligne-compte')||{}).value || '';
+  if (!cbudLignes.length) { box.innerHTML = '<div style="text-align:center;color:var(--blanc-dim);padding:10px;font-size:12px;">Ajoutez un sous-compte.</div>'; }
+  else box.innerHTML = '<table class="data-table" style="width:100%;"><thead><tr><th>Libellé</th><th>Sous-compte</th><th style="width:160px;">Montant (FCFA)</th>'+(enEdition?'':'<th style="width:40px;"></th>')+'</tr></thead><tbody>'
     + cbudLignes.map(function(l,i){
+        var sousC = (l.compte||'').trim();
+        var incoherent = ligneC && sousC && (sousC.indexOf(ligneC) !== 0 || sousC.length <= ligneC.length);
         return '<tr>'
           + '<td><input type="text" class="form-control" placeholder="Ex : Carburant véhicules" value="'+escHtml(l.libelle||'')+'" onchange="cbudLigneSet('+i+',\'libelle\',this.value)"></td>'
-          + '<td><input type="text" class="form-control" list="dl-plan-comptable" placeholder="Ex : 6055, 6051..." value="'+escHtml(l.compte||'')+'" onchange="cbudLigneSet('+i+',\'compte\',this.value)"></td>'
+          + '<td><input type="text" class="form-control" list="dl-plan-comptable" placeholder="Ex : 6055, 6051..." style="'+(incoherent?'border-color:var(--rouge);':'')+'" value="'+escHtml(l.compte||'')+'" onchange="cbudLigneSet('+i+',\'compte\',this.value)" oninput="cbudRenderLignes()">'
+            + (incoherent ? '<div style="font-size:10px;color:var(--rouge);">Doit commencer par « '+escHtml(ligneC)+' » et être plus précis</div>' : '') + '</td>'
           + '<td><input type="number" class="form-control" min="0" value="'+(l.montant||'')+'" onchange="cbudLigneSet('+i+',\'montant\',this.value)"></td>'
           + (enEdition ? '' : '<td><button class="btn btn-danger btn-sm btn-icon" onclick="cbudRetirerLigne('+i+')">✕</button></td>')
           + '</tr>';
@@ -91173,6 +91216,12 @@ function budgetPrevisionnelOuvrir(id) {
   var b = id ? (DATA.caisse_budgets||[]).find(function(x){ return x.id===id; }) : null;
   document.getElementById('cbud-modal-titre').textContent = b ? '✏️ Modifier le budget prévisionnel' : '📊 Nouveau budget prévisionnel';
   document.getElementById('cbud-id').value = id || '';
+  var champLigne = document.getElementById('cbud-ligne-compte');
+  champLigne.value = b ? (b.ligne_compte||'') : '';
+  /* Verrouillé en édition : changer la ligne parente d'un sous-compte déjà
+     existant romprait sa hiérarchie de façon inattendue (le groupe/total
+     dont il faisait partie perdrait ce sous-compte silencieusement). */
+  champLigne.disabled = !!b;
   var selDiv = document.getElementById('cbud-division');
   selDiv.innerHTML = '<option value="">— Toutes divisions (consolidé) —</option>' + (DATA.divisions||[]).map(function(d){
     return '<option value="'+d.id+'">'+escHtml(d.nom)+'</option>';
@@ -91187,16 +91236,19 @@ function budgetPrevisionnelOuvrir(id) {
   openModal('modal-caisse-budget');
 }
 async function budgetPrevisionnelSauverDepuisForm() {
+  var ligneCompte = document.getElementById('cbud-ligne-compte').value.trim();
   var divisionId = document.getElementById('cbud-division').value;
   var exercice = document.getElementById('cbud-annee').value;
   var idExistant = document.getElementById('cbud-id').value || null;
+  if (!ligneCompte) { toast('La ligne budgétaire (compte principal) est obligatoire.', 'error'); return; }
   var lignesValides = cbudLignes.filter(function(l){ return (l.compte||'').trim() && (parseFloat(l.montant)||0) > 0; });
-  if (!lignesValides.length) { toast('Ajoutez au moins une ligne avec un compte et un montant.', 'error'); return; }
+  if (!lignesValides.length) { toast('Ajoutez au moins un sous-compte avec un montant.', 'error'); return; }
 
   var reussies = 0, echecs = 0;
   for (var i = 0; i < lignesValides.length; i++) {
     var r = await budgetPrevisionnelSauver({
       id: (i === 0) ? idExistant : null,   /* seule la 1re ligne réutilise l'id en édition — les suivantes sont toujours de nouveaux budgets */
+      ligne_compte: ligneCompte,
       libelle: lignesValides[i].libelle,
       compte: lignesValides[i].compte.trim(),
       division_id: divisionId,
@@ -91208,7 +91260,7 @@ async function budgetPrevisionnelSauverDepuisForm() {
   if (reussies > 0) {
     closeModal('modal-caisse-budget');
     budgetRenderPrevisionnel();
-    toast('✅ ' + reussies + ' ligne(s) budgétaire(s) enregistrée(s)' + (echecs ? ' · ' + echecs + ' refusée(s), voir messages ci-dessus' : '') + '.', 'success');
+    toast('✅ ' + reussies + ' sous-compte(s) enregistré(s) sous la ligne ' + ligneCompte + (echecs ? ' · ' + echecs + ' refusé(s), voir messages ci-dessus' : '') + '.', 'success');
   }
 }
 
@@ -91331,12 +91383,29 @@ async function transfertSauver(champs) {
     toast('Choisissez deux comptes différents (source et destination).', 'error'); return null;
   }
   if (!(parseFloat(champs.montant) > 0)) { toast('Le montant doit être supérieur à 0.', 'error'); return null; }
+  var divisionId = champs.division_id||'', exerciceN = parseInt(champs.exercice,10)||new Date().getFullYear();
+  /* [Contrainte demandée] Un transfert ne déplace du disponible qu'ENTRE
+     sous-comptes d'une même ligne budgétaire — jamais entre deux lignes
+     différentes. Les deux comptes doivent donc déjà avoir leur propre
+     budget créé (pour connaître leur ligne parente) et cette ligne doit
+     être identique des deux côtés. */
+  var bSource = (DATA.caisse_budgets||[]).find(function(x){ return x.compte===champs.compte_source && (x.division_id||'')===divisionId && x.exercice===exerciceN; });
+  var bDest = (DATA.caisse_budgets||[]).find(function(x){ return x.compte===champs.compte_dest && (x.division_id||'')===divisionId && x.exercice===exerciceN; });
+  if (!bSource || !bDest) {
+    toast('Les deux sous-comptes doivent déjà avoir un budget prévisionnel créé (compte, division, exercice) avant de pouvoir y transférer.', 'error');
+    return null;
+  }
+  var ligneSource = bSource.ligne_compte || bSource.compte, ligneDest = bDest.ligne_compte || bDest.compte;
+  if (ligneSource !== ligneDest) {
+    toast('Transfert impossible : ' + champs.compte_source + ' (ligne ' + ligneSource + ') et ' + champs.compte_dest + ' (ligne ' + ligneDest + ') n\'appartiennent pas à la même ligne budgétaire.', 'error');
+    return null;
+  }
   var existant = champs.id ? (DATA.transferts_budgetaires||[]).find(function(x){ return x.id===champs.id; }) : null;
   if (existant && existant.statut !== 'brouillon' && existant.statut !== 'rejete') { toast('Ce transfert n\'est plus modifiable.', 'error'); return null; }
 
   var t = existant || { id: champs.id || uid(), created_at: new Date().toISOString(), statut: 'brouillon' };
-  t.division_id = champs.division_id||''; t.exercice = parseInt(champs.exercice,10)||new Date().getFullYear();
-  t.compte_source = champs.compte_source; t.compte_dest = champs.compte_dest;
+  t.division_id = divisionId; t.exercice = exerciceN;
+  t.compte_source = champs.compte_source; t.compte_dest = champs.compte_dest; t.ligne_compte = ligneSource;
   t.montant = Math.round(parseFloat(champs.montant)); t.motif = champs.motif||'';
   /* Remise à brouillon si on corrige un transfert rejeté — même
      justification que pour le budget prévisionnel et les fiches. */
