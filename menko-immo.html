@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.70 · 2026-08-18 — 2 corrections + 1 nouveauté sur l\'éditeur de plans. SIGNALÉ : « des murs déjà dessinés se sont déplacés » après injection — deux vraies causes trouvées, aucune n\'était un vrai déplacement de données. (1) L\'ouverture automatique de l\'éditeur (v14.65) forçait toujours le mode « masse » (plan de masse/terrain), jamais « intérieur » où vivent pièces et murs — un utilisateur ayant déjà dessiné des murs en mode intérieur ne les voyait plus après l\'injection (mauvais mode affiché), donnant l\'illusion trompeuse qu\'ils avaient bougé. Corrigé : le mode intérieur est désormais forcé après l\'auto-ouverture. (2) Plus grave : ED.elements démarre VIDE tant qu\'aucun plan n\'est explicitement rechargé dans la session — si l\'auto-ouverture se déclenchait sans recharger de plan existant, l\'utilisateur se serait retrouvé sur un plan VIERGE (contenant uniquement les éléments injectés), avec un risque réel d\'écraser silencieusement son ancien plan à la prochaine sauvegarde. Corrigé prudemment : un seul plan existant est rechargé automatiquement (aucune ambiguïté) ; plusieurs plans bloquent l\'injection avec un message clair invitant à choisir explicitement, plutôt que de deviner et risquer d\'écraser le mauvais travail. NOUVEAU : bouton « ⤢ Ajuster au contenu » sur les dimensions du champ de dessin (Terrain en mode masse, Logement en mode intérieur) — recalcule Long/Larg depuis la vraie bounding box des éléments dessinés, utile après une injection dont les murs peuvent dépasser les dimensions par défaut (15×10 m). Le champ de dessin paramétrable (Long/Larg + rectangle de limite coté) existait déjà — vérifié avant de reconstruire quoi que ce soit inutilement. Testé empiriquement le calcul de bounding box, y compris le cas particulier des cotes (x2/y2, distinct de w/h).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.71 · 2026-08-18 — NOUVEAU : bouton « 🎯 Centrer le plan », à côté de « Ajuster au contenu ». Décale tout le plan pour que son centre coïncide avec celui du champ de dessin actuel — utile après une injection dont les éléments atterrissent parfois loin de l\'origine. Le même décalage s\'applique à TOUS les niveaux ensemble (pas seulement le niveau actif), pour préserver l\'alignement RDC/étage — sans ça, un mur au RDC se serait désaligné de son homologue à l\'étage. AUDIT DE COMPLÉTUDE FAIT AVANT LIVRAISON : recensé les 16 points de création d\'élément dans l\'éditeur pour identifier TOUS les formats de coordonnées réellement utilisés — pas seulement x/y. Trouvé et géré : x2/y2 (cotes), points[] (lot, clôture, mur/cloison oblique, réseau), et surtout cx/cy (mur courbe — son centre de cercle, distinct de sa bounding box x/y ; sans cette translation, un mur courbe se serait affiché décalé de sa propre bounding box après centrage, un bug visuel qui serait passé inaperçu jusqu\'à ce qu\'un utilisateur trace un mur courbe puis centre son plan). Testé empiriquement sur les 4 formats simultanément — le décalage relatif cx-x reste identique avant/après translation, confirmant qu\'aucune géométrie interne n\'est faussée. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -9649,6 +9649,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                   <span id="archi-zoom-pct" style="min-width:38px;text-align:center;">100%</span>
                   <button class="btn btn-secondary btn-sm btn-icon" style="padding:2px 7px;" title="Zoom avant" onclick="archiZoomBouton(1.2)">+</button>
                   <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px;" title="Ajuster à la fenêtre" onclick="archiZoomAjuster()">⤢ Ajuster</button>
+                  <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px;" title="Recentre tout le plan dans le champ de dessin (Terrain/Logement)" onclick="archiCentrerPlan()">🎯 Centrer le plan</button>
                   <button class="archi-tool-btn" data-tool="zoom_zone" style="padding:2px 8px;font-size:10px;" title="Cliquer-glisser un cadre autour de la zone à examiner" onclick="archiSetTool('zoom_zone')">🔍 Zoomer sur zone</button>
                 </span>
                 <span style="display:flex;gap:4px;align-items:center;">
@@ -103095,6 +103096,52 @@ function qrSvgTag(text){
     if (ED.mode === 'masse' && typeof archiSetTerrain === 'function') archiSetTerrain();
     else archiRedraw();
     toast('✅ Champ de dessin ajusté au contenu : ' + L + ' × ' + W + ' m.', 'success');
+  };
+
+  /* [Centrer le plan] Décale TOUT le plan pour que son centre coïncide avec
+     le centre du champ de dessin actuel (Terrain en mode masse, Logement en
+     mode intérieur) — utile après une injection dont les éléments
+     atterrissent parfois loin de l'origine (0,0). La bounding box de
+     référence vient du niveau actif (cohérent avec archiAjusterChampDessin
+     ci-dessus), mais le MÊME décalage est appliqué à TOUS les niveaux
+     ensemble — sans ça, un mur au RDC se désaligne de son homologue à
+     l'étage, cassant la cohérence du bâtiment en élévation. Traduit tous
+     les formats de coordonnées réellement utilisés par les éléments :
+     x/y (tous), x2/y2 (cotes), points[] (lot, clôture, mur/cloison
+     oblique, réseau), cx/cy (mur courbe — sans ça, il resterait affiché à
+     son ancienne position, décalé de sa propre bounding box translatée). */
+  window.archiCentrerPlan = function() {
+    var elsRef = _elsVue();
+    if (!elsRef.length) { toast('Rien à centrer — ce niveau est vide.', 'info'); return; }
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    elsRef.forEach(function(e) {
+      if (e.x2 != null && e.y2 != null) {
+        minX = Math.min(minX, e.x||0, e.x2); maxX = Math.max(maxX, e.x||0, e.x2);
+        minY = Math.min(minY, e.y||0, e.y2); maxY = Math.max(maxY, e.y||0, e.y2);
+      } else {
+        minX = Math.min(minX, e.x||0); maxX = Math.max(maxX, (e.x||0)+(e.w||0));
+        minY = Math.min(minY, e.y||0); maxY = Math.max(maxY, (e.y||0)+(e.h||0));
+      }
+    });
+    var planW = maxX - minX, planH = maxY - minY;
+    var L = parseFloat(document.getElementById(ED.mode === 'masse' ? 'archi-terrain-l' : 'archi-lgt-l').value) || 100;
+    var W = parseFloat(document.getElementById(ED.mode === 'masse' ? 'archi-terrain-w' : 'archi-lgt-w').value) || 60;
+    var dx = (L - planW) / 2 - minX;
+    var dy = (W - planH) / 2 - minY;
+    if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) { toast('Le plan est déjà centré.', 'info'); return; }
+    _archipush();
+    ED.elements.forEach(function(e) {
+      e.x = Math.round(((e.x||0)+dx)*100)/100;
+      e.y = Math.round(((e.y||0)+dy)*100)/100;
+      if (e.x2 != null) e.x2 = Math.round((e.x2+dx)*100)/100;
+      if (e.y2 != null) e.y2 = Math.round((e.y2+dy)*100)/100;
+      if (e.cx != null) e.cx = Math.round((e.cx+dx)*100)/100;
+      if (e.cy != null) e.cy = Math.round((e.cy+dy)*100)/100;
+      if (Array.isArray(e.points)) e.points = e.points.map(function(p){ return { x: Math.round((p.x+dx)*100)/100, y: Math.round((p.y+dy)*100)/100 }; });
+    });
+    archiRedraw();
+    _archiUpdateSurfKpis();
+    toast('✅ Plan recentré dans le champ de dessin (' + Math.round(dx*100)/100 + ', ' + Math.round(dy*100)/100 + ' m).', 'success');
   };
 
   window.archiNouveauPlan = function() {
