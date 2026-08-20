@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.66 · 2026-08-18 — Bouton « 🧱 3. Tracer un mur » ajouté à la cotation manuelle d\'un plan (image), symétrique à « ▭ 2. Tracer une pièce » déjà existant, absent jusqu\'ici. Cliquer-glisser un trait allongé sur l\'image, puis choisir le type (porteur/cloison) — la plus grande dimension du tracé devient la longueur, la plus petite l\'épaisseur, quelle que soit l\'orientation (horizontale ou verticale) du geste. Rendu visuel en temps réel sur le canvas (rouge=porteur, bleu=cloison), liste des murs cotés affichée sous le canvas avec suppression individuelle. Fusionne avec une éventuelle détection IA déjà faite, exactement comme la cotation manuelle de pièces. Garde-fou : un trait quasi filiforme (imprécision de clic) reçoit une épaisseur par défaut de 10 cm plutôt qu\'une valeur non fiable — seuil ajusté à 5 cm après un premier test empirique l\'ayant montré un peu bas. Testé empiriquement : calcul longueur/épaisseur correct dans les deux orientations de tracé. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.68 · 2026-08-18 — Éditeur de plans : nouveau bouton « 🔍 Zoomer sur zone ». Le zoom molette/boutons existait déjà mais restait centré et imprécis pour examiner un détail technique précis (cotations serrées, coin d\'un plan complexe). Nouvel outil (cliquer-glisser un cadre) qui recentre et zoome exactement sur la zone tracée — réutilise la même relation scale/offset que le zoom molette existant (mêmes bornes min/max), pas un mécanisme parallèle. RISQUE ÉVITÉ AVANT LIVRAISON : l\'aperçu du cadre en cours de tracé passait par défaut par le rendu générique d\'élément architectural (type inconnu « zoom_zone » retombant sur la couleur « bâtiment ») — pas de plantage, mais un rendu visuel trompeur (verdâtre, comme une construction) pour ce qui n\'est qu\'un cadrage temporaire. Corrigé par un rendu dédié (pointillés bleus), cohérent avec les autres aperçus de sélection déjà présents dans l\'app. Testé empiriquement : le rectangle tracé apparaît bien centré et entièrement contenu dans le canvas après zoom, sur un scénario réaliste.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -9647,6 +9647,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                   <span id="archi-zoom-pct" style="min-width:38px;text-align:center;">100%</span>
                   <button class="btn btn-secondary btn-sm btn-icon" style="padding:2px 7px;" title="Zoom avant" onclick="archiZoomBouton(1.2)">+</button>
                   <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px;" title="Ajuster à la fenêtre" onclick="archiZoomAjuster()">⤢ Ajuster</button>
+                  <button class="archi-tool-btn" data-tool="zoom_zone" style="padding:2px 8px;font-size:10px;" title="Cliquer-glisser un cadre autour de la zone à examiner" onclick="archiSetTool('zoom_zone')">🔍 Zoomer sur zone</button>
                 </span>
                 <span style="display:flex;gap:4px;align-items:center;">
                   <label style="font-size:10px;">Grille</label>
@@ -87824,11 +87825,42 @@ function _dqeRenderScanPlanReview() {
       }
     }
   } catch(e) {}
+
+  /* [Contrôle croisé supplémentaire — linéaire de murs] Le contrôle
+     d'échelle ci-dessus ne portait QUE sur la surface des pièces — un écart
+     d'échelle pouvait donc rester invisible côté murs même s'il était
+     détecté (ou pas) côté pièces. On compare maintenant le linéaire de
+     murs porteurs DÉTECTÉ (IA ou cotation manuelle) au périmètre
+     géométrique RÉEL qui sera généré à l'injection — calculé par la même
+     fonction pure que l'injection elle-même utilisera, garantissant qu'on
+     compare ce qui sera vraiment produit, pas une estimation séparée qui
+     pourrait diverger. */
+  var alerteLineaireMurs = '';
+  try {
+    var mursDetectes = _dqeScanPlanTmp.murs || [];
+    if (mursDetectes.length && pcs.length) {
+      var epPRev = (function(){ var m=mursDetectes.filter(function(x){return x.type==='porteur';}); return m.length ? (m.reduce(function(s,x){return s+x.epaisseur;},0)/m.length) : 0.20; })();
+      var epCRev = (function(){ var m=mursDetectes.filter(function(x){return x.type==='cloison';}); return m.length ? (m.reduce(function(s,x){return s+x.epaisseur;},0)/m.length) : 0.10; })();
+      var layoutPrevu = _dqeCalculerLayout(pcs, epPRev, epCRev, 20);
+      var linPorteurDetecte = Math.round(mursDetectes.filter(function(m){return m.type==='porteur';}).reduce(function(s,m){return s+m.longueur;},0) * 10) / 10;
+      if (linPorteurDetecte > 0) {
+        var ratioMurs = linPorteurDetecte / layoutPrevu.linPerimetre;
+        if (ratioMurs < 0.5 || ratioMurs > 2.0) {
+          alerteLineaireMurs = '<div style="margin-top:8px;padding:8px 10px;background:rgba(234,88,12,0.12);border-left:3px solid var(--or,#B87333);border-radius:6px;font-size:12px;">'
+            + '<b>⚠️ Écart entre le linéaire de murs détecté et le périmètre calculé depuis les pièces</b><br>'
+            + 'Murs porteurs détectés : <b>' + linPorteurDetecte + ' m</b> · Périmètre attendu autour des pièces saisies : <b>' + layoutPrevu.linPerimetre + ' m</b> '
+            + '(rapport ×' + (Math.round(ratioMurs*100)/100) + ').<br>'
+            + 'Vérifiez le linéaire des murs dans le tableau ci-dessous avant d\'injecter — un écart important peut indiquer une échelle mal évaluée sur les murs, indépendamment des pièces.'
+            + '</div>';
+        }
+      }
+    }
+  } catch(e) {}
   document.getElementById('scan-plan-dqe-review-info').innerHTML =
     pcs.length + ' pièce(s) détectée(s) · ' + Math.round(total*10)/10 + ' m² habitables au total'
     + (nbEstimees ? ' · ⚠️ ' + nbEstimees + ' surface(s) estimée(s) (non annotée(s) sur le plan — à vérifier)' : '')
     + (anomalies.length ? ' · <span style="color:var(--rouge);font-weight:700;">🚩 ' + anomalies.length + ' surface(s) hors plage plausible pour leur type — probable erreur, à revérifier</span>' : '')
-    + alerteEchelle;
+    + alerteEchelle + alerteLineaireMurs;
   document.getElementById('tbody-scan-plan-dqe-review').innerHTML = pcs.map(function(p, i) {
     var plageAnormale = _dqeSurfacePlausible(p.label, p.surface);
     var style = plageAnormale ? 'background:rgba(220,38,38,0.10);' : (p.estime ? 'background:rgba(234,88,12,0.06);' : '');
@@ -87874,6 +87906,50 @@ function _dqeScanPlanMajDim(i, champ, val) {
    grille simple (la position exacte est indifférente au calcul DQE — seules
    surface et périmètre comptent), puis enchaîne directement sur la
    génération de nomenclature déjà existante (archiOuvrirGenNomenclature). */
+/* [Fonction pure — pas d'effet de bord] Calcule la disposition en grille des
+   pièces (bord à bord, cloisons intercalées) et le périmètre porteur qui en
+   résulte, SANS rien injecter — utilisée à la fois par l'écran de
+   vérification (pour un contrôle croisé d'échelle sur les murs, avant
+   injection) et par dqeScanPlanInjecter (pour créer les vrais éléments),
+   garantissant que les deux utilisent EXACTEMENT le même calcul, sans
+   jamais pouvoir diverger l'un de l'autre. */
+function _dqeCalculerLayout(pieces, epP, epC, largeurMax) {
+  var placements = [], cloisonsV = [], cloisonsH = [];
+  var x = epP, y = epP, ligneH = 0, largeurAtteinte = 0;
+  var premierePieceDeLigne = true;
+  pieces.forEach(function(p) {
+    if (x - epP + p.longueur > largeurMax) {
+      cloisonsH.push({ x: epP, y: y+ligneH, w: x-epC-epP, h: epC });
+      x = epP; y += ligneH + epC; ligneH = 0; premierePieceDeLigne = true;
+    }
+    if (!premierePieceDeLigne) {
+      cloisonsV.push({ x: x-epC, y: y, w: epC, h: p.largeur });
+    }
+    placements.push({ x: x, y: y, w: p.longueur, h: p.largeur, label: p.label });
+    x += p.longueur + epC;
+    ligneH = Math.max(ligneH, p.largeur);
+    largeurAtteinte = Math.max(largeurAtteinte, x - epC);
+    premierePieceDeLigne = false;
+  });
+  var largeurTotale = largeurAtteinte - epP;
+  var hauteurTotale = y + ligneH - epP;
+  var perimetre = [
+    { x: 0, y: 0, w: largeurTotale + 2*epP, h: epP },
+    { x: 0, y: hauteurTotale + epP, w: largeurTotale + 2*epP, h: epP },
+    { x: 0, y: 0, w: epP, h: hauteurTotale + 2*epP },
+    { x: largeurTotale + epP, y: 0, w: epP, h: hauteurTotale + 2*epP }
+  ];
+  /* [Fidèle au calcul DÉJÀ utilisé ailleurs dans le système — voir le calcul
+     du linéaire de gros œuvre pour le DQE] Math.max(w,h) par segment, somme
+     brute, SANS retirer l'excroissance des coins — c'est cette même
+     convention qui alimente les quantités de matériaux, donc la comparer à
+     autre chose fausserait le contrôle croisé plutôt que de le fiabiliser. */
+  var linPerimetre = Math.round(perimetre.reduce(function(s,seg){ return s + Math.max(seg.w, seg.h); }, 0) * 10) / 10;
+  var linCloisons = Math.round((cloisonsV.concat(cloisonsH).reduce(function(s,c){ return s + Math.max(c.w,c.h); }, 0)) * 10) / 10;
+  return { placements: placements, cloisonsV: cloisonsV, cloisonsH: cloisonsH, perimetre: perimetre,
+           largeurTotale: largeurTotale, hauteurTotale: hauteurTotale, linPerimetre: linPerimetre, linCloisons: linCloisons };
+}
+
 function dqeScanPlanInjecter() {
   if (!_dqeScanPlanTmp.pieces.length) { toast('Aucune pièce à injecter.', 'error'); return; }
   var anomalies = _dqeScanPlanTmp.pieces.filter(function(p){ return _dqeSurfacePlausible(p.label, p.surface); });
@@ -87940,46 +88016,22 @@ function dqeScanPlanInjecter() {
      côté porteur en cas d'ambiguïté détectée. */
   var epP = (function(){ var m=(_dqeScanPlanTmp.murs||[]).filter(function(x){return x.type==='porteur';}); return m.length ? (m.reduce(function(s,x){return s+x.epaisseur;},0)/m.length) : 0.20; })();
   var epC = (function(){ var m=(_dqeScanPlanTmp.murs||[]).filter(function(x){return x.type==='cloison';}); return m.length ? (m.reduce(function(s,x){return s+x.epaisseur;},0)/m.length) : 0.10; })();
-  var largeurMax = 20;
-  var x = epP, y = epP, ligneH = 0, largeurAtteinte = 0;
   var ajoutes = 0, ajoutesMurs = 0;
-  var premierePieceDeLigne = true;
+  var layout = _dqeCalculerLayout(_dqeScanPlanTmp.pieces, epP, epC, 20);
 
-  _dqeScanPlanTmp.pieces.forEach(function(p) {
-    if (x - epP + p.longueur > largeurMax) {
-      /* Nouvelle rangée : cloison horizontale sur toute la largeur de la rangée qui se termine */
-      ED.elements.push({ id: 'ae_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
-        type: 'cloison', niv: ED.nivActif || 0, x: Math.round(epP*100)/100, y: Math.round((y+ligneH)*100)/100,
-        w: Math.round((x-epC-epP)*100)/100, h: Math.round(epC*100)/100, label: '', _source_scan_ia: true });
-      ajoutesMurs++;
-      x = epP; y += ligneH + epC; ligneH = 0; premierePieceDeLigne = true;
-    }
-    if (!premierePieceDeLigne) {
-      /* Cloison verticale entre cette pièce et la précédente sur la même rangée */
-      ED.elements.push({ id: 'ae_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
-        type: 'cloison', niv: ED.nivActif || 0, x: Math.round((x-epC)*100)/100, y: Math.round(y*100)/100,
-        w: Math.round(epC*100)/100, h: p.largeur, label: '', _source_scan_ia: true });
-      ajoutesMurs++;
-    }
+  layout.placements.forEach(function(pl) {
     ED.elements.push({ id: 'ae_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
-      type: 'piece', niv: ED.nivActif || 0, x: Math.round(x*100)/100, y: Math.round(y*100)/100,
-      w: p.longueur, h: p.largeur, label: p.label, _source_scan_ia: true });
+      type: 'piece', niv: ED.nivActif || 0, x: Math.round(pl.x*100)/100, y: Math.round(pl.y*100)/100,
+      w: pl.w, h: pl.h, label: pl.label, _source_scan_ia: true });
     ajoutes++;
-    x += p.longueur + epC;
-    ligneH = Math.max(ligneH, p.largeur);
-    largeurAtteinte = Math.max(largeurAtteinte, x - epC);
-    premierePieceDeLigne = false;
   });
-  var largeurTotale = largeurAtteinte - epP;
-  var hauteurTotale = y + ligneH - epP;
-
-  /* Périmètre porteur autour de tout l'ensemble */
-  [
-    { x: 0, y: 0, w: largeurTotale + 2*epP, h: epP },                              /* haut */
-    { x: 0, y: hauteurTotale + epP, w: largeurTotale + 2*epP, h: epP },            /* bas */
-    { x: 0, y: 0, w: epP, h: hauteurTotale + 2*epP },                              /* gauche */
-    { x: largeurTotale + epP, y: 0, w: epP, h: hauteurTotale + 2*epP }             /* droite */
-  ].forEach(function(seg){
+  layout.cloisonsV.concat(layout.cloisonsH).forEach(function(c) {
+    ED.elements.push({ id: 'ae_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
+      type: 'cloison', niv: ED.nivActif || 0, x: Math.round(c.x*100)/100, y: Math.round(c.y*100)/100,
+      w: Math.round(c.w*100)/100, h: Math.round(c.h*100)/100, label: '', _source_scan_ia: true });
+    ajoutesMurs++;
+  });
+  layout.perimetre.forEach(function(seg) {
     ED.elements.push({ id: 'ae_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
       type: 'mur', niv: ED.nivActif || 0, x: Math.round(seg.x*100)/100, y: Math.round(seg.y*100)/100,
       w: Math.round(seg.w*100)/100, h: Math.round(seg.h*100)/100, label: '', _source_scan_ia: true });
@@ -102621,7 +102673,8 @@ function qrSvgTag(text){
       colonne:'Poteau / Colonne (clic)',
       dalle:'Dalle (cliquer-glisser sur l\'emprise à couvrir)',
       toiture:'Toiture (cliquer-glisser sur l\'emprise à couvrir)',
-      equipement:'Équipement technique (clic)' };
+      equipement:'Équipement technique (clic)',
+      zoom_zone:'Zoomer sur une zone (cliquer-glisser un cadre autour de la partie à examiner)' };
     var el = document.getElementById('archi-info-tool');
     if (el) el.textContent = 'Outil : ' + (labels[tool] || tool);
     ED.canvas.style.cursor = tool === 'select' ? 'default' : 'crosshair';
@@ -103556,6 +103609,18 @@ function qrSvgTag(text){
       return;
     }
     if (!ED._drawCurrent) return;
+    if (ED.tool === 'zoom_zone') {
+      var zx = ED.offsetX + ED._drawCurrent.x * ED.scale, zy = ED.offsetY + ED._drawCurrent.y * ED.scale;
+      var zw = ED._drawCurrent.w * ED.scale, zh = ED._drawCurrent.h * ED.scale;
+      ctx.save();
+      ctx.strokeStyle = '#2563EB'; ctx.lineWidth = 2; ctx.setLineDash([6,4]);
+      ctx.strokeRect(zx, zy, zw, zh);
+      ctx.fillStyle = 'rgba(37,99,235,0.08)';
+      ctx.fillRect(zx, zy, zw, zh);
+      ctx.setLineDash([]);
+      ctx.restore();
+      return;
+    }
     var el = Object.assign({}, ED._drawCurrent, { type: ED.tool, label: '' });
     _drawElement(ctx, el, false);
   }
@@ -104005,6 +104070,27 @@ function qrSvgTag(text){
     var w0 = Math.abs(mx - ED.drawStart.x);
     var h0 = Math.abs(my - ED.drawStart.y);
     if (w0 < 0.3 && h0 < 0.3) { ED.drawing = false; ED.drawStart = null; ED._drawCurrent = null; return; }
+
+    /* [Zoom cadré sur une zone] Le zoom molette/boutons existant zoome de
+       façon centrée mais imprécise — pour examiner un coin précis d'un plan
+       complexe (cotations serrées, détail technique), on trace directement
+       un rectangle autour de la zone voulue et l'éditeur cadre dessus.
+       Réutilise EXACTEMENT la même relation scale/offset que _archiZoomAt,
+       pour rester cohérent avec le zoom molette (mêmes bornes min/max). */
+    if (ED.tool === 'zoom_zone') {
+      var cx = x0 + w0/2, cy = y0 + h0/2;
+      var scaleX = ED.canvas.width / w0, scaleY = ED.canvas.height / h0;
+      var nouvelleEchelleZoom = Math.min(scaleX, scaleY) * 0.9; /* marge de 10% pour ne pas coller aux bords */
+      var borneMinZ = (ED._scaleFit || ED.scale) * 0.2;
+      var borneMaxZ = (ED._scaleFit || ED.scale) * 8;
+      ED.scale = Math.max(borneMinZ, Math.min(borneMaxZ, nouvelleEchelleZoom));
+      ED.offsetX = ED.canvas.width/2 - cx * ED.scale;
+      ED.offsetY = ED.canvas.height/2 - cy * ED.scale;
+      if (typeof _archiUpdateZoomPct === 'function') _archiUpdateZoomPct();
+      ED.drawing = false; ED.drawStart = null; ED._drawCurrent = null;
+      archiRedraw();
+      return;
+    }
 
     /* Épaisseur imposée pour mur/cloison : remplace la dimension la plus
        courte (perpendiculaire au tracé) par la valeur paramétrée, quel que
