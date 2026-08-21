@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.79 · 2026-08-18 — Suivi Budgétaire intégré au Tableau de bord principal (onglet Finance) et au Cockpit. Nouvelle fonction centrale _budgetKpiGlobal() : calcule le taux d\'utilisation PAR ligne budgétaire (pas juste un total global qui masquerait une ligne en dépassement compensée par une autre peu utilisée), détecte les lignes en dépassement (>100%) et proches de l\'épuisement (≥80%), identifie la ligne la plus consommée — réutilisée par le module Budget lui-même, l\'onglet Finance et le Cockpit pour ne jamais dupliquer cette logique à 3 endroits distincts. Onglet Finance : 3 nouvelles cartes (taux d\'utilisation moyen, lignes en dépassement, disponible consolidé), avec repli défensif si le module budgétaire n\'est pas encore chargé. Cockpit (le tableau de bord qui travaille) : nouveau moteur d\'actions — chaque ligne en dépassement devient une action urgente actionnable (proposant un transfert), les validations budgétaires en attente (lignes et fiches d\'engagement) remontent aussi dans la file. INCIDENT CORRIGÉ EN COURS DE CONSTRUCTION : un remplacement de texte a accidentellement effacé le corps entier d\'une fonction de rendu (onglet Finance) — détecté immédiatement par la validation JS systématique, restauré avant de continuer. Testé empiriquement un scénario à 2 lignes budgétaires (une en dépassement à 116,7%, une saine à 93,3%) — détection correcte des deux cas. Vérification exhaustive de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.80 · 2026-08-18 — NOUVEAU : bouton « 📊 Schéma des flux » sur la page Suivi Budgétaire, réutilisant exactement le mécanisme déjà en place pour Comptabilité SYSCOHADA, Montage, Chantier et Étude de Prix (FLUX_SPECS, modal-flux) — pas un nouveau système, le même que celui déjà connu dans l\'app. Trois onglets : schéma visuel du circuit complet (préparation du budget, engagement, transformation FED→DA, décaissement, transferts en branche séparée), cas concret chiffré (une FED bloquée par manque de disponible, débloquée par un transfert), et le lien avec la Comptabilité SYSCOHADA (l\'écriture générée au décaissement). Repris fidèlement le même vocabulaire visuel (fh-node, fh-axe, fh-arrow, fh-split/fh-branch) que les schémas déjà existants, pour une cohérence totale avec le reste de l\'app. Bouton placé et aligné exactement comme sur la page Comptabilité (avec le même spacer flex, vérifié avant d\'ajouter pour ne pas produire un alignement différent). Testé empiriquement l\'équilibre des balises HTML des 3 onglets avant livraison. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -14313,6 +14313,8 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <h1 class="page-title">📊 Suivi Budgétaire</h1>
             <div class="page-sub">Budget prévisionnel · Fiches d'engagement de dépense → Demandes d'Achat · Transferts de ligne</div>
           </div>
+          <div class="spacer"></div>
+          <button class="btn btn-secondary btn-sm" onclick="openFlux('budget')">📊 Schéma des flux</button>
         </div>
 
         <!-- ── Tableau de bord central — toujours visible, tous onglets confondus ── -->
@@ -26753,6 +26755,50 @@ var FLUX_SPECS = {
       +'<tr><td>Affectation bénéfice</td><td class="fh-mono">13</td><td class="fh-mono">110 · 121 (réserves)</td></tr>'
       +'<tr><td>Report perte</td><td class="fh-mono">119</td><td class="fh-mono">13</td></tr></table>'
       +'<div style="font-size:11.5px;color:var(--fh-enc2);margin-top:8px">Après affectation : reports à nouveau → bilan d\'ouverture N+1. L\'exercice clos est <b>verrouillé</b> (toute écriture datée dans l\'exercice est bloquée). FEC exporté en N lignes équilibrées par écriture.</div>'
+      +'</div></div>'
+  },
+
+  budget: {
+    title: '📊 Suivi Budgétaire — cycle complet',
+    schema:
+      '<div class="fh-axe fh-amont"><div class="fh-tt">Préparation — le budget prévisionnel</div>'
+      +'<div class="fh-split">'
+        +'<div class="fh-node fh-am"><span class="fh-store fh-mono">caisse_budgets</span><h4>Ligne budgétaire</h4><div class="fh-role">Compte principal (ex. 605). Ne porte jamais de montant saisi directement.</div></div>'
+        +'<div class="fh-node fh-am"><span class="fh-store fh-mono">caisse_budgets</span><h4>Sous-comptes</h4><div class="fh-role">Comptes précis (ex. 6051, 6055), chacun avec son montant. <b>La ligne = somme des sous-comptes.</b></div></div>'
+      +'</div></div>'
+      +'<div class="fh-arrow"><span class="fh-tag fh-mono">brouillon → soumis</span><span class="fh-v"></span>▼</div>'
+      +'<div class="fh-node fh-key"><span class="fh-store fh-mono">DG / rôle habilité</span><h4>Validation (plafond de rôle)</h4><div class="fh-role">La ligne devient <b>active</b> : disponible = alloué.</div></div>'
+      +'<div class="fh-arrow"><span class="fh-v"></span>▼</div>'
+
+      +'<div class="fh-axe fh-aval"><div class="fh-tt">Engagement — la dépense</div>'
+      +'<div class="fh-node fh-av"><span class="fh-store fh-mono">fiches_engagement_depense</span><h4>Fiche d\'Engagement de Dépense (FED)</h4><div class="fh-role">Engage un montant sur un sous-compte précis, avec le détail des lignes.</div></div></div>'
+      +'<div class="fh-arrow"><span class="fh-tag fh-mono">plafond de rôle + disponible sur le sous-compte</span><span class="fh-v"></span>▼</div>'
+      +'<div class="fh-split" style="margin-top:14px">'
+        +'<div class="fh-branch" style="border-color:var(--rouge,#DC2626)"><div class="fh-btt">Disponible insuffisant</div><div class="fh-flow">'
+          +'<div class="fh-node" style="border-color:var(--rouge,#DC2626)"><h4 style="color:var(--rouge,#DC2626)">Transfert nécessaire</h4><div class="fh-role">Voir le circuit « Transferts » ci-dessous — même ligne budgétaire uniquement.</div></div>'
+        +'</div></div>'
+        +'<div class="fh-branch"><div class="fh-btt">Disponible suffisant</div><div class="fh-flow">'
+          +'<div class="fh-node fh-key"><span class="fh-store fh-mono">fiches_engagement_depense</span><h4>La FED SE TRANSFORME EN Demande d\'Achat</h4><div class="fh-role">Ligne décrémentée à cet instant. Numéro DA attribué ; numéro FED conservé pour traçabilité.</div></div>'
+        +'</div></div>'
+      +'</div>'
+      +'<div class="fh-arrow"><span class="fh-v"></span>▼</div>'
+      +'<div class="fh-node fh-av"><span class="fh-store fh-mono">caisse_mouvements</span><h4>Décaissement à la Caisse</h4><div class="fh-role">Formulaire pré-rempli — <b>aucune ventilation à refaire</b>, le compte est déjà connu.</div></div>'
+
+      +'<div class="fh-axe fh-amont" style="margin-top:26px"><div class="fh-tt">Transferts budgétaires</div>'
+      +'<div class="fh-node fh-am fh-legacy"><h4>Entre deux sous-comptes d\'UNE MÊME ligne uniquement</h4><div class="fh-role">Refusé si les deux comptes n\'appartiennent pas à la même ligne, ou si l\'un des deux n\'a pas encore de budget créé. Même circuit de validation (plafond de rôle) que la FED.</div></div></div>',
+    exemple:
+      '<div class="fh-axe fh-amont"><div class="fh-tt">Cas concret — Division « Menko Building », exercice 2026</div>'
+      +'<div class="fh-node fh-am"><h4>Ligne 605 — Autres achats</h4><div class="fh-role">Sous-compte 6051 (Carburant véhicules) : 1 000 000 F alloués. Sous-compte 6055 (Fournitures d\'entretien) : 500 000 F alloués. <b>Total de la ligne : 1 500 000 F.</b></div></div></div>'
+      +'<div class="fh-arrow"><span class="fh-v"></span>▼</div>'
+      +'<div class="fh-node fh-av"><h4>FED-2026-0004 : Fournitures de chantier</h4><div class="fh-role">1 400 000 F engagés sur le sous-compte 6055 — <b>refusée</b> : disponible sur 6055 = 500 000 F seulement.</div></div>'
+      +'<div class="fh-arrow"><span class="fh-tag fh-mono">transfert proposé : 6051 → 6055, 900 000 F</span><span class="fh-v"></span>▼</div>'
+      +'<div class="fh-node fh-key"><h4>Après validation du transfert</h4><div class="fh-role">Disponible 6051 : 100 000 F · Disponible 6055 : 1 400 000 F. La FED-2026-0004 peut être resoumise puis validée — elle devient DA-2026-0004.</div></div>',
+    compta:
+      '<div class="fh-cout"><div class="fh-couth">Suivi Budgétaire → Comptabilité SYSCOHADA</div><div class="fh-coutb">'
+      +'<div style="font-size:12.5px;color:var(--fh-enc2);margin-bottom:10px;">Le module Budget lui-même ne passe aucune écriture — c\'est le décaissement à la Caisse, une fois la DA payée, qui génère l\'écriture comptable classique (voir schéma « Finance »). Le compte du sous-compte engagé (ex. 6055) est directement celui utilisé pour la ventilation, sans ressaisie.</div>'
+      +'<table class="fh-cpt"><tr><th>Événement</th><th>Débit</th><th>Crédit</th></tr>'
+      +'<tr><td>Décaissement d\'une DA (sous-compte engagé)</td><td class="fh-mono">6055 (ou sous-compte visé)</td><td class="fh-mono">571 (caisse)</td></tr></table>'
+      +'<div style="font-size:11.5px;color:var(--fh-enc2);margin-top:8px">Le montant, le compte et le libellé sont repris automatiquement depuis la fiche d\'engagement validée — le caissier ne fait que confirmer la sortie physique de fonds.</div>'
       +'</div></div>'
   }
 };
