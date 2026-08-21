@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.78 · 2026-08-18 — Module renommé « 📊 Suivi Budgétaire » (était « 💰 Budget ») — seul le libellé affiché change, la clé technique de permission reste « Budget » pour ne jamais casser les droits déjà configurés par rôle. Ce renommage a été appliqué aux 3 endroits où le nom apparaissait littéralement à l\'écran (case à cocher des permissions, matrice de rôles, export CSV) via un nouveau mapping d\'affichage centralisé, pas un renommage en dur risqué. NOUVEAU : tableau de bord moderne, central (toujours visible, tous onglets confondus — budget alloué, engagé, disponible, éléments en attente) et un mini-résumé par onglet (répartition par statut + total), réutilisant le style kpi-card déjà utilisé partout ailleurs dans l\'app plutôt qu\'un nouveau style. Se met à jour automatiquement après chaque action (déjà rappelé par les fonctions de rendu existantes). Testé empiriquement le calcul des 6 indicateurs du tableau de bord central sur un scénario à 4 statuts mêlés. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.79 · 2026-08-18 — Suivi Budgétaire intégré au Tableau de bord principal (onglet Finance) et au Cockpit. Nouvelle fonction centrale _budgetKpiGlobal() : calcule le taux d\'utilisation PAR ligne budgétaire (pas juste un total global qui masquerait une ligne en dépassement compensée par une autre peu utilisée), détecte les lignes en dépassement (>100%) et proches de l\'épuisement (≥80%), identifie la ligne la plus consommée — réutilisée par le module Budget lui-même, l\'onglet Finance et le Cockpit pour ne jamais dupliquer cette logique à 3 endroits distincts. Onglet Finance : 3 nouvelles cartes (taux d\'utilisation moyen, lignes en dépassement, disponible consolidé), avec repli défensif si le module budgétaire n\'est pas encore chargé. Cockpit (le tableau de bord qui travaille) : nouveau moteur d\'actions — chaque ligne en dépassement devient une action urgente actionnable (proposant un transfert), les validations budgétaires en attente (lignes et fiches d\'engagement) remontent aussi dans la file. INCIDENT CORRIGÉ EN COURS DE CONSTRUCTION : un remplacement de texte a accidentellement effacé le corps entier d\'une fonction de rendu (onglet Finance) — détecté immédiatement par la validation JS systématique, restauré avant de continuer. Testé empiriquement un scénario à 2 lignes budgétaires (une en dépassement à 116,7%, une saine à 93,3%) — détection correcte des deux cas. Vérification exhaustive de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -26885,11 +26885,17 @@ function buildDashTabFinance() {  var cessions      = DATA.cessions_foncieres ||
     {l:'Solde net (Enc. − Déc.)',  v:fmtF(soldeNet)+' FCFA',   i:'📊', c:soldeNet>=0?'kpi-green':'kpi-red', d:soldeNet>=0?'Trésorerie positive':'Attention : tension trésorerie'},
     (function(){ var s=(typeof caisseSoldeGlobalTempsReel==='function')?caisseSoldeGlobalTempsReel():0; return {l:'Espèces en caisse', v:fmtF(s)+' FCFA', i:'💵', c:'kpi-copper', d:'Sessions ouvertes · temps réel'}; })(),
     (function(){ var st=(typeof caisseAVentilerStats==='function')?caisseAVentilerStats():{nb:0,montant:0}; return {l:'Caisse — à ventiler', v:st.nb+' mvt', i:'🧾', c:st.nb?'kpi-red':'kpi-green', d:fmtF(st.montant)+' FCFA en attente', click:'goTo(\'caisse\')'}; })(),
+    (function(){ var k=(typeof _budgetKpiGlobal==='function')?_budgetKpiGlobal():null; if(!k) return null;
+      return {l:"Suivi budgétaire — taux d'utilisation", v:k.tauxMoyen+'%', i:'📊', c:k.tauxMoyen>=90?'kpi-red':(k.tauxMoyen>=70?'':'kpi-green'), d:k.nbLignesActives+' ligne(s) budgétaire(s) active(s)', click:'goTo(\'budget\')'}; })(),
+    (function(){ var k=(typeof _budgetKpiGlobal==='function')?_budgetKpiGlobal():null; if(!k) return null;
+      return {l:'Lignes budgétaires en dépassement', v:k.enDepassement.length, i:'🚨', c:k.enDepassement.length?'kpi-red':'kpi-green', d:k.enDepassement.length?k.enDepassement.map(function(l){return l.ligne_compte;}).join(', ') : 'Aucune ligne dépassée', click:'goTo(\'budget\')'}; })(),
+    (function(){ var k=(typeof _budgetKpiGlobal==='function')?_budgetKpiGlobal():null; if(!k) return null;
+      return {l:'Budget disponible (validé)', v:fmtF(k.totalDispo)+' FCFA', i:'✅', c:k.totalDispo<0?'kpi-red':'kpi-green', d:'Alloué '+fmtF(k.totalAlloue)+' — Engagé '+fmtF(k.totalEngage), click:'goTo(\'budget\')'}; })(),
     {l:'Reste à recouvrer', v:fmtF(encours)+' FCFA',   i:'⏳', c:encours>100000000?'kpi-red':'', d:DATA.clients.length+' souscripteurs + '+cessions.length+' cession(s)', click:'rarOuvrir()'},
     {l:'Taux de recouvrement',      v:tauxRecouv+'%',           i:'📈', c:tauxRecouv>=50?'kpi-green':'kpi-red', d:fmtF(totalVerse)+' / '+fmtF(totalDu)},
     {l:'Clients en retard',         v:retard,                   i:'⚠️', c:retard>0?'kpi-red':'kpi-green', d:retard+' dossiers à relancer', click:'goTo(\'relances\')'},
     {l:'Lots vendus',              v:DATA.lots.filter(function(l){return l.statut==='vendu';}).length+' / '+DATA.lots.length, i:'🏠', c:'', d:DATA.lots.filter(function(l){return l.statut==='disponible';}).length+' disponibles', click:'goTo(\'lots\')'},
-  ].map(function(k){
+  ].filter(Boolean).map(function(k){
     return '<div class="kpi-card '+k.c+'" data-icon="'+k.i+'"'+(k.click?' style="cursor:pointer;" title="Cliquer pour le détail" onclick="'+k.click+'"':'')+'><div class="kpi-label">'+k.l+'</div>'
       +'<div class="kpi-value or" style="font-size:17px;">'+k.v+'</div>'
       +'<div class="kpi-delta '+(k.c==='kpi-red'?'negative':k.c==='kpi-green'?'positive':'')+'">'+k.d+'</div></div>';
@@ -37470,6 +37476,41 @@ function ckActions() {
       ].filter(Boolean)
     });
   });
+
+  /* R-BUDGET — Lignes en dépassement (urgent, un transfert peut régler ça
+     immédiatement) et validations budgétaires en attente (chaque jour
+     d'attente retarde un décaissement en aval, à la caisse). */
+  try {
+    var kBud = (typeof _budgetKpiGlobal === 'function') ? _budgetKpiGlobal() : null;
+    if (kBud) {
+      kBud.enDepassement.forEach(function(l){
+        push({
+          aid: 'buddepasse_' + l.ligne_compte + '_' + (l.division_id||'') + '_' + l.exercice,
+          prio: 95, urgent: true, icone: '🚨',
+          titre: 'Ligne budgétaire ' + l.ligne_compte + ' en dépassement',
+          detail: 'Engagé ' + fmtF(l.engage) + ' F pour ' + fmtF(l.alloue) + ' F alloués (' + l.taux + '%) — un transfert depuis une ligne moins consommée peut régulariser.',
+          montant: l.engage - l.alloue,
+          boutons: [ { lib:'🔀 Faire un transfert', fn:"goTo('budget')" } ]
+        });
+      });
+      if (kBud.lignesEnAttente > 0) {
+        push({
+          aid: 'budlignes_attente', prio: 60, urgent: false, icone: '⏳',
+          titre: kBud.lignesEnAttente + ' ligne(s) de budget prévisionnel en attente de validation',
+          detail: 'Chaque ligne soumise reste inactive (aucune fiche d\'engagement possible dessus) tant qu\'elle n\'est pas validée.',
+          boutons: [ { lib:'✅ Aller valider', fn:"goTo('budget')" } ]
+        });
+      }
+      if (kBud.fichesEnAttente > 0) {
+        push({
+          aid: 'budfiches_attente', prio: 65, urgent: false, icone: '📤',
+          titre: kBud.fichesEnAttente + ' fiche(s) d\'engagement de dépense en attente de validation',
+          detail: 'Une fois validée, la fiche devient une Demande d\'Achat et peut être décaissée à la Caisse.',
+          boutons: [ { lib:'✅ Aller valider', fn:"goTo('budget')" } ]
+        });
+      }
+    }
+  } catch(e){}
 
   A.sort(function(a,b){ return b.prio - a.prio; });
   return A;
@@ -91101,26 +91142,72 @@ function _kpiCard(k) {
     + '<div class="kpi-value" style="font-size:20px;">' + k.val + '</div>'
     + '</div>';
 }
-function budgetRenderDashboard() {
-  var el = document.getElementById('budget-kpi-central'); if (!el) return;
+/* [Fonction centrale, réutilisée par le module Budget lui-même, l'onglet
+   Finance du tableau de bord principal ET le Cockpit] Calcule tous les
+   indicateurs budgétaires en un seul passage — évite de dupliquer cette
+   logique de regroupement à 3 endroits différents, avec le risque que les
+   3 divergent silencieusement au fil des évolutions futures. */
+function _budgetKpiGlobal() {
   var lignes = (DATA.caisse_budgets||[]).filter(function(b){ return b.periode==='annuel'; });
   var fiches = DATA.fiches_engagement_depense||[];
   var transferts = DATA.transferts_budgetaires||[];
 
   var totalAlloue = lignes.filter(function(b){ return b.statut==='valide'; }).reduce(function(s,b){ return s+b.montant; }, 0);
   var totalEngage = fiches.filter(function(f){ return f.statut==='validee' || f.statut==='decaissee'; }).reduce(function(s,f){ return s+f.montant; }, 0);
-  var totalDispo = totalAlloue - totalEngage;
-  var lignesEnAttente = lignes.filter(function(b){ return b.statut==='soumis'; }).length;
-  var fichesEnAttente = fiches.filter(function(f){ return f.statut==='soumise'; }).length;
-  var transfertsEnAttente = transferts.filter(function(t){ return t.statut==='soumis'; }).length;
+
+  /* Regroupement par ligne budgétaire (même clé que budgetRenderPrevisionnel :
+     ligne_compte + division + exercice), pour calculer un taux d'utilisation
+     PAR LIGNE — pas juste un total global qui masquerait une ligne en
+     dépassement compensée par une autre très peu utilisée. */
+  var groupes = {};
+  lignes.filter(function(b){ return b.statut==='valide'; }).forEach(function(b){
+    var ligneC = b.ligne_compte || b.compte;
+    var cle = ligneC + '|' + (b.division_id||'') + '|' + b.exercice;
+    groupes[cle] = groupes[cle] || { ligne_compte: ligneC, division_id: b.division_id||'', exercice: b.exercice, alloue: 0, sousComptes: [] };
+    groupes[cle].alloue += b.montant;
+    groupes[cle].sousComptes.push(b.compte);
+  });
+  var lignesDetail = Object.keys(groupes).map(function(k) {
+    var g = groupes[k];
+    var engage = fiches.filter(function(f){
+      return (f.statut==='validee' || f.statut==='decaissee') && g.sousComptes.indexOf(f.compte) !== -1
+        && (f.division_id||'')===g.division_id && f.exercice===g.exercice;
+    }).reduce(function(s,f){ return s+f.montant; }, 0);
+    var taux = g.alloue > 0 ? Math.round((engage / g.alloue) * 1000) / 10 : 0;
+    return { ligne_compte: g.ligne_compte, division_id: g.division_id, exercice: g.exercice, alloue: g.alloue, engage: engage, taux: taux };
+  });
+
+  var enDepassement = lignesDetail.filter(function(l){ return l.taux > 100; });
+  var procheEpuisement = lignesDetail.filter(function(l){ return l.taux >= 80 && l.taux <= 100; });
+  var tauxMoyen = lignesDetail.length ? Math.round((lignesDetail.reduce(function(s,l){ return s+l.taux; }, 0) / lignesDetail.length) * 10) / 10 : 0;
+  var pireLigne = lignesDetail.slice().sort(function(a,b){ return b.taux - a.taux; })[0] || null;
+
+  return {
+    totalAlloue: totalAlloue, totalEngage: totalEngage, totalDispo: totalAlloue - totalEngage,
+    lignesEnAttente: lignes.filter(function(b){ return b.statut==='soumis'; }).length,
+    fichesEnAttente: fiches.filter(function(f){ return f.statut==='soumise'; }).length,
+    transfertsEnAttente: transferts.filter(function(t){ return t.statut==='soumis'; }).length,
+    nbLignesActives: lignesDetail.length, tauxMoyen: tauxMoyen,
+    enDepassement: enDepassement, procheEpuisement: procheEpuisement, pireLigne: pireLigne
+  };
+}
+
+function budgetRenderDashboard() {
+  var el = document.getElementById('budget-kpi-central'); if (!el) return;
+  var k = _budgetKpiGlobal();
+  var libellePire = k.pireLigne ? (function(){ var c=(APP.planComptable||[]).find(function(x){return x.code===k.pireLigne.ligne_compte;}); return k.pireLigne.ligne_compte + (c?' — '+c.label:''); })() : '—';
 
   el.innerHTML = [
-    { label:'Budget alloué (validé)',   val: fmtF(totalAlloue)+' F', icon:'💰' },
-    { label:'Engagé (FED validées)',    val: fmtF(totalEngage)+' F', icon:'📝' },
-    { label:'Disponible',               val: fmtF(totalDispo)+' F',  icon:'✅', cls: totalDispo<0 ? 'kpi-red' : 'kpi-green' },
-    { label:'Lignes en attente',        val: lignesEnAttente,        icon:'⏳', cls: lignesEnAttente ? 'kpi-red' : '' },
-    { label:'Fiches en attente',        val: fichesEnAttente,        icon:'📤', cls: fichesEnAttente ? 'kpi-red' : '' },
-    { label:'Transferts en attente',    val: transfertsEnAttente,    icon:'🔀', cls: transfertsEnAttente ? 'kpi-red' : '' }
+    { label:'Budget alloué (validé)',   val: fmtF(k.totalAlloue)+' F', icon:'💰' },
+    { label:'Engagé (FED validées)',    val: fmtF(k.totalEngage)+' F', icon:'📝' },
+    { label:'Disponible',               val: fmtF(k.totalDispo)+' F',  icon:'✅', cls: k.totalDispo<0 ? 'kpi-red' : 'kpi-green' },
+    { label:'Taux d\'utilisation moyen', val: k.tauxMoyen+'%',          icon:'📊', cls: k.tauxMoyen>=90 ? 'kpi-red' : (k.tauxMoyen>=70 ? '' : 'kpi-green') },
+    { label:'Lignes en dépassement',    val: k.enDepassement.length,   icon:'🚨', cls: k.enDepassement.length ? 'kpi-red' : 'kpi-green' },
+    { label:'Proches de l\'épuisement (≥80%)', val: k.procheEpuisement.length, icon:'⚠️', cls: k.procheEpuisement.length ? 'kpi-red' : '' },
+    { label:'Ligne la plus consommée',  val: k.pireLigne ? k.pireLigne.taux+'%' : '—', icon:'🔴', cls: k.pireLigne && k.pireLigne.taux>=80 ? 'kpi-red' : '' },
+    { label:'Lignes en attente',        val: k.lignesEnAttente,        icon:'⏳', cls: k.lignesEnAttente ? 'kpi-red' : '' },
+    { label:'Fiches en attente',        val: k.fichesEnAttente,        icon:'📤', cls: k.fichesEnAttente ? 'kpi-red' : '' },
+    { label:'Transferts en attente',    val: k.transfertsEnAttente,    icon:'🔀', cls: k.transfertsEnAttente ? 'kpi-red' : '' }
   ].map(_kpiCard).join('');
 }
 function budgetRenderKpiPrevisionnel() {
