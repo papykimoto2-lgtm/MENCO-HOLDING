@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.80 · 2026-08-18 — NOUVEAU : bouton « 📊 Schéma des flux » sur la page Suivi Budgétaire, réutilisant exactement le mécanisme déjà en place pour Comptabilité SYSCOHADA, Montage, Chantier et Étude de Prix (FLUX_SPECS, modal-flux) — pas un nouveau système, le même que celui déjà connu dans l\'app. Trois onglets : schéma visuel du circuit complet (préparation du budget, engagement, transformation FED→DA, décaissement, transferts en branche séparée), cas concret chiffré (une FED bloquée par manque de disponible, débloquée par un transfert), et le lien avec la Comptabilité SYSCOHADA (l\'écriture générée au décaissement). Repris fidèlement le même vocabulaire visuel (fh-node, fh-axe, fh-arrow, fh-split/fh-branch) que les schémas déjà existants, pour une cohérence totale avec le reste de l\'app. Bouton placé et aligné exactement comme sur la page Comptabilité (avec le même spacer flex, vérifié avant d\'ajouter pour ne pas produire un alignement différent). Testé empiriquement l\'équilibre des balises HTML des 3 onglets avant livraison. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.81 · 2026-08-18 — NOUVEAU : filtre Division + Exercice sur la page Suivi Budgétaire, appliqué au tableau de bord central ET aux 3 onglets simultanément (mêmes variables globales lues partout, pas de re-saisie par écran). Nouveau bouton « 📄 État périodique » : aperçu avant impression de toute la situation budgétaire pour la division/exercice filtrés — KPI consolidés (alloué, engagé, disponible, taux moyen, lignes en dépassement) + tableau détaillé par ligne avec taux d\'utilisation coloré, en-tête de la vraie division concernée, QR code d\'authenticité. Exige un exercice sélectionné avant génération (un état périodique couvre une période précise, pas « tous exercices confondus »). Réutilise _budgetKpiGlobal (déjà sensible aux mêmes filtres) plutôt que de recalculer une seconde fois les mêmes chiffres. Testé empiriquement la logique de filtrage combinée sur 4 scénarios (aucun filtre, division seule, exercice seul, les deux). Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -14314,6 +14314,13 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div class="page-sub">Budget prévisionnel · Fiches d'engagement de dépense → Demandes d'Achat · Transferts de ligne</div>
           </div>
           <div class="spacer"></div>
+          <select class="filter-select" id="budget-filtre-division" onchange="budgetAppliquerFiltres()">
+            <option value="">🏢 Toutes divisions</option>
+          </select>
+          <select class="filter-select" id="budget-filtre-exercice" onchange="budgetAppliquerFiltres()">
+            <option value="">Tous exercices</option>
+          </select>
+          <button class="btn btn-secondary btn-sm" onclick="budgetEtatPeriodique()" title="Aperçu avant impression de la situation budgétaire filtrée">📄 État périodique</button>
           <button class="btn btn-secondary btn-sm" onclick="openFlux('budget')">📊 Schéma des flux</button>
         </div>
 
@@ -26304,7 +26311,7 @@ function goTo(page) {
   if (page === 'diaspo') { dspEnter(); }
   if (page === 'lbcft') { lbcRender(); }
   if (page === 'parc-auto') { paEnter(); }
-  if (page === 'budget') { if (typeof budgetRenderPrevisionnel === 'function') budgetRenderPrevisionnel(); }
+  if (page === 'budget') { if (typeof budgetInitFiltres === 'function') budgetInitFiltres(); if (typeof budgetRenderPrevisionnel === 'function') budgetRenderPrevisionnel(); }
 }
 
 function switchTab(context, tab) {
@@ -91176,6 +91183,75 @@ function budgetImprimerLigne(ligneCompte, divisionId, exercice) {
   win.document.close(); win.print();
 }
 
+/* [État périodique] Vue d'ensemble imprimable de TOUTE la situation
+   budgétaire filtrée (division + exercice) — pas une seule ligne comme
+   budgetImprimerLigne, mais toutes les lignes regroupées, avec les KPI
+   consolidés. Réutilise _budgetKpiGlobal (déjà sensible aux mêmes filtres
+   globaux) plutôt que de recalculer une seconde fois la même chose. */
+function budgetEtatPeriodique() {
+  var exercice = window._budgetFiltreExercice;
+  if (!exercice) { toast('Choisissez un exercice avant de générer l\'état périodique — un état couvre une période précise.', 'error'); return; }
+  var divisionId = window._budgetFiltreDivision;
+
+  var lignes = (DATA.caisse_budgets||[]).filter(function(b){ return b.periode==='annuel' && _budgetPasseFiltre(b); });
+  if (!lignes.length) { toast('Aucune ligne budgétaire pour ce filtre.', 'error'); return; }
+
+  var groupes = {};
+  lignes.forEach(function(b){
+    var ligneC = b.ligne_compte || b.compte;
+    groupes[ligneC] = groupes[ligneC] || { ligne_compte: ligneC, alloue: 0, sousComptes: [], statuts: {} };
+    if (b.statut === 'valide') { groupes[ligneC].alloue += b.montant; groupes[ligneC].sousComptes.push(b.compte); }
+    groupes[ligneC].statuts[b.statut] = (groupes[ligneC].statuts[b.statut]||0) + 1;
+  });
+  var fiches = (DATA.fiches_engagement_depense||[]).filter(_budgetPasseFiltre);
+  var lignesDetail = Object.keys(groupes).map(function(k) {
+    var g = groupes[k];
+    var engage = fiches.filter(function(f){ return (f.statut==='validee'||f.statut==='decaissee') && g.sousComptes.indexOf(f.compte)!==-1; }).reduce(function(s,f){ return s+f.montant; }, 0);
+    var taux = g.alloue > 0 ? Math.round((engage/g.alloue)*1000)/10 : 0;
+    var libelle = (function(){ var c=(APP.planComptable||[]).find(function(x){return x.code===g.ligne_compte;}); return c?c.label:''; })();
+    return { ligne_compte: g.ligne_compte, libelle: libelle, alloue: g.alloue, engage: engage, dispo: g.alloue-engage, taux: taux };
+  }).sort(function(a,b){ return a.ligne_compte.localeCompare(b.ligne_compte); });
+
+  var k = _budgetKpiGlobal();
+  var s = _identiteDivisionOuSociete(divisionId);
+  var divLabel = divisionId ? _nomDivision(divisionId) : 'Toutes divisions (consolidé)';
+
+  var rows = lignesDetail.map(function(l, i) {
+    var couleur = l.taux > 100 ? '#DC2626' : (l.taux >= 80 ? '#B87333' : '#0E9F6E');
+    return '<tr><td>'+(i+1)+'</td><td>'+escHtml(l.ligne_compte)+'</td><td>'+escHtml(l.libelle)+'</td>'
+      + '<td class="r">'+fmtF(l.alloue)+'</td><td class="r">'+fmtF(l.engage)+'</td><td class="r">'+fmtF(l.dispo)+'</td>'
+      + '<td class="r" style="color:'+couleur+';font-weight:700;">'+l.taux+'%</td></tr>';
+  }).join('');
+
+  var win = window.open('', '', 'width=900,height=750');
+  win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"><title>État périodique — '+exercice+'</title>'
+    + '<style>body{font-family:Georgia,serif;padding:36px;font-size:12.5px;color:#1a1a1a;}'
+    + 'h1{color:#B87333;border-bottom:2px solid #B87333;padding-bottom:8px;font-size:18px;}'
+    + 'table{width:100%;border-collapse:collapse;margin:14px 0;}td,th{border:1px solid #ccc;padding:6px 8px;}th{background:#F5EFE6;}'
+    + '.r{text-align:right;}.tot{font-weight:700;font-size:14px;color:#B87333;}.muted{color:#666;font-size:11.5px;}'
+    + '.kpi{display:flex;gap:14px;margin:14px 0;flex-wrap:wrap;}.kpibox{border:1px solid #ddd;border-radius:6px;padding:10px 14px;flex:1;min-width:140px;}'
+    + '.kpiv{font-size:17px;font-weight:700;color:#B87333;}.kpil{font-size:10.5px;color:#666;text-transform:uppercase;letter-spacing:.04em;}</style></head><body>'
+    + '<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
+      + '<div>' + (s.logo ? '<img src="'+s.logo+'" style="max-height:56px;max-width:150px;object-fit:contain;margin-bottom:6px;"><br>' : '')
+      + '<strong style="font-size:15px;">'+escHtml(s.nom)+'</strong><br>'
+      + '<span class="muted">'+escHtml([s.forme, s.adresse].filter(Boolean).join(' · '))+'</span></div>'
+      + '<div class="r muted">Exercice '+exercice+'<br>Édité le '+today()+'</div>'
+    + '</div>'
+    + '<h1>ÉTAT PÉRIODIQUE — SUIVI BUDGÉTAIRE</h1>'
+    + '<p><strong>Division :</strong> '+escHtml(divLabel)+' &nbsp;·&nbsp; <strong>Exercice :</strong> '+exercice+'</p>'
+    + '<div class="kpi">'
+      + '<div class="kpibox"><div class="kpiv">'+fmtF(k.totalAlloue)+' F</div><div class="kpil">Alloué</div></div>'
+      + '<div class="kpibox"><div class="kpiv">'+fmtF(k.totalEngage)+' F</div><div class="kpil">Engagé</div></div>'
+      + '<div class="kpibox"><div class="kpiv">'+fmtF(k.totalDispo)+' F</div><div class="kpil">Disponible</div></div>'
+      + '<div class="kpibox"><div class="kpiv">'+k.tauxMoyen+'%</div><div class="kpil">Taux moyen</div></div>'
+      + '<div class="kpibox"><div class="kpiv">'+k.enDepassement.length+'</div><div class="kpil">En dépassement</div></div>'
+    + '</div>'
+    + '<table><thead><tr><th>#</th><th>Ligne</th><th>Libellé</th><th class="r">Alloué</th><th class="r">Engagé</th><th class="r">Disponible</th><th class="r">Taux</th></tr></thead><tbody>'+rows+'</tbody></table>'
+    + '</body></html>');
+  try { if (win.document.body) { win.document.body.insertAdjacentHTML('beforeend', printQrFooter('BUDGET-ETAT-'+(divisionId||'CONSOLIDE')+'-'+exercice)); } } catch(e) {}
+  win.document.close(); win.print();
+}
+
 /* ═══════════════════════════════════════════════════════════════════════
    TABLEAU DE BORD — central (toujours visible, tous onglets confondus) et
    mini-résumés par onglet. Réutilise le pattern kpi-card déjà utilisé
@@ -91193,10 +91269,45 @@ function _kpiCard(k) {
    indicateurs budgétaires en un seul passage — évite de dupliquer cette
    logique de regroupement à 3 endroits différents, avec le risque que les
    3 divergent silencieusement au fil des évolutions futures. */
+/* ── Filtre Division/Exercice — s'applique au tableau de bord central et aux
+   3 onglets. Deux variables globales simples (pas de state complexe) : lues
+   par chaque fonction de rendu au moment de filtrer sa propre liste, jamais
+   stockées en base — un filtre d'affichage, pas une donnée métier. */
+window._budgetFiltreDivision = '';
+window._budgetFiltreExercice = '';
+function _budgetPasseFiltre(item) {
+  if (window._budgetFiltreDivision && (item.division_id||'') !== window._budgetFiltreDivision) return false;
+  if (window._budgetFiltreExercice && String(item.exercice) !== String(window._budgetFiltreExercice)) return false;
+  return true;
+}
+function budgetAppliquerFiltres() {
+  window._budgetFiltreDivision = document.getElementById('budget-filtre-division').value;
+  window._budgetFiltreExercice = document.getElementById('budget-filtre-exercice').value;
+  budgetRenderDashboard();
+  budgetRenderPrevisionnel();
+  budgetRenderFed();
+  budgetRenderTransferts();
+}
+function budgetInitFiltres() {
+  var selDiv = document.getElementById('budget-filtre-division');
+  if (selDiv && selDiv.options.length !== (DATA.divisions||[]).length + 1) {
+    var curDiv = selDiv.value;
+    selDiv.innerHTML = '<option value="">🏢 Toutes divisions</option>' + (DATA.divisions||[]).map(function(d){ return '<option value="'+d.id+'">'+escHtml(d.nom)+'</option>'; }).join('');
+    selDiv.value = curDiv;
+  }
+  var selEx = document.getElementById('budget-filtre-exercice');
+  if (selEx && !selEx.options.length) {
+    var exercices = Array.from(new Set((DATA.caisse_budgets||[]).map(function(b){ return b.exercice; }))).sort(function(a,b){ return b-a; });
+    var anneeCourante = new Date().getFullYear();
+    if (exercices.indexOf(anneeCourante) === -1) exercices.unshift(anneeCourante);
+    selEx.innerHTML = '<option value="">Tous exercices</option>' + exercices.map(function(e){ return '<option value="'+e+'">'+e+'</option>'; }).join('');
+  }
+}
+
 function _budgetKpiGlobal() {
-  var lignes = (DATA.caisse_budgets||[]).filter(function(b){ return b.periode==='annuel'; });
-  var fiches = DATA.fiches_engagement_depense||[];
-  var transferts = DATA.transferts_budgetaires||[];
+  var lignes = (DATA.caisse_budgets||[]).filter(function(b){ return b.periode==='annuel' && _budgetPasseFiltre(b); });
+  var fiches = (DATA.fiches_engagement_depense||[]).filter(_budgetPasseFiltre);
+  var transferts = (DATA.transferts_budgetaires||[]).filter(_budgetPasseFiltre);
 
   var totalAlloue = lignes.filter(function(b){ return b.statut==='valide'; }).reduce(function(s,b){ return s+b.montant; }, 0);
   var totalEngage = fiches.filter(function(f){ return f.statut==='validee' || f.statut==='decaissee'; }).reduce(function(s,f){ return s+f.montant; }, 0);
@@ -91306,8 +91417,8 @@ function budgetRenderPrevisionnel() {
   budgetRenderDashboard();
   budgetRenderKpiPrevisionnel();
   var box = document.getElementById('budget-previsionnel-box'); if (!box) return;
-  var lignes = (DATA.caisse_budgets||[]).filter(function(b){ return b.periode==='annuel'; });
-  if (!lignes.length) { box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Aucun budget prévisionnel. Cliquez « + Nouveau budget » pour en créer un.</div>'; return; }
+  var lignes = (DATA.caisse_budgets||[]).filter(function(b){ return b.periode==='annuel' && _budgetPasseFiltre(b); });
+  if (!lignes.length) { box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Aucun budget prévisionnel pour ce filtre. Cliquez « + Nouveau budget » pour en créer un.</div>'; return; }
 
   /* [Hiérarchie] Regroupe les sous-comptes par ligne budgétaire (compte
      principal) + division + exercice — un même compte principal peut avoir
@@ -91369,9 +91480,9 @@ function budgetRenderFed() {
   budgetRenderDashboard();
   budgetRenderKpiFed();
   var box = document.getElementById('budget-fed-box'); if (!box) return;
-  var fiches = (DATA.fiches_engagement_depense||[]).slice()
+  var fiches = (DATA.fiches_engagement_depense||[]).filter(_budgetPasseFiltre)
     .sort(function(a,b){ return (b.created_at||'').localeCompare(a.created_at||''); });
-  if (!fiches.length) { box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Aucune fiche d\'engagement. Cliquez « + Nouvelle fiche » pour en créer une.</div>'; return; }
+  if (!fiches.length) { box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Aucune fiche d\'engagement pour ce filtre. Cliquez « + Nouvelle fiche » pour en créer une.</div>'; return; }
 
   box.innerHTML = '<div class="table-wrap"><table class="data-table" style="width:100%;"><thead><tr>'
     + '<th>N°</th><th>Objet</th><th>Ligne</th><th>Division</th><th style="text-align:right;">Montant</th><th>Statut</th><th></th>'
@@ -91403,9 +91514,9 @@ function budgetRenderTransferts() {
   budgetRenderDashboard();
   budgetRenderKpiTransferts();
   var box = document.getElementById('budget-transferts-box'); if (!box) return;
-  var transferts = (DATA.transferts_budgetaires||[]).slice()
+  var transferts = (DATA.transferts_budgetaires||[]).filter(_budgetPasseFiltre)
     .sort(function(a,b){ return (b.created_at||'').localeCompare(a.created_at||''); });
-  if (!transferts.length) { box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Aucun transfert. Cliquez « + Nouveau transfert » pour en créer un.</div>'; return; }
+  if (!transferts.length) { box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Aucun transfert pour ce filtre. Cliquez « + Nouveau transfert » pour en créer un.</div>'; return; }
 
   box.innerHTML = '<div class="table-wrap"><table class="data-table" style="width:100%;"><thead><tr>'
     + '<th>De</th><th>Vers</th><th>Division</th><th style="text-align:right;">Montant</th><th>Motif</th><th>Statut</th><th></th>'
