@@ -94519,7 +94519,10 @@ function crecRender() {
         + '<button class="btn btn-primary btn-sm btn-icon" title="Encaisser" onclick="crecEncaisser(\'' + c.id + '\')">💵</button> '
         + '<button class="btn btn-secondary btn-sm btn-icon" title="Échéancier / Plan" onclick="crecOpenPlan(\'' + c.id + '\')">🗓️</button> '
         + (r ? '<button class="btn btn-warning btn-sm btn-icon" title="Relancer" onclick="crecOpenRelance(\'' + c.id + '\')">📨</button> '
-             + '<button class="btn btn-secondary btn-sm btn-icon" title="Lettre PDF" onclick="crecLettrePDF(\'' + c.id + '\')">📄</button>' : '')
+             + '<button class="btn btn-secondary btn-sm btn-icon" title="Lettre PDF" onclick="crecLettrePDF(\'' + c.id + '\')">📄</button> ' : '')
+        + '<button class="btn btn-secondary btn-sm btn-icon" title="Modifier la cession" onclick="cesOpen(\'' + c.id + '\')">✏️</button> '
+        + '<button class="btn btn-secondary btn-sm btn-icon" title="Aperçu avant impression" onclick="crecApercuFiche(\'' + c.id + '\')">🖨️</button> '
+        + '<button class="btn btn-danger btn-sm btn-icon" title="Supprimer la cession" onclick="crecSupprimerCession(\'' + c.id + '\')">🗑️</button>'
         + '</td></tr>';
     } catch (rowErr) {
       console.error('[crecRender] Ligne ignorée — cession id=' + (c && c.id) + ' :', rowErr);
@@ -94958,7 +94961,71 @@ function crecLettrePDF(id) {
   w.document.close();
 }
 
-/* ── Échéancier imprimable ── */
+/* ── Suppression directe d'une cession depuis la liste Recouvrement
+   (sans passer par la fiche d'édition) — même logique que cesDelete,
+   auto-portée sur l'id passé plutôt que sur la variable globale _cesId. ── */
+async function crecSupprimerCession(id) {
+  var c = (DATA.cessions_foncieres || []).find(function (x) { return x.id === id; });
+  if (!c) return;
+  if (!confirm('Supprimer définitivement la cession de ' + (c.acquereur || 'cet acquéreur') + ' (' + (c.designation || cesSourceRef(c.source_key)) + ') ? Les écritures comptables liées seront retirées. Cette action est irréversible.')) return;
+  if (c.ecriture_vente_id && typeof deleteRecord === 'function') await deleteRecord('ecritures', c.ecriture_vente_id);
+  if (c.ecriture_enc_id && typeof deleteRecord === 'function') await deleteRecord('ecritures', c.ecriture_enc_id);
+  if (typeof deleteRecord === 'function') await deleteRecord('cessions_foncieres', id);
+  else { DATA.cessions_foncieres = DATA.cessions_foncieres.filter(function (x) { return x.id !== id; }); await dbDelete('cessions_foncieres', id); }
+  crecRender();
+  if (typeof cesRender === 'function') cesRender();
+  if (typeof filterEcritures === 'function') filterEcritures();
+  if (typeof buildTresorerie === 'function') buildTresorerie();
+  filiereLiveRefresh();
+  toast('Cession supprimée', 'info');
+}
+
+/* ── Aperçu avant impression : fiche complète de la cession
+   (identité acquéreur, statut recouvrement, historique des versements). ── */
+function crecApercuFiche(id) {
+  var c = (DATA.cessions_foncieres || []).find(function (x) { return x.id === id; });
+  if (!c) return;
+  var a = c.acheteur || {};
+  var p = DATA.params || {}, soc = p.societe || 'La Société';
+  var prix = c.prix_cession || 0, verse = crecVerse(c), reste = crecReste(c);
+  var tx = prix > 0 ? Math.round(verse / prix * 100) : 0;
+  var r = crecRetard(c);
+  var niv = r ? crecNiveau(r.moisRetard) : null;
+  var modeLabel = { virement: 'Virement', wave: 'Wave', orange_money: 'Orange Money', mtn: 'MTN MoMo', especes: 'Espèces' };
+  var paiements = (c.paiements || []).slice().sort(function (x, y) { return new Date(x.date) - new Date(y.date); });
+  var lignesPaiements = paiements.length ? paiements.map(function (pm, i) {
+    return '<tr><td>' + (i + 1) + '</td><td>' + dateShort(pm.date) + '</td><td style="text-align:right;">' + fmtF(pm.montant) + '</td><td>' + (modeLabel[pm.mode] || pm.mode || '—') + '</td><td>' + (pm.ref || '—') + '</td></tr>';
+  }).join('') : '<tr><td colspan="5" style="text-align:center;color:#888;padding:10px;">Aucun versement enregistré.</td></tr>';
+
+  var w = window.open('', '_blank', 'width=850,height=920');
+  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Fiche cession — ' + escHtml(c.acquereur || '') + '</title><style>'
+    + 'body{font-family:Arial,sans-serif;padding:36px;font-size:12.5px;color:#1c1c2e;}'
+    + 'h1{color:#1A6B3A;font-size:17px;border-bottom:2px solid #1A6B3A;padding-bottom:8px;}'
+    + 'table{width:100%;border-collapse:collapse;margin-top:10px;}th,td{border:1px solid #ccc;padding:6px 9px;}th{background:#1A6B3A;color:#fff;text-align:left;}'
+    + '.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px 20px;margin:14px 0;font-size:13px;}'
+    + '@media print{button{display:none;}}</style></head><body>'
+    + '<div style="text-align:center;margin-bottom:10px;"><button onclick="window.print()" style="padding:8px 18px;background:#1A6B3A;color:#fff;border:none;border-radius:6px;cursor:pointer;">🖨 Imprimer</button></div>'
+    + '<h1>' + soc + ' — Fiche de cession foncière</h1>'
+    + '<div class="info-grid">'
+    + '<div><strong>Acquéreur :</strong> ' + escHtml(c.acquereur || cesAcquereurLabel(a)) + '</div>'
+    + '<div><strong>Dossier :</strong> ' + escHtml(c.dossier || '—') + '</div>'
+    + '<div><strong>Bien :</strong> ' + escHtml(c.designation || cesSourceRef(c.source_key)) + '</div>'
+    + '<div><strong>Contact :</strong> ' + escHtml(c.contact || a.tel || '—') + '</div>'
+    + '<div><strong>Prix de cession :</strong> ' + fcfa(prix) + '</div>'
+    + '<div><strong>Statut cession :</strong> ' + escHtml(c.statut || '—') + '</div>'
+    + '<div><strong>Encaissé :</strong> ' + fcfa(verse) + ' (' + tx + '%)</div>'
+    + '<div><strong>Reste dû :</strong> ' + fcfa(reste) + '</div>'
+    + (r ? '<div style="color:#c0392b;grid-column:1/-1;"><strong>Retard :</strong> ' + r.moisRetard + ' mois — ' + CREC_NIV[niv].replace(/^.. /, '') + '</div>'
+         : '<div style="color:#1A6B3A;grid-column:1/-1;"><strong>Statut recouvrement :</strong> À jour</div>')
+    + '</div>'
+    + '<h3>Historique des versements</h3>'
+    + '<table><thead><tr><th>#</th><th>Date</th><th style="text-align:right;">Montant</th><th>Mode</th><th>Référence</th></tr></thead><tbody>' + lignesPaiements + '</tbody></table>'
+    + '</body></html>';
+  w.document.write(html);
+  try { if (typeof printQrFooter === 'function' && w.document.body) w.document.body.insertAdjacentHTML('beforeend', printQrFooter('CES-' + c.id.slice(-6).toUpperCase())); } catch (e) {}
+  w.document.close();
+}
+
 function crecEcheancierPDF(id) {
   var c = id ? (DATA.cessions_foncieres || []).find(function (x) { return x.id === id; }) : (DATA.cessions_foncieres || []).find(function (x) { return x.id === _crecId; });
   if (!c) return;
