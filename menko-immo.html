@@ -2764,6 +2764,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             </select>
             <button class="btn btn-secondary btn-sm" onclick="refreshDashboard()">↻ Actualiser</button>
             <button class="btn btn-secondary btn-sm" onclick="_printFromElement('page-dashboard','Tableau de bord')">🖨️ Rapport</button>
+            <button class="btn btn-secondary btn-sm" onclick="dashEnvoyerRapportPDG()" title="Génère la synthèse PDF et ouvre WhatsApp vers le PDG">📤 Envoyer rapport</button>
             <button class="btn btn-primary btn-sm" onclick="openAnalyse360()">🧭 Analyse 360°</button>
           </div>
         </div>
@@ -5692,6 +5693,10 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                 <div class="form-group">
                   <label>WhatsApp notifications</label>
                   <input type="text" id="param-whatsapp" class="form-control" placeholder="+225 XX XX XX XX">
+                </div>
+                <div class="form-group">
+                  <label>WhatsApp PDG (envoi des rapports)</label>
+                  <input type="text" id="param-whatsapp-pdg" class="form-control" placeholder="+225 XX XX XX XX">
                 </div>
               </div>
             </div>
@@ -37793,6 +37798,93 @@ async function ckMarquerRelance(clientId, nom) {
   else buildDashTabCockpit();
 }
 
+/* ── Synthèse PDF → WhatsApp PDG ──────────────────────────────────────────
+   Limite technique incontournable : aucune API navigateur ne permet de
+   joindre automatiquement un fichier à une conversation WhatsApp — wa.me
+   n'accepte qu'un texte pré-rempli. On télécharge donc le PDF localement
+   PUIS on ouvre WhatsApp avec un message de synthèse + rappel d'y joindre
+   le fichier qui vient d'être téléchargé (le nom exact est donné dans le
+   message pour que ce soit immédiat à retrouver). */
+function dashGenererSynthesePDF() {
+  if (!(window.jspdf && window.jspdf.jsPDF)) { toast('jsPDF indisponible (hors ligne au premier usage ?).', 'error'); return null; }
+  var p = DATA.params || {};
+  var core = dashFinanceCore(null);
+  var actions = (typeof ckActions === 'function') ? ckActions() : [];
+  var urgents = actions.filter(function(a){ return a.urgent; });
+  var exig = 0, nbExig = 0;
+  try {
+    (typeof _ckLignes === 'function' ? _ckLignes() : []).forEach(function(l){
+      if (l.duAJour > 0) { exig += l.duAJour; nbExig++; }
+    });
+  } catch(e){}
+  var st = (typeof caisseAVentilerStats === 'function') ? caisseAVentilerStats() : { nb:0, montant:0 };
+  var solde = (typeof caisseSoldeGlobalTempsReel === 'function') ? caisseSoldeGlobalTempsReel() : 0;
+
+  var doc = new window.jspdf.jsPDF();
+  var y = 16;
+  doc.setFontSize(14); doc.text(String(p.societe || 'ImmoSuite ERP'), 14, y); y += 8;
+  doc.setFontSize(16); doc.text('Synthèse dirigeante', 14, y); y += 6;
+  doc.setFontSize(9); doc.setTextColor(120); doc.text(new Date().toLocaleDateString('fr-FR', { weekday:'long', year:'numeric', month:'long', day:'numeric' }), 14, y);
+  doc.setTextColor(0); y += 10;
+
+  doc.autoTable({
+    startY: y,
+    head: [['Indicateur', 'Valeur']],
+    body: [
+      ['Encaissé (cumul)', fmtF(core.encaisse) + ' F'],
+      ['Encours dû', fmtF(core.encours) + ' F'],
+      ['Taux de recouvrement', core.tauxRecouv + ' %'],
+      ['Exigible en souffrance', fmtF(exig) + ' F sur ' + nbExig + ' dossier(s)'],
+      ['Espèces en caisse', fmtF(solde) + ' F'],
+      ['Mouvements de caisse à ventiler', String(st.nb) + (st.montant ? ' (' + fmtF(st.montant) + ' F)' : '')],
+      ['Actions urgentes en file', String(urgents.length) + ' / ' + actions.length]
+    ],
+    styles: { fontSize: 9, cellPadding: 3 }, headStyles: { fillColor: [184,115,51] }
+  });
+  y = doc.lastAutoTable.finalY + 10;
+
+  doc.setFontSize(12); doc.text('Top actions prioritaires', 14, y); y += 4;
+  var topActions = actions.slice(0, 8).map(function(a){
+    return [a.urgent ? '🔴' : '', a.titre, a.montant ? fmtF(a.montant) + ' F' : '—'];
+  });
+  if (topActions.length) {
+    doc.autoTable({
+      startY: y, head: [['', 'Action', 'Montant']], body: topActions,
+      styles: { fontSize: 9, cellPadding: 3 }, headStyles: { fillColor: [184,115,51] },
+      columnStyles: { 0: { cellWidth: 8 } }
+    });
+  } else {
+    doc.setFontSize(10); doc.text('Aucune action en attente — portefeuille à jour.', 14, y + 6);
+  }
+
+  var nomFichier = 'Synthese-' + String(p.societe || 'ImmoSuite').replace(/[^\w\-]+/g,'_') + '-' + today() + '.pdf';
+  return { doc: doc, filename: nomFichier };
+}
+
+async function dashEnvoyerRapportPDG() {
+  var p = DATA.params || {};
+  var numero = (p.whatsapp_pdg || '').replace(/[\s.\-()]/g, '');
+  if (!numero) {
+    toast('⚠️ Aucun numéro WhatsApp PDG configuré — Paramètres → Société → « WhatsApp PDG (envoi des rapports) ».', 'error');
+    return;
+  }
+  var res = dashGenererSynthesePDF();
+  if (!res) return;
+  res.doc.save(res.filename);
+
+  var core = dashFinanceCore(null);
+  var texte = 'Synthèse dirigeante — ' + (p.societe || 'ImmoSuite ERP') + '\n'
+    + new Date().toLocaleDateString('fr-FR') + '\n\n'
+    + '💰 Encaissé : ' + fmtF(core.encaisse) + ' F\n'
+    + '📊 Taux recouvrement : ' + core.tauxRecouv + ' %\n'
+    + '⏳ Encours dû : ' + fmtF(core.encours) + ' F\n\n'
+    + '📎 Le PDF détaillé (' + res.filename + ') vient d\'être téléchargé sur cet appareil — veuillez le joindre manuellement à ce message (WhatsApp ne permet pas la jointure automatique depuis un navigateur).';
+
+  if (numero.indexOf('225') !== 0 && numero.length <= 10) numero = '225' + numero;
+  toast('📄 PDF téléchargé — joignez-le dans la conversation WhatsApp qui s\'ouvre.', 'info', 6000);
+  window.open('https://wa.me/' + numero + '?text=' + encodeURIComponent(texte), '_blank');
+}
+
 /* ── Briefing en langage naturel ─────────────────────────────────────────── */
 function ckBriefing(actions) {
   var h = new Date().getHours();
@@ -39480,6 +39572,7 @@ async function saveParams() {
     tel:         gv('param-tel'),
     site:        gv('param-site'),
     whatsapp:    gv('param-whatsapp'),
+    whatsapp_pdg: gv('param-whatsapp-pdg'),
     tva:         parseFloat(gv('param-tva'))||18,
     retenue_pct: parseFloat(gv('param-retenue'))||10,
     avance_pct:  parseFloat(gv('param-avance'))||20,
@@ -39710,7 +39803,7 @@ function loadParamFields() {
   sv('param-teledeclarant-dgi',p.teledeclarant_dgi); sv('param-teledeclarant-cnps',p.teledeclarant_cnps); sv('param-teledeclarant-fne',p.teledeclarant_fne);
   sv('param-agrement',p.agrement); sv('param-adresse',p.adresse);
   sv('param-email',p.email); sv('param-tel',p.tel); sv('param-site',p.site);
-  sv('param-whatsapp',p.whatsapp); sv('param-tva',p.tva||18);
+  sv('param-whatsapp',p.whatsapp); sv('param-whatsapp-pdg',p.whatsapp_pdg); sv('param-tva',p.tva||18);
   sv('param-retenue',p.retenue_pct||10); sv('param-avance',p.avance_pct||20);
   sv('param-commission',p.commission_pct||3);
   sv('param-comm-souscription', p.comm_souscription_pct||10);
