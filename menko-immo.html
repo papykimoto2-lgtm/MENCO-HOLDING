@@ -15882,7 +15882,8 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           </div>
           <div class="form-group">
             <label>Apport initial (FCFA)</label>
-            <input type="number" class="form-control" id="c-apport" value="0" oninput="calcEcheancier()">
+            <input type="number" class="form-control" id="c-apport" value="0" oninput="calcEcheancier();checkApportVerse()">
+            <div id="c-apport-hint"></div>
           </div>
           <div class="form-group">
             <label>Durée mensualités (mois)</label>
@@ -28743,6 +28744,7 @@ function fillClientForm(c) {
     setSelectValue('c-mode-livraison', c.mode_livraison || 'gros_oeuvre');
   }
   calcEcheancier();
+  checkApportVerse();
 }
 
 function setSelectValue(id, val) {
@@ -28758,6 +28760,43 @@ function calcEcheancier() {
   var reste = total - apport;
   var mensualite = duree > 0 ? Math.ceil(reste / duree) : 0;
   document.getElementById('c-mensualite').value = mensualite > 0 ? fcfa(mensualite) : '—';
+}
+
+/* Vérifie que l'apport initial déclaré sur la fiche a bien un versement réel
+   correspondant (DATA.versements type='apport'). Le champ "Apport initial" est
+   contractuel — seul un versement encaissé est déduit du reste à payer partout
+   ailleurs dans le logiciel (échéancier, tableaux de bord, exports). Sans ce
+   versement, le reste à payer reste égal au prix total malgré l'apport saisi. */
+function checkApportVerse() {
+  var hint = document.getElementById('c-apport-hint');
+  if (!hint) return;
+  var apport = parseFloat((document.getElementById('c-apport') || {}).value) || 0;
+  if (!APP.editingId || apport <= 0) { hint.innerHTML = ''; return; }
+  var verseApport = (DATA.versements || []).filter(function(v) {
+    return v.client_id === APP.editingId && v.type === 'apport';
+  }).reduce(function(s, v) { return s + (parseFloat(v.montant) || 0); }, 0);
+  var manque = apport - verseApport;
+  if (manque > 0) {
+    hint.innerHTML = '<div style="margin-top:6px;padding:8px 10px;background:rgba(245,158,11,.12);border-left:3px solid #f59e0b;border-radius:6px;font-size:11px;line-height:1.5;">'
+      + '⚠️ ' + fmtF(manque) + ' F d\'apport déclaré non encore encaissé — <strong>non déduit</strong> du reste à payer tant qu\'il n\'est pas enregistré comme versement.<br>'
+      + '<button type="button" class="btn btn-warning btn-sm" style="margin-top:5px;" onclick="ouvrirVersementApport(\'' + APP.editingId + '\',' + manque + ')">💰 Enregistrer maintenant</button>'
+      + '</div>';
+  } else {
+    hint.innerHTML = '<div style="margin-top:6px;font-size:11px;color:var(--vert);">✅ Apport initial intégralement encaissé (versement enregistré).</div>';
+  }
+}
+
+/* Raccourci : ferme la fiche souscripteur, ouvre le formulaire de versement
+   pré-rempli (type "Apport initial", montant = manquant détecté) pour combler
+   l'écart en un clic — sans toucher au champ "apport" contractuel. */
+function ouvrirVersementApport(clientId, montantSuggere) {
+  closeModal('modal-client');
+  openPaiementModal(clientId);
+  setTimeout(function() {
+    var tEl = document.getElementById('v-type'); if (tEl) tEl.value = 'apport';
+    var mEl = document.getElementById('v-montant'); if (mEl) mEl.value = montantSuggere;
+    if (typeof onTypeVersementChange === 'function') onTypeVersementChange();
+  }, 80);
 }
 
 /* Statut du lot selon le % encaissé : réservé jusqu'au seuil d'immobilisation, puis vendu */
