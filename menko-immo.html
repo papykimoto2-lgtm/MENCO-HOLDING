@@ -3658,6 +3658,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               </div>
             </div>
           </div>
+          <div class="kpi-grid" id="compta-vers-kpi-grid" style="margin-bottom:16px;"></div>
           <div class="card"><div class="table-wrap"><table>
             <thead><tr><th>Réf</th><th>Date</th><th>Souscripteur / Acquéreur</th><th>Type</th><th style="text-align:right;">Montant</th><th>Mode</th><th>Commissions liées</th><th></th></tr></thead>
             <tbody id="tbody-compta-versements"></tbody>
@@ -90681,6 +90682,47 @@ function editVersement(id) {
    étaient auparavant invisibles dans cet onglet (store séparé,
    commissions liées via cession_id et non versement_id).
 ══════════════════════════════════════════════════════════ */
+/* Tableau de bord récapitulatif — Versements souscripteurs (vue Comptabilité).
+   Calculé sur l'ensemble des versements (lots + cessions foncières), sans
+   tenir compte du filtre source ni de la recherche texte, pour donner une
+   vision globale toujours cohérente au-dessus de la liste filtrable. */
+function buildComptaVersementsKPIs(lignesLot, lignesFoncier) {
+  var el = document.getElementById('compta-vers-kpi-grid');
+  if (!el) return;
+  var fmt = (typeof fcfa === 'function') ? fcfa : function(n){ return fmtF(n) + ' FCFA'; };
+
+  var toutes = (lignesLot || []).concat(lignesFoncier || []);
+  var totalLot = (lignesLot || []).reduce(function(s, r){ return s + (r.montant || 0); }, 0);
+  var totalFoncier = (lignesFoncier || []).reduce(function(s, r){ return s + (r.montant || 0); }, 0);
+  var totalGeneral = totalLot + totalFoncier;
+  var nbTotal = toutes.length;
+
+  var now = new Date();
+  var moisCourant = toutes.filter(function(r) {
+    var d = r.date ? new Date(r.date) : null;
+    return d && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+  });
+  var totalMois = moisCourant.reduce(function(s, r){ return s + (r.montant || 0); }, 0);
+
+  var totalCommissions = toutes.reduce(function(s, r){ return s + (r.commTot || 0); }, 0);
+  var moyenne = nbTotal ? totalGeneral / nbTotal : 0;
+
+  el.innerHTML = [
+    { label: 'Total encaissé', val: fmt(totalGeneral), icon: '📥', color: 'var(--vert)', cls: 'kpi-green' },
+    { label: 'Ce mois-ci', val: fmt(totalMois) + ' (' + moisCourant.length + ')', icon: '📅', color: 'var(--or)', cls: '' },
+    { label: 'Nb versements', val: nbTotal, icon: '🧾', color: 'var(--bleu)', cls: 'kpi-blue' },
+    { label: 'Lots (programmes)', val: fmt(totalLot) + ' (' + (lignesLot || []).length + ')', icon: '🏠', color: 'var(--bleu)', cls: '' },
+    { label: 'Cessions foncières', val: fmt(totalFoncier) + ' (' + (lignesFoncier || []).length + ')', icon: '🏞️', color: 'var(--violet)', cls: '' },
+    { label: 'Commissions liées', val: fmt(totalCommissions), icon: '💼', color: 'var(--rouge)', cls: '' },
+    { label: 'Montant moyen / versement', val: fmt(Math.round(moyenne)), icon: '📊', color: 'var(--blanc)', cls: '' }
+  ].map(function(k) {
+    return '<div class="kpi-card ' + k.cls + '" data-icon="' + k.icon + '">'
+      + '<div class="kpi-label">' + k.label + '</div>'
+      + '<div class="kpi-value or" style="color:' + k.color + ';font-size:16px;">' + k.val + '</div>'
+      + '</div>';
+  }).join('');
+}
+
 function renderComptaVersements() {
   var tb = document.getElementById('tbody-compta-versements');
   if (!tb) return;
@@ -90737,6 +90779,8 @@ function renderComptaVersements() {
       });
     });
   });
+
+  buildComptaVersementsKPIs(lignesLot, lignesFoncier);
 
   var base = filtreSrc === 'lot' ? lignesLot
            : filtreSrc === 'cession' ? lignesFoncier
