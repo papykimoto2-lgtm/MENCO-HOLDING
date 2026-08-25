@@ -2793,6 +2793,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         <!-- ══ TAB : COCKPIT — le tableau de bord qui travaille ═══════════ -->
         <div id="dpane-cockpit">
           <div id="ck-briefing" style="margin-bottom:16px;"></div>
+          <div id="ck-recouvrement"></div>
           <div style="display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:16px;align-items:start;" class="ck-grid">
             <div>
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
@@ -3399,6 +3400,26 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
       <div class="page" id="page-commercialisation">
         <div class="page-header"><h2>📊 Commercialisation</h2></div>
         <div class="kpi-grid" id="cmz-kpis"></div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;" class="cmz-row-2col">
+          <div class="card">
+            <div class="card-header"><h3>🏆 Performance — commerciaux &amp; apporteurs</h3></div>
+            <div class="card-body"><div id="cmz-performance"></div></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><h3>🫙 Entonnoir de conversion <span id="cmz-funnel-conv" style="font-weight:400;font-size:11px;color:var(--blanc-dim);"></span></h3></div>
+            <div class="card-body"><div id="cmz-funnel"></div></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
+          <div class="card-header"><h3>📈 Tendance des ventes <span id="cmz-velocite" style="font-weight:400;font-size:11px;color:var(--blanc-dim);"></span></h3></div>
+          <div class="card-body">
+            <div id="cmz-trend" style="display:flex;align-items:flex-end;gap:5px;height:90px;"></div>
+            <div id="cmz-trend-labels" style="display:flex;gap:5px;margin-top:6px;"></div>
+          </div>
+        </div>
+
         <div class="card" style="margin-top:16px;">
           <div class="card-header"><h3>Taux de commercialisation par programme</h3></div>
           <div class="card-body"><div id="cmz-table"></div></div>
@@ -3407,6 +3428,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="card-header"><h3>⏰ Réservations à échéance (délai de validité dépassé)</h3></div>
           <div class="card-body"><div id="cmz-alerts"></div></div>
         </div>
+        <style>@media (max-width: 900px){ .cmz-row-2col{ grid-template-columns:1fr !important; } }</style>
       </div>
 
       <div class="page" id="page-lots">
@@ -26327,6 +26349,92 @@ async function renderPortailStats() {
   document.getElementById('pstats-kpis').insertAdjacentHTML('afterend',
     '<div style="font-size:11px;color:var(--blanc-dim);margin:4px 0 0;">* Taux de rebond : visiteurs n\'ayant consulté aucun onglet au-delà de l\'accueil. Aucune donnée personnelle collectée — région = fuseau horaire déclaré par le navigateur, pas de géolocalisation IP.</div>');
 }
+/* Classement commerciaux + apporteurs — CA porté (montant_total) et encaissé,
+   à partir des souscripteurs qu'ils ont respectivement en portefeuille.
+   Un commercial et un apporteur peuvent être associés au même souscripteur
+   (rôles non exclusifs) : les deux classements restent donc lus séparément
+   par rôle plutôt qu'additionnés dans un total qui doublerait le CA. */
+function cmzBuildPerformance() {
+  var el = document.getElementById('cmz-performance');
+  if (!el) return;
+  var clients = DATA.clients || [];
+
+  function agreger(champNom) {
+    var g = {};
+    clients.forEach(function(c) {
+      var nom = c[champNom];
+      if (!nom) return;
+      if (!g[nom]) g[nom] = { nom: nom, nb: 0, ca: 0, enc: 0 };
+      g[nom].nb++;
+      g[nom].ca += (parseFloat(c.montant_total) || 0);
+      g[nom].enc += (typeof totalPayePrix === 'function') ? totalPayePrix(c.id) : 0;
+    });
+    return Object.keys(g).map(function(k){ return g[k]; });
+  }
+
+  var commerciaux = agreger('commercial').map(function(x){ x.type='commercial'; return x; });
+  var apporteurs  = agreger('apporteur').map(function(x){ x.type='apporteur'; return x; });
+  var tous = commerciaux.concat(apporteurs).sort(function(a,b){ return b.enc - a.enc; });
+
+  if (!tous.length) { el.innerHTML = '<div style="color:var(--blanc-dim);padding:16px;">Aucune donnée commerciale.</div>'; return; }
+
+  var medals = ['🥇','🥈','🥉'];
+  el.innerHTML = tous.slice(0, 8).map(function(p, i) {
+    var pct = p.ca > 0 ? Math.min(100, Math.round(p.enc / p.ca * 100)) : 0;
+    var col = p.type === 'apporteur' ? '#B87333' : '#3B82F6';
+    var emoji = p.type === 'apporteur' ? '🤝' : '💼';
+    return '<div style="padding:9px 11px;background:var(--fond2,#F8FAFC);border:1px solid var(--bord,#E0E0EA);border-left:4px solid '+col+';border-radius:8px;margin-bottom:7px;">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">'
+      +   '<div style="min-width:0;"><span style="font-size:14px;margin-right:5px;">'+(medals[i]||emoji)+'</span><strong style="font-size:12px;">'+escHtml(p.nom)+'</strong>'
+      +     '<div style="font-size:10px;color:var(--blanc-dim);margin-top:1px;">'+emoji+' '+(p.type==='apporteur'?'Apporteur':'Commercial')+' · '+p.nb+' souscripteur(s)</div></div>'
+      +   '<div style="text-align:right;white-space:nowrap;"><div style="font-size:13px;font-weight:700;color:'+col+';">'+fmtF(p.enc)+' F</div><div style="font-size:10px;color:var(--blanc-dim);">'+pct+'% de '+fmtF(p.ca)+' F</div></div>'
+      + '</div></div>';
+  }).join('');
+}
+
+/* Tendance des ventes : nb de lots passés "vendu" par mois (12 derniers mois),
+   à partir de lot.date_vente (posé par saveLot/majStatutLotClient au moment du
+   basculement de statut). Vélocité = moyenne des 3 derniers mois vs les 3
+   précédents, même logique que la tendance du Pouls du Cockpit (ckPouls). */
+function cmzBuildTendance() {
+  var hostB = document.getElementById('cmz-trend');
+  var hostL = document.getElementById('cmz-trend-labels');
+  var hostV = document.getElementById('cmz-velocite');
+  if (!hostB) return;
+  var lots = DATA.lots || [];
+  var months = [];
+  var now = new Date();
+  for (var i = 11; i >= 0; i--) {
+    var d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push({ label: d.toLocaleDateString('fr-FR', {month:'short'}).slice(0,3), key: d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0') });
+  }
+  var counts = months.map(function(m) {
+    return lots.filter(function(l){ return l.statut==='vendu' && (l.date_vente||'').startsWith(m.key); }).length;
+  });
+  var max = Math.max.apply(null, counts) || 1;
+
+  hostB.innerHTML = ''; if (hostL) hostL.innerHTML = '';
+  counts.forEach(function(n, i) {
+    var pct = n===0 ? 3 : Math.max(6, Math.round(n/max*100));
+    var bar = document.createElement('div');
+    bar.style.cssText = 'flex:1;height:'+pct+'%;border-radius:3px 3px 0 0;background:'+(n===0?'rgba(148,163,184,.35)':'linear-gradient(to top,#B87333,#EAB86C)')+';';
+    bar.title = months[i].label + ' : ' + n + ' lot(s) vendu(s)';
+    hostB.appendChild(bar);
+    if (hostL) {
+      var lbl = document.createElement('div');
+      lbl.style.cssText = 'flex:1;text-align:center;font-size:9px;color:var(--blanc-dim);';
+      lbl.textContent = months[i].label;
+      hostL.appendChild(lbl);
+    }
+  });
+
+  var t3 = counts.slice(-3).reduce(function(s,n){return s+n;},0);
+  var t3prec = counts.slice(-6,-3).reduce(function(s,n){return s+n;},0);
+  var tendance = t3prec>0 ? Math.round((t3-t3prec)/t3prec*100) : (t3>0?100:0);
+  if (hostV) hostV.textContent = '· ' + (t3/3).toFixed(1) + ' lot(s)/mois (3 derniers mois)'
+    + (t3prec>0 ? ' · ' + (tendance>=0?'▲ +':'▼ ')+Math.abs(tendance)+'% vs trimestre préc.' : '');
+}
+
 function renderCommercialisation() {
   var lots = DATA.lots || [], progs = DATA.programmes || [];
   var totD=0, totR=0, totV=0;
@@ -26343,12 +26451,29 @@ function renderCommercialisation() {
 
   var totLots = totD+totR+totV;
   var pctGlobal = totLots ? Math.round((totV+totR)/totLots*100) : 0;
+
+  /* Valeur du stock : CA potentiel des lots encore disponibles + prix moyen/m²
+     constaté sur l'ensemble des lots prix-és et surfacés (indicateur de
+     positionnement tarifaire, pas seulement du disponible). */
+  var lotsDispoList = lots.filter(function(l){ return l.statut==='disponible' || !l.statut; });
+  var caPotentiel = lotsDispoList.reduce(function(s,l){ return s+(parseFloat(l.prix)||0); }, 0);
+  var avecSurface = lots.filter(function(l){ return (parseFloat(l.prix)||0)>0 && (parseFloat(l.surface)||0)>0; });
+  var prixM2Moyen = avecSurface.length
+    ? Math.round(avecSurface.reduce(function(s,l){ return s+(parseFloat(l.prix)/parseFloat(l.surface)); },0) / avecSurface.length)
+    : 0;
+
   document.getElementById('cmz-kpis').innerHTML =
     '<div class="kpi-card" data-icon="🏠"><div class="kpi-label">Total lots</div><div class="kpi-value">'+totLots+'</div></div>'
     + '<div class="kpi-card" data-icon="🟢"><div class="kpi-label">Disponibles</div><div class="kpi-value">'+totD+'</div></div>'
     + '<div class="kpi-card" data-icon="🟠"><div class="kpi-label">Réservés</div><div class="kpi-value">'+totR+'</div></div>'
     + '<div class="kpi-card" data-icon="🔵"><div class="kpi-label">Vendus</div><div class="kpi-value">'+totV+'</div></div>'
-    + '<div class="kpi-card" data-icon="📈"><div class="kpi-label">Taux commercialisation</div><div class="kpi-value">'+pctGlobal+'%</div></div>';
+    + '<div class="kpi-card" data-icon="📈"><div class="kpi-label">Taux commercialisation</div><div class="kpi-value">'+pctGlobal+'%</div></div>'
+    + '<div class="kpi-card" data-icon="💎"><div class="kpi-label">CA potentiel — stock dispo</div><div class="kpi-value" style="font-size:15px;">'+fmtF(caPotentiel)+' F</div></div>'
+    + '<div class="kpi-card" data-icon="📐"><div class="kpi-label">Prix moyen / m²</div><div class="kpi-value" style="font-size:15px;">'+fmtF(prixM2Moyen)+' F</div></div>';
+
+  cmzBuildPerformance();
+  cmrcBuildFunnel(DATA.leads || [], 'cmz-funnel', 'cmz-funnel-conv');
+  cmzBuildTendance();
 
   var tbl = '<table class="data-table"><thead><tr><th>Programme</th><th>Disponibles</th><th>Réservés</th><th>Vendus</th><th>Total</th><th>Taux</th></tr></thead><tbody>'
     + rows.map(function(r){
@@ -27089,7 +27214,7 @@ function buildDashTabFinance() {  var cessions      = DATA.cessions_foncieres ||
     {l:'Reste à recouvrer', v:fmtF(encours)+' FCFA',   i:'⏳', c:encours>100000000?'kpi-red':'', d:DATA.clients.length+' souscripteurs + '+cessions.length+' cession(s)', click:'rarOuvrir()'},
     {l:'Taux de recouvrement',      v:tauxRecouv+'%',           i:'📈', c:tauxRecouv>=50?'kpi-green':'kpi-red', d:fmtF(totalVerse)+' / '+fmtF(totalDu)},
     {l:'Clients en retard',         v:retard,                   i:'⚠️', c:retard>0?'kpi-red':'kpi-green', d:retard+' dossiers à relancer', click:'goTo(\'relances\')'},
-    {l:'Lots vendus',              v:DATA.lots.filter(function(l){return l.statut==='vendu';}).length+' / '+DATA.lots.length, i:'🏠', c:'', d:DATA.lots.filter(function(l){return l.statut==='disponible';}).length+' disponibles', click:'goTo(\'lots\')'},
+    (function(){ var ls=lotsStatsGlobal(); return {l:'Lots vendus', v:ls.vendus+' / '+DATA.lots.length, i:'🏠', c:'', d:ls.reserves+' réservé(s) (en cours) · '+ls.disponibles+' disponible(s)', click:'goTo(\'lots\')'}; })(),
   ].filter(Boolean).map(function(k){
     return '<div class="kpi-card '+k.c+'" data-icon="'+k.i+'"'+(k.click?' style="cursor:pointer;" title="Cliquer pour le détail" onclick="'+k.click+'"':'')+'><div class="kpi-label">'+k.l+'</div>'
       +'<div class="kpi-value or" style="font-size:17px;">'+k.v+'</div>'
@@ -27186,8 +27311,8 @@ function buildDashTabCommercial() {
 }
 
 /* ── Entonnoir de conversion ─────────────────────────────────── */
-function cmrcBuildFunnel(leads) {
-  var host = document.getElementById('cmrc-funnel');
+function cmrcBuildFunnel(leads, hostId, convHostId) {
+  var host = document.getElementById(hostId || 'cmrc-funnel');
   if (!host) return;
   var idx = {}; CMRC_STADES.forEach(function(s,i){ idx[s.k]=i; });
   /* Cumul : un lead au stade N a franchi tous les stades < N. */
@@ -27197,7 +27322,7 @@ function cmrcBuildFunnel(leads) {
   var entrants = counts[0] || leads.length || 1;
   var maxW = counts[0] || 1;
   var convGlobal = entrants>0 ? Math.round((counts[counts.length-1]/entrants)*100) : 0;
-  var cvSpan = document.getElementById('cmrc-funnel-conv');
+  var cvSpan = document.getElementById(convHostId || 'cmrc-funnel-conv');
   if (cvSpan) cvSpan.textContent = '· conversion globale '+convGlobal+'%';
 
   host.innerHTML = CMRC_STADES.map(function(s,i){
@@ -28057,8 +28182,10 @@ function refreshDashboard() {
   var totalVerse = _core.encaisse;
   var totalDu    = _core.du;
   var encours    = _core.encours;
-  var lotsVendus = DATA.lots.filter(function(l){return l.statut==='vendu';}).length;
-  var lotsDispo  = DATA.lots.filter(function(l){return l.statut==='disponible';}).length;
+  var _lotsStats = lotsStatsGlobal();
+  var lotsVendus = _lotsStats.vendus;
+  var lotsDispo  = _lotsStats.disponibles;
+  var lotsReserves = _lotsStats.reserves;
   var retardataires = getRetardataires().length;
   var tauxRecouv = _core.tauxRecouv;
 
@@ -28087,7 +28214,7 @@ function refreshDashboard() {
     {l:'Reste à recouvrer', v:fmtF(encours)+' FCFA', i:'⏳', c:encours>100000000?'kpi-red':'',
      d:DATA.clients.length+' souscripteurs + '+_cesAll.length+' cession(s)', click:'rarOuvrir()'},
     {l:'Lots vendus', v:lotsVendus+' / '+DATA.lots.length, i:'🏠', c:'kpi-copper',
-     d:lotsDispo+' lots encore disponibles', click:'goTo(\'lots\')'},
+     d:lotsReserves+' réservé(s) (en cours) · '+lotsDispo+' disponible(s)', click:'goTo(\'lots\')'},
     {l:'Taux de recouvrement', v:tauxRecouv+'%', i:'📈', c:tauxRecouv>=50?'kpi-green':tauxRecouv>=30?'':'kpi-red',
      d:fmtF(totalVerse)+' / '+fmtF(totalDu)},
     {l:'Clients en retard', v:retardataires, i:'⚠️', c:retardataires>5?'kpi-red':'',
@@ -28840,6 +28967,22 @@ async function majStatutLotClient(clientId) {
     else { await supprimerVenteTerrain(lot.id); }
   }
   return nouveau;
+}
+
+/* Statistiques lots par statut — source unique pour les KPI « Lots vendus »
+   des tableaux de bord (Vue générale, Finance, Programmes, Direction).
+   Un lot ne passe « vendu » qu'au-delà du seuil d'immobilisation (voir
+   majStatutLotClient, param. Seuil d'immobilisation réservé → vendu, 70% par
+   défaut) : avant ce seuil il reste « réservé ». Un KPI qui n'affiche que les
+   « vendu » masque donc toute l'activité commerciale en cours (souscripteurs
+   venant de signer et de verser un apport) — d'où l'intérêt d'exposer aussi
+   le nombre de réservés à côté du nombre de vendus. */
+function lotsStatsGlobal(lots) {
+  var L = lots || DATA.lots || [];
+  var vendus = L.filter(function(l){ return l.statut === 'vendu'; }).length;
+  var reserves = L.filter(function(l){ return l.statut === 'reserve'; }).length;
+  var disponibles = L.filter(function(l){ return l.statut === 'disponible'; }).length;
+  return { vendus: vendus, reserves: reserves, disponibles: disponibles, total: L.length, enCours: vendus + reserves };
 }
 
 /* Code dossier souscripteur séquentiel : SS001, SS002… */
@@ -38044,6 +38187,33 @@ function ckSante() {
   }).join('');
 }
 
+/* ── Reste à recouvrer par catégorie, en tête du Cockpit ───────────────────
+   Le score « Recouvrement » de ckSante() résume l'encours en un seul chiffre ;
+   il ne dit pas à qui il appartient. Ce bloc décompose le montant par
+   catégorie (souscripteurs, cessions foncières, partenaires financiers) —
+   même calcul que l'onglet Compta > Versements (rarResteParCategorie), pour
+   que les deux vues restent toujours identiques. */
+function ckRecouvrement() {
+  var el = document.getElementById('ck-recouvrement');
+  if (!el) return;
+  var r;
+  try { r = rarResteParCategorie(); } catch(e) { return; }
+  var cartes = [
+    { label:'Reste à recouvrer — Total', val:r.resteTotal, icone:'⏳', coul:'var(--rouge)', fn:'rarOuvrir()' },
+    { label:'Souscripteurs (ventes lots)', val:r.resteLots, icone:'🏠', coul:'#B87333', fn:'rarOuvrir()' },
+    { label:'Cessions foncières', val:r.resteCessions, icone:'🏞️', coul:'#B87333', fn:'rarOuvrir()' },
+    { label:'Partenaires financiers', val:r.resteFinanciers, icone:'🤝', coul:'#B87333', fn:"goTo('foncier');switchTab('foncier','financiers');finRender()" }
+  ];
+  el.innerHTML = '<div class="kpi-grid" style="margin-bottom:16px;">'
+    + cartes.map(function(k){
+        return '<div class="kpi-card" data-icon="'+k.icone+'" style="cursor:pointer;" onclick="'+k.fn+'" title="Ouvrir le détail">'
+          +   '<div class="kpi-label">'+k.label+'</div>'
+          +   '<div class="kpi-value or" style="font-size:16px;color:'+k.coul+';">'+fmtF(k.val)+' F</div>'
+          + '</div>';
+      }).join('')
+    + '</div>';
+}
+
 /* ── Rendu de la file d'actions ──────────────────────────────────────────── */
 function buildDashTabCockpit() {
   _ckCache = null;   /* données fraîches à chaque rendu */
@@ -38055,6 +38225,7 @@ function buildDashTabCockpit() {
 
   var actions = ckActions();
   if (hostB) hostB.innerHTML = ckBriefing(actions);
+  ckRecouvrement();
   if (hostP) hostP.innerHTML = ckPouls();
   if (hostS) hostS.innerHTML = ckSante();
 
@@ -38108,6 +38279,31 @@ function buildDashTabCockpit() {
    les souscripteurs (échéancier mensuel, retard mesurable en mois) et les
    cessions foncières (échéance unique). On les traite donc séparément tout en
    les additionnant dans le total, qui doit rester égal au KPI. */
+
+/* Reste à recouvrer par catégorie — source unique partagée par le Cockpit
+   (ckRecouvrement) et l'onglet Compta > Versements (buildComptaVersementsKPIs),
+   pour que les deux affichages ne divergent jamais. Calculé entité par entité
+   (pas sur des lignes de versement filtrables) et Math.max(0, ...) par entité,
+   pour qu'un trop-perçu sur un dossier ne compense pas un impayé sur un autre. */
+function rarResteParCategorie() {
+  var resteLots = (DATA.clients || []).reduce(function(s, c) {
+    var verse = (DATA.versements || []).filter(function(v){ return v.client_id === c.id && v.statut !== 'annule'; })
+      .reduce(function(a, v){ return a + (parseFloat(v.montant) || 0); }, 0);
+    return s + Math.max(0, (c.montant_total || 0) - verse);
+  }, 0);
+
+  var resteCessions = (DATA.cessions_foncieres || []).reduce(function(s, cf) {
+    return s + Math.max(0, (cf.prix_cession || 0) - (typeof crecVerse === 'function' ? crecVerse(cf) : (parseFloat(cf.montant_encaisse) || 0)));
+  }, 0);
+
+  var resteFinanciers = (DATA.af_financiers || []).reduce(function(s, f) {
+    var verse = (typeof finMontantVerse === 'function') ? finMontantVerse(f.id)
+      : (DATA.af_versements_financiers || []).filter(function(v){ return v.financier_id === f.id; }).reduce(function(a, v){ return a + (parseFloat(v.montant) || 0); }, 0);
+    return s + Math.max(0, (f.montant_engagement || 0) - verse);
+  }, 0);
+
+  return { resteLots: resteLots, resteCessions: resteCessions, resteFinanciers: resteFinanciers, resteTotal: resteLots + resteCessions + resteFinanciers };
+}
 
 function _rarMensualite(c) {
   var duree = parseInt(c.duree, 10) || 0;
@@ -63060,7 +63256,8 @@ function buildROI(){
 /* ─── Programmes KPIs ─────────────────────────────── */
 function buildProgrammesKPIs(){
   var el=document.getElementById('prog-kpi-grid');if(!el)return;
-  var vendus=DATA.lots.filter(function(l){return l.statut==='vendu';}).length;
+  var _ls=lotsStatsGlobal();
+  var vendus=_ls.vendus;
   var totalCA=DATA.versements.reduce(function(s,v){return s+(v.montant||0);},0);
   var totalM=DATA.conventions.reduce(function(s,c){return s+(c.montant_ttc||0);},0);
   var enCours=DATA.conventions.filter(function(c){return c.statut==='en_cours';}).length;
@@ -63068,6 +63265,7 @@ function buildProgrammesKPIs(){
   el.innerHTML=[
     {l:'Programmes actifs',v:DATA.programmes.length,i:'🏗️',c:'kpi-green'},
     {l:'Lots vendus / total',v:vendus+' / '+DATA.lots.length,i:'🏠',c:'kpi-copper'},
+    {l:'Lots réservés (en cours)',v:_ls.reserves,i:'🔖',c:'kpi-blue'},
     {l:'CA encaissé',v:fmtF(totalCA)+' FCFA',i:'💰',c:'kpi-green'},
     {l:'Marchés travaux',v:fmtF(totalM)+' FCFA',i:'📋',c:'kpi-blue'},
     {l:'Chantiers en cours',v:enCours,i:'👷',c:''},
@@ -74407,7 +74605,9 @@ function _a360Metrics() {
   var avgAvancement = convEnCours.length
     ? Math.round(convEnCours.reduce(function(s,c){ return s+(parseFloat(c.avancement)||0); },0) / convEnCours.length) : 0;
 
-  var lotsVendus = lots.filter(function(l){ return l.statut==='vendu'; }).length;
+  var _lsDir = lotsStatsGlobal(lots);
+  var lotsVendus = _lsDir.vendus;
+  var lotsReserves = _lsDir.reserves;
   var lotsTotal = lots.length;
   var tauxVente = lotsTotal ? Math.round(lotsVendus/lotsTotal*100) : 0;
 
@@ -74500,7 +74700,7 @@ function _a360Metrics() {
     caPortefLots: caPortefLots, encaisseLots: encaisseLots, txRecouvLots: txRecouvLots,
     nbRetard: retard.length, montantRetard: montantRetard, topRetard: retard.slice().sort(function(a,b){return b.montantDu-a.montantDu;}).slice(0,5),
     convEnCours: convEnCours.length, chantiersRetard: chantiersRetard.length, avgAvancement: avgAvancement,
-    lotsVendus: lotsVendus, lotsTotal: lotsTotal, tauxVente: tauxVente, progInvendus: progInvendus, nbProgrammes: programmes.length,
+    lotsVendus: lotsVendus, lotsReserves: lotsReserves, lotsTotal: lotsTotal, tauxVente: tauxVente, progInvendus: progInvendus, nbProgrammes: programmes.length,
     effectif: effectif, nbCommerciaux: commerciaux.length,
     produits: produits, charges: charges, resultat: resultat, margePct: margePct,
     commDues: commDues, nbApporteurs: apporteurs.length,
@@ -74688,7 +74888,7 @@ function buildAnalyse360() {
     +'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px;">'
     +kpi('Chantiers en cours', m.convEnCours, '#3B82F6', 'avanc. '+m.avgAvancement+'%')
     +kpi('Chantiers en retard', m.chantiersRetard, m.chantiersRetard?'#EF4444':'#10B981')
-    +kpi('Vente lots', m.tauxVente+'%', m.tauxVente>=60?'#10B981':'#EA580C', m.lotsVendus+'/'+m.lotsTotal)
+    +kpi('Vente lots', m.tauxVente+'%', m.tauxVente>=60?'#10B981':'#EA580C', m.lotsVendus+'/'+m.lotsTotal+' vendus · '+m.lotsReserves+' réservé(s)')
     +kpi('Commissions dues', fmtF(m.commDues)+' F', m.commDues?'#EA580C':'#10B981')
     +'</div>'
     +'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px;">'
@@ -74748,7 +74948,7 @@ function imprimerAnalyse360() {
     +'<tr><th>Valeur foncier en stock</th><td>'+fmtF(m.valeurFoncier)+' F ('+m.nbParcelles+' parcelle(s))</td><th>Cessions foncières</th><td>'+m.nbCessions+' cession(s)</td></tr>'
     +'<tr><th>Clients / Prospects actifs</th><td>'+m.nbClients+' / '+m.leadsActifs+'</td><th>Taux conversion</th><td>'+m.txConv+'%</td></tr>'
     +'<tr><th>Impayés</th><td>'+fmtF(m.montantRetard)+' F ('+m.nbRetard+')</td><th>Commissions dues</th><td>'+fmtF(m.commDues)+' F</td></tr>'
-    +'<tr><th>Chantiers en cours / retard</th><td>'+m.convEnCours+' / '+m.chantiersRetard+'</td><th>Vente lots</th><td>'+m.tauxVente+'% ('+m.lotsVendus+'/'+m.lotsTotal+')</td></tr>'
+    +'<tr><th>Chantiers en cours / retard</th><td>'+m.convEnCours+' / '+m.chantiersRetard+'</td><th>Vente lots</th><td>'+m.tauxVente+'% ('+m.lotsVendus+'/'+m.lotsTotal+' vendus, '+m.lotsReserves+' réservé(s))</td></tr>'
     +'<tr><th>Effectif actif</th><td>'+m.effectif+'</td><th>Masse salariale (mois)</th><td>'+fmtF(m.masseBrute)+' F</td></tr>'
     +'<tr><th>Charges patronales</th><td>'+fmtF(m.chargesPat)+' F</td><th>Coût employeur / Poids paie</th><td>'+fmtF(m.coutEmployeur)+' F · '+m.poidsSalaireEncaisse+'%</td></tr>'
     +'</table>'
@@ -90707,28 +90907,11 @@ function buildComptaVersementsKPIs(lignesLot, lignesFoncier) {
   var totalCommissions = toutes.reduce(function(s, r){ return s + (r.commTot || 0); }, 0);
   var moyenne = nbTotal ? totalGeneral / nbTotal : 0;
 
-  /* ── Reste à recouvrer par catégorie ──
-     Calculé entité par entité (pas sur les lignes de versement affichées)
-     pour rester correct même si des lignes sont filtrées par la recherche,
-     et pour éviter qu'un trop-perçu sur une fiche ne compense un impayé sur
-     une autre (Math.max(0, ...) par entité). */
-  var resteLots = (DATA.clients || []).reduce(function(s, c) {
-    var verse = (DATA.versements || []).filter(function(v){ return v.client_id === c.id && v.statut !== 'annule'; })
-      .reduce(function(a, v){ return a + (parseFloat(v.montant) || 0); }, 0);
-    return s + Math.max(0, (c.montant_total || 0) - verse);
-  }, 0);
-
-  var resteCessions = (DATA.cessions_foncieres || []).reduce(function(s, cf) {
-    return s + Math.max(0, (cf.prix_cession || 0) - (typeof crecVerse === 'function' ? crecVerse(cf) : (parseFloat(cf.montant_encaisse) || 0)));
-  }, 0);
-
-  var resteFinanciers = (DATA.af_financiers || []).reduce(function(s, f) {
-    var verse = (typeof finMontantVerse === 'function') ? finMontantVerse(f.id)
-      : (DATA.af_versements_financiers || []).filter(function(v){ return v.financier_id === f.id; }).reduce(function(a, v){ return a + (parseFloat(v.montant) || 0); }, 0);
-    return s + Math.max(0, (f.montant_engagement || 0) - verse);
-  }, 0);
-
-  var resteTotal = resteLots + resteCessions + resteFinanciers;
+  /* Reste à recouvrer par catégorie — voir rarResteParCategorie(), source
+     unique partagée avec le Cockpit (garantit que les deux vues concordent). */
+  var _rar = rarResteParCategorie();
+  var resteLots = _rar.resteLots, resteCessions = _rar.resteCessions,
+      resteFinanciers = _rar.resteFinanciers, resteTotal = _rar.resteTotal;
 
   el.innerHTML = [
     { label: 'Total encaissé', val: fmt(totalGeneral), icon: '📥', color: 'var(--vert)', cls: 'kpi-green' },
