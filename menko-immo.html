@@ -90707,6 +90707,29 @@ function buildComptaVersementsKPIs(lignesLot, lignesFoncier) {
   var totalCommissions = toutes.reduce(function(s, r){ return s + (r.commTot || 0); }, 0);
   var moyenne = nbTotal ? totalGeneral / nbTotal : 0;
 
+  /* ── Reste à recouvrer par catégorie ──
+     Calculé entité par entité (pas sur les lignes de versement affichées)
+     pour rester correct même si des lignes sont filtrées par la recherche,
+     et pour éviter qu'un trop-perçu sur une fiche ne compense un impayé sur
+     une autre (Math.max(0, ...) par entité). */
+  var resteLots = (DATA.clients || []).reduce(function(s, c) {
+    var verse = (DATA.versements || []).filter(function(v){ return v.client_id === c.id && v.statut !== 'annule'; })
+      .reduce(function(a, v){ return a + (parseFloat(v.montant) || 0); }, 0);
+    return s + Math.max(0, (c.montant_total || 0) - verse);
+  }, 0);
+
+  var resteCessions = (DATA.cessions_foncieres || []).reduce(function(s, cf) {
+    return s + Math.max(0, (cf.prix_cession || 0) - (typeof crecVerse === 'function' ? crecVerse(cf) : (parseFloat(cf.montant_encaisse) || 0)));
+  }, 0);
+
+  var resteFinanciers = (DATA.af_financiers || []).reduce(function(s, f) {
+    var verse = (typeof finMontantVerse === 'function') ? finMontantVerse(f.id)
+      : (DATA.af_versements_financiers || []).filter(function(v){ return v.financier_id === f.id; }).reduce(function(a, v){ return a + (parseFloat(v.montant) || 0); }, 0);
+    return s + Math.max(0, (f.montant_engagement || 0) - verse);
+  }, 0);
+
+  var resteTotal = resteLots + resteCessions + resteFinanciers;
+
   el.innerHTML = [
     { label: 'Total encaissé', val: fmt(totalGeneral), icon: '📥', color: 'var(--vert)', cls: 'kpi-green' },
     { label: 'Ce mois-ci', val: fmt(totalMois) + ' (' + moisCourant.length + ')', icon: '📅', color: 'var(--or)', cls: '' },
@@ -90714,7 +90737,11 @@ function buildComptaVersementsKPIs(lignesLot, lignesFoncier) {
     { label: 'Lots (programmes)', val: fmt(totalLot) + ' (' + (lignesLot || []).length + ')', icon: '🏠', color: 'var(--bleu)', cls: '' },
     { label: 'Cessions foncières', val: fmt(totalFoncier) + ' (' + (lignesFoncier || []).length + ')', icon: '🏞️', color: 'var(--violet)', cls: '' },
     { label: 'Commissions liées', val: fmt(totalCommissions), icon: '💼', color: 'var(--rouge)', cls: '' },
-    { label: 'Montant moyen / versement', val: fmt(Math.round(moyenne)), icon: '📊', color: 'var(--blanc)', cls: '' }
+    { label: 'Montant moyen / versement', val: fmt(Math.round(moyenne)), icon: '📊', color: 'var(--blanc)', cls: '' },
+    { label: 'Reste à recouvrer — Total', val: fmt(resteTotal), icon: '⏳', color: 'var(--rouge)', cls: 'kpi-red' },
+    { label: 'Reste à recouvrer — Souscripteurs lots', val: fmt(resteLots), icon: '🏠', color: 'var(--rouge)', cls: '' },
+    { label: 'Reste à recouvrer — Cessions foncières', val: fmt(resteCessions), icon: '🏞️', color: 'var(--rouge)', cls: '' },
+    { label: 'Reste à recouvrer — Partenaires financiers', val: fmt(resteFinanciers), icon: '🤝', color: 'var(--rouge)', cls: '' }
   ].map(function(k) {
     return '<div class="kpi-card ' + k.cls + '" data-icon="' + k.icon + '">'
       + '<div class="kpi-label">' + k.label + '</div>'
