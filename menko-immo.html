@@ -11422,6 +11422,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <button class="btn btn-secondary btn-sm" id="btn-caisse-nouvelle" onclick="caisseConfigModal(null)" style="display:none;">➕ Nouvelle caisse</button>
           <button class="btn btn-secondary btn-sm" onclick="caisseAuditDoublonsModal()">🔍 Audit doublons</button>
           <button class="btn btn-secondary btn-sm" onclick="caisseControleIntegrite()">🩺 Contrôle d'intégrité</button>
+          <button class="btn btn-secondary btn-sm" onclick="caisseAuditEcartsModal()">⚖️ Audit écarts de caisse</button>
           <button class="btn btn-secondary btn-sm" onclick="caisseSnapshotsModal()">♻️ Points de restauration</button>
         </div>
 
@@ -113420,6 +113421,325 @@ function caisseEcartNonRegularise(){
   }).reduce(function(a,s){ return a+Math.abs(parseFloat(s.ecart)||0); }, 0);
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   AUDIT DES ÉCARTS DE CAISSE — analyse des mouvements et correction
+   ────────────────────────────────────────────────────────────────────────
+   Vue transverse (toutes caisses / divisions confondues, filtrable) sur les
+   sessions clôturées en écart : statistiques, tendance, détail par session
+   avec repérage des mouvements suspects (modifiés après coup, sans pièce
+   jointe, montant proche de l'écart constaté…), et deux actions :
+     - 🔍 Analyse des mouvements de la session (inline, sans quitter l'audit)
+     - ✏️ Correction du comptage physique en cas d'erreur de saisie avérée
+       (distinct de la RÉGULARISATION comptable déjà existante plus haut,
+       qui elle ne fait que constater l'écart via une écriture 658/758 —
+       ici on corrige la DONNÉE si le comptage lui-même était faux).
+══════════════════════════════════════════════════════════════════════════ */
+var CAISSE_AUDIT_ECARTS = { division:'', caisse:'', dateDebut:'', dateFin:'', statut:'toutes', type:'tous', ouvert:{} };
+
+function _caeSessionsFiltrees(){
+  var idsCaisseOk = null;
+  if (CAISSE_AUDIT_ECARTS.caisse) idsCaisseOk = [CAISSE_AUDIT_ECARTS.caisse];
+  else if (CAISSE_AUDIT_ECARTS.division) idsCaisseOk = (DATA.caisses||[]).filter(function(c){ return c.division_id===CAISSE_AUDIT_ECARTS.division; }).map(function(c){ return c.id; });
+
+  return (DATA.caisse_sessions||[]).filter(function(s){
+    if (s.statut !== 'cloturee') return false;
+    var ec = parseFloat(s.ecart)||0;
+    if (ec === 0) return false;
+    if (idsCaisseOk && idsCaisseOk.indexOf(s.caisse_id) < 0) return false;
+    var j = (s.date||'').slice(0,10);
+    if (CAISSE_AUDIT_ECARTS.dateDebut && j < CAISSE_AUDIT_ECARTS.dateDebut) return false;
+    if (CAISSE_AUDIT_ECARTS.dateFin && j > CAISSE_AUDIT_ECARTS.dateFin) return false;
+    if (CAISSE_AUDIT_ECARTS.statut === 'attente' && s.ecart_regularise) return false;
+    if (CAISSE_AUDIT_ECARTS.statut === 'regularise' && !s.ecart_regularise) return false;
+    if (CAISSE_AUDIT_ECARTS.type === 'manquant' && ec >= 0) return false;
+    if (CAISSE_AUDIT_ECARTS.type === 'excedent' && ec <= 0) return false;
+    return true;
+  }).sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); });
+}
+
+function caisseAuditEcartsModal(){
+  if (!caisseRoleAdminLike()) { toast('Accès réservé au comptable / manager / admin.', 'error'); return; }
+  var divSel = document.getElementById('cae-filtre-division');
+  divSel.innerHTML = '<option value="">🏢 Toutes divisions</option>' + (DATA.divisions||[]).map(function(d){
+    return '<option value="'+d.id+'"'+(CAISSE_AUDIT_ECARTS.division===d.id?' selected':'')+'>'+escHtml(d.nom)+'</option>';
+  }).join('');
+  var caisseSel = document.getElementById('cae-filtre-caisse');
+  caisseSel.innerHTML = '<option value="">💰 Toutes caisses</option>' + caissesVisibles().map(function(c){
+    return '<option value="'+c.id+'"'+(CAISSE_AUDIT_ECARTS.caisse===c.id?' selected':'')+'>'+escHtml(c.nom)+'</option>';
+  }).join('');
+  document.getElementById('cae-filtre-debut').value = CAISSE_AUDIT_ECARTS.dateDebut || '';
+  document.getElementById('cae-filtre-fin').value = CAISSE_AUDIT_ECARTS.dateFin || '';
+  document.getElementById('cae-filtre-statut').value = CAISSE_AUDIT_ECARTS.statut;
+  document.getElementById('cae-filtre-type').value = CAISSE_AUDIT_ECARTS.type;
+  openModal('modal-caisse-audit-ecarts');
+  caisseRenderAuditEcarts();
+}
+
+function caisseAuditEcartsSetFiltre(champ, valeur){
+  CAISSE_AUDIT_ECARTS[champ] = valeur || '';
+  caisseRenderAuditEcarts();
+}
+
+function caisseAuditEcartsResetFiltres(){
+  CAISSE_AUDIT_ECARTS = { division:'', caisse:'', dateDebut:'', dateFin:'', statut:'toutes', type:'tous', ouvert:{} };
+  caisseAuditEcartsModal();
+}
+
+function _caeBarChart(serie){
+  var W=640, H=160, pad=26, n=serie.length || 1;
+  var max = Math.max(1, Math.max.apply(null, serie.map(function(s){ return Math.max(s.manquant, s.excedent); })));
+  var bw = (W - pad*2) / n, half = bw*0.32;
+  var bars = serie.map(function(s,i){
+    var x = pad + i*bw + bw/2;
+    var hm = (H-pad*2) * (s.manquant/max), he = (H-pad*2) * (s.excedent/max);
+    return '<rect x="'+(x-half-2)+'" y="'+(H-pad-hm)+'" width="'+half+'" height="'+hm+'" rx="2" fill="var(--rouge)"><title>Manquants '+s.k+' : '+fmtF(s.manquant)+'</title></rect>'
+         + '<rect x="'+(x+2)+'" y="'+(H-pad-he)+'" width="'+half+'" height="'+he+'" rx="2" fill="var(--vert)"><title>Excédents '+s.k+' : '+fmtF(s.excedent)+'</title></rect>'
+         + '<text x="'+x+'" y="'+(H-pad+13)+'" text-anchor="middle" font-size="9" fill="var(--blanc-dim)">'+s.k+'</text>';
+  }).join('');
+  return '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;">'
+    + '<line x1="'+pad+'" y1="'+(H-pad)+'" x2="'+(W-pad)+'" y2="'+(H-pad)+'" stroke="var(--bord)" stroke-width="1"/>'
+    + bars + '</svg>';
+}
+
+/* Repère les mouvements potentiellement en cause dans l'écart d'une session :
+   modifiés après coup, sans référence de pièce, sans justificatif joint, ou
+   dont le montant se rapproche fortement de l'écart total constaté (piste
+   prioritaire à vérifier). Lecture seule — ne modifie rien. */
+function _caeAnalyserMouvements(session){
+  var mvts = (DATA.caisse_mouvements||[]).filter(function(m){ return m.session_id === session.id; })
+    .sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
+  var ecartAbs = Math.abs(parseFloat(session.ecart)||0);
+  var parAuteur = {};
+  mvts.forEach(function(m){
+    var enriched = m;
+    var flags = [];
+    if (m.modifie_le) flags.push({ txt:'✎ Modifié après création', c:'var(--or,#B87333)' });
+    if (!m.piece_ref) flags.push({ txt:'Sans réf. de pièce', c:'var(--blanc-dim)' });
+    if (typeof caisseDocCount === 'function' && caisseDocCount(m.id) === 0) flags.push({ txt:'Sans justificatif joint', c:'var(--blanc-dim)' });
+    if (ecartAbs > 0 && (parseFloat(m.montant)||0) >= ecartAbs*0.8) flags.push({ txt:'🎯 Montant proche de l\'écart — priorité', c:'var(--rouge)' });
+    m._caeFlags = flags;
+    var auteur = m.created_by || '—';
+    parAuteur[auteur] = (parAuteur[auteur]||0) + 1;
+  });
+  var topAuteurs = Object.keys(parAuteur).map(function(k){ return { nom:k, n:parAuteur[k] }; }).sort(function(a,b){ return b.n-a.n; });
+  return { mvts: mvts, topAuteurs: topAuteurs, suspects: mvts.filter(function(m){ return m._caeFlags.length; }) };
+}
+
+function caisseAuditEcartsToggleDetail(sessionId){
+  CAISSE_AUDIT_ECARTS.ouvert[sessionId] = !CAISSE_AUDIT_ECARTS.ouvert[sessionId];
+  caisseRenderAuditEcarts();
+}
+
+function _caeDetailMouvementsHtml(session){
+  var a = _caeAnalyserMouvements(session);
+  if (!a.mvts.length) return '<div style="font-size:11px;color:var(--blanc-dim);padding:10px;">Aucun mouvement rattaché à cette session.</div>';
+  var rows = a.mvts.map(function(m){
+    var flagsHtml = m._caeFlags.map(function(f){ return '<span style="display:inline-block;font-size:9px;font-weight:700;color:'+f.c+';border:1px solid '+f.c+';border-radius:8px;padding:1px 6px;margin:1px 3px 1px 0;">'+f.txt+'</span>'; }).join('');
+    return '<tr'+(m._caeFlags.length?' style="background:rgba(224,82,82,0.06);"':'')+'>'
+      + '<td>'+(m.date||'').slice(0,16).replace('T',' ')+'</td>'
+      + '<td>'+escHtml(m.numero||'')+'</td>'
+      + '<td>'+escHtml(m.motif||'')+(m.beneficiaire?' — '+escHtml(m.beneficiaire):'')+'</td>'
+      + '<td style="text-align:right;color:var(--vert);">'+(m.type==='entree'?fmtF(m.montant):'')+'</td>'
+      + '<td style="text-align:right;color:var(--rouge);">'+(m.type==='sortie'?fmtF(m.montant):'')+'</td>'
+      + '<td>'+escHtml(m.created_by||'')+'</td>'
+      + '<td>'+(flagsHtml||'<span style="font-size:10px;color:var(--vert);">✓ RAS</span>')+'</td>'
+      + '<td>'+(caisseCanEditBon(m) ? '<button class="btn btn-secondary btn-sm btn-icon" title="Modifier le bon" onclick="caisseEditBonModal(\''+m.id+'\')">✏️</button>' : '')+'</td>'
+      + '</tr>';
+  }).join('');
+  return '<div style="padding:10px 4px;">'
+    + (a.suspects.length ? '<div style="font-size:11px;color:var(--rouge);font-weight:700;margin-bottom:6px;">⚠️ '+a.suspects.length+' mouvement(s) à examiner en priorité sur '+a.mvts.length+'.</div>' : '<div style="font-size:11px;color:var(--vert);margin-bottom:6px;">✓ Aucune anomalie de saisie détectée sur les '+a.mvts.length+' mouvement(s) — l\'écart provient probablement d\'une erreur de comptage physique (billetage) plutôt que d\'un mouvement mal enregistré.</div>')
+    + '<div style="overflow-x:auto;max-height:280px;overflow-y:auto;border:1px solid var(--bord);border-radius:6px;">'
+      + '<table class="data-table" style="font-size:11px;"><thead><tr><th>Date/heure</th><th>N° bon</th><th>Motif</th><th>Entrée</th><th>Sortie</th><th>Auteur</th><th>Signalement</th><th></th></tr></thead>'
+      + '<tbody>'+rows+'</tbody></table>'
+    + '</div>'
+  + '</div>';
+}
+
+function caisseRenderAuditEcarts(){
+  var liste = _caeSessionsFiltrees();
+  var idxCaisse = {}; (DATA.caisses||[]).forEach(function(c){ idxCaisse[c.id]=c; });
+
+  /* ── KPI ── */
+  var manquants = liste.filter(function(s){ return (parseFloat(s.ecart)||0) < 0; });
+  var excedents = liste.filter(function(s){ return (parseFloat(s.ecart)||0) > 0; });
+  var totalManquants = manquants.reduce(function(a,s){ return a+Math.abs(parseFloat(s.ecart)||0); },0);
+  var totalExcedents = excedents.reduce(function(a,s){ return a+(parseFloat(s.ecart)||0); },0);
+  var nbRegularises = liste.filter(function(s){ return s.ecart_regularise; }).length;
+  var nbAttente = liste.length - nbRegularises;
+  var totalClotureesFiltre = (DATA.caisse_sessions||[]).filter(function(s){
+    if (s.statut !== 'cloturee') return false;
+    if (CAISSE_AUDIT_ECARTS.caisse && s.caisse_id !== CAISSE_AUDIT_ECARTS.caisse) return false;
+    if (CAISSE_AUDIT_ECARTS.division) { var cc=idxCaisse[s.caisse_id]; if (!cc || cc.division_id !== CAISSE_AUDIT_ECARTS.division) return false; }
+    return true;
+  }).length;
+  var tauxEcart = totalClotureesFiltre ? Math.round(liste.length/totalClotureesFiltre*100) : 0;
+
+  var parCaisseCompte = {};
+  liste.forEach(function(s){ parCaisseCompte[s.caisse_id] = (parCaisseCompte[s.caisse_id]||0) + 1; });
+  var caisseTop = Object.keys(parCaisseCompte).sort(function(a,b){ return parCaisseCompte[b]-parCaisseCompte[a]; })[0];
+  var caisseTopNom = caisseTop && idxCaisse[caisseTop] ? idxCaisse[caisseTop].nom : '—';
+
+  document.getElementById('cae-kpi-box').innerHTML =
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">'
+    + _cdKpi('Sessions en écart', String(liste.length), '', liste.length?'var(--rouge)':'var(--vert)', tauxEcart+'% des clôtures du périmètre')
+    + _cdKpi('Total manquants', fmtF(totalManquants), 'FCFA', 'var(--rouge)', manquants.length+' session(s)')
+    + _cdKpi('Total excédents', fmtF(totalExcedents), 'FCFA', 'var(--vert)', excedents.length+' session(s)')
+    + _cdKpi('Net', (totalExcedents-totalManquants>=0?'+':'')+fmtF(totalExcedents-totalManquants), 'FCFA', (totalExcedents-totalManquants>=0?'var(--vert)':'var(--rouge)'), 'Excédents − manquants')
+    + _cdKpi('À régulariser', String(nbAttente), '', nbAttente?'var(--rouge)':'var(--vert)', nbRegularises+' déjà régularisé(s)')
+    + _cdKpi('Caisse la + touchée', caisseTopNom, '', 'var(--or,#B87333)', caisseTop ? (parCaisseCompte[caisseTop]+' écart(s)') : '—')
+    + '</div>';
+
+  /* ── Tendance mensuelle ── */
+  var parMois = {};
+  liste.forEach(function(s){
+    var key = (s.date||'').slice(0,7);
+    if (!key) return;
+    if (!parMois[key]) parMois[key] = { manquant:0, excedent:0 };
+    var ec = parseFloat(s.ecart)||0;
+    if (ec<0) parMois[key].manquant += Math.abs(ec); else parMois[key].excedent += ec;
+  });
+  var moisTries = Object.keys(parMois).sort();
+  if (moisTries.length) {
+    var serie = moisTries.slice(-12).map(function(k){
+      var d = new Date(k+'-01T00:00:00');
+      return { k: d.toLocaleDateString('fr-FR',{month:'short',year:'2-digit'}).replace('.',''), manquant: parMois[k].manquant, excedent: parMois[k].excedent };
+    });
+    document.getElementById('cae-chart-box').innerHTML = '<div class="card" style="padding:14px;">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">'
+        + '<div style="font-weight:700;font-size:13px;">Tendance des écarts par mois</div>'
+        + '<div style="font-size:11px;color:var(--blanc-dim);"><span style="color:var(--rouge);">■</span> Manquants <span style="color:var(--vert);margin-left:8px;">■</span> Excédents</div>'
+      + '</div>' + _caeBarChart(serie)
+    + '</div>';
+  } else {
+    document.getElementById('cae-chart-box').innerHTML = '';
+  }
+
+  /* ── Tableau détaillé ── */
+  if (!liste.length) {
+    document.getElementById('cae-table-box').innerHTML = '<div class="card" style="padding:20px;text-align:center;color:var(--vert);">✅ Aucun écart ne correspond à ces filtres.</div>';
+    document.getElementById('cae-btn-regulariser-tout').style.display = 'none';
+    return;
+  }
+  document.getElementById('cae-btn-regulariser-tout').style.display = nbAttente ? '' : 'none';
+
+  var rows = liste.map(function(s){
+    var c = idxCaisse[s.caisse_id];
+    var ec = parseFloat(s.ecart)||0, exc = ec>0;
+    var ouvert = !!CAISSE_AUDIT_ECARTS.ouvert[s.id];
+    return '<tr>'
+      + '<td>'+(s.date||'')+'</td>'
+      + '<td>'+escHtml(c?c.nom:'?')+(c?'<div style="font-size:9px;color:'+_caisseDivCouleur(c.division_id)+';">'+escHtml(_nomDivision(c.division_id))+'</div>':'')+'</td>'
+      + '<td>'+escHtml(s.cloturee_par||'—')+'</td>'
+      + '<td style="text-align:right;">'+fmtF(s.fond_cloture_theorique)+'</td>'
+      + '<td style="text-align:right;">'+fmtF(s.fond_cloture_reel)+'</td>'
+      + '<td style="text-align:right;font-weight:700;color:'+(exc?'var(--vert)':'var(--rouge)')+';">'+(exc?'+':'')+fmtF(ec)+'</td>'
+      + '<td>'+(s.ecart_regularise ? '<span style="color:var(--vert);">✅ Régularisé</span>' : '<span style="color:var(--rouge);">⏳ En attente</span>')+(s.corrections&&s.corrections.length?' <span title="'+s.corrections.length+' correction(s) de comptage" style="color:var(--or,#B87333);">✎×'+s.corrections.length+'</span>':'')+'</td>'
+      + '<td style="white-space:nowrap;">'
+        + '<button class="btn btn-secondary btn-sm btn-icon" title="Analyser les mouvements" onclick="caisseAuditEcartsToggleDetail(\''+s.id+'\')">'+(ouvert?'🔽':'🔍')+'</button> '
+        + '<button class="btn btn-secondary btn-sm btn-icon" title="Corriger le comptage" onclick="caisseCorrigerComptageModal(\''+s.id+'\')">✏️</button> '
+        + (!s.ecart_regularise ? '<button class="btn btn-primary btn-sm" title="Régulariser" onclick="caisseRegulariserEcart(\''+s.id+'\').then(function(){caisseRenderAuditEcarts();})">✅</button>' : '')
+      + '</td>'
+    + '</tr>'
+    + (ouvert ? '<tr><td colspan="8" style="padding:0;background:var(--card2);">'+_caeDetailMouvementsHtml(s)+'</td></tr>' : '');
+  }).join('');
+
+  document.getElementById('cae-table-box').innerHTML = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr>'
+    + '<th>Date</th><th>Caisse</th><th>Clôturée par</th><th>Théorique</th><th>Réel</th><th>Écart</th><th>Statut</th><th></th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+/* ── Correction du comptage physique (erreur de saisie, distincte de la régularisation comptable) ── */
+function caisseCorrigerComptageModal(sessionId){
+  if (!caisseRoleAdminLike()) { toast('Accès réservé au comptable / manager / admin.', 'error'); return; }
+  var s = (DATA.caisse_sessions||[]).find(function(x){ return x.id===sessionId; });
+  if (!s) return;
+  var c = (DATA.caisses||[]).find(function(x){ return x.id===s.caisse_id; });
+  document.getElementById('ccae-session-id').value = s.id;
+  document.getElementById('ccae-nouveau-reel').value = s.fond_cloture_reel || 0;
+  document.getElementById('ccae-nouveau-reel').dataset.theorique = s.fond_cloture_theorique || 0;
+  document.getElementById('ccae-motif').value = '';
+  document.getElementById('ccae-recap').innerHTML = '<strong>'+escHtml(c?c.nom:'')+'</strong> — '+(s.date||'')+'<br>'
+    + 'Solde théorique (mouvements) : <strong>'+fmtF(s.fond_cloture_theorique)+' FCFA</strong><br>'
+    + 'Comptage réel actuellement enregistré : <strong>'+fmtF(s.fond_cloture_reel)+' FCFA</strong><br>'
+    + 'Écart actuel : <strong style="color:'+((s.ecart||0)>=0?'var(--vert)':'var(--rouge)')+';">'+((s.ecart||0)>=0?'+':'')+fmtF(s.ecart||0)+' FCFA</strong>'
+    + (s.ecart_regularise ? '<br><span style="color:var(--or,#B87333);">⚠️ Cet écart a déjà été régularisé comptablement — corriger annulera l\'écriture existante ('+escHtml(s.ecart_ecriture_id||'')+').</span>' : '');
+  var hist = document.getElementById('ccae-historique');
+  if (s.corrections && s.corrections.length) {
+    hist.innerHTML = '<div style="font-size:11px;font-weight:700;margin-bottom:4px;">Historique des corrections</div>'
+      + '<div style="font-size:11px;color:var(--blanc-dim);max-height:120px;overflow-y:auto;">'
+      + s.corrections.slice().reverse().map(function(h){
+          return '<div style="margin-bottom:4px;padding-bottom:4px;border-bottom:1px dashed var(--bord);">'
+            + (h.date||'').slice(0,16).replace('T',' ') + ' · ' + escHtml(h.par||'') + ' : '
+            + fmtF(h.ancien_reel) + ' → ' + fmtF(h.nouveau_reel) + ' FCFA — <em>' + escHtml(h.motif||'') + '</em></div>';
+        }).join('')
+      + '</div>';
+  } else { hist.innerHTML = ''; }
+  caisseCorrigerEcartPreview();
+  openModal('modal-caisse-corriger-ecart');
+}
+
+function caisseCorrigerEcartPreview(){
+  var input = document.getElementById('ccae-nouveau-reel');
+  var theorique = parseFloat(input.dataset.theorique) || 0;
+  var reel = parseFloat(input.value) || 0;
+  var ecart = reel - theorique;
+  var el = document.getElementById('ccae-ecart-preview');
+  el.style.color = ecart === 0 ? 'var(--vert)' : 'var(--rouge)';
+  el.textContent = ecart === 0 ? 'Nouvel écart : 0 FCFA (aucun écart après correction).' : 'Nouvel écart : ' + (ecart>0?'+':'') + fmtF(ecart) + ' FCFA';
+}
+
+async function caisseCorrigerEcartValider(){
+  if (!caisseRoleAdminLike()) { toast('Accès réservé au comptable / manager / admin.', 'error'); return; }
+  var sessionId = document.getElementById('ccae-session-id').value;
+  var s = (DATA.caisse_sessions||[]).find(function(x){ return x.id===sessionId; });
+  if (!s) { toast('Session introuvable.', 'error'); return; }
+  var nouveauReel = parseFloat(document.getElementById('ccae-nouveau-reel').value);
+  var motif = document.getElementById('ccae-motif').value.trim();
+  if (isNaN(nouveauReel) || nouveauReel < 0) { toast('Montant réel invalide.', 'error'); return; }
+  if (!motif) { toast('Le motif de la correction est obligatoire.', 'error'); return; }
+
+  var theorique = parseFloat(s.fond_cloture_theorique)||0;
+  var ancienReel = parseFloat(s.fond_cloture_reel)||0;
+  var ancienEcart = parseFloat(s.ecart)||0;
+  var nouvelEcart = nouveauReel - theorique;
+
+  if (nouveauReel === ancienReel) { toast('Aucun changement — montant identique.', 'info'); return; }
+  if (!confirm('Confirmer la correction du comptage de '+fmtF(ancienReel)+' à '+fmtF(nouveauReel)+' FCFA ?\nNouvel écart : '+(nouvelEcart>=0?'+':'')+fmtF(nouvelEcart)+' FCFA.')) return;
+
+  /* Si déjà régularisée, on annule l'écriture existante : elle constatait un
+     montant désormais faux. La session repasse « à régulariser » avec le bon
+     montant (ou disparaît de cette liste si le nouvel écart est nul). */
+  if (s.ecart_regularise && s.ecart_ecriture_id) {
+    var okDel = await deleteRecord('ecritures', s.ecart_ecriture_id);
+    if (okDel === false) { toast('❌ Impossible d\'annuler l\'écriture existante (exercice clos) — correction annulée.', 'error'); return; }
+    s.ecart_regularise = false;
+    s.ecart_ecriture_id = null;
+    s.ecart_regularise_par = null;
+    s.ecart_regularise_le = null;
+    if (typeof buildBalance==='function') buildBalance();
+    if (typeof buildGrandLivre==='function') buildGrandLivre();
+  }
+
+  s.corrections = s.corrections || [];
+  s.corrections.push({
+    date: new Date().toISOString(), par: (APP.currentUser&&APP.currentUser.nom)||'—',
+    ancien_reel: ancienReel, nouveau_reel: nouveauReel,
+    ancien_ecart: ancienEcart, nouvel_ecart: nouvelEcart, motif: motif
+  });
+  s.fond_cloture_reel = nouveauReel;
+  s.ecart = nouvelEcart;
+
+  await dbPut('caisse_sessions', s);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_sessions', s);
+
+  toast('✅ Comptage corrigé — nouvel écart : '+(nouvelEcart>=0?'+':'')+fmtF(nouvelEcart)+' FCFA.', 'success');
+  closeModal('modal-caisse-corriger-ecart');
+  caisseRenderAuditEcarts();
+  if (typeof caisseRenderEcarts === 'function') caisseRenderEcarts();
+  if (typeof caisseRenderDashboard === 'function') caisseRenderDashboard();
+  if (CAISSE_UI.brouillardCaisseId === s.caisse_id) caisseAfficherBrouillard(s.caisse_id);
+}
+
 /* ══════════════════════════════════════════════════════════════════
    PARTENAIRES LOTISSEMENT
    Propriétaires fonciers confiant leurs terrains en lotissement.
@@ -116868,6 +117188,75 @@ goTo = function(page) {
       <button class="btn btn-secondary" onclick="closeModal('modal-caisse-integrite')">Fermer</button>
       <button class="btn btn-secondary" onclick="caisseReparerNumerosDupliques()">🔧 Réparer les numéros</button>
       <button class="btn btn-primary" onclick="caisseControleIntegrite()">🔄 Relancer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Audit des écarts de caisse — analyse des mouvements et correction -->
+<div class="modal-overlay" id="modal-caisse-audit-ecarts">
+  <div class="modal modal-lg" style="max-width:980px;">
+    <div class="modal-header">
+      <h3>⚖️ Audit des écarts de caisse</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-caisse-audit-ecarts')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:11px;color:var(--blanc-dim);margin-bottom:12px;">Analyse de toutes les sessions clôturées présentant un écart entre le solde théorique (mouvements) et le comptage physique réel. Permet d'identifier les mouvements suspects à l'origine d'un écart, de corriger un comptage erroné, et de déclencher la régularisation comptable (SYSCOHADA 658/758).</div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px;padding:10px;background:var(--card2);border-radius:8px;">
+        <select class="filter-select" id="cae-filtre-division" onchange="caisseAuditEcartsSetFiltre('division', this.value)" style="font-size:11px;"></select>
+        <select class="filter-select" id="cae-filtre-caisse" onchange="caisseAuditEcartsSetFiltre('caisse', this.value)" style="font-size:11px;"></select>
+        <input type="date" class="filter-select" id="cae-filtre-debut" onchange="caisseAuditEcartsSetFiltre('dateDebut', this.value)" style="font-size:11px;" title="Depuis le">
+        <span style="font-size:11px;color:var(--blanc-dim);">→</span>
+        <input type="date" class="filter-select" id="cae-filtre-fin" onchange="caisseAuditEcartsSetFiltre('dateFin', this.value)" style="font-size:11px;" title="Jusqu'au">
+        <select class="filter-select" id="cae-filtre-statut" onchange="caisseAuditEcartsSetFiltre('statut', this.value)" style="font-size:11px;">
+          <option value="toutes">Tous statuts</option>
+          <option value="attente">⏳ À régulariser</option>
+          <option value="regularise">✅ Régularisés</option>
+        </select>
+        <select class="filter-select" id="cae-filtre-type" onchange="caisseAuditEcartsSetFiltre('type', this.value)" style="font-size:11px;">
+          <option value="tous">Manquants + excédents</option>
+          <option value="manquant">🔴 Manquants seulement</option>
+          <option value="excedent">🟢 Excédents seulement</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="caisseAuditEcartsResetFiltres()">✕ Réinitialiser</button>
+      </div>
+
+      <div id="cae-kpi-box" style="margin-bottom:14px;"></div>
+      <div id="cae-chart-box" style="margin-bottom:16px;"></div>
+      <div id="cae-table-box"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-caisse-audit-ecarts')">Fermer</button>
+      <button class="btn btn-secondary" id="cae-btn-regulariser-tout" onclick="caisseRegulariserTousEcarts();caisseRenderAuditEcarts();">⚡ Tout régulariser (filtre courant)</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Correction du comptage physique d'une session clôturée -->
+<div class="modal-overlay" id="modal-caisse-corriger-ecart">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>✏️ Corriger le comptage — écart de caisse</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-caisse-corriger-ecart')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:11px;color:var(--blanc-dim);margin-bottom:10px;">À utiliser uniquement en cas d'ERREUR DE SAISIE lors du comptage physique initial (ex. billets mal recomptés, chiffre transposé). Toute correction est tracée (auteur, date, ancien/nouveau montant, motif). Si l'écart avait déjà été régularisé comptablement, l'écriture existante sera annulée et devra être régénérée avec le nouveau montant.</div>
+      <input type="hidden" id="ccae-session-id">
+      <div id="ccae-recap" class="card" style="padding:10px 12px;font-size:12px;margin-bottom:12px;"></div>
+      <div class="form-group">
+        <label>Nouveau montant réel compté (FCFA) <span style="color:var(--rouge);">*</span></label>
+        <input type="number" class="form-control" id="ccae-nouveau-reel" oninput="caisseCorrigerEcartPreview()">
+      </div>
+      <div id="ccae-ecart-preview" style="font-size:13px;font-weight:700;margin-bottom:10px;"></div>
+      <div class="form-group">
+        <label>Motif de la correction <span style="color:var(--rouge);">*</span></label>
+        <textarea class="form-control" id="ccae-motif" rows="2" placeholder="Ex. : erreur de recomptage, billet de 10 000 F compté comme 1 000 F…"></textarea>
+      </div>
+      <div id="ccae-historique" style="margin-top:10px;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-caisse-corriger-ecart')">Annuler</button>
+      <button class="btn btn-primary" onclick="caisseCorrigerEcartValider()">✅ Enregistrer la correction</button>
     </div>
   </div>
 </div>
