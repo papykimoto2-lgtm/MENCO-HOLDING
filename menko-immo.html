@@ -3167,6 +3167,14 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           </select>
         </div>
 
+        <div class="filters-bar" style="margin-top:-6px;align-items:flex-end;">
+          <div class="form-group" style="margin:0;"><label style="font-size:11px;">📅 Souscrit depuis</label><input type="date" class="filter-select" id="filter-client-date-debut" onchange="filterClients()"></div>
+          <div class="form-group" style="margin:0;"><label style="font-size:11px;">📅 Jusqu'au</label><input type="date" class="filter-select" id="filter-client-date-fin" onchange="filterClients()"></div>
+          <button class="btn btn-secondary btn-sm" onclick="clientsPeriodeReset()">✕ Réinitialiser la période</button>
+        </div>
+
+        <div id="clients-periode-info"></div>
+
         <div id="clients-dashboard" style="margin-bottom:16px;"></div>
 
         <div class="card">
@@ -29265,6 +29273,8 @@ function renderClients() {
   var filterStat = document.getElementById('filter-statut-client').value;
   var filterStand = document.getElementById('filter-standing').value;
   var filterCA = (document.getElementById('filter-commercial-client')||{}).value || '';
+  var dDeb = (document.getElementById('filter-client-date-debut')||{}).value || '';
+  var dFin = (document.getElementById('filter-client-date-fin')||{}).value || '';
 
   /* Index O(1)/O(n) construits UNE SEULE FOIS pour tout l'écran — remplacent
      des appels répétés PAR CLIENT (jusqu'à 2× par client, en comptant le
@@ -29297,8 +29307,20 @@ function renderClients() {
     var verse = versementsParClient[c.id] || 0;
     var statut = verse >= c.montant_total ? 'solde' : (isRetard ? 'retard' : c.statut || 'actif');
     var filtStat = !filterStat || statut === filterStat;
-    return match && prog && stand && filtStat && ca;
+    var dateRef = (c.date_debut || c.created_at || '').slice(0, 10);
+    var matchPeriode = (!dDeb || dateRef >= dDeb) && (!dFin || dateRef <= dFin);
+    return match && prog && stand && filtStat && ca && matchPeriode;
   });
+
+  var periodeInfoBox = document.getElementById('clients-periode-info');
+  if (periodeInfoBox) {
+    if (dDeb || dFin) {
+      var totalMontantPeriode = list.reduce(function(a,c){ return a + (parseFloat(c.montant_total) || 0); }, 0);
+      periodeInfoBox.innerHTML = '<div class="card" style="padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--blanc-dim);">📅 Période : <strong>' + (dDeb || '…') + ' → ' + (dFin || '…') + '</strong> — ' + list.length + ' souscripteur(s), montant total <strong>' + fcfa(totalMontantPeriode) + '</strong></div>';
+    } else {
+      periodeInfoBox.innerHTML = '';
+    }
+  }
 
   var tbody = document.getElementById('tbody-clients');
   if (!list.length) {
@@ -29353,6 +29375,7 @@ function renderClients() {
 }
 
 function filterClients() { renderClients(); }
+function clientsPeriodeReset() { var d1 = document.getElementById('filter-client-date-debut'); var d2 = document.getElementById('filter-client-date-fin'); if (d1) d1.value = ''; if (d2) d2.value = ''; filterClients(); }
 
 async function deleteClient(id) {
   if (!confirm('Supprimer ce souscripteur et tous ses versements ?')) return;
@@ -112045,9 +112068,11 @@ function caisseAppliquerPrincipal(principalInputId, compteSelectId, infoId) {
   }
 }
 
-var CAISSE_VENT = { division: '' }; /* division: '' = toutes les divisions */
+var CAISSE_VENT = { division: '', dateDebut: '', dateFin: '' }; /* division: '' = toutes les divisions ; dateDebut/dateFin: '' = periode illimitee */
 
 function caisseSetVentilationDivisionFilter(v) { CAISSE_VENT.division = v || ''; caisseRenderVentilation(); }
+function caisseSetVentilationDateFilter(champ, v) { CAISSE_VENT[champ] = v || ''; caisseRenderVentilation(); }
+function caisseResetVentilationPeriode() { CAISSE_VENT.dateDebut = ''; CAISSE_VENT.dateFin = ''; caisseRenderVentilation(); }
 
 /* Ids des caisses appartenant à une division donnée (ou toutes si divisionId vide) */
 function _cvCaissesDeDivision(divisionId) {
@@ -112067,6 +112092,9 @@ function caisseRenderVentilation() {
     if (m.statut === 'ventile') return false;
     if (m.type === 'sortie' && m.requiert_validation && !m.valide) return false; /* pas encore approuvé */
     if (caissesIdsFiltre && caissesIdsFiltre.indexOf(m.caisse_id) < 0) return false;
+    var mDate = (m.date || '').slice(0, 10);
+    if (CAISSE_VENT.dateDebut && mDate < CAISSE_VENT.dateDebut) return false;
+    if (CAISSE_VENT.dateFin && mDate > CAISSE_VENT.dateFin) return false;
     var s = (DATA.caisse_sessions || []).find(function(x){ return x.id === m.session_id; });
     return s && s.statut === 'cloturee';
   }).sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
@@ -112085,11 +112113,24 @@ function caisseRenderVentilation() {
       + '</select>'
     : '';
 
+  var filtrePeriodeActif = !!(CAISSE_VENT.dateDebut || CAISSE_VENT.dateFin);
+  var periodeFiltreHtml = '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">'
+    + '<span style="font-size:11px;color:var(--blanc-dim);">📅 Période</span>'
+    + '<input type="date" class="form-control" style="max-width:150px;padding:4px 6px;" value="' + escHtml(CAISSE_VENT.dateDebut) + '" onchange="caisseSetVentilationDateFilter(\'dateDebut\', this.value)" title="Date début">'
+    + '<span style="font-size:11px;color:var(--blanc-dim);">→</span>'
+    + '<input type="date" class="form-control" style="max-width:150px;padding:4px 6px;" value="' + escHtml(CAISSE_VENT.dateFin) + '" onchange="caisseSetVentilationDateFilter(\'dateFin\', this.value)" title="Date fin">'
+    + (filtrePeriodeActif ? '<button class="btn btn-secondary btn-sm btn-icon" onclick="caisseResetVentilationPeriode()" title="Effacer la période">✖</button>' : '')
+    + '</div>';
+
+  var totalEntreesFiltre = enAttente.filter(function(m){ return m.type === 'entree'; }).reduce(function(a,m){ return a + (parseFloat(m.montant) || 0); }, 0);
+  var totalSortiesFiltre = enAttente.filter(function(m){ return m.type === 'sortie'; }).reduce(function(a,m){ return a + (parseFloat(m.montant) || 0); }, 0);
+
   var html = '<div class="card" style="padding:16px;">'
     + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">'
     + '<div style="font-weight:800;font-size:15px;">🧾 Ventilation comptable des mouvements de caisse</div>'
     + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'
     + divisionSelectHtml
+    + periodeFiltreHtml
     + '<button class="btn btn-secondary btn-sm" onclick="caisseOpenVentilationConfig()">⚙️ Configurer les règles</button>'
     + '<button class="btn btn-secondary btn-sm" onclick="caisseVentilationAuto()">⚡ Ventilation automatique</button>'
     + '<button class="btn btn-secondary btn-sm" onclick="caisseGenererReglesHistorique()">🧠 Générer règles depuis l\'historique</button>'
@@ -112097,7 +112138,15 @@ function caisseRenderVentilation() {
     + '</div>'
     + '<div style="font-size:11px;color:var(--blanc-dim);margin-bottom:10px;">Seuls les mouvements des caisses <strong>clôturées</strong> apparaissent ici, après vérification.'
     + (CAISSE_VENT.division ? ' Filtré sur la division <strong>' + escHtml(_nomDivision(CAISSE_VENT.division)) + '</strong>.' : '')
+    + (filtrePeriodeActif ? ' Période : <strong>' + (CAISSE_VENT.dateDebut || '…') + ' → ' + (CAISSE_VENT.dateFin || '…') + '</strong>.' : '')
     + (enCours ? ' (' + enCours + ' mouvement(s) en attente dans une caisse encore ouverte.)' : '') + '</div>';
+
+  if (enAttente.length) {
+    html += '<div style="font-size:11px;color:var(--blanc-dim);margin-bottom:10px;">' + enAttente.length + ' mouvement(s)'
+      + (filtrePeriodeActif ? ' sur la période' : '') + ' — Entrées : <strong style="color:var(--vert);">' + fmtF(totalEntreesFiltre) + ' FCFA</strong>'
+      + ' · Sorties : <strong style="color:var(--rouge);">' + fmtF(totalSortiesFiltre) + ' FCFA</strong>'
+      + ' · Solde net : <strong>' + fmtF(totalEntreesFiltre - totalSortiesFiltre) + ' FCFA</strong></div>';
+  }
 
   if (!enAttente.length) {
     html += '<div style="padding:16px;text-align:center;color:var(--blanc-dim);">Aucun mouvement en attente de ventilation.</div>';
