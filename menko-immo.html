@@ -15926,6 +15926,10 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <input type="number" class="form-control" id="c-duree" value="60" oninput="calcEcheancier()">
           </div>
           <div class="form-group">
+            <label>📅 Date de souscription</label>
+            <input type="date" class="form-control" id="c-date-souscription">
+          </div>
+          <div class="form-group">
             <label>Date de 1ère mensualité</label>
             <input type="date" class="form-control" id="c-date-debut">
           </div>
@@ -28689,7 +28693,7 @@ function buildDashActivite() {
     events.push({date:v.date,icon:'💳',txt:'Versement '+fmtF(v.montant)+' FCFA — '+c.nom+' '+c.prenoms,color:'var(--vert)'});
   });
   DATA.clients.slice(-3).forEach(function(c){
-    if(c.created_at||c.date_debut) events.push({date:c.created_at||c.date_debut,icon:'👤',txt:'Nouveau souscripteur — '+c.nom+' '+c.prenoms,color:'var(--bleu)'});
+    if(c.date_souscription||c.created_at||c.date_debut) events.push({date:c.date_souscription||c.created_at||c.date_debut,icon:'👤',txt:'Nouveau souscripteur — '+c.nom+' '+c.prenoms,color:'var(--bleu)'});
   });
   (DATA.rapports_chantier||[]).slice(-3).forEach(function(r){
     var c=DATA.conventions.find(function(x){return x.id===r.convention_id;})||{numero:'?'};
@@ -28841,6 +28845,7 @@ function openClientModal(id) {
   } else {
     document.getElementById('modal-client-title').textContent = 'Nouveau Souscripteur';
     document.getElementById('c-date-debut').value = today();
+    document.getElementById('c-date-souscription').value = today();
     document.getElementById('client-historique-block').innerHTML = '';
   }
   if (typeof updateLotsByProgramme === 'function') updateLotsByProgramme();
@@ -28849,7 +28854,7 @@ function openClientModal(id) {
 
 function clearClientForm() {
   ['c-nom','c-prenoms','c-ddn','c-nationalite','c-profession','c-tel','c-email','c-adresse',
-   'c-piece-num','c-montant-total','c-apport','c-duree','c-date-debut','c-mensualite','c-type-logement',
+   'c-piece-num','c-montant-total','c-apport','c-duree','c-date-debut','c-date-souscription','c-mensualite','c-type-logement',
    'c-commercial','c-apporteur'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.value = el.id === 'c-nationalite' ? 'Ivoirienne' : el.id === 'c-duree' ? '60' : el.id === 'c-apport' ? '0' : '';
@@ -28864,11 +28869,13 @@ function fillClientForm(c) {
   var map = { 'c-nom': 'nom', 'c-prenoms': 'prenoms', 'c-ddn': 'ddn', 'c-nationalite': 'nationalite',
     'c-profession': 'profession', 'c-tel': 'tel', 'c-email': 'email', 'c-adresse': 'adresse',
     'c-piece-num': 'piece_num', 'c-montant-total': 'montant_total', 'c-apport': 'apport',
-    'c-duree': 'duree', 'c-date-debut': 'date_debut', 'c-type-logement': 'type_logement'
+    'c-duree': 'duree', 'c-date-debut': 'date_debut', 'c-date-souscription': 'date_souscription', 'c-type-logement': 'type_logement'
   };
   Object.keys(map).forEach(function(id) {
     var el = document.getElementById(id);
-    if (el) el.value = c[map[id]] || '';
+    if (!el) return;
+    if (id === 'c-date-souscription') { el.value = c.date_souscription || c.date_debut || c.created_at || ''; return; }
+    el.value = c[map[id]] || '';
   });
   setSelectValue('c-matrimonial', c.matrimonial);
   setSelectValue('c-standing', c.standing);
@@ -29103,6 +29110,7 @@ async function saveClient() {
     apport: parseFloat(document.getElementById('c-apport').value) || 0,
     duree: parseInt(document.getElementById('c-duree').value) || 60,
     date_debut: document.getElementById('c-date-debut').value,
+    date_souscription: document.getElementById('c-date-souscription').value,
     statut: 'actif',
     dossier: _dossier,
     _baseModifie: APP.editingId ? (APP._clientBaseModifie || null) : null,
@@ -29307,7 +29315,7 @@ function renderClients() {
     var verse = versementsParClient[c.id] || 0;
     var statut = verse >= c.montant_total ? 'solde' : (isRetard ? 'retard' : c.statut || 'actif');
     var filtStat = !filterStat || statut === filterStat;
-    var dateRef = (c.date_debut || c.created_at || '').slice(0, 10);
+    var dateRef = (c.date_souscription || c.date_debut || c.created_at || '').slice(0, 10);
     var matchPeriode = (!dDeb || dateRef >= dDeb) && (!dFin || dateRef <= dFin);
     return match && prog && stand && filtStat && ca && matchPeriode;
   });
@@ -39101,6 +39109,7 @@ function printContrat(clientId) {
     + '<table style="margin-top:16px;"><tr><td><strong>Apport initial</strong></td><td>' + new Intl.NumberFormat('fr-FR').format(client.apport || 0) + ' FCFA</td></tr>'
     + '<tr><td><strong>Durée</strong></td><td>' + (client.duree || 60) + ' mensualités</td></tr>'
     + '<tr><td><strong>Mensualité</strong></td><td>' + new Intl.NumberFormat('fr-FR').format(Math.ceil(((client.montant_total - (client.apport || 0)) / (client.duree || 60)))) + ' FCFA</td></tr>'
+    + '<tr><td><strong>Date de souscription</strong></td><td>' + dateShort(client.date_souscription || client.date_debut) + '</td></tr>'
     + '<tr><td><strong>1ère mensualité</strong></td><td>' + dateShort(client.date_debut) + '</td></tr></table>'
     + '<div class="signature"><div class="sig-box">Signature du Souscripteur<br><br><br></div>'
     + '<div class="sig-box">Pour ' + (params.societe || 'ImmoSuite ERP') + '<br><br><br></div></div>'
