@@ -3687,9 +3687,11 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                   <option value="cession">🏞️ Foncier (cessions)</option>
                 </select>
                 <input type="text" class="search-input" id="compta-vers-search" placeholder="🔍 Réf, souscripteur / acquéreur..." oninput="_debInput('renderComptaVersements')" style="min-width:200px;">
+                <button class="btn btn-secondary btn-sm" onclick="detecterVersementsDoublons()" title="Repère les versements probablement saisis deux fois (import historique + ressaisie manuelle)">🔍 Détecter les doublons</button>
               </div>
             </div>
           </div>
+          <div id="compta-vers-doublons" style="display:none;"></div>
           <div class="kpi-grid" id="compta-vers-kpi-grid" style="margin-bottom:16px;"></div>
           <div class="card"><div class="table-wrap"><table>
             <thead><tr><th>Réf</th><th>Date</th><th>Souscripteur / Acquéreur</th><th>Type</th><th style="text-align:right;">Montant</th><th>Mode</th><th>Commissions liées</th><th></th></tr></thead>
@@ -5776,6 +5778,14 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                 <div class="form-group">
                   <label>📒 Compte produit des frais (SYSCOHADA)</label>
                   <input type="text" id="param-frais-souscription-compte" class="form-control" value="" placeholder="Ex : 7088">
+                </div>
+                <div class="form-group">
+                  <label>💼 Commissionner les frais de souscription ?</label>
+                  <select id="param-commission-sur-frais" class="form-control">
+                    <option value="non">Non — frais de dossier, sans commission (recommandé)</option>
+                    <option value="oui">Oui — commercial et apporteur perçoivent leur commission dessus aussi</option>
+                  </select>
+                  <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">S'applique aux nouveaux versements de type « Frais de souscription ». Les commissions déjà générées ne sont pas recalculées rétroactivement.</div>
                 </div>
                 <div class="form-group">
                   <label>🎨 Couleur du bandeau (portail)</label>
@@ -29740,6 +29750,13 @@ async function genererCommissionsVersement(versement) {
   var client = DATA.clients.find(function(c){ return c.id === versement.client_id; });
   if (!client) return;
 
+  /* Les frais de souscription (ouverture de dossier, non remboursables) ne
+     génèrent une commission commerciale/apporteur que si l'utilisateur l'a
+     explicitement activé en Paramètres (param-commission-sur-frais) — par
+     défaut, non : ce sont des frais administratifs, pas une part du prix du
+     bien vendu, contrairement à tous les autres versements sur prix. */
+  if (versement.type === 'frais_souscription' && !(DATA.params && DATA.params.commission_sur_frais_souscription)) return;
+
   // Anti-doublon : types de commission déjà présents pour ce versement (hors annulées)
   var existTypes = (DATA.commissions||[]).filter(function(c){
     return c.versement_id === versement.id && c.statut !== 'annulee';
@@ -30397,6 +30414,106 @@ async function backfillVentesTerrains() {
 }
 
 /* ── RATTRAPAGE : génère les écritures manquantes pour les versements saisis AVANT ce correctif ── */
+/* ── Détection des versements en double (import historique + ressaisie) ──
+   Deux sources à croiser, car l'historique importé pour ce dossier est
+   arrivé via la CAISSE (mouvements d'entrée), pas via Paiements :
+   1) Versements ↔ versements : même client + montant identique + dates
+      rapprochées (≤ 2 jours) dans DATA.versements.
+   2) Versements ↔ mouvements de caisse « entrée » importés : même montant,
+      dates rapprochées, et le nom du client apparaît dans le bénéficiaire
+      du bon (les mouvements de caisse n'ont pas de client_id — rapprochement
+      textuel, donc à valider par un humain, jamais supprimé automatiquement).
+   Ne supprime rien — les paiements sont des données sensibles — affiche la
+   liste pour arbitrage (garder, supprimer, ou confirmer que ce sont deux
+   paiements distincts). */
+function detecterVersementsDoublons() {
+  var host = document.getElementById('compta-vers-doublons');
+  if (!host) return;
+  var vers = (DATA.versements || []).slice().sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
+
+  // 1) Doublons versement ↔ versement
+  var groupes = [];
+  var vus = {};
+  for (var i = 0; i < vers.length; i++) {
+    if (vus[vers[i].id]) continue;
+    var v = vers[i];
+    var groupe = [v];
+    for (var j = i+1; j < vers.length; j++) {
+      var w = vers[j];
+      if (vus[w.id] || w.client_id !== v.client_id) continue;
+      if (Math.round(parseFloat(w.montant)||0) !== Math.round(parseFloat(v.montant)||0)) continue;
+      var dV = new Date(v.date), dW = new Date(w.date);
+      if (isNaN(dV) || isNaN(dW) || Math.abs(dV-dW) > 2*86400000) continue;
+      groupe.push(w);
+    }
+    if (groupe.length > 1) { groupe.forEach(function(g){ vus[g.id]=true; }); groupes.push(groupe); }
+    vus[v.id] = true;
+  }
+
+  // 2) Doublons versement ↔ mouvement de caisse (bon d'entrée importé ou saisi)
+  var mvtsEntree = (DATA.caisse_mouvements || []).filter(function(m){ return m.type === 'entree'; });
+  var croisements = [];
+  vers.forEach(function(v) {
+    var cl = (DATA.clients||[]).find(function(c){ return c.id === v.client_id; });
+    if (!cl) return;
+    var nomCl = ((cl.nom||'')+' '+(cl.prenoms||'')).toLowerCase().trim();
+    if (!nomCl) return;
+    var matches = mvtsEntree.filter(function(m) {
+      if (Math.round(parseFloat(m.montant)||0) !== Math.round(parseFloat(v.montant)||0)) return false;
+      var dV = new Date(v.date), dM = new Date((m.date||'').slice(0,10));
+      if (isNaN(dV) || isNaN(dM) || Math.abs(dV-dM) > 2*86400000) return false;
+      var benef = (m.beneficiaire||'').toLowerCase();
+      return benef && (benef.indexOf(nomCl.split(' ')[0]) !== -1 || (cl.nom && benef.indexOf(cl.nom.toLowerCase()) !== -1));
+    });
+    if (matches.length) croisements.push({ v:v, cl:cl, mvts:matches });
+  });
+
+  if (!groupes.length && !croisements.length) {
+    host.style.display = '';
+    host.innerHTML = '<div class="card" style="border-left:4px solid var(--vert);padding:12px 14px;margin-bottom:14px;">✅ Aucun doublon probable détecté — ni entre versements, ni entre versements et mouvements de caisse (même montant, dates ≤ 2 jours, nom correspondant).</div>';
+    return;
+  }
+  var origine = function(v){ return v._import_source ? ('📥 importé (' + v._import_source.replace('csv_','') + ')') : ('✍️ saisi le ' + (v.created_at||'').slice(0,10)); };
+  var blocs = '';
+  if (groupes.length) {
+    blocs += '<div style="margin-top:10px;"><strong style="font-size:12px;">Entre versements (' + groupes.length + ')</strong>'
+      + groupes.map(function(g){
+          var cl = (DATA.clients||[]).find(function(c){ return c.id === g[0].client_id; });
+          var nom = cl ? ((cl.nom||'')+' '+(cl.prenoms||'')).trim() : (g[0].client_id||'—');
+          return '<div style="padding:8px 10px;border:1px solid var(--bord);border-radius:8px;margin:6px 0;">'
+            + '<div style="font-weight:700;font-size:12px;margin-bottom:6px;">' + escHtml(nom) + ' — ' + fmtF(g[0].montant) + ' F</div>'
+            + g.map(function(v){
+                return '<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;padding:4px 0;border-top:1px solid var(--bord2,#E2E8F0);">'
+                  + '<span>' + (v.ref||v.id) + ' · ' + (v.date||'') + ' · ' + origine(v) + '</span>'
+                  + '<span><button class="btn btn-secondary btn-sm" onclick="editVersement(\''+v.id+'\')">✎ Ouvrir</button></span>'
+                  + '</div>';
+              }).join('')
+            + '</div>';
+        }).join('')
+      + '</div>';
+  }
+  if (croisements.length) {
+    blocs += '<div style="margin-top:10px;"><strong style="font-size:12px;">Versement ↔ mouvement de caisse (' + croisements.length + ') — rapprochement par nom, à vérifier</strong>'
+      + croisements.map(function(x){
+          var nom = ((x.cl.nom||'')+' '+(x.cl.prenoms||'')).trim();
+          return '<div style="padding:8px 10px;border:1px solid var(--or);border-radius:8px;margin:6px 0;">'
+            + '<div style="font-weight:700;font-size:12px;margin-bottom:6px;">' + escHtml(nom) + ' — ' + fmtF(x.v.montant) + ' F</div>'
+            + '<div style="font-size:11px;padding:4px 0;border-top:1px solid var(--bord2,#E2E8F0);">Versement : ' + (x.v.ref||x.v.id) + ' · ' + (x.v.date||'') + ' · ' + origine(x.v)
+            + ' <button class="btn btn-secondary btn-sm" onclick="editVersement(\''+x.v.id+'\')" style="margin-left:6px;">✎ Ouvrir</button></div>'
+            + x.mvts.map(function(m){
+                return '<div style="font-size:11px;padding:4px 0;border-top:1px solid var(--bord2,#E2E8F0);color:var(--dim);">Caisse : bon n°' + (m.numero||m.id) + ' · ' + (m.date||'').slice(0,10) + ' · bénéficiaire « ' + escHtml(m.beneficiaire||'') + ' »' + (m._import_source ? ' · 📥 importé' : '') + '</div>';
+              }).join('')
+            + '</div>';
+        }).join('')
+      + '</div>';
+  }
+  host.style.display = '';
+  host.innerHTML = '<div class="card" style="border-left:4px solid var(--rouge);padding:12px 14px;margin-bottom:14px;">'
+    + '<strong>⚠️ Doublons probables détectés</strong> — vérifiez avant toute suppression : cela peut aussi être deux paiements distincts et coïncidents.'
+    + blocs
+    + '</div>';
+}
+
 async function backfillEcrituresVersements() {
   var manquants = DATA.versements.filter(function(v) {
     return !DATA.ecritures.some(function(e){ return e.id === 'ecr_vrs_' + v.id; });
@@ -30449,6 +30566,45 @@ async function savePaiement() {
   }
 
   var _anVrs = String(new Date().getFullYear());
+  /* [Anti-doublon import caisse ↔ saisie Paiements] L'historique importé est
+     constitué de mouvements de CAISSE (DATA.caisse_mouvements, import
+     « Mouvements de caisse — historique »), pas de versements. Un règlement
+     souscripteur déjà présent dans cet historique (bon d'entrée importé,
+     bénéficiaire = nom du client) risque d'être ressaisi ici comme nouveau
+     versement, sans qu'aucun lien ne les rapproche automatiquement — ni la
+     caisse (mouvement anonyme, sans client_id) ni Paiements (versement,
+     sans lien vers un mouvement de caisse) ne se recoupent d'eux-mêmes. On
+     vérifie donc les deux sources avant d'enregistrer : versements déjà
+     saisis pour ce client, ET mouvements de caisse « entrée » dont le
+     bénéficiaire correspond à son nom, même montant, date proche. */
+  var clientPaiement = (DATA.clients || []).find(function(c){ return c.id === cid; });
+  var nomClientPaiement = clientPaiement ? ((clientPaiement.nom||'')+' '+(clientPaiement.prenoms||'')).toLowerCase().trim() : '';
+  var doublonProbable = (DATA.versements || []).find(function(v) {
+    if (v.client_id !== cid) return false;
+    if (Math.round(parseFloat(v.montant) || 0) !== Math.round(montant)) return false;
+    var dV = new Date(v.date), dN = new Date(date);
+    if (isNaN(dV) || isNaN(dN)) return false;
+    return Math.abs(dV - dN) <= 2 * 86400000;
+  });
+  if (doublonProbable) {
+    var origine = doublonProbable._import_source ? ('importé le ' + doublonProbable._import_source.replace('csv_','')) : ('saisi le ' + (doublonProbable.created_at||'').slice(0,10));
+    if (!confirm('⚠️ Versement similaire déjà enregistré pour ce client :\n'
+      + fmtF(doublonProbable.montant) + ' F le ' + doublonProbable.date + ' (réf. ' + (doublonProbable.ref||doublonProbable.id) + ', ' + origine + ').\n\n'
+      + 'Confirmer que ce nouveau versement est bien DIFFÉRENT (et non une ressaisie du même paiement) ?')) return;
+  }
+  var mvtCaisseProche = nomClientPaiement ? (DATA.caisse_mouvements || []).find(function(m) {
+    if (m.type !== 'entree') return false;
+    if (Math.round(parseFloat(m.montant) || 0) !== Math.round(montant)) return false;
+    var dM = new Date((m.date||'').slice(0,10)), dN = new Date(date);
+    if (isNaN(dM) || isNaN(dN) || Math.abs(dM-dN) > 2*86400000) return false;
+    var benef = (m.beneficiaire||'').toLowerCase();
+    return benef && (benef.indexOf(nomClientPaiement.split(' ')[0]) !== -1 || (clientPaiement.nom && benef.indexOf(clientPaiement.nom.toLowerCase()) !== -1));
+  }) : null;
+  if (mvtCaisseProche) {
+    var origineC = mvtCaisseProche._import_source ? ('importé dans l\'historique caisse') : ('saisi en caisse le ' + (mvtCaisseProche.date||'').slice(0,10));
+    if (!confirm('⚠️ Un mouvement de caisse de ' + fmtF(mvtCaisseProche.montant) + ' F daté du ' + (mvtCaisseProche.date||'').slice(0,10) + ' (bon n°' + (mvtCaisseProche.numero||mvtCaisseProche.id) + ', bénéficiaire « ' + (mvtCaisseProche.beneficiaire||'') + ' », ' + origineC + ') correspond peut-être à ce même règlement.\n\n'
+      + 'Confirmer que ce versement est bien un encaissement DIFFÉRENT (et non ce paiement déjà présent dans l\'historique caisse) ?')) return;
+  }
   var ref = 'VRS-' + _anVrs + '-' + prochainNumeroRef('versements','VRS',_anVrs,4);
   var versement = {
     id: uid(),
@@ -40009,6 +40165,7 @@ async function saveParams() {
     comm_apporteur_regulier_pct:  parseFloat(gv('param-comm-apporteur-regulier'))||5,
     frais_souscription:           parseFloat(gv('param-frais-souscription'))||0,
     compte_frais_souscription:    gv('param-frais-souscription-compte')||'',
+    commission_sur_frais_souscription: gv('param-commission-sur-frais')==='oui',
     bandeau_couleur:              gv('param-bandeau-couleur')||'#003366',
     bandeau_texte:                gv('param-bandeau-texte')||'',
     portail_nom:                  gv('param-portail-nom'),
@@ -40238,6 +40395,7 @@ function loadParamFields() {
   sv('param-comm-apporteur-regulier', p.comm_apporteur_regulier_pct||5);
   sv('param-frais-souscription', p.frais_souscription||0);
   sv('param-frais-souscription-compte', p.compte_frais_souscription||'');
+  sv('param-commission-sur-frais', p.commission_sur_frais_souscription ? 'oui' : 'non');
   sv('param-bandeau-couleur', p.bandeau_couleur||'#003366');
   sv('param-bandeau-texte', p.bandeau_texte||'');
   sv('param-portail-nom', p.portail_nom||'');
@@ -110851,6 +111009,30 @@ async function caisseSaveBon() {
   /* ── MODE CRÉATION ────────────────────────────────────────────────────── */
   var session = caisseGetSessionOuverte(caisseId);
   if (!session) { toast('La caisse a été clôturée entre-temps — impossible d\'enregistrer ce bon.', 'error'); closeModal('modal-caisse-bon'); return; }
+
+  /* [Anti-doublon Paiements ↔ Caisse] Un versement souscripteur en espèces
+     peut être saisi deux fois : une fois via le module Paiements (crée un
+     versement + une écriture, mais AUCUN mouvement de caisse), une fois ici
+     via un bon d'entrée (si la caissière encaisse physiquement le même
+     règlement sans savoir qu'il a déjà été enregistré côté Paiements). Les
+     deux chemins ne se recoupent jamais automatiquement — on avertit donc
+     ici si un versement du même montant, à une date proche, existe déjà
+     pour un client dont le nom apparaît dans le champ Bénéficiaire du bon. */
+  if (type === 'entree' && beneficiaire) {
+    var benefNorm = beneficiaire.toLowerCase();
+    var versementProche = (DATA.versements || []).find(function(v) {
+      if (Math.round(parseFloat(v.montant)||0) !== Math.round(montant)) return false;
+      var dV = new Date(v.date), dN = new Date(date);
+      if (isNaN(dV) || isNaN(dN) || Math.abs(dV-dN) > 2*86400000) return false;
+      var cl = (DATA.clients||[]).find(function(c){ return c.id === v.client_id; });
+      if (!cl) return false;
+      var nomCl = ((cl.nom||'')+' '+(cl.prenoms||'')).toLowerCase().trim();
+      return nomCl && (benefNorm.indexOf(nomCl.split(' ')[0]) !== -1 || (cl.nom && benefNorm.indexOf(cl.nom.toLowerCase()) !== -1));
+    });
+    if (versementProche) {
+      if (!confirm('⚠️ Un versement souscripteur de ' + fmtF(versementProche.montant) + ' F le ' + versementProche.date + ' (réf. ' + (versementProche.ref||versementProche.id) + ') a déjà été enregistré via le module Paiements pour un client dont le nom ressemble au bénéficiaire saisi.\n\nCe bon de caisse concerne-t-il bien un ENCAISSEMENT DIFFÉRENT (et non ce même règlement déjà comptabilisé) ?')) return;
+    }
+  }
 
   if (type === 'sortie') {
     var soldeCourant = caisseSoldeSession(session);
