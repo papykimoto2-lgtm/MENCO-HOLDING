@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.86 · 2026-08-27 — Bilan de Promotion : sous-détail Villa/plain-pied vs Immeuble ajouté à l\'intérieur du groupe « Logements » (produits réalisés et stock restant), en plus du split Logement/Terrain déjà en place. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.88 · 2026-08-27 — CORRECTIF MAJEUR : import du morcellement (CSV/Excel) ne renseignait JAMAIS la nature du lot créé — tous les lots importés (module « morcellement », par nature une subdivision de terrain) tombaient par défaut sur « logement » dans tous les tableaux de bord, alors qu\'il s\'agit de terrain nu. Cause exacte du KPI « Souscripteur Logement » non-nul alors qu\'aucun souscripteur logement n\'existe réellement. Corrigé pour les futurs imports (nature=terrain par défaut, sauf typologie bâtie détectée dans la colonne Type). Nouveau bouton « 🔧 Réparer la nature des lots déjà importés » (page Morcellement) pour corriger rétroactivement les lots déjà en base, avec aperçu chiffré avant toute action et mise à jour en cascade des souscripteurs concernés. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -16709,6 +16709,11 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <input type="file" id="mrc-import-file" accept=".csv,.xlsx,.xls" style="display:none;" onchange="importMorcellementFichier(this)">
           <button class="btn btn-primary" style="background:var(--or);" onclick="document.getElementById('mrc-import-file').click()">📁 Choisir un fichier CSV / Excel</button>
           <span id="mrc-import-status" style="margin-left:10px;font-size:12px;"></span>
+          <div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(184,115,51,0.25);">
+            <button class="btn btn-secondary btn-sm" onclick="diagnostiquerLotsSansNature()">🔧 Réparer la nature des lots déjà importés</button>
+            <span style="font-size:11px;color:var(--dim);margin-left:6px;">Corrige les lots importés avant ce correctif, classés « logement » par défaut au lieu de « terrain ».</span>
+            <div id="mrc-repair-status" style="margin-top:8px;"></div>
+          </div>
         </div>
 
         <div style="padding:14px;background:rgba(74,148,224,0.08);border:1px solid rgba(74,148,224,0.3);border-radius:10px;margin-bottom:14px;">
@@ -31855,6 +31860,61 @@ function _statutFromEtat(e) {
 }
 
 /* Transforme un tableau de lignes (array d'arrays) en lots et les crée */
+/* [FIX rétroactif] Répare les lots déjà importés via le morcellement AVANT
+   ce correctif — leur `nature` n'a jamais été renseignée (undefined), donc
+   comptés « logement » par défaut partout dans l'app alors qu'il s'agit de
+   terrain nu. Un lot créé manuellement a TOUJOURS une nature explicite
+   (dropdown avec valeur par défaut 'villa') — donc `nature` strictement
+   vide est un signal fiable et sans ambiguïté d'import morcellement non
+   corrigé. Aperçu avant action : jamais de correction en masse silencieuse
+   sur des données de vente réelles. */
+function diagnostiquerLotsSansNature() {
+  var host = document.getElementById('mrc-repair-status');
+  if (!host) return;
+  var progId = APP.currentMrcProgId;
+  var lots = (DATA.lots || []).filter(function(l){ return !progId || l.programme_id === progId; });
+  var sansNature = lots.filter(function(l){ return !l.nature; });
+  if (!sansNature.length) {
+    host.innerHTML = '<div style="color:var(--vert);font-size:12px;">✅ Aucun lot sans nature définie' + (progId ? ' sur ce programme' : '') + '.</div>';
+    return;
+  }
+  var vendusOuReserves = sansNature.filter(function(l){ return l.statut==='vendu' || l.statut==='reserve'; }).length;
+  host.innerHTML = '<div style="padding:10px;background:rgba(220,38,38,0.08);border:1px solid rgba(220,38,38,0.3);border-radius:8px;font-size:12px;">'
+    + '⚠️ <strong>' + sansNature.length + ' lot(s)</strong> sans nature définie' + (progId ? ' sur ce programme' : ' (tous programmes confondus)') + ' — comptés « logement » par défaut dans les tableaux de bord.'
+    + (vendusOuReserves ? '<br>Dont <strong>' + vendusOuReserves + '</strong> déjà vendu(s)/réservé(s) — impact direct sur les KPI Logement/Terrain et les souscripteurs concernés.' : '')
+    + '<br><br>Action : marquer ces ' + sansNature.length + ' lot(s) en <strong>Terrain nu</strong>.'
+    + '<br><button class="btn btn-primary btn-sm" style="margin-top:6px;" onclick="reparerLotsSansNature()">✅ Confirmer — marquer en Terrain nu</button></div>';
+}
+
+async function reparerLotsSansNature() {
+  var progId = APP.currentMrcProgId;
+  var lots = (DATA.lots || []).filter(function(l){ return (!progId || l.programme_id === progId) && !l.nature; });
+  if (!lots.length) return;
+  if (!confirm('Marquer ' + lots.length + ' lot(s) en « Terrain nu » ? Les souscripteurs déjà rattachés à ces lots seront aussi reclassés en Terrain (sauf ceux déjà marqués Terrain). Un choix « Logement » déjà fait manuellement sur un de ces dossiers serait alors écrasé — vérifiez d\'abord si un tel cas existe avant de confirmer.')) return;
+  var nbLots = 0, nbClients = 0;
+  for (var i = 0; i < lots.length; i++) {
+    lots[i].nature = 'terrain';
+    await dbPut('lots', lots[i]);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_lots', lots[i]);
+    nbLots++;
+  }
+  var lotIds = {};
+  lots.forEach(function(l){ lotIds[l.id] = true; });
+  var clientsConcernes = (DATA.clients || []).filter(function(c){ return c.lot_id && lotIds[c.lot_id]; });
+  for (var j = 0; j < clientsConcernes.length; j++) {
+    var c = clientsConcernes[j];
+    if (c.nature_bien === 'terrain') continue;
+    c.nature_bien = 'terrain';
+    await dbPut('clients', c);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_clients', c);
+    nbClients++;
+  }
+  toast('✅ ' + nbLots + ' lot(s) reclassé(s) en Terrain nu · ' + nbClients + ' souscripteur(s) mis à jour.', 'success');
+  document.getElementById('mrc-repair-status').innerHTML = '<div style="color:var(--vert);font-size:12px;">✅ Terminé.</div>';
+  if (typeof renderLots === 'function') renderLots();
+  if (typeof renderProgrammes === 'function') renderProgrammes();
+}
+
 async function _creerLotsDepuisLignes(rows) {
   var progId = APP.currentMrcProgId;
   if (!progId) { toast('Ouvrez le morcellement d\'un programme d\'abord.', 'error'); return; }
@@ -31886,9 +31946,23 @@ async function _creerLotsDepuisLignes(rows) {
     var fonc = parseFloat((g(col.fonc) || '0').toString().replace(/\s/g,'').replace(',','.')) || 0;
     var pu   = parseFloat((g(col.pu)   || '0').toString().replace(/\s/g,'').replace(',','.')) || 0;
 
+    /* [FIX] Le champ nature n'était JAMAIS renseigné sur un lot issu de cet
+       import — alors que « morcellement » désigne par nature un découpage de
+       terrain en lots à vendre nus, pas des logements. Résultat en
+       production : des centaines/milliers de lots terrain classés par
+       défaut « logement » dans tous les tableaux de bord (Cockpit, Finance,
+       Bilan de Promotion…), avec des montants de vente de terrain qui
+       apparaissaient comme du logement. On force 'terrain' par défaut, sauf
+       si la colonne TYPE indique clairement un typologie bâtie (villa, F1-F6,
+       duplex, appartement, studio) — auquel cas ce module sert alors à
+       importer des logements et non des parcelles nues. */
+    var typLower = typ.toLowerCase();
+    var estBati = /villa|duplex|appartement|studio|\bf[1-6]\b|triplex|penthouse/.test(typLower);
+    var nature = estBati ? (typLower.indexOf('immeuble')!==-1 || typLower.indexOf('appartement')!==-1 ? 'immeuble' : 'villa') : 'terrain';
+
     var lot = {
       id: uid(), programme_id: progId, numero: numero, ilot: ilot,
-      type: typ || 'Lot', surface: surface, pieces: _piecesFromType(typ),
+      type: typ || 'Lot', nature: nature, surface: surface, pieces: _piecesFromType(typ),
       prix: pu, cout_revient: amen + fonc,
       standing: 'moyen', mode_livraison: 'gros_oeuvre',
       statut: _statutFromEtat(g(col.etat)),
@@ -117739,7 +117813,7 @@ goTo = function(page) {
 </div>
 
 <div class="modal-overlay" id="modal-reste-recouvrer">
-  <div class="modal modal-lg">
+  <div class="modal modal-xl">
     <div class="modal-header">
       <h3>⏳ Reste à recouvrer — analyse détaillée</h3>
       <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-reste-recouvrer')">✕</button>
