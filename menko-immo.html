@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.88 · 2026-08-27 — CORRECTIF MAJEUR : import du morcellement (CSV/Excel) ne renseignait JAMAIS la nature du lot créé — tous les lots importés (module « morcellement », par nature une subdivision de terrain) tombaient par défaut sur « logement » dans tous les tableaux de bord, alors qu\'il s\'agit de terrain nu. Cause exacte du KPI « Souscripteur Logement » non-nul alors qu\'aucun souscripteur logement n\'existe réellement. Corrigé pour les futurs imports (nature=terrain par défaut, sauf typologie bâtie détectée dans la colonne Type). Nouveau bouton « 🔧 Réparer la nature des lots déjà importés » (page Morcellement) pour corriger rétroactivement les lots déjà en base, avec aperçu chiffré avant toute action et mise à jour en cascade des souscripteurs concernés. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.89 · 2026-08-27 — CORRECTIF MAJEUR : le Cockpit (494 473 999 F) et la modale « Reste à recouvrer — analyse détaillée » (605 198 999 F) affichaient deux totaux différents pour le même indicateur. Cause : deux filtres incohérents sur les versements entre rarResteParCategorie() (Cockpit, KPI Finance) et rarCollecter() (modale détaillée) — le premier comptait à tort les frais de souscription comme réduisant la dette du client (alors qu\'ils sont hors prix du bien), le second oubliait d\'exclure les versements annulés. Filtre unique désormais partagé (statut ≠ annulé ET hors frais de souscription) : un seul et même chiffre partout. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -38827,7 +38827,14 @@ function clientNatureBien(c) {
 function rarResteParCategorie() {
   var resteLogements = 0, resteTerrainsLot = 0, resteIndetermine = 0;
   (DATA.clients || []).forEach(function(c) {
-    var verse = (DATA.versements || []).filter(function(v){ return v.client_id === c.id && v.statut !== 'annule'; })
+    /* [FIX] Deux bugs de filtre trouvés ici, chacun compensant partiellement
+       l'autre côté rarCollecter (d'où l'écart Cockpit ↔ modale détaillée) :
+       1) les frais de souscription (non remboursables, hors prix du bien —
+          voir _versementSurPrix) étaient comptés comme réduisant la dette du
+          client, alors qu'ils ne font pas partie du prix dû ;
+       2) rarCollecter, lui, oubliait d'exclure les versements annulés.
+       Filtre unique désormais partagé par les deux fonctions. */
+    var verse = (DATA.versements || []).filter(function(v){ return v.client_id === c.id && v.statut !== 'annule' && _versementSurPrix(v); })
       .reduce(function(a, v){ return a + (parseFloat(v.montant) || 0); }, 0);
     var reste = Math.max(0, (c.montant_total || 0) - verse);
     var nat = clientNatureBien(c);
@@ -38864,7 +38871,7 @@ function rarCollecter() {
     var du = parseFloat(c.montant_total) || 0;
     if (du <= 0) return;
     var verse = (DATA.versements || []).filter(function(v){
-      return v.client_id === c.id && _versementSurPrix(v);
+      return v.client_id === c.id && v.statut !== 'annule' && _versementSurPrix(v);
     }).reduce(function(a,v){ return a + (parseFloat(v.montant) || 0); }, 0);
     var reste = du - verse;
     if (reste <= 0) return;   /* soldé : hors encours */
