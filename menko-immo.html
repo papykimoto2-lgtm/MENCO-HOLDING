@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.82 · 2026-08-27 — NOUVEAU : distinction Maison/Terrain fiabilisée de bout en bout (nature_bien figé à la souscription, insensible à un changement ultérieur du lot). Carte Cockpit « ⚠️ Nature à préciser » (montant + nombre de dossiers), filtre dédié dans la modale Reste à recouvrer, export CSV, bouton de correction directe depuis chaque ligne vers la fiche souscripteur. Bilan de Promotion, KPI Finance, comptabilisation des ventes et export des souscripteurs : tous splittés Logement/Terrain. TVA par défaut recentralisée sur le paramètre Société (fini les « 18 % » figés dans une dizaine d\'écrans). Caisse : détection et fusion des sessions ouvertes en double (concurrence multi-poste), garde à l\'ouverture avec pull cloud préalable, suppression en cascade d\'un mouvement de caisse répercutée sur la Demande d\'Achat liée (retour en « validée » au lieu de rester « décaissée » fantôme). Comptabilité par division : alerte si la paie est comptabilisée en mode global avec plusieurs divisions actives (charges de personnel sinon invisibles par division). Clôture d\'exercice : alerte si un exercice antérieur avec mouvements n\'a jamais été clôturé (rupture silencieuse de la chaîne d\'à-nouveaux sur les recouvrements pluriannuels). Immobilisations (biens_amort) : synchronisation cloud et vérification du retour dbPut ajoutées sur l\'enregistrement d\'un bien et sur la comptabilisation des dotations annuelles (mêmes garde-fous que le reste de l\'app). Détection de versements en double entre saisie manuelle et import caisse historique, recherche périodique (date début/fin) sur Compta > Versements. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.83 · 2026-08-27 — CORRECTIF : le formulaire Nouveau/Modifier Souscripteur n\'offrait aucun moyen de spécifier directement la nature du bien (logement/terrain) — champ 100% déduit du lot, avec un défaut silencieux sur « maison » si aucun lot n\'était encore choisi ou si le lot lui-même n\'avait pas de nature définie. Ajout d\'un sélecteur explicite « Nature du bien * » (Auto depuis le lot / Logement / Terrain nu), prioritaire sur la déduction automatique, persistant même si le lot change ensuite. Suppression du défaut silencieux vers « maison » : nature_bien devient « indetermine » (visible dans la carte Cockpit « ⚠️ Nature à préciser ») plutôt que faussement « maison » quand elle n\'est réellement pas connue. En édition, le sélecteur reflète un choix déjà forcé manuellement plutôt que de le réafficher sur Auto et perdre la correction. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -15912,6 +15912,14 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <option value="">— Choisir —</option>
             </select>
           </div>
+          <div class="form-group">
+            <label>Nature du bien *</label>
+            <select class="form-control" id="c-nature-manuel" onchange="updateNatureBienUI((DATA.lots||[]).find(function(l){return l.id===document.getElementById('c-lot').value;}))" style="font-weight:700;">
+              <option value="auto">— Auto depuis le lot —</option>
+              <option value="maison">🏠 Logement (bâti)</option>
+              <option value="terrain">🗺️ Terrain nu (parcelle)</option>
+            </select>
+          </div>
           <div class="form-group span-2" id="c-nature-badge-wrap" style="display:none;">
             <div id="c-nature-badge" style="display:inline-block;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700;"></div>
           </div>
@@ -28903,6 +28911,7 @@ function clearClientForm() {
   document.getElementById('doc-btns').innerHTML = '';
   var modeEl = document.getElementById('c-mode-livraison'); if (modeEl) modeEl.value = 'gros_oeuvre';
   var standEl = document.getElementById('c-standing'); if (standEl) standEl.value = 'economique';
+  var natManEl = document.getElementById('c-nature-manuel'); if (natManEl) natManEl.value = 'auto';
   updateNatureBienUI(null);
 }
 
@@ -28923,6 +28932,18 @@ function fillClientForm(c) {
   setSelectValue('c-programme', c.programme_id);
   setSelectValue('c-commercial', c.commercial_id || '');
   setSelectValue('c-apporteur', c.apporteur_id || '');
+  /* [FIX] Reflète l'état réel du dossier dans le sélecteur manuel : si
+     nature_bien diverge de ce que le lot rattaché indiquerait tout seul (ou
+     si aucun lot n'est rattaché mais que nature_bien est déjà connu — ex.
+     'indetermine' corrigé manuellement en 'terrain' avant tout rattachement
+     de lot), on le montre comme un choix FORCÉ plutôt que de le réafficher
+     sur "Auto" et perdre silencieusement la correction déjà faite. */
+  var selManuel = document.getElementById('c-nature-manuel');
+  if (selManuel) {
+    var lotActuel = c.lot_id ? (DATA.lots || []).find(function(l) { return l.id === c.lot_id; }) : null;
+    var natureAuto = lotActuel ? (lotActuel.nature === 'terrain' ? 'terrain' : 'maison') : null;
+    selManuel.value = (c.nature_bien && c.nature_bien !== natureAuto) ? c.nature_bien : 'auto';
+  }
   if (c.programme_id) {
     updateLotsByProgramme();
     setTimeout(function() {
@@ -29152,12 +29173,21 @@ async function saveClient() {
     programme_id: document.getElementById('c-programme').value,
     lot_id: document.getElementById('c-lot').value,
     /* Distingue une souscription pour un bien bâti (maison/appartement) d'une
-       souscription pour un terrain nu (parcelle) — dérivé de la nature du lot
-       rattaché, car un même souscripteur ne peut avoir qu'un lot à la fois. */
+       souscription pour un terrain nu (parcelle). Priorité : 1) choix manuel
+       explicite (« Nature du bien »), 2) nature du lot rattaché, 3) sinon
+       'indetermine' — jamais un défaut silencieux vers 'maison', qui masquait
+       le problème au lieu de le signaler (voir carte Cockpit « ⚠️ Nature à
+       préciser »). */
     nature_bien: (function() {
+      var selManuel = document.getElementById('c-nature-manuel');
+      var choixManuel = selManuel ? selManuel.value : 'auto';
+      if (choixManuel === 'terrain') return 'terrain';
+      if (choixManuel === 'maison') return 'maison';
       var lotSel = document.getElementById('c-lot');
       var lotSel2 = lotSel ? (DATA.lots || []).find(function(l) { return l.id === lotSel.value; }) : null;
-      return (lotSel2 && lotSel2.nature === 'terrain') ? 'terrain' : 'maison';
+      if (lotSel2 && lotSel2.nature === 'terrain') return 'terrain';
+      if (lotSel2) return 'maison';
+      return 'indetermine';
     })(),
     type_logement: document.getElementById('c-type-logement').value,
     mode_livraison: (function(){ var el=document.getElementById('c-mode-livraison'); return el ? el.value : 'gros_oeuvre'; })(),
@@ -43016,20 +43046,29 @@ function updateLotsByProgramme() {
    formulaire de souscription (badge, libellés, champs visibles, bouton
    « Cahier des charges ») selon la nature réelle du lot choisi. */
 function updateNatureBienUI(lot) {
-  var isTerrain = !!lot && lot.nature === 'terrain';
+  /* [FIX] Le champ manuel « Nature du bien » a priorité sur la déduction
+     automatique depuis le lot. Sans lui, un souscripteur créé AVANT le choix
+     du lot (ou dont le lot n'a lui-même aucune nature définie) se voyait
+     imposer « maison » par défaut à l'enregistrement (voir saveClient), sans
+     aucun moyen de le corriger dans le formulaire — exactement le blocage
+     remonté : impossible de spécifier logement/terrain. */
+  var selManuel = document.getElementById('c-nature-manuel');
+  var choixManuel = selManuel ? selManuel.value : 'auto';
+  var isTerrain = choixManuel === 'terrain' || (choixManuel === 'auto' && !!lot && lot.nature === 'terrain');
+  var natureConnue = choixManuel !== 'auto' || !!lot;
   var wrap = document.getElementById('c-nature-badge-wrap');
   var badge = document.getElementById('c-nature-badge');
   if (wrap && badge) {
-    if (!lot) {
+    if (!natureConnue) {
       wrap.style.display = 'none';
     } else {
       wrap.style.display = '';
       if (isTerrain) {
-        badge.textContent = '🗺️ Terrain nu / parcelle (vente foncière)';
+        badge.textContent = '🗺️ Terrain nu / parcelle (vente foncière)' + (choixManuel==='terrain' && (!lot || lot.nature!=='terrain') ? ' — forcé manuellement' : '');
         badge.style.background = 'rgba(74,148,224,0.14)';
         badge.style.color = '#2563EB';
       } else {
-        badge.textContent = '🏠 Maison / logement bâti';
+        badge.textContent = '🏠 Maison / logement bâti' + (choixManuel==='maison' && (!lot || lot.nature==='terrain') ? ' — forcé manuellement' : '');
         badge.style.background = 'rgba(184,115,51,0.14)';
         badge.style.color = '#B87333';
       }
