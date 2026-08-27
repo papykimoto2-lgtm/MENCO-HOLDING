@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.91 · 2026-08-27 — CORRECTIF UI : tableaux « Par commercial » et « Par type de bien » (modale Reste à recouvrer) isolés dans leur propre zone défilable (280px, bordure visible, en-tête figé) — la modale entière défilait déjà correctement mais rien n\'indiquait qu\'il fallait le faire, donnant l\'impression que ces tableaux étaient coupés/vides. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.92 · 2026-08-27 — NOUVEAU : gestion documentaire juridique complète pour les souscripteurs terrain/logement, avec conditions contractuelles de remise. Fiche souscripteur : 6 boutons rapides (Cahier des charges, Plan de situation, PV de bornage, Attestation de non-gage, Acte notarié, Titre foncier). Chaque document téléversé peut être marqué visible au portail immédiatement, visible seulement après solde intégral du prix (quittance, titre foncier…), ou strictement interne — bascule possible a posteriori sans re-upload. Programme : section documents propre (cahier des charges partagé, visible par tous les souscripteurs du programme concerné). Portail souscripteur : nouvel onglet Documents enrichi listant tous les documents autorisés (dossier + programme), plus une Quittance de solde intégral générée automatiquement et strictement inaccessible tant que le prix n\'est pas payé en totalité. Correctif au passage : le téléversement de documents (fiche client) ne synchronisait jamais vers le cloud, document invisible sur les autres postes — corrigé. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -11974,7 +11974,13 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <button class="btn btn-secondary" onclick="telechargerContrat()">📄 Contrat de réservation</button>
               <button class="btn btn-secondary" onclick="telechargerEcheancier()">📅 Échéancier personnalisé</button>
               <button class="btn btn-secondary" onclick="telechargerAttestationVersement()">📑 Attestation de versements</button>
+              <button class="btn btn-secondary" id="portal-btn-quittance-solde" style="display:none;" onclick="telechargerQuittanceSoldeIntegral()">✅ Quittance de solde intégral</button>
             </div>
+          </div>
+          <div class="card" style="margin-top:14px;">
+            <div class="card-title">📁 Documents transmis par le promoteur</div>
+            <div style="font-size:11px;color:var(--dim);margin-top:2px;margin-bottom:10px;">Cahier des charges, plan de situation, actes et autres pièces de votre dossier — mis à disposition au fur et à mesure de l'avancement.</div>
+            <div id="portal-souscripteur-doc-list"><div style="color:var(--dim);font-size:13px;">Aucun document disponible pour l'instant.</div></div>
           </div>
         </div>
 
@@ -15992,6 +15998,15 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <button class="btn btn-secondary btn-sm" onclick="ouvrirPadSignature('client', APP.editingId)">✍️ Signature</button>
             </div>
           </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
+            <input type="file" id="client-doc-upload-type" accept=".pdf,.jpg,.png,.docx,.xlsx" style="display:none;">
+            <button class="btn btn-secondary btn-sm" onclick="uploadDocumentTypeJuridique('Cahier des charges du lotissement')">📜 Cahier des charges</button>
+            <button class="btn btn-secondary btn-sm" onclick="uploadDocumentTypeJuridique('Plan de situation du lot')">🗺️ Plan de situation</button>
+            <button class="btn btn-secondary btn-sm" onclick="uploadDocumentTypeJuridique('Procès-verbal de bornage contradictoire')">📐 PV de bornage</button>
+            <button class="btn btn-secondary btn-sm" onclick="uploadDocumentTypeJuridique('Attestation de non-gage / non-hypothèque')">🛡️ Attestation non-gage</button>
+            <button class="btn btn-secondary btn-sm" onclick="uploadDocumentTypeJuridique('Acte de vente notarié')">⚖️ Acte notarié</button>
+            <button class="btn btn-secondary btn-sm" onclick="uploadDocumentTypeJuridique('Titre foncier')">🏛️ Titre foncier</button>
+          </div>
           <div id="client-doc-list"><div style="color:var(--blanc-dim);font-size:13px;">Aucun document attaché.</div></div>
         </div>
 
@@ -16171,6 +16186,15 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         <div class="form-group span-2">
           <label>Description</label>
           <textarea class="form-control" id="p-description"></textarea>
+        </div>
+        <div class="form-group span-2" style="border-top:1px solid var(--bord);padding-top:14px;margin-top:4px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <label style="margin-bottom:0;">📎 Documents du programme (cahier des charges, plan de situation…)</label>
+            <input type="file" id="programme-doc-upload" accept=".pdf,.jpg,.png,.docx,.xlsx" style="display:none;" onchange="uploadDocumentForEntity('programme', APP.editingId, this.files[0])">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('programme-doc-upload').click()">📁 Téléverser</button>
+          </div>
+          <div style="font-size:11px;color:var(--blanc-dim);margin-bottom:8px;">Un document marqué « visible au client » ici apparaît dans le portail de TOUS les souscripteurs de ce programme.</div>
+          <div id="programme-doc-list"><div style="color:var(--blanc-dim);font-size:13px;">Aucun document attaché.</div></div>
         </div>
       </div>
     </div>
@@ -30876,9 +30900,12 @@ function openProgrammeModal(id) {
     document.getElementById('p-pct-honoraires-tech').value = p.pct_honoraires_tech || 0;
     document.getElementById('p-pct-aleas').value = p.pct_aleas || 0;
     _progMajNoteHonoraires(id);
+    refreshDocumentsForEntity('programme', id);
   } else {
     document.getElementById('modal-prog-title').textContent = 'Nouveau Programme';
     _progMajNoteHonoraires(null);
+    var _dl = document.getElementById('programme-doc-list');
+    if (_dl) _dl.innerHTML = '<div style="color:var(--blanc-dim);font-size:13px;">Enregistrez le programme d\'abord pour pouvoir y attacher des documents.</div>';
   }
   openModal('modal-programme');
 }
@@ -67803,6 +67830,7 @@ function switchPortalTab(tab) {
   if (tab === 'paiement')   renderDemandesPortail();
   if (tab === 'travaux' && typeof portalRenderTravaux === 'function') portalRenderTravaux();
   if (tab === 'diaspora' && typeof portalRenderDiaspora === 'function') portalRenderDiaspora();
+  if (tab === 'documents') renderDocumentsSouscripteur();
 }
 
 /* ─── Chargement principal du portail ───────────────── */
@@ -67987,6 +68015,78 @@ function telechargerContrat() {
 function telechargerEcheancier() {
   if (!SESSION_SOUSCRIPTEUR) return;
   etatEcheancier(SESSION_SOUSCRIPTEUR.id);
+}
+
+/* [NOUVEAU] Documents du souscripteur — fusionne les documents attachés à
+   son dossier ET ceux attachés au programme (cahier des charges, plan de
+   situation générique), tous deux filtrés par visible_portail + condition
+   contractuelle (solde intégral). Affiche aussi la quittance de solde
+   intégral, générée automatiquement, uniquement quand elle est due. */
+async function renderDocumentsSouscripteur() {
+  if (!SESSION_SOUSCRIPTEUR) return;
+  var c = SESSION_SOUSCRIPTEUR;
+  var host = document.getElementById('portal-souscripteur-doc-list');
+  if (host) {
+    var docs = await dbGetAll('documents');
+    var verseCl = (DATA.versements||[]).filter(function(v){ return v.client_id===c.id && v.statut!=='annule' && _versementSurPrix(v); }).reduce(function(s,v){ return s+(parseFloat(v.montant)||0); },0);
+    var soldeIntegral = (parseFloat(c.montant_total)||0) > 0 && verseCl >= (parseFloat(c.montant_total)||0);
+    var visibles = docs.filter(function(d){
+      var appartientDossier = d.entity_type === 'client' && d.entity_id === c.id;
+      var appartientProgramme = d.entity_type === 'programme' && d.entity_id === c.programme_id;
+      if (!appartientDossier && !appartientProgramme) return false;
+      if (!d.visible_portail) return false;
+      if (d.condition_portail === 'solde_integral' && !soldeIntegral) return false;
+      return true;
+    });
+    if (!visibles.length) {
+      host.innerHTML = '<div style="color:var(--dim);font-size:13px;">Aucun document disponible pour l\'instant.</div>';
+    } else {
+      var typeIcon = {'application/pdf':'📄','image/jpeg':'🖼️','image/png':'🖼️'};
+      host.innerHTML = visibles.map(function(doc) {
+        var icon = typeIcon[doc.type] || '📎';
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:var(--card2);border-radius:var(--r);margin-bottom:6px;">'
+          + '<div><div style="font-size:13px;font-weight:600;">'+icon+' '+escHtml(doc.name)+'</div>'
+          + '<div style="font-size:10px;color:var(--dim);">'+dateShort(doc.upload_date)+(doc.description?' · '+escHtml(doc.description):'')+'</div></div>'
+          + '<button class="btn btn-secondary btn-sm btn-icon" onclick="telechargerDocument(\''+doc.id+'\')" title="Télécharger">⬇</button>'
+          + '</div>';
+      }).join('');
+    }
+    var btnQuit = document.getElementById('portal-btn-quittance-solde');
+    if (btnQuit) btnQuit.style.display = soldeIntegral ? '' : 'none';
+  }
+}
+
+/* Quittance officielle de solde intégral — générée à la volée, jamais
+   affichée/accessible tant que le prix n'est pas totalement payé (condition
+   contractuelle : elle atteste que plus rien n'est dû). */
+function telechargerQuittanceSoldeIntegral() {
+  if (!SESSION_SOUSCRIPTEUR) return;
+  var c = SESSION_SOUSCRIPTEUR;
+  var verseCl = (DATA.versements||[]).filter(function(v){ return v.client_id===c.id && v.statut!=='annule' && _versementSurPrix(v); }).reduce(function(s,v){ return s+(parseFloat(v.montant)||0); },0);
+  var total = parseFloat(c.montant_total)||0;
+  if (total <= 0 || verseCl < total) { toast('Le prix n\'est pas encore intégralement payé — cette quittance n\'est pas encore disponible.', 'error'); return; }
+  var societe = (DATA.params && DATA.params.societe) || 'ImmoSuite ERP';
+  var prog = (DATA.programmes||[]).find(function(p){ return p.id === c.programme_id; });
+  var lot = (DATA.lots||[]).find(function(l){ return l.id === c.lot_id; });
+  var win = window.open('','','width=820,height=650');
+  win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Quittance de solde intégral</title>'
+    +'<style>body{font-family:Arial,sans-serif;padding:36px;font-size:13px;color:#222;}'
+    +'h1{font-size:18px;color:#1A6B3A;text-align:center;border-bottom:2px solid #1A6B3A;padding-bottom:10px;}'
+    +'.bloc{margin:18px 0;line-height:1.8;} .sb{margin-top:60px;}</style></head><body>'
+    +'<h1>QUITTANCE DE SOLDE INTÉGRAL</h1>'
+    +'<div class="bloc"><strong style="font-size:18px;color:#1A6B3A;">'+escHtml(societe)+'</strong></div>'
+    +'<div class="bloc">Nous soussignés, '+escHtml(societe)+', attestons par la présente que le dossier ci-dessous a été intégralement soldé :</div>'
+    +'<div class="bloc"><strong>Souscripteur :</strong> '+escHtml((c.prenoms||'')+' '+(c.nom||''))+'<br>'
+    +'<strong>Dossier :</strong> '+escHtml(c.dossier||'N/A')+'<br>'
+    +'<strong>Programme :</strong> '+escHtml(prog?prog.nom:'—')+'<br>'
+    +'<strong>Lot :</strong> '+escHtml(lot?('Lot '+lot.numero+(lot.ilot?' — îlot '+lot.ilot:'')):'—')+'<br>'
+    +'<strong>Prix total du contrat :</strong> '+fmtF(total)+' FCFA<br>'
+    +'<strong>Montant versé :</strong> '+fmtF(verseCl)+' FCFA<br>'
+    +'<strong>Solde restant dû :</strong> 0 FCFA — INTÉGRALEMENT SOLDÉ</div>'
+    +'<div class="bloc">Cette quittance atteste du paiement intégral du prix convenu au contrat et ne préjuge pas des formalités notariales et foncières restant à accomplir pour le transfert définitif de propriété.</div>'
+    +'<div class="sb" style="text-align:right;">Fait à Abidjan, le '+dateShort(today())+'<br><br>LA DIRECTION<br>'+escHtml(societe)+'<br><br><br>Signature et cachet</div>'
+    +'<script>window.onload=function(){window.print();}<\/script>'
+    +'</body></html>');
 }
 
 function telechargerAttestationVersement() {
@@ -68531,11 +68631,27 @@ var _sigLastX = 0, _sigLastY = 0;
 var _sigColor = '#000000';
 var _sigLineWidth = 2.5;
 
-/* ─── Upload de documents ─────────────────────────────── */
-function uploadDocumentForEntity(entity_type, entity_id, file) {
+/* ─── Upload de documents ─────────────────────────────────
+   [FIX + NOUVEAU] Deux ajouts :
+   1) Synchronisation cloud manquante — un document attaché ici restait
+      local à l'appareil, invisible sur les autres postes et perdu si le
+      stockage local était vidé (même classe de bug que caisse/paie/etc.
+      déjà corrigés dans cette conversation).
+   2) Conditions contractuelles de remise : certains documents (quittance de
+      solde intégral, titre foncier…) ne doivent être visibles du client
+      qu'une fois le prix intégralement payé — pas dès le dépôt. Le
+      téléverseur demande donc explicitement la portée de visibilité. */
+function uploadDocumentForEntity(entity_type, entity_id, file, typeLabel) {
   if (!file) return;
   if (file.size > 10 * 1024 * 1024) { toast('Fichier trop volumineux (max 10 MB).', 'error'); return; }
-  var description = prompt('Description du document (optionnel) :', file.name.replace(/\.[^.]+$/, '')) || '';
+  var description = typeLabel || (prompt('Description du document (optionnel) :', file.name.replace(/\.[^.]+$/, '')) || '');
+  var visiblePortail = false, conditionPortail = 'immediat';
+  if (entity_type === 'client' || entity_type === 'programme') {
+    visiblePortail = confirm('Ce document doit-il être visible par le souscripteur dans son espace Portail ?\n\nOK = Oui, visible au client\nAnnuler = Non, usage interne uniquement');
+    if (visiblePortail && entity_type === 'client') {
+      conditionPortail = confirm('Le rendre visible SEULEMENT une fois le prix intégralement payé (ex. quittance finale, titre foncier) ?\n\nOK = Oui, seulement après solde intégral\nAnnuler = Non, visible immédiatement') ? 'solde_integral' : 'immediat';
+    }
+  }
   var reader = new FileReader();
   reader.onload = async function(e) {
     var doc = {
@@ -68547,16 +68663,52 @@ function uploadDocumentForEntity(entity_type, entity_id, file) {
       size: file.size,
       blob: e.target.result,
       upload_date: today(),
-      description: description
+      description: description,
+      visible_portail: visiblePortail,
+      condition_portail: conditionPortail
     };
     await dbPut('documents', doc);
-    toast('📎 ' + file.name + ' téléversé.', 'success');
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_documents', doc);
+    toast('📎 ' + file.name + ' téléversé.' + (visiblePortail ? ' Visible au client (' + (conditionPortail==='solde_integral'?'après solde intégral':'immédiatement') + ').' : ''), 'success');
     refreshDocumentsForEntity(entity_type, entity_id);
     // Reset file input
     var inp = document.getElementById(entity_type + '-doc-upload') || document.getElementById('upload-doc-file');
     if (inp) inp.value = '';
   };
   reader.readAsDataURL(file);
+}
+
+/* Bascule la visibilité portail d'un document déjà téléversé, sans avoir à
+   le re-uploader — utile pour publier une quittance finale a posteriori. */
+async function basculerVisibilitePortailDocument(docId, entity_type, entity_id) {
+  var docs = await dbGetAll('documents');
+  var doc = docs.find(function(d){ return d.id === docId; });
+  if (!doc) return;
+  if (!doc.visible_portail) {
+    doc.visible_portail = true;
+    doc.condition_portail = (entity_type === 'client' && confirm('Visible seulement après solde intégral du prix ?\n\nOK = Oui\nAnnuler = Non, visible immédiatement')) ? 'solde_integral' : 'immediat';
+  } else {
+    doc.visible_portail = false;
+  }
+  await dbPut('documents', doc);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_documents', doc);
+  toast(doc.visible_portail ? '✅ Visible au client (' + (doc.condition_portail==='solde_integral'?'après solde intégral':'immédiatement') + ')' : '🔒 Repassé en usage interne', 'success');
+  refreshDocumentsForEntity(entity_type, entity_id);
+}
+
+/* Boutons rapides Documents juridiques (fiche souscripteur) : ouvre le
+   sélecteur de fichier, puis passe directement le libellé du type choisi à
+   uploadDocumentForEntity (évite de le retaper à chaque fois). */
+function uploadDocumentTypeJuridique(typeLabel) {
+  if (!APP.editingId) { toast('Enregistrez d\'abord le souscripteur avant d\'attacher un document.', 'error'); return; }
+  var inp = document.getElementById('client-doc-upload-type');
+  if (!inp) return;
+  inp.onchange = function() {
+    var file = inp.files[0];
+    if (file) uploadDocumentForEntity('client', APP.editingId, file, typeLabel);
+    inp.value = ''; inp.onchange = null;
+  };
+  inp.click();
 }
 
 async function refreshDocumentsForEntity(entity_type, entity_id) {
@@ -68577,13 +68729,19 @@ async function refreshDocumentsForEntity(entity_type, entity_id) {
 
   container.innerHTML = filtered.map(function(doc) {
     var icon = typeIcon[doc.type] || '📎';
+    var badgeVis = (entity_type === 'client' || entity_type === 'programme')
+      ? (doc.visible_portail
+          ? '<span class="badge" style="font-size:9px;background:rgba(74,196,122,0.15);color:var(--vert);border:1px solid var(--vert);margin-left:6px;">👁️ ' + (doc.condition_portail==='solde_integral' ? 'Portail — après solde' : 'Portail — visible') + '</span>'
+          : '<span class="badge" style="font-size:9px;background:rgba(148,163,184,0.15);color:var(--dim);border:1px solid var(--bord);margin-left:6px;">🔒 Interne</span>')
+      : '';
     return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:var(--card2);border-radius:var(--r);margin-bottom:6px;">'
-      +'<div><div style="font-size:13px;font-weight:600;">'+icon+' '+doc.name+'</div>'
+      +'<div><div style="font-size:13px;font-weight:600;">'+icon+' '+doc.name+badgeVis+'</div>'
         +'<div style="font-size:10px;color:var(--blanc-dim);">'+dateShort(doc.upload_date)+' · '+(doc.size/1024).toFixed(1)+' KB'+(doc.description?' · '+doc.description:'')+'</div>'
       +'</div>'
       +'<div style="display:flex;gap:4px;">'
         +'<button class="btn btn-secondary btn-sm btn-icon" onclick="apercuDocument(\''+doc.id+'\')" title="Aperçu">👁️</button>'
         +'<button class="btn btn-secondary btn-sm btn-icon" onclick="telechargerDocument(\''+doc.id+'\')" title="Télécharger">⬇</button>'
+        + ((entity_type === 'client' || entity_type === 'programme') ? '<button class="btn btn-secondary btn-sm btn-icon" onclick="basculerVisibilitePortailDocument(\''+doc.id+'\',\''+entity_type+'\',\''+entity_id+'\')" title="Changer la visibilité portail">🔁</button>' : '')
         +'<button class="btn btn-danger btn-sm btn-icon" onclick="supprimerDocument(\''+doc.id+'\',\''+entity_type+'\',\''+entity_id+'\')" title="Supprimer">🗑</button>'
       +'</div></div>';
   }).join('')
@@ -115861,6 +116019,25 @@ async function refreshDocumentsForEntityReadonly(entity_type, entity_id, contain
   if (!container) return;
   var docs = await dbGetAll('documents');
   var filtered = docs.filter(function(d){ return d.entity_type===entity_type && d.entity_id===entity_id; });
+  /* [Conditions contractuelles de remise] Un document attaché à un dossier
+     souscripteur n'apparaît au portail que si l'admin l'a explicitement
+     rendu visible — et, s'il est conditionné au solde intégral (quittance
+     finale, titre foncier…), seulement une fois le prix totalement payé.
+     Documents internes (contre-visites, correspondance privée…) restent
+     invisibles par défaut : l'admin doit activer la visibilité lui-même. */
+  if (entity_type === 'client') {
+    var soldeIntegral = false;
+    var cl = (DATA.clients||[]).find(function(c){ return c.id === entity_id; });
+    if (cl) {
+      var verseCl = (DATA.versements||[]).filter(function(v){ return v.client_id===cl.id && v.statut!=='annule' && _versementSurPrix(v); }).reduce(function(s,v){ return s+(parseFloat(v.montant)||0); },0);
+      soldeIntegral = verseCl >= (parseFloat(cl.montant_total)||0) && (parseFloat(cl.montant_total)||0) > 0;
+    }
+    filtered = filtered.filter(function(d){
+      if (!d.visible_portail) return false;
+      if (d.condition_portail === 'solde_integral' && !soldeIntegral) return false;
+      return true;
+    });
+  }
   if (!filtered.length) { container.innerHTML = '<div style="color:var(--dim);font-size:13px;">Aucun document disponible pour l\'instant.</div>'; return; }
   var typeIcon = {'application/pdf':'📄','image/jpeg':'🖼️','image/png':'🖼️'};
   container.innerHTML = filtered.map(function(doc) {
