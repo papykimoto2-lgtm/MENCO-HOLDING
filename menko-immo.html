@@ -3687,6 +3687,13 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                   <option value="cession">🏞️ Foncier (cessions)</option>
                 </select>
                 <input type="text" class="search-input" id="compta-vers-search" placeholder="🔍 Réf, souscripteur / acquéreur..." oninput="_debInput('renderComptaVersements')" style="min-width:200px;">
+                <label style="font-size:11px;color:var(--blanc-dim);display:flex;align-items:center;gap:4px;">Du
+                  <input type="date" class="form-control" id="compta-vers-date-debut" onchange="renderComptaVersements()" style="padding:6px 8px;">
+                </label>
+                <label style="font-size:11px;color:var(--blanc-dim);display:flex;align-items:center;gap:4px;">au
+                  <input type="date" class="form-control" id="compta-vers-date-fin" onchange="renderComptaVersements()" style="padding:6px 8px;">
+                </label>
+                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('compta-vers-date-debut').value='';document.getElementById('compta-vers-date-fin').value='';renderComptaVersements()" title="Réinitialiser la période">✕ Période</button>
                 <button class="btn btn-secondary btn-sm" onclick="detecterVersementsDoublons()" title="Repère les versements probablement saisis deux fois (import historique + ressaisie manuelle)">🔍 Détecter les doublons</button>
               </div>
             </div>
@@ -27227,9 +27234,10 @@ function buildDashTabFinance() {  var cessions      = DATA.cessions_foncieres ||
   el.innerHTML = [
     {l:'CA Encaissé total',        v:fmtF(totalVerse)+' FCFA', i:'💰', c:'kpi-green', d:'Logements + terrains + cessions foncières'},
     {l:'CA Mois en cours',         v:fmtF(caM)+' FCFA',        i:'📆', c:'',         d:'Encaissements du mois'},
-    (function(){ var v=dashEncaisseLots(null,'logement'); return {l:'dont Logements (souscriptions)', v:fmtF(v)+' FCFA', i:'🏠', c:'', d:(DATA.clients||[]).filter(function(c){var l=(DATA.lots||[]).find(function(x){return x.id===c.lot_id;});return !l||l.nature!=='terrain';}).length+' souscripteur(s)'}; })(),
-    (function(){ var v=dashEncaisseLots(null,'terrain'); return {l:'dont Terrains (souscriptions)', v:fmtF(v)+' FCFA', i:'🗺️', c:'', d:(DATA.clients||[]).filter(function(c){var l=(DATA.lots||[]).find(function(x){return x.id===c.lot_id;});return l&&l.nature==='terrain';}).length+' souscripteur(s) — hors registre Cessions'}; })(),
+    (function(){ var v=dashEncaisseLots(null,'logement'); return {l:'dont Logements (souscriptions)', v:fmtF(v)+' FCFA', i:'🏠', c:'', d:(DATA.clients||[]).filter(function(c){return clientNatureBien(c)==='logement';}).length+' souscripteur(s)'}; })(),
+    (function(){ var v=dashEncaisseLots(null,'terrain'); return {l:'dont Terrains (souscriptions)', v:fmtF(v)+' FCFA', i:'🗺️', c:'', d:(DATA.clients||[]).filter(function(c){return clientNatureBien(c)==='terrain';}).length+' souscripteur(s) — hors registre Cessions'}; })(),
     {l:'dont Cessions foncières',  v:fmtF(totalVerseCes)+' FCFA', i:'🏞️', c:'',      d:cessions.length+' cession(s)'},
+    (function(){ var nb=(DATA.clients||[]).filter(function(c){return clientNatureBien(c)==='indetermine';}).length; if(!nb) return null; var v=dashEncaisseLots(null,'indetermine'); return {l:'⚠️ Nature à préciser', v:fmtF(v)+' FCFA', i:'❓', c:'kpi-red', d:nb+' souscripteur(s) sans lot rattaché ou lot sans nature définie — à corriger', click:"goTo('finance');switchDashTab('finance')"}; })(),
     {l:'Décaissements total',      v:fmtF(totalDec)+' FCFA',   i:'💸', c:'kpi-red',  d:'Charges enregistrées'},
     {l:'Décaissements du mois',    v:fmtF(decM)+' FCFA',       i:'📉', c:'',         d:'Charges du mois en cours'},
     {l:'Solde net (Enc. − Déc.)',  v:fmtF(soldeNet)+' FCFA',   i:'📊', c:soldeNet>=0?'kpi-green':'kpi-red', d:soldeNet>=0?'Trésorerie positive':'Attention : tension trésorerie'},
@@ -27244,6 +27252,7 @@ function buildDashTabFinance() {  var cessions      = DATA.cessions_foncieres ||
     {l:'Reste à recouvrer', v:fmtF(encours)+' FCFA',   i:'⏳', c:encours>100000000?'kpi-red':'', d:DATA.clients.length+' souscripteurs + '+cessions.length+' cession(s)', click:'rarOuvrir()'},
     {l:'Reste à recouvrer — dont Logements', v:fmtF(_core.resteLogements||0)+' FCFA', i:'🏠', c:'', d:'Souscriptions logements', click:'rarOuvrir()'},
     {l:'Reste à recouvrer — dont Terrains',  v:fmtF(_core.resteTerrainsLot||0)+' FCFA', i:'🗺️', c:'', d:'Souscriptions terrains', click:'rarOuvrir()'},
+    ((_core.resteIndetermine||0)>0 ? {l:'⚠️ Reste à recouvrer — Nature à préciser', v:fmtF(_core.resteIndetermine||0)+' FCFA', i:'❓', c:'kpi-red', d:'Sans lot rattaché ou lot sans nature définie', click:'rarOuvrir()'} : null),
     {l:'Reste à recouvrer — dont Cessions',  v:fmtF(_core.resteCessions||0)+' FCFA', i:'🏞️', c:'', d:'Cessions foncières', click:'rarOuvrir()'},
     {l:'Taux de recouvrement',      v:tauxRecouv+'%',           i:'📈', c:tauxRecouv>=50?'kpi-green':'kpi-red', d:fmtF(totalVerse)+' / '+fmtF(totalDu)},
     {l:'Clients en retard',         v:retard,                   i:'⚠️', c:retard>0?'kpi-red':'kpi-green', d:retard+' dossiers à relancer', click:'goTo(\'relances\')'},
@@ -27966,12 +27975,22 @@ function buildDashTabStock() {
    Portefeuille Foncier) et le pipeline AF_STAGES (module Foncier Ops).
    ══════════════════════════════════════════════════════════════ */
 function buildDashTabFoncier() {
-  var parcelles = DATA.parcelles || [];
+  /* [FIX cohérence SIG] Une parcelle fusionnée ou découpée via le module
+     Cartographie reste dans DATA.parcelles (traçabilité), marquée
+     fusionnee_dans/decoupee_dans — la SIG l'exclut déjà de ses propres
+     listes actives (_sigParcellesActives), mais ce tableau de bord la
+     comptait encore : nombre de parcelles et superficie totale se
+     retrouvaient gonflés à chaque fusion/découpage (l'ancienne parcelle ET
+     sa/ses remplaçante(s) comptées ensemble). La valeur foncière (coût
+     d'acquisition cumulé), elle, reste calculée sur la totalité : la
+     fusion ne duplique aucun coût réel, l'ancienne parcelle porte le seul
+     historique d'acquisition valide. */
+  var parcelles = (DATA.parcelles || []).filter(function(p){ return !p.fusionnee_dans && !p.decoupee_dans; });
   var nb        = parcelles.length;
   var supTot    = parcelles.reduce(function(s,p){ return s+(p.superficie||0); }, 0);
   var tfDef     = parcelles.filter(function(p){ return p.statut==='tf_definitif'; }).length;
   var acd       = parcelles.filter(function(p){ return ['acd','tf_provisoire','prospection','negociation'].indexOf(p.statut) >= 0; }).length;
-  var valeur    = parcelles.reduce(function(s,p){ return s+((p.prix_acq||0)+(p.frais_mutation||0)+(p.frais_bornage||0)+(p.frais_notaire||0)); }, 0);
+  var valeur    = (DATA.parcelles || []).reduce(function(s,p){ return s+((p.prix_acq||0)+(p.frais_mutation||0)+(p.frais_bornage||0)+(p.frais_notaire||0)); }, 0);
   var contentieux = parcelles.filter(function(p){ return p.statut==='contentieux'; });
   var cessions  = DATA.cessions_foncieres || [];
   var opsActives = (DATA.af_operations || []).filter(function(o){ return o.stage !== 'commercialisation' || !o.archive; });
@@ -29404,9 +29423,11 @@ function renderClients() {
       + '<td>' + escHtml(c.tel) + '<br><span style="font-size:11px;color:var(--blanc-dim);">' + escHtml(c.email || '') + '</span></td>'
       + '<td>' + commCell + '</td>'
       + '<td>' + (prog ? escHtml(prog.nom) : '—') + '</td>'
-      + '<td>' + (lot ? 'Lot ' + lot.numero + (lot.nature === 'terrain'
+      + '<td>' + (lot ? 'Lot ' + lot.numero + (clientNatureBien(c) === 'terrain'
             ? ' <span title="Terrain nu" style="color:#2563EB;">🗺️</span>'
-            : ' <span title="Maison / logement" style="color:#B87333;">🏠</span>') : '—') + '</td>'
+            : (clientNatureBien(c) === 'indetermine'
+              ? ' <span title="Nature à préciser" style="color:#DC2626;">❓</span>'
+              : ' <span title="Maison / logement" style="color:#B87333;">🏠</span>')) : '—') + '</td>'
       + '<td style="font-size:12px;white-space:nowrap;">' + dateShort(c.date_souscription || c.date_debut) + '</td>'
       + '<td>' + fcfa(c.montant_total) + '</td>'
       + '<td style="color:var(--vert);">' + fcfa(verse) + '</td>'
@@ -29484,7 +29505,8 @@ function exportClients() {
     var prog = DATA.programmes.find(function(p) { return p.id === c.programme_id; });
     var lot = DATA.lots.find(function(l) { return l.id === c.lot_id; });
     var lotLabel = lot ? ('Lot ' + lot.numero) : '';
-    var natureLabel = lot ? (lot.nature === 'terrain' ? 'Terrain' : 'Logement') : '';
+    var _natCl = clientNatureBien(c);
+    var natureLabel = _natCl === 'terrain' ? 'Terrain' : (_natCl === 'logement' ? 'Logement' : 'Nature à préciser');
     rows.push([c.nom, c.prenoms, c.tel, c.email || '', prog ? prog.nom : '', lotLabel, natureLabel, c.montant_total || 0, verse, Math.max(0, (c.montant_total || 0) - verse), c.statut || 'actif']);
   });
   var csv = rows.map(function(r) { return r.map(function(v) { return '"' + String(v).replace(/"/g, '""') + '"'; }).join(';'); }).join('\n');
@@ -34296,6 +34318,14 @@ function compteEstParent(code){
   code = String(code);
   return (APP.planComptable||[]).some(function(c){ return c.code !== code && String(c.code).indexOf(code) === 0; });
 }
+/* Sous-comptes réels qui font qu'un code est considéré « de regroupement »
+   (compteEstParent ne dit que oui/non — ceci dit LESQUELS, pour pouvoir les
+   repérer dans Paramètres → Plan comptable sans deviner). */
+function compteEnfantsDe(code) {
+  if (!code) return [];
+  code = String(code);
+  return (APP.planComptable||[]).filter(function(c){ return c.code !== code && String(c.code).indexOf(code) === 0; });
+}
 function compteParentDe(code){
   code = String(code||'');
   var best = null;
@@ -34806,6 +34836,31 @@ function ouvrirVisaEcritures() {
     + '<div>⛔ Non visables : <strong style="color:var(--rouge);">' + ko.length + '</strong></div></div>';
 
   if (ko.length) {
+    /* [Diagnostic] Quand un même compte « de regroupement » bloque des
+       dizaines/centaines de pièces d'un coup (cas typique : le compte de
+       trésorerie caisse par défaut est devenu un préfixe d'un autre compte
+       du plan), l'utilisateur a besoin de savoir LEQUEL et POURQUOI en un
+       coup d'œil plutôt que d'ouvrir les pièces une à une. */
+    var comptesRegroupement = {};
+    ko.forEach(function(k){
+      k.pb.forEach(function(p){
+        var m = /^compte de regroupement (.+)$/.exec(p);
+        if (m) { comptesRegroupement[m[1]] = (comptesRegroupement[m[1]] || 0) + 1; }
+      });
+    });
+    var codesRegroupement = Object.keys(comptesRegroupement).sort(function(a,b){ return comptesRegroupement[b]-comptesRegroupement[a]; });
+    if (codesRegroupement.length) {
+      corps += '<div style="margin-bottom:12px;padding:10px 12px;background:rgba(225,29,72,0.08);border-left:3px solid var(--rouge);border-radius:4px;font-size:12px;line-height:1.7;">'
+        + '<strong style="color:var(--rouge);">🔎 Diagnostic — compte(s) à l\'origine du blocage</strong><br>'
+        + codesRegroupement.map(function(code){
+            var enfants = compteEnfantsDe(code);
+            return '<div style="margin-top:6px;">Le compte <strong>' + escHtml(code) + '</strong> est utilisé directement sur <strong>' + comptesRegroupement[code] + ' pièce(s)</strong>, mais votre plan comptable contient ' + enfants.length + ' sous-compte(s) qui en font un compte de regroupement :<br>'
+              + enfants.slice(0,10).map(function(c){ return '&nbsp;&nbsp;— <span style="font-family:monospace;">' + escHtml(c.code) + '</span> ' + escHtml(c.label||''); }).join('<br>')
+              + (enfants.length>10 ? '<br>&nbsp;&nbsp;… et ' + (enfants.length-10) + ' autre(s)' : '')
+              + '<br>→ Paramètres → Plan comptable : si un de ces sous-comptes est une erreur/doublon, supprimez-le — <strong>' + escHtml(code) + '</strong> redevient un compte normal et toutes les pièces bloquées à cause de lui se libèrent. Sinon, il faut faire pointer les comptes par défaut (Trésorerie…) vers un compte réellement terminal.</div>';
+          }).join('')
+        + '</div>';
+    }
     corps += '<div style="font-weight:700;color:var(--rouge);font-size:12.5px;">Anomalies bloquantes — ces pièces ne peuvent pas être visées</div>'
       + '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Pièce</th><th>Libellé</th><th>Anomalie</th><th></th></tr></thead><tbody>'
       + ko.slice(0, 30).map(function(k){
@@ -37337,8 +37392,7 @@ function dashEncaisseLots(filterFn, natureFilter) {
   if (natureFilter) {
     idxClientNature = {};
     (DATA.clients || []).forEach(function(c) {
-      var lot = (DATA.lots || []).find(function(l){ return l.id === c.lot_id; });
-      idxClientNature[c.id] = (lot && lot.nature === 'terrain') ? 'terrain' : 'logement';
+      idxClientNature[c.id] = clientNatureBien(c);
     });
   }
   return (DATA.versements || [])
@@ -38545,6 +38599,13 @@ function ckRecouvrement() {
     { label:'Cessions foncières', val:r.resteCessions, icone:'🏞️', coul:'#B87333', fn:'rarOuvrir()' },
     { label:'Partenaires financiers', val:r.resteFinanciers, icone:'🤝', coul:'#B87333', fn:"goTo('foncier');switchTab('foncier','financiers');finRender()" }
   ];
+  /* Carte affichée seulement s'il existe des dossiers dont la nature (terrain
+     / logement) est réellement indéterminable — lot manquant ou sans nature
+     définie. Avant le correctif, ce montant était noyé sans le dire dans
+     « Souscripteurs — Logements » ci-dessus. */
+  if (r.resteIndetermine > 0) {
+    cartes.push({ label:'⚠️ Nature à préciser', val:r.resteIndetermine, icone:'❓', coul:'var(--rouge)', fn:'rarOuvrir()' });
+  }
   el.innerHTML = '<div class="kpi-grid" style="margin-bottom:16px;">'
     + cartes.map(function(k){
         return '<div class="kpi-card" data-icon="'+k.icone+'" style="cursor:pointer;" onclick="'+k.fn+'" title="Ouvrir le détail">'
@@ -38621,21 +38682,51 @@ function buildDashTabCockpit() {
    cessions foncières (échéance unique). On les traite donc séparément tout en
    les additionnant dans le total, qui doit rester égal au KPI. */
 
+/* Nature (terrain/logement) d'un souscripteur — SOURCE UNIQUE, appelée par
+   tout ce qui doit ventiler foncier vs logement (Cockpit, Finance, Compta >
+   Versements, Recouvrement, export CSV, doc contrat, commissions).
+   [FIX répartition RAR] Avant ce correctif, six écrans refaisaient chacun
+   leur propre recherche live (DATA.lots.find sur c.lot_id) et retombaient
+   SILENCIEUSEMENT sur « logement » dès que le lot était introuvable —
+   dossier sans lot_id, lot supprimé depuis, ou lot créé avant l'ajout du
+   champ « nature » (un nouveau lot vaut « villa » par défaut, sauf s'il est
+   rattaché à un programme de type lotissement). Résultat : des souscripteurs
+   fonciers étaient comptés comme logements dans le reste à recouvrer,
+   faussant la répartition entre les deux catégories — exactement le
+   symptôme remonté sur les dossiers anciens.
+   Cette fonction fait confiance en priorité à client.nature_bien, figé une
+   fois pour toutes à la souscription (insensible à une modification ou
+   suppression ultérieure du lot) ; à défaut elle retombe sur le lot
+   rattaché ; si la nature reste réellement impossible à établir, elle
+   renvoie 'indetermine' — JAMAIS 'logement' par défaut — pour que ces
+   dossiers restent visibles et corrigibles au lieu d'être noyés dans la
+   mauvaise catégorie. */
+function clientNatureBien(c) {
+  if (!c) return 'indetermine';
+  if (c.nature_bien === 'terrain') return 'terrain';
+  if (c.nature_bien === 'maison' || c.nature_bien === 'logement') return 'logement';
+  var lot = c.lot_id ? (DATA.lots || []).find(function(l){ return l.id === c.lot_id; }) : null;
+  if (lot && lot.nature) return lot.nature === 'terrain' ? 'terrain' : 'logement';
+  return 'indetermine';
+}
+
 /* Reste à recouvrer par catégorie — source unique partagée par le Cockpit
    (ckRecouvrement) et l'onglet Compta > Versements (buildComptaVersementsKPIs),
    pour que les deux affichages ne divergent jamais. Calculé entité par entité
    (pas sur des lignes de versement filtrables) et Math.max(0, ...) par entité,
    pour qu'un trop-perçu sur un dossier ne compense pas un impayé sur un autre. */
 function rarResteParCategorie() {
-  var resteLogements = 0, resteTerrainsLot = 0;
+  var resteLogements = 0, resteTerrainsLot = 0, resteIndetermine = 0;
   (DATA.clients || []).forEach(function(c) {
     var verse = (DATA.versements || []).filter(function(v){ return v.client_id === c.id && v.statut !== 'annule'; })
       .reduce(function(a, v){ return a + (parseFloat(v.montant) || 0); }, 0);
     var reste = Math.max(0, (c.montant_total || 0) - verse);
-    var lot = c.lot_id ? (DATA.lots || []).find(function(l){ return l.id === c.lot_id; }) : null;
-    if (lot && lot.nature === 'terrain') resteTerrainsLot += reste; else resteLogements += reste;
+    var nat = clientNatureBien(c);
+    if (nat === 'terrain') resteTerrainsLot += reste;
+    else if (nat === 'logement') resteLogements += reste;
+    else resteIndetermine += reste;
   });
-  var resteLots = resteLogements + resteTerrainsLot;
+  var resteLots = resteLogements + resteTerrainsLot + resteIndetermine;
 
   var resteCessions = (DATA.cessions_foncieres || []).reduce(function(s, cf) {
     return s + Math.max(0, (cf.prix_cession || 0) - (typeof crecVerse === 'function' ? crecVerse(cf) : (parseFloat(cf.montant_encaisse) || 0)));
@@ -38647,7 +38738,7 @@ function rarResteParCategorie() {
     return s + Math.max(0, (f.montant_engagement || 0) - verse);
   }, 0);
 
-  return { resteLots: resteLots, resteLogements: resteLogements, resteTerrainsLot: resteTerrainsLot, resteCessions: resteCessions, resteFinanciers: resteFinanciers, resteTotal: resteLots + resteCessions + resteFinanciers };
+  return { resteLots: resteLots, resteLogements: resteLogements, resteTerrainsLot: resteTerrainsLot, resteIndetermine: resteIndetermine, resteCessions: resteCessions, resteFinanciers: resteFinanciers, resteTotal: resteLots + resteCessions + resteFinanciers };
 }
 
 function _rarMensualite(c) {
@@ -38688,7 +38779,7 @@ function rarCollecter() {
       ? ('Lot ' + (lot.numero || '?') + (lot.ilot ? ' — îlot ' + lot.ilot : '') + (lot.superficie ? ' · ' + Math.round(lot.superficie) + ' m²' : ''))
       : '—';
     var typeBien = lot ? (lot.usage || lot.type || 'Lot') : '—';
-    var natureLot = lot && lot.nature === 'terrain' ? 'terrain' : 'logement';
+    var natureLot = clientNatureBien(c);
 
     /* Le client porte normalement le nom du commercial en clair, mais les
        dossiers anciens n'ont parfois que commercial_id : même repli que pour
@@ -38776,6 +38867,7 @@ function rarOuvrir() {
   if (!el) return;
   var f = (document.getElementById('rar-filtre-classe')||{}).value || '';
   var fc = (document.getElementById('rar-filtre-comm')||{}).value || '';
+  var fn = (document.getElementById('rar-filtre-nature')||{}).value || '';
   var q = ((document.getElementById('rar-recherche')||{}).value||'').toLowerCase().trim();
   var lignes = rarCollecter();
 
@@ -38806,7 +38898,7 @@ function rarOuvrir() {
   });
   var parType = {};
   lignes.forEach(function(l){
-    var k = l.nature === 'cession' ? 'Parcelle foncière (cession)' : (l.natureLot === 'terrain' ? 'Terrain (souscription)' : 'Logement (souscription)');
+    var k = l.nature === 'cession' ? 'Parcelle foncière (cession)' : (l.natureLot === 'terrain' ? 'Terrain (souscription)' : (l.natureLot === 'indetermine' ? '⚠️ Nature à préciser (souscription)' : 'Logement (souscription)'));
     parType[k] = parType[k] || { nb:0, montant:0 };
     parType[k].nb++; parType[k].montant += l.reste;
   });
@@ -38823,6 +38915,7 @@ function rarOuvrir() {
   var vue = lignes.filter(function(l){
     if (f && _rarClasse(l).cle !== f) return false;
     if (fc && (l.commercial||'—') !== fc) return false;
+    if (fn && l.natureLot !== fn) return false;
     if (!q) return true;
     return ((l.nom||'') + ' ' + (l.dossier||'') + ' ' + (l.bien||'') + ' ' + (l.commercial||'')).toLowerCase().indexOf(q) !== -1;
   });
@@ -38889,7 +38982,7 @@ function rarOuvrir() {
         + '<td><strong>' + escHtml(l.nom) + '</strong>'
         + (l.dossier ? '<br><span style="font-size:10px;color:var(--dim);">' + escHtml(l.dossier) + '</span>' : '')
         + (l.tel ? '<br><span style="font-size:10px;color:var(--dim);">' + escHtml(l.tel) + '</span>' : '') + '</td>'
-        + '<td>' + escHtml(l.bien) + '<br><span style="font-size:10px;color:var(--dim);">' + escHtml(l.nature === 'cession' ? 'Cession foncière' : 'Souscription') + '</span></td>'
+        + '<td>' + escHtml(l.bien) + '<br><span style="font-size:10px;color:var(--dim);">' + escHtml(l.nature === 'cession' ? 'Cession foncière' : 'Souscription') + '</span>' + (l.natureLot === 'indetermine' ? '<br><span style="font-size:10px;color:var(--rouge);font-weight:600;">⚠️ Nature à préciser</span>' : '') + '</td>'
         + '<td>' + escHtml(l.commercial) + '</td>'
         + '<td style="text-align:right;">' + fmtF(l.du) + '</td>'
         + '<td style="text-align:right;">' + fmtF(l.verse) + '<br><span style="font-size:10px;color:var(--dim);">' + l.pctVerse + ' %</span></td>'
@@ -38897,6 +38990,7 @@ function rarOuvrir() {
         + '<td style="text-align:right;color:' + (l.duAJour?'var(--rouge)':'var(--blanc-dim)') + ';">' + (l.duAJour?fmtF(l.duAJour):'—') + '</td>'
         + '<td><span style="color:' + cl.col + ';font-size:10px;">' + escHtml(cl.lib) + '</span></td>'
         + '<td style="white-space:nowrap;">'
+        + (l.nature === 'souscripteur' && l.natureLot === 'indetermine' ? '<a class="btn btn-secondary btn-sm btn-icon" title="Corriger le lot rattaché (nature à préciser)" onclick="closeModal(\'modal-reste-recouvrer\');openClientModal(\'' + l.id + '\')">⚠️</a> ' : '')
         + (l.tel ? '<a class="btn btn-secondary btn-sm btn-icon" title="Appeler" href="tel:' + escHtml(l.tel) + '">📞</a> '
                  + '<a class="btn btn-secondary btn-sm btn-icon" title="WhatsApp" target="_blank" rel="noopener" href="https://wa.me/' + escHtml(String(l.tel).replace(/\D/g,'')) + '">💬</a>' : '')
         + '</td>'
@@ -38953,6 +39047,7 @@ function dashFinanceCore(pmin) {
     du: du, encours: encours,
     resteLogements: _rar ? _rar.resteLogements : null,
     resteTerrainsLot: _rar ? _rar.resteTerrainsLot : null,
+    resteIndetermine: _rar ? _rar.resteIndetermine : null,
     resteCessions: _rar ? _rar.resteCessions : null,
     resteFinanciers: _rar ? _rar.resteFinanciers : null,
     decaisse: decaisse, soldeNet: encaisse - decaisse,
@@ -39431,7 +39526,7 @@ function printContrat(clientId) {
   /* Un terrain nu n'a ni mode de livraison (gros œuvre / clé en main) ni
      surface bâtie à afficher au même titre qu'un logement — ces lignes sont
      donc adaptées selon la nature réelle du lot. */
-  var estTerrainDoc = !!(lot && lot.nature === 'terrain');
+  var estTerrainDoc = clientNatureBien(client) === 'terrain';
   var win = window.open('', '_blank', 'width=800,height=700');
   var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>' + titreDoc.charAt(0) + titreDoc.slice(1).toLowerCase() + '</title>'
     + '<style>body{font-family:Georgia,serif;color:#222;padding:40px;max-width:750px;margin:0 auto;}'
@@ -47718,6 +47813,20 @@ async function comptabiliserPaieUI(){
   var mode=(document.getElementById('lp-compta-mode')||{}).value||'global';
   var regl=(document.getElementById('lp-compta-reglement')||{}).checked;
   var dept=(document.getElementById('lp-filter-dept-journal')||{}).value||'';
+  /* [Cohérence multi-division] Le mode « global » (agrégat multi-employés en
+     une seule écriture) laisse volontairement division:'' — voir comptabiliserPaie.
+     Si l'entreprise a plusieurs divisions, ce choix fait disparaître TOUTES
+     les charges de personnel (brut, charges patronales, net à payer) de
+     chaque Bilan et Compte de Résultat filtré par division : elles ne
+     restent visibles que dans la vue « Toutes divisions ». Seul le mode
+     « détail » (1 écriture par salarié, division de sa fiche employé)
+     répartit correctement la charge. On avertit avant, pas après. */
+  if (mode === 'global' && (DATA.divisions||[]).length > 1 && !dept) {
+    if (!confirm('⚠️ Mode « global » avec plusieurs divisions configurées.\n\n'
+      + 'Les charges de personnel (brut, charges patronales, net à payer) de cette écriture agrégée ne seront rattachées à AUCUNE division — elles resteront invisibles dans le Bilan et le Compte de Résultat filtrés par division, visibles seulement en « Toutes divisions ».\n\n'
+      + 'Pour une comptabilité par division exacte, préférez le mode « détail » (1 écriture par salarié, rattachée à la division de sa fiche).\n\n'
+      + 'Continuer quand même en mode global ?')) return;
+  }
   var exist=(DATA.ecritures||[]).filter(function(e){return e._paie_mois===moisKey;}).length;
   if(exist && !confirm('La paie de '+moisKey+' est deja comptabilisee ('+exist+' ecritures). Regenerer ?')) return;
   var r=await comptabiliserPaie(moisKey,{mode:mode,reglement:regl,dept:dept});
@@ -53131,6 +53240,16 @@ function sigSimuOpen(){
   if(!window.turf){ _sigLoadTurf(); toast('Moteur géospatial en cours de chargement — réessayez dans un instant.','info'); return; }
   var a=_sigAreaM2(path);
   document.getElementById('sig-simu-cible').innerHTML='Parcelle <strong>'+escHtml(p.ref||p.id)+'</strong> · '+(a/10000).toFixed(4)+' ha ('+Math.round(a).toLocaleString('fr-FR')+' m²)';
+  /* [Anti-oubli] Le coût d'acquisition par défaut du simulateur est 0 — si
+     la parcelle a déjà un coût réel enregistré (prix_acq + frais), on le
+     préremplit ici en FCFA/m². Sans ça, la marge prévisionnelle ignore
+     silencieusement un coût pourtant déjà réellement engagé et connu,
+     donnant une marge artificiellement optimiste. */
+  var acqInput = document.getElementById('simu-acq');
+  if (acqInput && p) {
+    var coutTotal = (parseFloat(p.prix_acq)||0)+(parseFloat(p.frais_mutation)||0)+(parseFloat(p.frais_bornage)||0)+(parseFloat(p.frais_notaire)||0);
+    if (coutTotal > 0 && a > 0) acqInput.value = Math.round(coutTotal / a);
+  }
   ['simu-pdf-btn','simu-gj-btn','simu-mat-btn'].forEach(function(id){ var b=document.getElementById(id); if(b)b.style.display='none'; });
   document.getElementById('simu-metrics').innerHTML='';
   openModal('modal-sig-simu');
@@ -53371,7 +53490,7 @@ async function sigSimuMaterialiser(){
     var l=m.lots[i]; var ring=l.rings[0]||[]; if(ring.length<3) continue;
     var cLat=ring.reduce(function(s,q){return s+q[0];},0)/ring.length, cLng=ring.reduce(function(s,q){return s+q[1];},0)/ring.length;
     var lot={ id:uid(), programme_id:prog.id, parcelle_id:m.parcelleId,
-      numero:'LOT-'+String(i+1).padStart(3,'0'), ilot:'', type:'terrain',
+      numero:'LOT-'+String(i+1).padStart(3,'0'), ilot:'', type:'terrain', nature:'terrain',
       surface:Math.round(l.area), prix:Math.round(l.area*m.params.prix), statut:'disponible',
       geo_polygon:ring, lat:cLat, lng:cLng, notes:'Issu du simulateur d\'aménagement', created_at:today() };
     DATA.lots=DATA.lots||[]; DATA.lots.push(lot);
@@ -58412,6 +58531,32 @@ async function cloturerExercice(annee, divisionId) {
   var divLabel = divisionId ? (_nomDivision ? _nomDivision(divisionId) : divisionId) : 'Toutes divisions (consolidé)';
   if (!exigerDroit('Comptabilite','v','la clôture de l\'exercice')) return;
   if (!hasRole('admin')) { toast('Réservé à l\'administrateur.', 'error'); return; }
+  /* [FIX cohérence multi-exercices] Les à-nouveaux d'une clôture ne portent
+     que le solde des comptes de bilan MOUVEMENTÉS DURANT CETTE ANNÉE-LÀ
+     (voir soldesCptBilan plus bas). Un client dont la vente a été reconnue
+     il y a plusieurs exercices et qui n'a RIEN versé pendant une année
+     intermédiaire reste correct SI chaque exercice est clôturé dans l'ordre
+     (son solde survit via l'à-nouveau de chaque année, même sans mouvement).
+     Mais si un exercice intermédiaire est sauté (jamais clôturé), la chaîne
+     se rompt : l'à-nouveau généré ici ne reprendra pas le solde antérieur à
+     l'exercice sauté, et ce client — pourtant toujours débiteur au vrai Bilan
+     — disparaît silencieusement des à-nouveaux et du FEC de cet exercice.
+     Le Bilan affiché reste juste (il recalcule sur tout l'historique), mais
+     les à-nouveaux eux-mêmes, remis à un expert-comptable ou un logiciel
+     externe, seraient incomplets. On avertit donc si un exercice antérieur
+     avec mouvement n'a jamais été clôturé, sauf s'il est couvert par un
+     Bilan d'ouverture (reprise volontaire, cas normal au démarrage). */
+  var anteriorite = (DATA.ecritures||[]).some(function(e){
+    if (!e.date || e.date >= String(annee)+'-01-01') return false;
+    if (divisionId && (e.division||'') !== divisionId) return false;
+    return true;
+  });
+  if (anteriorite && !exerciceEstClos((annee-1)+'-12-31', divisionId || undefined)) {
+    var aBO = (DATA.ecritures||[]).some(function(e){ return (e.reference||'').indexOf('BO-'+annee) === 0; });
+    if (!aBO && !confirm('⚠️ Des écritures antérieures à '+annee+' existent, mais l\'exercice '+(annee-1)+' — '+divLabel+' n\'a jamais été clôturé (et aucun Bilan d\'ouverture '+annee+' ne le couvre).\n\n'
+      + 'Les à-nouveaux générés ici ne reprendront QUE les mouvements de '+annee+' — le solde d\'un client sans aucun versement pendant une année sautée (recouvrement à cheval sur plusieurs exercices) disparaîtrait silencieusement des à-nouveaux et du FEC, même si le Bilan affiché reste correct.\n\n'
+      + 'Clôturez '+(annee-1)+' d\'abord si possible. Continuer quand même avec '+annee+' ?')) return;
+  }
   if (!confirm('🔒 Clôturer l\'exercice '+annee+' — '+divLabel+' ?\n\n• Solde de chaque compte 6 et 7 mouvementé → résultat\n• Génération des à-nouveaux au 01/01/'+(annee+1)+'\n• Verrouillage des écritures '+annee+' de ce périmètre\n\nCette action est réversible uniquement par un admin.')) return;
   if (!confirm('Dernière confirmation — exercice '+annee+' — '+divLabel+' ?')) return;
 
@@ -59717,6 +59862,7 @@ async function saveBienAmort() {
   if (!DATA.biens_amort) DATA.biens_amort = [];
   DATA.biens_amort.push(bien);
   await dbPut('biens_amort', bien);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_biens_amort', bien);
   // Écriture comptable d'immobilisation — acquisition par le promoteur.
   // Contrepartie choisie par l'utilisateur : 481 (Fournisseurs d'investissements, à crédit) ou 512 (Banque, au comptant).
   var compteContrepartie = (document.getElementById('amort-compte-contrepartie')||{}).value || '481';
@@ -59724,7 +59870,22 @@ async function saveBienAmort() {
     libelle:'Immobilisation — '+des,compte:bien.compte_immo,compte_debit:bien.compte_immo,
     compte_credit:compteContrepartie,montant:val,type:'actif',mode:'interne',division:bien.division_id||'',notes:'Immobilisation acquise par le promoteur',created_at:date};
   DATA.ecritures.push(ecr);
-  await dbPut('ecritures',ecr);
+  /* [FIX] Le retour de dbPut n'était jamais vérifié. Si la date tombe sur un
+     exercice clos, dbPut rejette l'écriture (et l'a déjà retirée de
+     DATA.ecritures côté garde centrale) — mais ce code continuait quand
+     même à afficher « ✅ Bien enregistré », alors que l'écriture comptable
+     n'existait nulle part : le bien apparaissait en immobilisation sans
+     aucune contrepartie comptable, silencieusement. Même filet que pour la
+     caisse (cf. genererEcritureCaisseMouvement). */
+  var _okEcr = await dbPut('ecritures', ecr);
+  if (_okEcr === false) {
+    var _i = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; });
+    if (_i >= 0) DATA.ecritures.splice(_i, 1);
+    toast('❌ Bien enregistré, mais écriture comptable refusée (exercice clos à cette date) — corrigez la date d\'acquisition.', 'error');
+    switchAmortTab('biens');
+    return;
+  }
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecr);
   switchAmortTab('biens');
   toast('✅ Bien enregistré en immobilisation ('+bien.compte_immo+').','success');
 }
@@ -59982,8 +60143,16 @@ async function comptabiliserDotations() {
   var annee=parseInt(sel?sel.value||new Date().getFullYear():new Date().getFullYear());
   var biens=DATA.biens_amort||[];
   if(!biens.length){toast('Aucun bien à amortir.','error');return;}
+  /* [FIX] Aucun garde-fou exercice clos ici, contrairement à la fonction
+     sœur genererDotationsAnnuelles() (module Immobilisations). Sans lui,
+     dbPut rejette silencieusement chaque écriture sur un exercice clos,
+     mais la boucle continuait, affichant « ✅ N dotations comptabilisées »
+     alors qu'aucune ne persistait réellement. */
+  if (typeof exerciceEstClos === 'function' && exerciceEstClos(annee+'-12-31')) {
+    toast('🔒 Exercice ' + annee + ' clôturé — dotations bloquées.', 'error'); return;
+  }
 
-  var count=0;
+  var count=0, refuses=0;
   var date31dec=annee+'-12-31';
   for(var i=0;i<biens.length;i++){
     var b=biens[i];
@@ -60007,10 +60176,21 @@ async function comptabiliserDotations() {
     };
     var idxDot = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; });
     if (idxDot >= 0) DATA.ecritures[idxDot] = ecr; else DATA.ecritures.push(ecr);
-    await dbPut('ecritures',ecr);
+    /* [FIX] Retour de dbPut vérifié — même filet que genererDotationsAnnuelles()
+       et genererEcritureCaisseMouvement(), sinon une écriture rejetée reste
+       fantôme en mémoire (visible dans la session en cours) sans jamais être
+       persistée ni synchronisée. */
+    var _ok = await dbPut('ecritures',ecr);
+    if (_ok === false) {
+      var _idx2 = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; });
+      if (_idx2 >= 0) DATA.ecritures.splice(_idx2, 1);
+      refuses++;
+      continue;
+    }
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecr);
     count++;
   }
-  toast('✅ '+count+' dotations comptabilisées — Débit 681 / Crédit 281 pour '+annee+'.','success');
+  toast('✅ '+count+' dotation(s) comptabilisée(s) — Débit 681 / Crédit 281 pour '+annee+'.'+(refuses?' · ⛔ '+refuses+' refusée(s) (exercice clos).':''), refuses?'warning':'success');
   buildDotations();
   buildAmortBiens();
 }
@@ -70350,12 +70530,16 @@ function populateAllERP() {
    MODULE FONCIER & JURIDIQUE
 ══════════════════════════════════════════════════════ */
 function updateFoncierKPIs() {
-  var nb = DATA.parcelles.length;
-  var supTot = DATA.parcelles.reduce(function(s,p){ return s+(p.superficie||0); }, 0);
-  var tfDef = DATA.parcelles.filter(function(p){ return p.statut==='tf_definitif'; }).length;
-  var acd = DATA.parcelles.filter(function(p){ return ['acd','tf_provisoire','prospection','negociation'].indexOf(p.statut) >= 0; }).length;
+  /* [FIX cohérence SIG] Même correctif que buildDashTabFoncier : exclure les
+     parcelles fusionnées/découpées du décompte et de la surface, pour ne
+     pas compter à la fois l'ancienne parcelle et sa/ses remplaçante(s). */
+  var parcellesActives = (DATA.parcelles || []).filter(function(p){ return !p.fusionnee_dans && !p.decoupee_dans; });
+  var nb = parcellesActives.length;
+  var supTot = parcellesActives.reduce(function(s,p){ return s+(p.superficie||0); }, 0);
+  var tfDef = parcellesActives.filter(function(p){ return p.statut==='tf_definitif'; }).length;
+  var acd = parcellesActives.filter(function(p){ return ['acd','tf_provisoire','prospection','negociation'].indexOf(p.statut) >= 0; }).length;
   var valeur = DATA.parcelles.reduce(function(s,p){ return s+((p.prix_acq||0)+(p.frais_mutation||0)+(p.frais_bornage||0)+(p.frais_notaire||0)); }, 0);
-  var contentieux = DATA.parcelles.filter(function(p){ return p.statut==='contentieux'; }).length;
+  var contentieux = parcellesActives.filter(function(p){ return p.statut==='contentieux'; }).length;
   var el = function(id, val) { var e = document.getElementById(id); if (e) e.textContent = val; };
   el('kpi-nb-parcelles', nb);
   el('kpi-sup-totale', fmtF(supTot) + ' m²');
@@ -91400,7 +91584,7 @@ function buildComptaVersementsKPIs(lignesLot, lignesFoncier) {
      unique partagée avec le Cockpit (garantit que les deux vues concordent). */
   var _rar = rarResteParCategorie();
   var resteLots = _rar.resteLots, resteLogements = _rar.resteLogements, resteTerrainsLot = _rar.resteTerrainsLot,
-      resteCessions = _rar.resteCessions, resteFinanciers = _rar.resteFinanciers, resteTotal = _rar.resteTotal;
+      resteIndetermine = _rar.resteIndetermine, resteCessions = _rar.resteCessions, resteFinanciers = _rar.resteFinanciers, resteTotal = _rar.resteTotal;
 
   el.innerHTML = [
     { label: 'Total encaissé', val: fmt(totalGeneral), icon: '📥', color: 'var(--vert)', cls: 'kpi-green' },
@@ -91414,9 +91598,10 @@ function buildComptaVersementsKPIs(lignesLot, lignesFoncier) {
     { label: 'Reste à recouvrer — Souscripteurs lots', val: fmt(resteLots), icon: '🏠', color: 'var(--rouge)', cls: '' },
     { label: 'Reste à recouvrer — dont Logements', val: fmt(resteLogements), icon: '🏠', color: 'var(--rouge)', cls: '' },
     { label: 'Reste à recouvrer — dont Terrains', val: fmt(resteTerrainsLot), icon: '🗺️', color: 'var(--rouge)', cls: '' },
+    (resteIndetermine > 0 ? { label: '⚠️ Reste à recouvrer — Nature à préciser', val: fmt(resteIndetermine), icon: '❓', color: 'var(--rouge)', cls: 'kpi-red' } : null),
     { label: 'Reste à recouvrer — Cessions foncières', val: fmt(resteCessions), icon: '🏞️', color: 'var(--rouge)', cls: '' },
     { label: 'Reste à recouvrer — Partenaires financiers', val: fmt(resteFinanciers), icon: '🤝', color: 'var(--rouge)', cls: '' }
-  ].map(function(k) {
+  ].filter(Boolean).map(function(k) {
     return '<div class="kpi-card ' + k.cls + '" data-icon="' + k.icon + '">'
       + '<div class="kpi-label">' + k.label + '</div>'
       + '<div class="kpi-value or" style="color:' + k.color + ';font-size:16px;">' + k.val + '</div>'
@@ -91429,6 +91614,15 @@ function renderComptaVersements() {
   if (!tb) return;
   var q = ((document.getElementById('compta-vers-search') || {}).value || '').toLowerCase();
   var filtreSrc = (document.getElementById('compta-vers-filtre') || {}).value || '';
+  var dateDebut = (document.getElementById('compta-vers-date-debut') || {}).value || '';
+  var dateFin = (document.getElementById('compta-vers-date-fin') || {}).value || '';
+  var dansPeriode = function(d) {
+    if (!d) return !dateDebut && !dateFin;
+    var j = String(d).slice(0,10);
+    if (dateDebut && j < dateDebut) return false;
+    if (dateFin && j > dateFin) return false;
+    return true;
+  };
   var typeLabels = { frais_souscription:'Frais souscription', apport:'Apport', mensualite:'Mensualité', regularisation:'Régularisation', autre:'Autre' };
   var modeLabels = { especes:'Espèces', virement:'Virement', cheque:'Chèque', mobile_money:'Mobile Money' };
   var fmt = (typeof fcfa === 'function') ? fcfa : function(n){ return fmtF(n) + ' FCFA'; };
@@ -91441,15 +91635,14 @@ function renderComptaVersements() {
     var comms = (DATA.commissions || []).filter(function(c){ return c.versement_id === v.id && c.statut !== 'annulee'; });
     var totComm = comms.reduce(function(s, c){ return s + (c.montant_comm || 0); }, 0);
     var payee = comms.some(function(c){ return c.statut === 'payee'; });
-    var lot = cl && cl.lot_id ? (DATA.lots || []).find(function(l){ return l.id === cl.lot_id; }) : null;
-    var estTerrain = !!(lot && lot.nature === 'terrain');
+    var natCl = clientNatureBien(cl);
     return {
       ref: v.ref, date: v.date, nom: nom,
       typeTxt: typeLabels[v.type] || v.type || '—', typeBadge: 'badge-bleu',
       montant: parseFloat(v.montant) || 0, mode: modeLabels[v.mode] || v.mode || '—',
       commCount: comms.length, commTot: totComm, commPayee: payee, commNote: '',
-      source: 'lot', srcIcon: estTerrain ? '🗺️' : '🏠',
-      srcTitle: estTerrain ? 'Souscripteur — terrain' : 'Souscripteur — logement',
+      source: 'lot', srcIcon: natCl === 'terrain' ? '🗺️' : (natCl === 'indetermine' ? '❓' : '🏠'),
+      srcTitle: natCl === 'terrain' ? 'Souscripteur — terrain' : (natCl === 'indetermine' ? 'Souscripteur — nature à préciser' : 'Souscripteur — logement'),
       editAction: "editVersement('" + v.id + "')",
       editTitle: 'Modifier (recalcule les commissions)'
     };
@@ -91484,17 +91677,21 @@ function renderComptaVersements() {
     });
   });
 
-  buildComptaVersementsKPIs(lignesLot, lignesFoncier);
+  buildComptaVersementsKPIs(
+    dateDebut||dateFin ? lignesLot.filter(function(r){ return dansPeriode(r.date); }) : lignesLot,
+    dateDebut||dateFin ? lignesFoncier.filter(function(r){ return dansPeriode(r.date); }) : lignesFoncier
+  );
 
   var base = filtreSrc === 'lot' ? lignesLot
            : filtreSrc === 'cession' ? lignesFoncier
            : lignesLot.concat(lignesFoncier);
 
   var list = base.filter(function(r) {
+    if (!dansPeriode(r.date)) return false;
     return !q || (r.nom || '').toLowerCase().indexOf(q) !== -1 || (r.ref || '').toLowerCase().indexOf(q) !== -1;
   }).sort(function(a, b){ return new Date(b.date) - new Date(a.date); });
 
-  if (!list.length) { tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--blanc-dim);padding:20px;">Aucun versement</td></tr>'; return; }
+  if (!list.length) { tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--blanc-dim);padding:20px;">Aucun versement' + ((dateDebut||dateFin) ? ' sur cette période' : '') + '</td></tr>'; return; }
 
   tb.innerHTML = list.map(function(r) {
     var commTxt = r.commCount
@@ -110514,6 +110711,25 @@ async function _caisseDelMvt(mvt) {
   if (DATA.ecritures.some(function(e){ return e.id === ecrIdCible; })) {
     if (await deleteRecord('ecritures', ecrIdCible) === false) return false; // exercice clos
   }
+  /* [FIX cascade Budget → Caisse] Un mouvement peut avoir « payé » une DA
+     (fiches_engagement_depense, voir da_id posé dans caisseSaveBon). Sans ce
+     rattrapage, supprimer ce mouvement laissait la DA marquée « décaissée »
+     avec mouvement_caisse_id pointant vers un enregistrement qui n'existe
+     plus : impossible de la repayer proprement, et le budget la comptait
+     toujours comme engagée/décaissée alors qu'aucun mouvement de caisse ne
+     le prouve réellement. On la fait revenir en « validée » (toujours
+     engagée sur le budget, prête pour un nouveau décaissement). */
+  var daLiee = mvt.da_id ? (DATA.fiches_engagement_depense||[]).find(function(x){ return x.id === mvt.da_id; }) : null;
+  if (!daLiee) daLiee = (DATA.fiches_engagement_depense||[]).find(function(x){ return x.mouvement_caisse_id === mvt.id; });
+  if (daLiee && daLiee.statut === 'decaissee') {
+    daLiee.statut = 'validee';
+    delete daLiee.mouvement_caisse_id;
+    delete daLiee.decaisse_le;
+    daLiee._modifie = new Date().toISOString();
+    await dbPut('fiches_engagement_depense', daLiee);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_fiches_engagement_depense', daLiee);
+    if (typeof budgetRenderFed === 'function') budgetRenderFed();
+  }
   await deleteRecord('caisse_mouvements', mvt.id);
   return true;
 }
@@ -117408,6 +117624,12 @@ goTo = function(page) {
         <select class="filter-select" id="rar-filtre-comm" onchange="rarOuvrir()">
           <option value="">Tous commerciaux</option>
         </select>
+        <select class="filter-select" id="rar-filtre-nature" onchange="rarOuvrir()">
+          <option value="">Logements + Terrains + Cessions</option>
+          <option value="terrain">🗺️ Terrains uniquement</option>
+          <option value="logement">🏠 Logements uniquement</option>
+          <option value="indetermine">⚠️ Nature à préciser uniquement</option>
+        </select>
         <button class="btn btn-secondary btn-sm" onclick="rarExporterCSV()">⬇ Export CSV</button>
       </div>
       <div id="rar-contenu"></div>
@@ -118282,11 +118504,12 @@ function sigRenderLots(){
   if(!show) return;
   var lots=(DATA.lots||[]).filter(function(l){ return l.geo_polygon && l.geo_polygon.length>=3; });
   lots.forEach(function(l){
-    var col=MASSE_TYPE_COLORS[l.type]||'#64748b';
+    var estTerrain = l.nature === 'terrain';
+    var col = estTerrain ? '#8B6914' : (MASSE_TYPE_COLORS[l.type]||'#64748b');
     var stFill = l.statut==='vendu'?0.55:(l.statut==='reserve'?0.4:0.28);
     var prog=(DATA.programmes||[]).find(function(p){return p.id===l.programme_id;});
     var pop='<strong>Lot '+escHtml(String(l.numero||''))+'</strong>'+(l.ilot?' · Îlot '+escHtml(String(l.ilot)):'')+'<br>'
-      +(prog?escHtml(prog.nom)+'<br>':'')+'Type : '+escHtml(l.type||'—')+' ('+(l.pieces||'?')+' p.)<br>'
+      +(prog?escHtml(prog.nom)+'<br>':'')+(estTerrain?'🗺️ Terrain nu':'🏠 Type : '+escHtml(l.type||'—')+' ('+(l.pieces||'?')+' p.)')+'<br>'
       +'Surface : '+(l.surface||'—')+' m²'+(l.surface_calc?' (calc '+l.surface_calc+')':'')+'<br>Statut : '+escHtml(l.statut||'—');
     L.polygon(l.geo_polygon,{color:col,weight:1.4,fillColor:col,fillOpacity:stFill}).addTo(_sig.lotsLayer).bindPopup(pop);
     var a=0,o=0; l.geo_polygon.forEach(function(q){a+=q[0];o+=q[1];}); a/=l.geo_polygon.length; o/=l.geo_polygon.length;
