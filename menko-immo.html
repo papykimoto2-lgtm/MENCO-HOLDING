@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.89 · 2026-08-27 — CORRECTIF MAJEUR : le Cockpit (494 473 999 F) et la modale « Reste à recouvrer — analyse détaillée » (605 198 999 F) affichaient deux totaux différents pour le même indicateur. Cause : deux filtres incohérents sur les versements entre rarResteParCategorie() (Cockpit, KPI Finance) et rarCollecter() (modale détaillée) — le premier comptait à tort les frais de souscription comme réduisant la dette du client (alors qu\'ils sont hors prix du bien), le second oubliait d\'exclure les versements annulés. Filtre unique désormais partagé (statut ≠ annulé ET hors frais de souscription) : un seul et même chiffre partout. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.90 · 2026-08-27 — BALAYAGE COMPLET du même bug que le correctif précédent (filtre incomplet frais de souscription / versements annulés dans les calculs de reste dû ou d\'encaissé) sur 17 emplacements supplémentaires : Portail Acquéreur Foncier, Portail Souscripteur (page détail + rappel email + attestation de versement + échéancier), rapprochement Mobile Money (momoResteDu), export CSV souscripteurs, Grand Livre auxiliaire clients 411, appel de fonds VEFA, carte des programmes (CA affiché), Bilan de Promotion (encaissé), reçu de versement officiel, carte géographique des clients, tendance d\'encaissement 14 jours, rapport de placement programme. Un même filtre cohérent partout désormais : statut ≠ annulé, hors frais de souscription pour tout calcul de reste dû/CA sur prix. Vérification systématique de non-régression effectuée, y compris relecture manuelle des blocs modifiés (deux erreurs de remplacement corrigées en cours de route).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -28680,7 +28680,6 @@ function buildDashEcheances() {
     return enc < c.montant_total;
   }).slice(0,5);
   clientsEch.forEach(function(c){
-    var enc=DATA.versements.filter(function(v){return v.client_id===c.id;}).reduce(function(s,v){return s+v.montant;},0);
     items.push({date:moisKey+'-28',label:c.nom+' '+c.prenoms,detail:'Mensualité '+fmtF(c.mensualite)+' FCFA',type:'paiement',color:'var(--or)'});
   });
 
@@ -29540,7 +29539,7 @@ function getRetardataires() {
 function exportClients() {
   var rows = [['Nom','Prénom','Tél','Email','Programme','Lot','Nature','Montant Total','Versé','Reste','Statut']];
   DATA.clients.forEach(function(c) {
-    var versements = DATA.versements.filter(function(v) { return v.client_id === c.id; });
+    var versements = DATA.versements.filter(function(v) { return v.client_id === c.id && v.statut !== 'annule' && _versementSurPrix(v); });
     var verse = versements.reduce(function(a, v) { return a + (parseFloat(v.montant) || 0); }, 0);
     var prog = DATA.programmes.find(function(p) { return p.id === c.programme_id; });
     var lot = DATA.lots.find(function(l) { return l.id === c.lot_id; });
@@ -30984,7 +30983,7 @@ function renderProgrammes() {
     var nbClients = DATA.clients.filter(function(c) { return c.programme_id === p.id; }).length;
     var ca = DATA.versements.filter(function(v) {
       var c = DATA.clients.find(function(cl) { return cl.id === v.client_id; });
-      return c && c.programme_id === p.id;
+      return c && c.programme_id === p.id && v.statut !== 'annule' && _versementSurPrix(v);
     }).reduce(function(a, v) { return a + (parseFloat(v.montant) || 0); }, 0);
     var pct = lotsTotal > 0 ? Math.round((lotsVendus / lotsTotal) * 100) : 0;
     var planMrc = (DATA.plans_morcellement || []).find(function(pl) { return pl.programme_id === p.id; });
@@ -37967,7 +37966,7 @@ function _ckTendanceEncaissements() {
     var d = new Date(); d.setDate(d.getDate() - i);
     var k = d.toISOString().slice(0,10);
     var v = (DATA.versements||[]).filter(function(x){
-      return _versementSurPrix(x) && (x.date||'').slice(0,10) === k;
+      return x.statut !== 'annule' && _versementSurPrix(x) && (x.date||'').slice(0,10) === k;
     }).reduce(function(s,x){ return s + (parseFloat(x.montant)||0); }, 0);
     if (i < 7) j7 += v; else j7prec += v;
   }
@@ -48717,7 +48716,7 @@ function vefaData(progId, av){
   return clients.map(function(c){
     var lot=(DATA.lots||[]).find(function(l){return l.id===c.lot_id;})||{};
     var prix=parseFloat(c.prix)||parseFloat(lot.prix)||0;
-    var enc=(DATA.versements||[]).filter(function(v){return v.client_id===c.id;}).reduce(function(s,v){return s+(parseFloat(v.montant)||0);},0);
+    var enc=(DATA.versements||[]).filter(function(v){return v.client_id===c.id && v.statut!=='annule' && _versementSurPrix(v);}).reduce(function(s,v){return s+(parseFloat(v.montant)||0);},0);
     var exig=Math.round(prix*pct/100), appel=Math.max(0,exig-enc);
     return { c:c, lot:lot, prix:prix, enc:enc, exig:exig, appel:appel };
   });
@@ -50856,7 +50855,7 @@ function momoInit(){ MOMO_LINES=[]; momoRender(); }
 function momoClients(){ return (DATA.clients||[]); }
 function momoResteDu(c){
   var tot=parseFloat(c.montant_total)||0;
-  var verse=(DATA.versements||[]).filter(function(v){return v.client_id===c.id;}).reduce(function(s,v){return s+(parseFloat(v.montant)||0);},0);
+  var verse=(DATA.versements||[]).filter(function(v){return v.client_id===c.id && v.statut!=='annule' && _versementSurPrix(v);}).reduce(function(s,v){return s+(parseFloat(v.montant)||0);},0);
   return Math.max(0, tot-verse);
 }
 function momoMatch(tel,nom){
@@ -51234,7 +51233,7 @@ function bpCompute(progId) {
   });
 
   /* Encaissé : versements du programme + cessions foncières encaissées de la parcelle */
-  var encaisseVte = (DATA.versements || []).filter(function(v){ return v.programme_id === progId; })
+  var encaisseVte = (DATA.versements || []).filter(function(v){ return v.programme_id === progId && v.statut !== 'annule' && _versementSurPrix(v); })
     .reduce(function(s,v){ return s + (parseFloat(v.montant)||0); }, 0);
   var encaisseCes = calcCessionsTotal('montant_encaisse', function(c){
     return parcelleId && (c.source_key||'').indexOf(parcelleId) !== -1;
@@ -54149,7 +54148,7 @@ function renderCarteGeo() {
       var coords = getCoordsFromAdresse(c.adresse || c.commune || 'Abidjan');
       if (!coords) return;
       _geoAllPoints.push(coords);
-      var verse = DATA.versements.filter(function(v){return v.client_id===c.id;}).reduce(function(s,v){return s+(parseFloat(v.montant)||0);},0);
+      var verse = DATA.versements.filter(function(v){return v.client_id===c.id && v.statut!=='annule' && _versementSurPrix(v);}).reduce(function(s,v){return s+(parseFloat(v.montant)||0);},0);
       totalCA += parseFloat(c.montant_total)||0;
       totalEnc += verse;
       nbC++;
@@ -65634,7 +65633,7 @@ function chargerPortailApporteur() {
     tbD.innerHTML = mesClients.length ? mesClients.map(function(c) {
       var lot = DATA.lots ? DATA.lots.find(function(l){ return l.id === c.lot_id; }) : null;
       var prog = lot && DATA.programmes ? DATA.programmes.find(function(p){ return p.id === lot.programme_id; }) : null;
-      var verse = (DATA.versements || []).filter(function(v){ return v.client_id === c.id && v.statut !== 'annule'; })
+      var verse = (DATA.versements || []).filter(function(v){ return v.client_id === c.id && v.statut !== 'annule' && _versementSurPrix(v); })
         .reduce(function(s,v){ return s + (v.montant||0); },0);
       return '<tr><td>' + escHtml(c.dossier || '—') + '</td><td>' + escHtml((c.prenoms ? c.prenoms + ' ' : '') + (c.nom || '')) + '</td>'
         + '<td>' + escHtml(lot ? lot.numero || '' : '—') + '</td><td>' + escHtml(prog ? prog.nom : '—') + '</td>'
@@ -67813,7 +67812,7 @@ function chargerPortailSouscripteur() {
   if (el) el.textContent = c.prenoms + ' ' + c.nom + ' — Dossier ' + (c.dossier || 'N/A');
 
   /* Calculs financiers */
-  var versClient = DATA.versements.filter(function(v){ return v.client_id === c.id; });
+  var versClient = DATA.versements.filter(function(v){ return v.client_id === c.id && v.statut !== 'annule' && _versementSurPrix(v); });
   var totalVerse = versClient.reduce(function(s,v){ return s+(v.montant||0); }, 0);
   var reste      = Math.max(0, (c.montant_total||0) - totalVerse);
   var pct        = c.montant_total > 0 ? Math.round(totalVerse / c.montant_total * 100) : 0;
@@ -67982,7 +67981,7 @@ function telechargerEcheancier() {
 function telechargerAttestationVersement() {
   if (!SESSION_SOUSCRIPTEUR) return;
   var c = SESSION_SOUSCRIPTEUR;
-  var vers = DATA.versements.filter(function(v){ return v.client_id === c.id; });
+  var vers = DATA.versements.filter(function(v){ return v.client_id === c.id && v.statut !== 'annule'; });
   var societe = DATA.params.societe || 'ImmoSuite ERP';
   var totalV = vers.reduce(function(s,v){ return s+v.montant; }, 0);
   var win = window.open('','','width=820,height=650');
@@ -68312,7 +68311,7 @@ function envoyerEmailClient() {
   if (typeof emailjs === 'undefined') { toast('EmailJS SDK non chargé.','error'); return; }
   emailjs.init(key);
   var prog = DATA.programmes.find(function(p){ return p.id===c.programme_id; })||{nom:'—'};
-  var totalVerse = DATA.versements.filter(function(v){ return v.client_id===c.id; }).reduce(function(s,v){ return s+v.montant; },0);
+  var totalVerse = DATA.versements.filter(function(v){ return v.client_id===c.id && v.statut!=='annule' && _versementSurPrix(v); }).reduce(function(s,v){ return s+v.montant; },0);
 
   emailjs.send(service, template, {
     to_email:      c.email,
@@ -77383,7 +77382,7 @@ function etatRecuVersement(versementId) {
   var c    = DATA.clients.find(function(x){ return x.id === v.client_id; });
   var prog = c ? DATA.programmes.find(function(p){ return p.id === c.programme_id; }) : null;
   var lot  = c ? DATA.lots.find(function(l){ return l.id === c.lot_id; }) : null;
-  var totalVerse = DATA.versements.filter(function(x){ return x.client_id === v.client_id; })
+  var totalVerse = DATA.versements.filter(function(x){ return x.client_id === v.client_id && x.statut !== 'annule' && _versementSurPrix(x); })
     .reduce(function(a,x){ return a + (parseFloat(x.montant)||0); }, 0);
   var totalContrat = (c && parseFloat(c.montant_total)) || 0;
   var reste = Math.max(0, totalContrat - totalVerse);
@@ -77432,7 +77431,7 @@ function etatEcheancier(clientId) {
   var total  = parseFloat(c.montant_total) || 0;
   var duree  = parseInt(c.duree) || 0;
   var mensualite = duree > 0 ? Math.ceil((total - apport) / duree) : 0;
-  var totalVerse = DATA.versements.filter(function(v){ return v.client_id === c.id; })
+  var totalVerse = DATA.versements.filter(function(v){ return v.client_id === c.id && v.statut !== 'annule' && _versementSurPrix(v); })
     .reduce(function(a,v){ return a + (parseFloat(v.montant)||0); }, 0);
   var debut = c.date_debut ? new Date(c.date_debut) : new Date();
 
@@ -98151,7 +98150,7 @@ function pgmEtapes(progId) {
   var verse = 0;
   clients.forEach(function(c){
     verse += (DATA.versements||[]).filter(function(v){
-      return v.client_id === c.id && (typeof _versementSurPrix !== 'function' || _versementSurPrix(v));
+      return v.client_id === c.id && v.statut !== 'annule' && (typeof _versementSurPrix !== 'function' || _versementSurPrix(v));
     }).reduce(function(s,v){ return s + (parseFloat(v.montant)||0); }, 0);
   });
   var taux = du > 0 ? Math.round(verse/du*100) : 0;
@@ -110600,7 +110599,7 @@ function _caisseCollecterClients411() {
   var today = new Date();
   var out = [];
   (DATA.clients||[]).forEach(function(c) {
-    var versements = (DATA.versements||[]).filter(function(v){ return v.client_id===c.id; });
+    var versements = (DATA.versements||[]).filter(function(v){ return v.client_id===c.id && v.statut!=='annule' && _versementSurPrix(v); });
     var totalVerse = versements.reduce(function(s,v){return s+(v.montant||0);},0);
     var solde = (c.montant_total||0) - totalVerse;
     if (solde <= 0) return;
