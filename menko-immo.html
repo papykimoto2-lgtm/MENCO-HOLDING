@@ -30188,7 +30188,7 @@ async function comptabiliserVenteTerrain(lot) {
   var cClient  = requireCompteDefaut('client_lots');
   var cProduit = requireCompteDefaut('terrain_produit');
   var cStock   = cd.terrain_stock || '';
-  var taux     = (cd.terrain_taux_tva != null ? cd.terrain_taux_tva : 18) / 100;
+  var taux     = (cd.terrain_taux_tva != null ? cd.terrain_taux_tva : tvaDefaut()) / 100;
 
   var viab = !!lot.terrain_tva;
   var prixTtc = (lot.terrain_prix_ttc !== false);   /* défaut : prix saisi = TTC */
@@ -33316,7 +33316,7 @@ function loadComptesDefaut() {
   document.getElementById('cd-cession-produit').value = cd.cession_produit || '';
   var _tp=document.getElementById('cd-terrain-produit'); if(_tp)_tp.value=cd.terrain_produit|| '';
   var _tt=document.getElementById('cd-terrain-tva'); if(_tt)_tt.value=cd.terrain_tva_collectee|| '';
-  var _ttx=document.getElementById('cd-terrain-taux-tva'); if(_ttx)_ttx.value=(cd.terrain_taux_tva!=null?cd.terrain_taux_tva:18);
+  var _ttx=document.getElementById('cd-terrain-taux-tva'); if(_ttx)_ttx.value=(cd.terrain_taux_tva!=null?cd.terrain_taux_tva:tvaDefaut());
   var _ts=document.getElementById('cd-terrain-stock'); if(_ts)_ts.value=cd.terrain_stock|| '';
   var _tv2=document.getElementById('cd-terrain-variation'); if(_tv2)_tv2.value=cd.terrain_variation|| '';
   var _ta=document.getElementById('cd-terrain-achat'); if(_ta)_ta.value=cd.terrain_achat|| '';
@@ -33404,7 +33404,7 @@ function saveComptesDefaut() {
     cession_produit:     document.getElementById('cd-cession-produit').value.trim() || '',
     terrain_produit:     (document.getElementById('cd-terrain-produit')||{}).value ? document.getElementById('cd-terrain-produit').value.trim() : '',
     terrain_tva_collectee: (document.getElementById('cd-terrain-tva')||{}).value ? document.getElementById('cd-terrain-tva').value.trim() : '',
-    terrain_taux_tva:    parseFloat((document.getElementById('cd-terrain-taux-tva')||{}).value) || 18,
+    terrain_taux_tva:    parseFloat((document.getElementById('cd-terrain-taux-tva')||{}).value) || tvaDefaut(),
     terrain_stock:       (document.getElementById('cd-terrain-stock')||{}).value ? document.getElementById('cd-terrain-stock').value.trim() : '',
     terrain_variation:   (document.getElementById('cd-terrain-variation')||{}).value ? document.getElementById('cd-terrain-variation').value.trim() : '',
     terrain_achat:       (document.getElementById('cd-terrain-achat')||{}).value ? document.getElementById('cd-terrain-achat').value.trim() : '',
@@ -37164,6 +37164,18 @@ function calcCessionsTotal(field, filterFn) {
    le registre dédié Cessions foncières, SOIT via une souscription classique
    (client rattaché à un lot de nature 'terrain'). Sans ce filtre, ce second
    cas de vente de terrain restait invisible, noyé dans le total générique. */
+/* Taux TVA par défaut de la société — source unique (Paramètres → param-tva).
+   Utilisé partout où un formulaire avait sa propre valeur par défaut « 18 »
+   codée en dur (DQE, situations, avenants, conventions BTP, fiscalité) : un
+   changement de taux dans Paramètres se répercute désormais sur tous les
+   nouveaux formulaires au lieu de rester figé à 18 dans une dizaine d'écrans
+   indépendants. Les enregistrements déjà saisis gardent leur propre valeur
+   (tva/tva_pct stocké) — seul le défaut proposé pour une NOUVELLE saisie change. */
+function tvaDefaut() {
+  var v = DATA.params && parseFloat(DATA.params.tva);
+  return (v > 0) ? v : 18;
+}
+
 function dashEncaisseLots(filterFn, natureFilter) {
   var idxClientNature = null;
   if (natureFilter) {
@@ -50721,6 +50733,22 @@ function bpCompute(progId) {
   var caLotsVendus = lotsVendus.reduce(function(s,l){ return s + (parseFloat(l.prix)||0); }, 0);
   var caLotsPotentiel = lots.reduce(function(s,l){ return s + (parseFloat(l.prix)||0); }, 0);
 
+  /* ── Distinction Logements (bâti) / Terrains nus au sein du même programme ──
+     Un programme mixte (ex. villas + lots à bâtir viabilisés) mélangeait tout
+     sous « lots » : impossible de savoir quelle part de la marge vient de la
+     vente de maisons et laquelle vient de la vente de terrain nu. Même critère
+     de nature que partout ailleurs dans l'ERP (lot.nature === 'terrain'). */
+  var lotsLogement = lots.filter(function(l){ return l.nature !== 'terrain'; });
+  var lotsTerrain  = lots.filter(function(l){ return l.nature === 'terrain'; });
+  var lotsVendusLogement = lotsLogement.filter(function(l){ return l.statut === 'vendu' || l.statut === 'reserve'; });
+  var lotsVendusTerrain  = lotsTerrain.filter(function(l){ return l.statut === 'vendu' || l.statut === 'reserve'; });
+  var caLogementEngage = lotsVendusLogement.reduce(function(s,l){ return s + (parseFloat(l.prix)||0); }, 0);
+  var caTerrainEngage  = lotsVendusTerrain.reduce(function(s,l){ return s + (parseFloat(l.prix)||0); }, 0);
+  var caLogementPotentiel = lotsLogement.reduce(function(s,l){ return s + (parseFloat(l.prix)||0); }, 0);
+  var caTerrainPotentiel  = lotsTerrain.reduce(function(s,l){ return s + (parseFloat(l.prix)||0); }, 0);
+  var caLogementReel = lotsLogement.filter(function(l){ return l.statut==='vendu'; }).reduce(function(s,l){ return s + (parseFloat(l.prix)||0); }, 0);
+  var caTerrainReel  = lotsTerrain.filter(function(l){ return l.statut==='vendu'; }).reduce(function(s,l){ return s + (parseFloat(l.prix)||0); }, 0);
+
   /* Cessions liées à la parcelle du programme */
   var parcelleId = prog.parcelle_id || '';
   var cessions = (DATA.cessions_foncieres || []).filter(function(c){
@@ -50816,6 +50844,9 @@ function bpCompute(progId) {
   var triAnnuel = (dureeMois>0 && roi>-100) ? (Math.pow(1+roi/100, 12/dureeMois)-1)*100 : 0;
 
   return { prog:prog, lots:lots, lotsVendus:lotsVendus, caLotsVendus:caLotsVendus, caLotsPotentiel:caLotsPotentiel,
+    lotsLogement:lotsLogement, lotsTerrain:lotsTerrain, lotsVendusLogement:lotsVendusLogement, lotsVendusTerrain:lotsVendusTerrain,
+    caLogementEngage:caLogementEngage, caTerrainEngage:caTerrainEngage, caLogementPotentiel:caLogementPotentiel, caTerrainPotentiel:caTerrainPotentiel,
+    caLogementReel:caLogementReel, caTerrainReel:caTerrainReel,
     cessions:cessions, caCessions:caCessions, encaisse:encaisse, coutFoncier:coutFoncier, coutTravaux:coutTravaux,
     caLotsVendusReel:caLotsVendusReel, caLotsReserves:caLotsReserves, produitsRealises:produitsRealises, margeRealisee:margeRealisee, tauxMargeRealisee:tauxMargeRealisee,
     coutHonoTech:coutHonoTech, coutCommercial:coutCommercial, coutFinancier:coutFinancier, coutAleas:coutAleas, coutsAnnexes:coutsAnnexes,
@@ -50842,6 +50873,8 @@ function bpRender() {
   var kpi = function(l,v,c,d){ return '<div class="kpi-card" style="border-top:3px solid '+c+';"><div class="kpi-label">'+l+'</div><div class="kpi-value" style="font-size:17px;color:'+c+';">'+v+'</div>'+(d?'<div class="kpi-delta">'+d+'</div>':'')+'</div>'; };
   elK.innerHTML =
     kpi('Produits engagés', fmtF(b.produits)+' F', 'var(--vert)', b.lotsVendus.length+' lot(s) vendu(s)/réservé(s)')
+    + kpi('dont Logements', fmtF(b.caLogementEngage)+' F', 'var(--vert)', b.lotsVendusLogement.length+'/'+b.lotsLogement.length+' logement(s)')
+    + kpi('dont Terrains', fmtF(b.caTerrainEngage)+' F', 'var(--vert)', b.lotsVendusTerrain.length+'/'+b.lotsTerrain.length+' terrain(s)')
     + kpi('Coûts opération', fmtF(b.couts)+' F', 'var(--rouge)', 'foncier+travaux+annexes')
     + kpi('Marge actuelle', fmtF(b.marge)+' F', b.marge>=0?'var(--vert)':'var(--rouge)', b.tauxMarge.toFixed(1)+'% du CA')
     + kpi('Marge potentielle', fmtF(b.margePot)+' F', b.margePot>=0?'var(--bleu)':'var(--rouge)', b.tauxMargePot.toFixed(1)+'% si 100% vendu')
@@ -50855,11 +50888,15 @@ function bpRender() {
 
   document.getElementById('bp-produits').innerHTML =
     row('Ventes lots VENDUS (signés)', fmtF(b.caLotsVendusReel)+' F', 'var(--vert)')
+    + row('&nbsp;&nbsp;dont Logements', fmtF(b.caLogementReel)+' F', 'var(--dim)')
+    + row('&nbsp;&nbsp;dont Terrains', fmtF(b.caTerrainReel)+' F', 'var(--dim)')
     + row('Cessions foncières liées', fmtF(b.caCessions)+' F', 'var(--vert)')
     + row('= Produits réalisés', fmtF(b.produitsRealises)+' F', 'var(--vert)', true)
     + row('Réservations (engagées, non signées)', fmtF(b.caLotsReserves)+' F', 'var(--or)')
     + row('= Produits engagés', fmtF(b.produits)+' F', 'var(--or)', true)
     + row('Stock lots restant ('+(b.lots.length-b.lotsVendus.length)+' lots)', fmtF(b.caLotsPotentiel-b.caLotsVendus)+' F', 'var(--dim)')
+    + row('&nbsp;&nbsp;dont Logements ('+(b.lotsLogement.length-b.lotsVendusLogement.length)+')', fmtF(b.caLogementPotentiel-b.caLogementEngage)+' F', 'var(--dim)')
+    + row('&nbsp;&nbsp;dont Terrains ('+(b.lotsTerrain.length-b.lotsVendusTerrain.length)+')', fmtF(b.caTerrainPotentiel-b.caTerrainEngage)+' F', 'var(--dim)')
     + row('= Potentiel total', fmtF(b.produitsPotentiel)+' F', 'var(--bleu)', true);
 
   document.getElementById('bp-couts').innerHTML =
@@ -50898,6 +50935,8 @@ function bpRender() {
     row('Prix moyen lot', fmtF(b.prixMoyenLot)+' F')
     + row('Lots à vendre pour couvrir les coûts', b.lotsSeuil + ' lot(s)', 'var(--or)', true)
     + row('Lots vendus/réservés', b.lotsVendus.length + ' / ' + b.lots.length)
+    + row('&nbsp;&nbsp;dont Logements', b.lotsVendusLogement.length + ' / ' + b.lotsLogement.length, 'var(--dim)')
+    + row('&nbsp;&nbsp;dont Terrains', b.lotsVendusTerrain.length + ' / ' + b.lotsTerrain.length, 'var(--dim)')
     + '<div style="margin-top:10px;padding:10px;border-radius:8px;background:' + (seuilAtteint?'rgba(74,196,122,0.1)':'rgba(240,173,78,0.1)') + ';font-size:12px;font-weight:700;color:' + (seuilAtteint?'var(--vert)':'var(--or)') + ';">'
     + (b.lotsSeuil===0 ? '✅ Coûts couverts par les cessions.' : (seuilAtteint ? '✅ Seuil de rentabilité atteint.' : '⏳ Encore ' + (b.lotsSeuil - b.lotsVendus.length) + ' lot(s) à vendre pour atteindre le seuil.'))
     + '</div>';
@@ -50938,7 +50977,7 @@ function bpRenderComparatif(){
       var w=Math.round(Math.abs(b.roi)/maxROI*100);
       return '<tr style="border-top:1px solid var(--bord);cursor:pointer;" onclick="document.getElementById(\'bp-programme\').value=\''+r.p.id+'\';bpRender();window.scrollTo(0,0);">'
         +'<td style="padding:7px 0;"><span style="margin-right:6px;">'+med+'</span>'+escHtml(r.p.nom||r.p.id)+'</td>'
-        +'<td style="text-align:right;">'+b.lotsVendus.length+'/'+b.lots.length+'</td>'
+        +'<td style="text-align:right;">'+b.lotsVendus.length+'/'+b.lots.length+(b.lotsTerrain.length?'<br><span style="font-size:9px;color:var(--dim);">L:'+b.lotsVendusLogement.length+'/'+b.lotsLogement.length+' · T:'+b.lotsVendusTerrain.length+'/'+b.lotsTerrain.length+'</span>':'')+'</td>'
         +'<td style="text-align:right;">'+fmtF(Math.round(b.couts))+'</td>'
         +'<td style="text-align:right;color:'+(b.margePot>=0?'var(--vert)':'var(--rouge)')+';font-weight:600;">'+fmtF(Math.round(b.margePot))+'</td>'
         +'<td style="text-align:right;">'+b.tauxMargePot.toFixed(0)+'%</td>'
@@ -51115,6 +51154,8 @@ function bpImprimer() {
     + '<div style="text-align:right;"><div style="font-weight:800;font-size:14px;">' + escHtml(b.prog.nom||'') + '</div><div style="font-size:10px;color:#6B6B9A;">Édité le ' + new Date().toLocaleDateString('fr-FR') + '</div></div></div>'
     + '<h2>PRODUITS</h2><table>'
     + tr('Ventes lots (vendus/réservés — ' + b.lotsVendus.length + ')', fmtF(b.caLotsVendus)+' F')
+    + tr('&nbsp;&nbsp;dont Logements (' + b.lotsVendusLogement.length + '/' + b.lotsLogement.length + ')', fmtF(b.caLogementEngage)+' F')
+    + tr('&nbsp;&nbsp;dont Terrains (' + b.lotsVendusTerrain.length + '/' + b.lotsTerrain.length + ')', fmtF(b.caTerrainEngage)+' F')
     + tr('Cessions foncières', fmtF(b.caCessions)+' F')
     + tr('Produits engagés', fmtF(b.produits)+' F', '#1A6B3A', true)
     + tr('Potentiel total (100% vendu)', fmtF(b.produitsPotentiel)+' F', '#1D4ED8')
@@ -63835,7 +63876,7 @@ function onSelectConventionSitu(){
     var nb=(DATA.situations||[]).filter(function(s){return s.convention_id===id;}).length+1;
     document.getElementById('situ-numero').value='SIT-'+String(nb).padStart(3,'0');
     /* TVA/retenue/avance par défaut depuis la convention */
-    document.getElementById('situ-tva').value=conv.tva_pct||18;
+    document.getElementById('situ-tva').value=conv.tva_pct||tvaDefaut();
   }
   /* Récap visuel marché */
   if(recap){
@@ -63949,7 +63990,7 @@ function openSituation(convId){
   APP.editingId=null;var cSel=document.getElementById('situ-convention');
   if(cSel){ cSel.innerHTML='<option value="">— Sélectionner —</option>'; DATA.conventions.forEach(function(c){var o=document.createElement('option');o.value=c.id;o.textContent=c.numero+' — '+(DATA.constructeurs.find(function(x){return x.id===c.constructeur_id;})||{raison_sociale:'?'}).raison_sociale;cSel.appendChild(o);}); }
   ['situ-numero','situ-periode','situ-travaux','situ-observations'].forEach(function(f){var e=document.getElementById(f);if(e)e.value='';});
-  document.getElementById('situ-date').value=today();document.getElementById('situ-montant-ht').value='0';document.getElementById('situ-tva').value='18';document.getElementById('situ-montant-ttc').value='0';document.getElementById('situ-retenue').value='0';document.getElementById('situ-net').value='0';document.getElementById('situ-statut').value='soumise';
+  document.getElementById('situ-date').value=today();document.getElementById('situ-montant-ht').value='0';document.getElementById('situ-tva').value=tvaDefaut();document.getElementById('situ-montant-ttc').value='0';document.getElementById('situ-retenue').value='0';document.getElementById('situ-net').value='0';document.getElementById('situ-statut').value='soumise';
   var md=document.getElementById('situ-mode-decompte'); if(md)md.value='avancement';
   var ar=document.getElementById('situ-avance-recup'); if(ar)ar.value='0';
   var rc=document.getElementById('situ-recap-conv'); if(rc)rc.style.display='none';
@@ -63959,7 +64000,7 @@ function openSituation(convId){
   document.getElementById('modal-situation').classList.add('open');
 }
 function openSituationForConv(convId){openSituation(convId);}
-function openSituationEdit(id){APP.editingId=id;openSituation();setTimeout(function(){var s=DATA.situations.find(function(x){return x.id===id;});if(!s)return;var el=function(eid,v){var e=document.getElementById(eid);if(e)e.value=(v===undefined||v===null)?'':v;};el('situ-convention',s.convention_id);el('situ-numero',s.numero);el('situ-date',s.date);el('situ-periode',s.periode);el('situ-mode-decompte',s.mode_decompte||'direct');el('situ-montant-ht',s.montant_ht);el('situ-tva',s.tva||18);el('situ-montant-ttc',s.montant_ttc);el('situ-avance-recup',s.avance_recup||0);el('situ-retenue',s.retenue);el('situ-net',s.net);el('situ-avancement',s.avancement);el('situ-avct-physique',s.avancement_physique);el('situ-mode',s.mode);el('situ-statut',s.statut);el('situ-travaux',s.travaux);el('situ-observations',s.observations);onSituModeDecompte();onSelectConventionSitu();document.getElementById('situ-modal-title').textContent='Modifier situation';if(typeof situEcartAvancement==='function')situEcartAvancement();},100);}
+function openSituationEdit(id){APP.editingId=id;openSituation();setTimeout(function(){var s=DATA.situations.find(function(x){return x.id===id;});if(!s)return;var el=function(eid,v){var e=document.getElementById(eid);if(e)e.value=(v===undefined||v===null)?'':v;};el('situ-convention',s.convention_id);el('situ-numero',s.numero);el('situ-date',s.date);el('situ-periode',s.periode);el('situ-mode-decompte',s.mode_decompte||'direct');el('situ-montant-ht',s.montant_ht);el('situ-tva',s.tva||tvaDefaut());el('situ-montant-ttc',s.montant_ttc);el('situ-avance-recup',s.avance_recup||0);el('situ-retenue',s.retenue);el('situ-net',s.net);el('situ-avancement',s.avancement);el('situ-avct-physique',s.avancement_physique);el('situ-mode',s.mode);el('situ-statut',s.statut);el('situ-travaux',s.travaux);el('situ-observations',s.observations);onSituModeDecompte();onSelectConventionSitu();document.getElementById('situ-modal-title').textContent='Modifier situation';if(typeof situEcartAvancement==='function')situEcartAvancement();},100);}
 
 async function saveSituationAndCompta(){
   var convId=document.getElementById('situ-convention').value;
@@ -63988,7 +64029,7 @@ async function saveSituationAndCompta(){
     periode:document.getElementById('situ-periode').value.trim(),
     mode_decompte:(document.getElementById('situ-mode-decompte')||{}).value||'direct',
     montant_ht:ht,
-    tva:parseFloat(document.getElementById('situ-tva').value)||18,
+    tva:parseFloat(document.getElementById('situ-tva').value)||tvaDefaut(),
     montant_ttc:parseFloat(document.getElementById('situ-montant-ttc').value)||0,
     avance_recup:parseFloat(document.getElementById('situ-avance-recup').value)||0,
     retenue:parseFloat(document.getElementById('situ-retenue').value)||0,
@@ -64076,11 +64117,11 @@ function printSituation(id){var s=DATA.situations.find(function(x){return x.id==
 
 /* ─── Avenants ─────────────────────────────────────── */
 function renderAvenants(){var tbody=document.getElementById('tbody-avenants');if(!tbody)return;var list=DATA.avenants||[];if(!list.length){tbody.innerHTML='<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--blanc-dim);">Aucun avenant.</td></tr>';return;}var sC={projet:'badge-bleu',signe:'badge-vert',rejete:'badge-rouge'};tbody.innerHTML=list.map(function(a){var conv=DATA.conventions.find(function(c){return c.id===a.convention_id;})||{numero:'—'};var constr=DATA.constructeurs.find(function(c){return c.id===conv.constructeur_id;})||{raison_sociale:'—'};return'<tr><td style="font-family:monospace;color:var(--or);">'+a.numero+'</td><td style="font-size:12px;">'+conv.numero+' — '+constr.raison_sociale+'</td><td style="font-size:12px;">'+a.objet+'</td><td style="font-weight:700;color:var(--or);">'+fmtF(a.montant_ttc||0)+' FCFA</td><td>'+a.date+'</td><td><span class="badge '+(sC[a.statut]||'badge-bleu')+'">'+a.statut+'</span></td><td><button class="btn btn-secondary btn-sm btn-icon" onclick="openAvenantEdit(\''+a.id+'\')">✏️</button> <button class="btn btn-danger btn-sm btn-icon" onclick="deleteAvenant(\''+a.id+'\')">🗑</button></td></tr>';}).join('');}
-function openAvenantNew(){APP.editingId=null;var cSel=document.getElementById('av-convention');if(cSel&&cSel.options.length<=1)DATA.conventions.forEach(function(c){var o=document.createElement('option');o.value=c.id;o.textContent=c.numero;cSel.appendChild(o);});['av-numero','av-objet','av-justification'].forEach(function(f){var e=document.getElementById(f);if(e)e.value='';});document.getElementById('av-date').value=today();document.getElementById('av-montant-ht').value='0';document.getElementById('av-tva').value='18';document.getElementById('av-montant-ttc').value='0';document.getElementById('av-delai-supp').value='0';document.getElementById('av-statut').value='projet';document.getElementById('av-modal-title').textContent='Nouvel avenant';document.getElementById('modal-avenant').classList.add('open');}
-function openAvenantEdit(id){APP.editingId=id;openAvenantNew();setTimeout(function(){var a=DATA.avenants.find(function(x){return x.id===id;});if(!a)return;var el=function(eid,v){var e=document.getElementById(eid);if(e)e.value=v||'';};el('av-convention',a.convention_id);el('av-numero',a.numero);el('av-date',a.date);el('av-objet',a.objet);el('av-montant-ht',a.montant_ht);el('av-tva',a.tva||18);el('av-montant-ttc',a.montant_ttc);el('av-delai-supp',a.delai_supp);el('av-nouvelle-date-fin',a.nouvelle_date_fin);el('av-motif',a.motif);el('av-statut',a.statut);el('av-justification',a.justification);document.getElementById('av-modal-title').textContent='Modifier avenant';},80);}
-function calcAvenantTTC(){var ht=parseFloat(document.getElementById('av-montant-ht').value)||0;var tva=parseFloat(document.getElementById('av-tva').value)||18;document.getElementById('av-montant-ttc').value=Math.round(ht*(1+tva/100));}
+function openAvenantNew(){APP.editingId=null;var cSel=document.getElementById('av-convention');if(cSel&&cSel.options.length<=1)DATA.conventions.forEach(function(c){var o=document.createElement('option');o.value=c.id;o.textContent=c.numero;cSel.appendChild(o);});['av-numero','av-objet','av-justification'].forEach(function(f){var e=document.getElementById(f);if(e)e.value='';});document.getElementById('av-date').value=today();document.getElementById('av-montant-ht').value='0';document.getElementById('av-tva').value=tvaDefaut();document.getElementById('av-montant-ttc').value='0';document.getElementById('av-delai-supp').value='0';document.getElementById('av-statut').value='projet';document.getElementById('av-modal-title').textContent='Nouvel avenant';document.getElementById('modal-avenant').classList.add('open');}
+function openAvenantEdit(id){APP.editingId=id;openAvenantNew();setTimeout(function(){var a=DATA.avenants.find(function(x){return x.id===id;});if(!a)return;var el=function(eid,v){var e=document.getElementById(eid);if(e)e.value=v||'';};el('av-convention',a.convention_id);el('av-numero',a.numero);el('av-date',a.date);el('av-objet',a.objet);el('av-montant-ht',a.montant_ht);el('av-tva',a.tva||tvaDefaut());el('av-montant-ttc',a.montant_ttc);el('av-delai-supp',a.delai_supp);el('av-nouvelle-date-fin',a.nouvelle_date_fin);el('av-motif',a.motif);el('av-statut',a.statut);el('av-justification',a.justification);document.getElementById('av-modal-title').textContent='Modifier avenant';},80);}
+function calcAvenantTTC(){var ht=parseFloat(document.getElementById('av-montant-ht').value)||0;var tva=parseFloat(document.getElementById('av-tva').value)||tvaDefaut();document.getElementById('av-montant-ttc').value=Math.round(ht*(1+tva/100));}
 function calcAvenantDelai(){var convId=document.getElementById('av-convention').value;var conv=DATA.conventions.find(function(c){return c.id===convId;});var supp=parseInt(document.getElementById('av-delai-supp').value)||0;var base=conv&&conv.date_fin_prev?new Date(conv.date_fin_prev):new Date();base.setMonth(base.getMonth()+supp);document.getElementById('av-nouvelle-date-fin').value=base.toISOString().slice(0,10);}
-async function saveAvenant(){var convId=document.getElementById('av-convention').value;var num=document.getElementById('av-numero').value.trim();if(!convId||!num){toast('Convention et numéro obligatoires.','error');return;}var a={id:APP.editingId||uid(),convention_id:convId,numero:num,date:document.getElementById('av-date').value,objet:document.getElementById('av-objet').value.trim(),montant_ht:parseFloat(document.getElementById('av-montant-ht').value)||0,tva:parseFloat(document.getElementById('av-tva').value)||18,montant_ttc:parseFloat(document.getElementById('av-montant-ttc').value)||0,delai_supp:parseInt(document.getElementById('av-delai-supp').value)||0,nouvelle_date_fin:document.getElementById('av-nouvelle-date-fin').value,motif:document.getElementById('av-motif').value,statut:document.getElementById('av-statut').value,justification:document.getElementById('av-justification').value.trim(),created_at:APP.editingId?undefined:today()};if(APP.editingId){var idx=DATA.avenants.findIndex(function(x){return x.id===APP.editingId;});if(idx>=0)DATA.avenants[idx]=a;}else DATA.avenants.push(a);await dbPut('avenants',a);if(a.statut==='signe'){var conv=DATA.conventions.find(function(c){return c.id===convId;});if(conv){conv.montant_ht=(conv.montant_ht||0)+a.montant_ht;conv.montant_ttc=(conv.montant_ttc||0)+a.montant_ttc;if(a.nouvelle_date_fin)conv.date_fin_prev=a.nouvelle_date_fin;await dbPut('conventions',conv);}toast('✅ Convention mise à jour.','success');}else toast('Avenant enregistré.','success');closeModal('modal-avenant');renderAvenants();renderConventions();}
+async function saveAvenant(){var convId=document.getElementById('av-convention').value;var num=document.getElementById('av-numero').value.trim();if(!convId||!num){toast('Convention et numéro obligatoires.','error');return;}var a={id:APP.editingId||uid(),convention_id:convId,numero:num,date:document.getElementById('av-date').value,objet:document.getElementById('av-objet').value.trim(),montant_ht:parseFloat(document.getElementById('av-montant-ht').value)||0,tva:parseFloat(document.getElementById('av-tva').value)||tvaDefaut(),montant_ttc:parseFloat(document.getElementById('av-montant-ttc').value)||0,delai_supp:parseInt(document.getElementById('av-delai-supp').value)||0,nouvelle_date_fin:document.getElementById('av-nouvelle-date-fin').value,motif:document.getElementById('av-motif').value,statut:document.getElementById('av-statut').value,justification:document.getElementById('av-justification').value.trim(),created_at:APP.editingId?undefined:today()};if(APP.editingId){var idx=DATA.avenants.findIndex(function(x){return x.id===APP.editingId;});if(idx>=0)DATA.avenants[idx]=a;}else DATA.avenants.push(a);await dbPut('avenants',a);if(a.statut==='signe'){var conv=DATA.conventions.find(function(c){return c.id===convId;});if(conv){conv.montant_ht=(conv.montant_ht||0)+a.montant_ht;conv.montant_ttc=(conv.montant_ttc||0)+a.montant_ttc;if(a.nouvelle_date_fin)conv.date_fin_prev=a.nouvelle_date_fin;await dbPut('conventions',conv);}toast('✅ Convention mise à jour.','success');}else toast('Avenant enregistré.','success');closeModal('modal-avenant');renderAvenants();renderConventions();}
 async function deleteAvenant(id){if(!confirm('Supprimer ?'))return;if(await deleteRecord('avenants',id)===false)return;renderAvenants();toast('Supprimé.','info');}
 
 /* ─── Retenues de garantie ────────────────────────── */
@@ -70133,6 +70174,18 @@ function populateAllERP() {
   populateCommerciauxPartout();
   // Peupler tous les selects apporteurs
   populateApporteursPartout();
+  /* Calculateurs autonomes dont le taux TVA par défaut était figé à 18 en
+     dur dans le HTML (fiscalité immeuble neuf, budget prévisionnel terrain) :
+     alignés ici sur le taux configuré en Paramètres, une fois les données
+     chargées. Ne touche pas une valeur déjà modifiée par l'utilisateur dans
+     la session en cours (contrôle via un flag posé au premier passage). */
+  if (!APP._tvaDefautAppliquee) {
+    APP._tvaDefautAppliquee = true;
+    ['fisc-tva', 'terr-tva'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el && el.value === '18') el.value = tvaDefaut();
+    });
+  }
 }
 
 /* ══════════════════════════════════════════════════════
@@ -78120,7 +78173,7 @@ function amOpenConventionModal(id) {
   var v = {
     'am-cv-numero': c ? c.numero : '', 'am-cv-amenageur': c ? c.amenageur_id : '', 'am-cv-programme': c ? c.programme_id : '',
     'am-cv-objet': c ? c.objet : '', 'am-cv-date-signature': c ? c.date_signature : '',
-    'am-cv-ht': c ? c.montant_ht : 0, 'am-cv-tva': c ? c.tva_pct : 18, 'am-cv-ttc': c ? c.montant_ttc : 0,
+    'am-cv-ht': c ? c.montant_ht : 0, 'am-cv-tva': c ? c.tva_pct : tvaDefaut(), 'am-cv-ttc': c ? c.montant_ttc : 0,
     'am-cv-retenue-pct': c ? c.retenue_pct : 10, 'am-cv-retenue-montant': c ? c.retenue_montant : 0,
     'am-cv-avance-pct': c ? c.avance_pct : 20, 'am-cv-avance-montant': c ? c.avance_montant : 0,
     'am-cv-delai': c ? c.delai : 12, 'am-cv-date-demarrage': c ? c.date_demarrage : '', 'am-cv-date-fin-prev': c ? c.date_fin_prev : '',
@@ -78150,7 +78203,7 @@ async function amSaveConvention() {
     date_signature: document.getElementById('am-cv-date-signature').value,
     statut: document.getElementById('am-cv-statut').value,
     montant_ht: parseFloat(document.getElementById('am-cv-ht').value) || 0,
-    tva_pct: parseFloat(document.getElementById('am-cv-tva').value) || 18,
+    tva_pct: parseFloat(document.getElementById('am-cv-tva').value) || tvaDefaut(),
     montant_ttc: parseFloat(document.getElementById('am-cv-ttc').value) || 0,
     retenue_pct: parseFloat(document.getElementById('am-cv-retenue-pct').value) || 10,
     retenue_montant: parseFloat(document.getElementById('am-cv-retenue-montant').value) || 0,
@@ -78213,7 +78266,7 @@ function amRenderConventions() {
 /* ================= SITUATIONS DE TRAVAUX ================= */
 function amCalcSituation() {
   var ht = parseFloat(document.getElementById('am-situ-ht').value) || 0;
-  var tva = parseFloat(document.getElementById('am-situ-tva').value) || 18;
+  var tva = parseFloat(document.getElementById('am-situ-tva').value) || tvaDefaut();
   var rp = parseFloat(document.getElementById('am-situ-retenue-pct').value) || 10;
   var ttc = ht * (1 + tva / 100);
   var retenue = ttc * rp / 100;
@@ -78226,7 +78279,7 @@ function amOpenSituationModal(id) {
   var s = id ? DATA.situations_amenagement.find(function(x){ return x.id === id; }) : null;
   document.getElementById('am-situ-modal-title').textContent = s ? 'Modifier situation' : 'Nouvelle situation de travaux';
   var v = { 'am-situ-convention': s ? s.convention_id : '', 'am-situ-numero': s ? s.numero : '', 'am-situ-date': s ? s.date : today(),
-    'am-situ-avancement': s ? s.avancement : 0, 'am-situ-ht': s ? s.montant_ht : 0, 'am-situ-tva': s ? s.tva_pct : 18,
+    'am-situ-avancement': s ? s.avancement : 0, 'am-situ-ht': s ? s.montant_ht : 0, 'am-situ-tva': s ? s.tva_pct : tvaDefaut(),
     'am-situ-ttc': s ? s.montant_ttc : 0, 'am-situ-retenue-pct': s ? s.retenue_pct : 10, 'am-situ-net': s ? s.net : 0,
     'am-situ-mode': s ? s.mode : 'virement', 'am-situ-statut': s ? s.statut : 'brouillon', 'am-situ-travaux': s ? s.travaux : '' };
   Object.keys(v).forEach(function(el){ var e = document.getElementById(el); if (e) e.value = v[el]; });
@@ -78246,7 +78299,7 @@ async function amSaveSituation() {
   if (!conv || !num) { toast('Convention et n° situation obligatoires.', 'error'); return; }
   amCalcSituation();
   var ht = parseFloat(document.getElementById('am-situ-ht').value) || 0;
-  var tva = parseFloat(document.getElementById('am-situ-tva').value) || 18;
+  var tva = parseFloat(document.getElementById('am-situ-tva').value) || tvaDefaut();
   var rp = parseFloat(document.getElementById('am-situ-retenue-pct').value) || 10;
   var ttc = ht * (1 + tva / 100);
   var retenue = ttc * rp / 100;
@@ -78349,7 +78402,7 @@ function amRenderSituations() {
 /* ================= AVENANTS ================= */
 function amCalcAvenant() {
   var ht = parseFloat(document.getElementById('am-av-ht').value) || 0;
-  var tva = parseFloat(document.getElementById('am-av-tva').value) || 18;
+  var tva = parseFloat(document.getElementById('am-av-tva').value) || tvaDefaut();
   document.getElementById('am-av-ttc').value = Math.round(ht * (1 + tva / 100));
 }
 function amOpenAvenantModal(id) {
@@ -78358,7 +78411,7 @@ function amOpenAvenantModal(id) {
   var a = id ? DATA.avenants_amenagement.find(function(x){ return x.id === id; }) : null;
   document.getElementById('am-av-modal-title').textContent = a ? 'Modifier avenant' : 'Nouvel avenant';
   var v = { 'am-av-convention': a ? a.convention_id : '', 'am-av-numero': a ? a.numero : '', 'am-av-date': a ? a.date : today(),
-    'am-av-objet': a ? a.objet : '', 'am-av-ht': a ? a.montant_ht : 0, 'am-av-tva': a ? a.tva_pct : 18,
+    'am-av-objet': a ? a.objet : '', 'am-av-ht': a ? a.montant_ht : 0, 'am-av-tva': a ? a.tva_pct : tvaDefaut(),
     'am-av-ttc': a ? a.montant_ttc : 0, 'am-av-statut': a ? a.statut : 'projet' };
   Object.keys(v).forEach(function(el){ var e = document.getElementById(el); if (e) e.value = v[el]; });
   openModal('modal-am-avenant');
@@ -78374,7 +78427,7 @@ async function amSaveAvenant() {
     date: document.getElementById('am-av-date').value || today(),
     objet: document.getElementById('am-av-objet').value.trim(),
     montant_ht: parseFloat(document.getElementById('am-av-ht').value) || 0,
-    tva_pct: parseFloat(document.getElementById('am-av-tva').value) || 18,
+    tva_pct: parseFloat(document.getElementById('am-av-tva').value) || tvaDefaut(),
     montant_ttc: parseFloat(document.getElementById('am-av-ttc').value) || 0,
     statut: document.getElementById('am-av-statut').value,
     created_at: APP.editingId ? undefined : today()
