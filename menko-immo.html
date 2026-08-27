@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.83 · 2026-08-27 — CORRECTIF : le formulaire Nouveau/Modifier Souscripteur n\'offrait aucun moyen de spécifier directement la nature du bien (logement/terrain) — champ 100% déduit du lot, avec un défaut silencieux sur « maison » si aucun lot n\'était encore choisi ou si le lot lui-même n\'avait pas de nature définie. Ajout d\'un sélecteur explicite « Nature du bien * » (Auto depuis le lot / Logement / Terrain nu), prioritaire sur la déduction automatique, persistant même si le lot change ensuite. Suppression du défaut silencieux vers « maison » : nature_bien devient « indetermine » (visible dans la carte Cockpit « ⚠️ Nature à préciser ») plutôt que faussement « maison » quand elle n\'est réellement pas connue. En édition, le sélecteur reflète un choix déjà forcé manuellement plutôt que de le réafficher sur Auto et perdre la correction. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.86 · 2026-08-27 — Bilan de Promotion : sous-détail Villa/plain-pied vs Immeuble ajouté à l\'intérieur du groupe « Logements » (produits réalisés et stock restant), en plus du split Logement/Terrain déjà en place. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -15883,6 +15883,18 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
       <div class="tab-pane" id="tab-modal-client-souscription">
         <div class="form-grid">
 
+          <!-- ── Nature du bien EN PREMIER : vous vendez majoritairement des
+               terrains, autant fixer ce choix avant de chercher le bien plutôt
+               que de compter sur une déduction après coup. ── -->
+          <div class="form-group span-2">
+            <label>🏗️ Nature du bien *</label>
+            <select class="form-control" id="c-nature-manuel" onchange="updateNatureBienUI((DATA.lots||[]).find(function(l){return l.id===document.getElementById('c-lot').value;}));updateLotsByProgramme(true)" style="font-weight:700;">
+              <option value="auto">— Auto / Tous les lots (à défaut, choisissez ci-dessous) —</option>
+              <option value="terrain">🗺️ Terrain nu (parcelle)</option>
+              <option value="maison">🏠 Logement (bâti)</option>
+            </select>
+          </div>
+
           <!-- ── Rattachement commercial / apporteur (obligatoire) ── -->
           <div class="form-group">
             <label>💼 Commercial assigné *</label>
@@ -15900,25 +15912,18 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             ⚠️ <strong>Obligatoire :</strong> Sélectionnez au moins un commercial <em>ou</em> un apporteur pour calculer les commissions.
           </div>
 
-          <div class="form-group">
+          <div class="form-group span-2">
             <label>Programme *</label>
             <select class="form-control" id="c-programme" onchange="updateLotsByProgramme()">
               <option value="">— Choisir —</option>
             </select>
           </div>
-          <div class="form-group">
+          <div class="form-group span-2">
             <label>Lot *</label>
             <select class="form-control" id="c-lot" onchange="onClientLotChange()">
               <option value="">— Choisir —</option>
             </select>
-          </div>
-          <div class="form-group">
-            <label>Nature du bien *</label>
-            <select class="form-control" id="c-nature-manuel" onchange="updateNatureBienUI((DATA.lots||[]).find(function(l){return l.id===document.getElementById('c-lot').value;}))" style="font-weight:700;">
-              <option value="auto">— Auto depuis le lot —</option>
-              <option value="maison">🏠 Logement (bâti)</option>
-              <option value="terrain">🗺️ Terrain nu (parcelle)</option>
-            </select>
+            <div id="c-lot-diag" style="display:none;"></div>
           </div>
           <div class="form-group span-2" id="c-nature-badge-wrap" style="display:none;">
             <div id="c-nature-badge" style="display:inline-block;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700;"></div>
@@ -42939,12 +42944,16 @@ function importJSON(input) {
 ────────────────────────────────────────────────────── */
 function populateProgrammeSelects() {
   var selects = ['c-programme', 'l-programme', 't-programme', 'e-programme'];
+  /* [FIX] Une fiche programme fusionnée (voir reparerProgrammeDoublon) reste
+     en base pour l'historique mais ne doit plus être proposée à la saisie —
+     sinon on recrée le même doublon à la prochaine souscription. */
+  var actifs = (DATA.programmes||[]).filter(function(p){ return !p.fusionne_dans; });
   selects.forEach(function(id) {
     var el = document.getElementById(id);
     if (!el) return;
     var val = el.value;
     el.innerHTML = '<option value="">— Choisir —</option>'
-      + DATA.programmes.map(function(p) { return '<option value="' + p.id + '">' + p.nom + '</option>'; }).join('');
+      + actifs.map(function(p) { return '<option value="' + p.id + '">' + p.nom + '</option>'; }).join('');
     if (val) el.value = val;
   });
 }
@@ -42973,10 +42982,45 @@ function populateClientSelects() {
   });
 }
 
-function updateLotsByProgramme() {
+/* [FIX] Répare un doublon de fiche Programme : rattache tous les lots des
+   fiches homonymes (même nom, id différent) au programme actuellement
+   sélectionné, puis marque les fiches vidées comme fusionnées (jamais
+   supprimées — traçabilité, même logique que sigFusionner côté SIG). */
+async function reparerProgrammeDoublon(progIdCible) {
+  var progCible = (DATA.programmes||[]).find(function(p){ return p.id === progIdCible; });
+  if (!progCible) return;
+  var nomNorm = String(progCible.nom||'').trim().toLowerCase();
+  var homonymes = (DATA.programmes||[]).filter(function(p){ return p.id !== progIdCible && String(p.nom||'').trim().toLowerCase() === nomNorm; });
+  if (!homonymes.length) { toast('Aucun doublon détecté.', 'info'); return; }
+  var lotsAReattacher = [];
+  homonymes.forEach(function(p){ lotsAReattacher = lotsAReattacher.concat(DATA.lots.filter(function(l){ return l.programme_id === p.id; })); });
+  if (!lotsAReattacher.length) { toast('Aucun lot à réattacher.', 'info'); return; }
+  if (!confirm('⚠️ ' + lotsAReattacher.length + ' lot(s) vont être rattaché(s) à « ' + progCible.nom + ' » (fiche actuelle).\n\n'
+    + homonymes.length + ' fiche(s) programme en double seront vidées (jamais supprimées — conservées pour historique).\n\n'
+    + 'Vérifiez d\'abord qu\'il s\'agit bien du même lotissement réel avant de continuer. Confirmer ?')) return;
+  for (var i = 0; i < lotsAReattacher.length; i++) {
+    var l = lotsAReattacher[i];
+    l.programme_id = progIdCible;
+    await dbPut('lots', l);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_lots', l);
+  }
+  for (var j = 0; j < homonymes.length; j++) {
+    var p = homonymes[j];
+    p.fusionne_dans = progIdCible;
+    p.notes = (p.notes||'') + '\n[Fusion auto ' + today() + '] Lots réattachés à la fiche ' + progIdCible + ' (doublon détecté).';
+    await dbPut('programmes', p);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_programmes', p);
+  }
+  toast('✅ ' + lotsAReattacher.length + ' lot(s) réattaché(s) à « ' + progCible.nom + ' ».', 'success');
+  if (typeof populateProgrammeSelects === 'function') populateProgrammeSelects();
+  updateLotsByProgramme();
+}
+
+function updateLotsByProgramme(gardeSelection) {
   var progId = document.getElementById('c-programme').value;
   var lotSelect = document.getElementById('c-lot');
   if (!lotSelect) return;
+  var selectionPrecedente = gardeSelection ? lotSelect.value : '';
   lotSelect.disabled = false;
   lotSelect.removeAttribute('disabled');
   if (!progId) {
@@ -42990,13 +43034,22 @@ function updateLotsByProgramme() {
      pouvaient être enregistrés sur le même lot (double vente). */
   var editingClientId = APP.editingId || null;
   var estLibrePourEdition = function(l) { return !l.client_id || l.client_id === editingClientId; };
+  /* [FIX UX] Filtre par nature choisie manuellement — utile sur un programme
+     à des centaines/milliers de lots (ex. lotissement de 2000+ parcelles) où
+     chercher un terrain nu au milieu des logements bâtis serait impraticable. */
+  var natureManuelle = (document.getElementById('c-nature-manuel')||{}).value || 'auto';
+  var correspondNature = function(l) {
+    if (natureManuelle === 'auto') return true;
+    return natureManuelle === 'terrain' ? l.nature === 'terrain' : l.nature !== 'terrain';
+  };
   var dispo = lotsProg.filter(function(l) {
+    if (!correspondNature(l)) return false;
     if (l.statut === 'vendu') return false;
     if (l.statut === 'reserve') return estLibrePourEdition(l);
     return true; /* disponible ou statut vide */
   });
-  var vendus = lotsProg.filter(function(l) { return l.statut === 'vendu'; });
-  var reservesAutrui = lotsProg.filter(function(l) { return l.statut === 'reserve' && !estLibrePourEdition(l); });
+  var vendus = lotsProg.filter(function(l) { return l.statut === 'vendu' && correspondNature(l); });
+  var reservesAutrui = lotsProg.filter(function(l) { return l.statut === 'reserve' && !estLibrePourEdition(l) && correspondNature(l); });
   if (APP.editingId) {
     var editClient = DATA.clients.find(function(c) { return c.id === APP.editingId; });
     if (editClient && editClient.lot_id) {
@@ -43004,15 +43057,37 @@ function updateLotsByProgramme() {
       if (editLot && !dispo.find(function(l) { return l.id === editLot.id; })) dispo.unshift(editLot);
     }
   }
-  /* Diagnostic : aucun lot rattaché à ce programme */
+  /* Diagnostic : aucun lot rattaché à ce programme.
+     [FIX] Cas fréquent et non signalé jusqu'ici : deux fiches Programme quasi
+     identiques (même nom, ids différents — doublon de saisie ou import) où
+     TOUS les lots réels sont rattachés à l'AUTRE fiche. Le sélecteur affichait
+     alors « aucun lot » sans jamais indiquer que les lots existaient bel et
+     bien, juste sous un programme homonyme. On le détecte et on le dit. */
   if (!lotsProg.length) {
     var totalAutres = (DATA.lots || []).length;
-    var msg = totalAutres
-      ? '— Aucun lot rattaché à ce programme (' + totalAutres + ' lot(s) sur d\'autres programmes) —'
-      : '— Aucun lot : importez le morcellement —';
-    lotSelect.innerHTML = '<option value="">' + msg + '</option>';
+    var progActuel = (DATA.programmes||[]).find(function(p){ return p.id === progId; });
+    var nomNorm = progActuel ? String(progActuel.nom||'').trim().toLowerCase() : '';
+    var homonymes = nomNorm ? (DATA.programmes||[]).filter(function(p){ return p.id !== progId && String(p.nom||'').trim().toLowerCase() === nomNorm; }) : [];
+    var lotsChezHomonymes = 0;
+    homonymes.forEach(function(p){ lotsChezHomonymes += DATA.lots.filter(function(l){ return l.programme_id === p.id; }).length; });
+    if (homonymes.length && lotsChezHomonymes > 0) {
+      lotSelect.innerHTML = '<option value="">⚠️ ' + lotsChezHomonymes + ' lot(s) existent sous ' + homonymes.length + ' fiche(s) « ' + escHtml(progActuel.nom) + ' » en double — pas celle-ci —</option>';
+      var wrapDiag = document.getElementById('c-lot-diag');
+      if (wrapDiag) {
+        wrapDiag.style.display = '';
+        wrapDiag.innerHTML = '<div style="font-size:11px;color:var(--rouge);margin-top:4px;">⚠️ Programme en double détecté : ' + lotsChezHomonymes + ' lot(s) rattaché(s) à ' + homonymes.length + ' autre(s) fiche « ' + escHtml(progActuel.nom) + ' ». '
+          + '<button type="button" class="btn btn-secondary btn-sm" onclick="reparerProgrammeDoublon(\'' + progId + '\')" style="margin-left:4px;">🔧 Réparer (rattacher les lots ici)</button></div>';
+      }
+    } else {
+      var msg = totalAutres
+        ? '— Aucun lot rattaché à ce programme (' + totalAutres + ' lot(s) sur d\'autres programmes) —'
+        : '— Aucun lot : importez le morcellement —';
+      lotSelect.innerHTML = '<option value="">' + msg + '</option>';
+    }
     return;
   }
+  var wrapDiag2 = document.getElementById('c-lot-diag');
+  if (wrapDiag2) { wrapDiag2.style.display = 'none'; wrapDiag2.innerHTML = ''; }
   var fmt = function(l){
     return '<option value="' + l.id + '">Lot ' + l.numero + (l.ilot ? ' / Îlot ' + l.ilot : '')
       + ' — ' + (l.type || '') + ' — ' + new Intl.NumberFormat('fr-FR').format(l.prix || 0) + ' FCFA</option>';
@@ -43020,7 +43095,7 @@ function updateLotsByProgramme() {
   dispo.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
   vendus.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
   reservesAutrui.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
-  var html = '<option value="">— Choisir un lot (' + dispo.length + ' dispo / ' + lotsProg.length + ' au total) —</option>';
+  var html = '<option value="">— Choisir un lot (' + dispo.length + ' dispo / ' + lotsProg.length + ' au total' + (natureManuelle!=='auto' ? ', filtré par nature' : '') + ') —</option>';
   html += dispo.map(fmt).join('');
   if (reservesAutrui.length) {
     html += '<optgroup label="Déjà réservés par un autre souscripteur (' + reservesAutrui.length + ', non sélectionnables)">'
@@ -43037,6 +43112,9 @@ function updateLotsByProgramme() {
       + '</optgroup>';
   }
   lotSelect.innerHTML = html;
+  if (selectionPrecedente && dispo.some(function(l){ return l.id === selectionPrecedente; })) {
+    lotSelect.value = selectionPrecedente;
+  }
 }
 
 /* La souscription se fait aussi bien pour des maisons (villas, appartements...)
@@ -51055,6 +51133,16 @@ function bpCompute(progId) {
   var caLogementReel = lotsLogement.filter(function(l){ return l.statut==='vendu'; }).reduce(function(s,l){ return s + (parseFloat(l.prix)||0); }, 0);
   var caTerrainReel  = lotsTerrain.filter(function(l){ return l.statut==='vendu'; }).reduce(function(s,l){ return s + (parseFloat(l.prix)||0); }, 0);
 
+  /* Sous-détail à l'intérieur du Logement : Villa/plain-pied vs Immeuble
+     (plusieurs appartements) — même lot.nature, juste plus fin que le
+     simple booléen terrain/logement utilisé ci-dessus. */
+  var lotsVilla     = lotsLogement.filter(function(l){ return l.nature !== 'immeuble'; });
+  var lotsImmeuble  = lotsLogement.filter(function(l){ return l.nature === 'immeuble'; });
+  var lotsVendusVilla    = lotsVilla.filter(function(l){ return l.statut==='vendu' || l.statut==='reserve'; });
+  var lotsVendusImmeuble = lotsImmeuble.filter(function(l){ return l.statut==='vendu' || l.statut==='reserve'; });
+  var caVillaEngage    = lotsVendusVilla.reduce(function(s,l){ return s + (parseFloat(l.prix)||0); }, 0);
+  var caImmeubleEngage = lotsVendusImmeuble.reduce(function(s,l){ return s + (parseFloat(l.prix)||0); }, 0);
+
   /* Cessions liées à la parcelle du programme */
   var parcelleId = prog.parcelle_id || '';
   var cessions = (DATA.cessions_foncieres || []).filter(function(c){
@@ -51153,6 +51241,8 @@ function bpCompute(progId) {
     lotsLogement:lotsLogement, lotsTerrain:lotsTerrain, lotsVendusLogement:lotsVendusLogement, lotsVendusTerrain:lotsVendusTerrain,
     caLogementEngage:caLogementEngage, caTerrainEngage:caTerrainEngage, caLogementPotentiel:caLogementPotentiel, caTerrainPotentiel:caTerrainPotentiel,
     caLogementReel:caLogementReel, caTerrainReel:caTerrainReel,
+    lotsVilla:lotsVilla, lotsImmeuble:lotsImmeuble, lotsVendusVilla:lotsVendusVilla, lotsVendusImmeuble:lotsVendusImmeuble,
+    caVillaEngage:caVillaEngage, caImmeubleEngage:caImmeubleEngage,
     cessions:cessions, caCessions:caCessions, encaisse:encaisse, coutFoncier:coutFoncier, coutTravaux:coutTravaux,
     caLotsVendusReel:caLotsVendusReel, caLotsReserves:caLotsReserves, produitsRealises:produitsRealises, margeRealisee:margeRealisee, tauxMargeRealisee:tauxMargeRealisee,
     coutHonoTech:coutHonoTech, coutCommercial:coutCommercial, coutFinancier:coutFinancier, coutAleas:coutAleas, coutsAnnexes:coutsAnnexes,
@@ -51195,6 +51285,8 @@ function bpRender() {
   document.getElementById('bp-produits').innerHTML =
     row('Ventes lots VENDUS (signés)', fmtF(b.caLotsVendusReel)+' F', 'var(--vert)')
     + row('&nbsp;&nbsp;dont Logements', fmtF(b.caLogementReel)+' F', 'var(--dim)')
+    + row('&nbsp;&nbsp;&nbsp;&nbsp;· Villa / plain-pied ('+b.lotsVendusVilla.length+')', fmtF(b.lotsVendusVilla.filter(function(l){return l.statut==='vendu';}).reduce(function(s,l){return s+(parseFloat(l.prix)||0);},0))+' F', 'var(--dim)')
+    + row('&nbsp;&nbsp;&nbsp;&nbsp;· Immeuble ('+b.lotsVendusImmeuble.length+')', fmtF(b.lotsVendusImmeuble.filter(function(l){return l.statut==='vendu';}).reduce(function(s,l){return s+(parseFloat(l.prix)||0);},0))+' F', 'var(--dim)')
     + row('&nbsp;&nbsp;dont Terrains', fmtF(b.caTerrainReel)+' F', 'var(--dim)')
     + row('Cessions foncières liées', fmtF(b.caCessions)+' F', 'var(--vert)')
     + row('= Produits réalisés', fmtF(b.produitsRealises)+' F', 'var(--vert)', true)
@@ -51202,6 +51294,8 @@ function bpRender() {
     + row('= Produits engagés', fmtF(b.produits)+' F', 'var(--or)', true)
     + row('Stock lots restant ('+(b.lots.length-b.lotsVendus.length)+' lots)', fmtF(b.caLotsPotentiel-b.caLotsVendus)+' F', 'var(--dim)')
     + row('&nbsp;&nbsp;dont Logements ('+(b.lotsLogement.length-b.lotsVendusLogement.length)+')', fmtF(b.caLogementPotentiel-b.caLogementEngage)+' F', 'var(--dim)')
+    + row('&nbsp;&nbsp;&nbsp;&nbsp;· Villa / plain-pied ('+(b.lotsVilla.length-b.lotsVendusVilla.length)+')', fmtF(b.lotsVilla.reduce(function(s,l){return s+(parseFloat(l.prix)||0);},0)-b.caVillaEngage)+' F', 'var(--dim)')
+    + row('&nbsp;&nbsp;&nbsp;&nbsp;· Immeuble ('+(b.lotsImmeuble.length-b.lotsVendusImmeuble.length)+')', fmtF(b.lotsImmeuble.reduce(function(s,l){return s+(parseFloat(l.prix)||0);},0)-b.caImmeubleEngage)+' F', 'var(--dim)')
     + row('&nbsp;&nbsp;dont Terrains ('+(b.lotsTerrain.length-b.lotsVendusTerrain.length)+')', fmtF(b.caTerrainPotentiel-b.caTerrainEngage)+' F', 'var(--dim)')
     + row('= Potentiel total', fmtF(b.produitsPotentiel)+' F', 'var(--bleu)', true);
 
