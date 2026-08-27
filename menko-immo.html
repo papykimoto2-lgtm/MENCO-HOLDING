@@ -27232,6 +27232,9 @@ function buildDashTabFinance() {  var cessions      = DATA.cessions_foncieres ||
     (function(){ var k=(typeof _budgetKpiGlobal==='function')?_budgetKpiGlobal():null; if(!k) return null;
       return {l:'Budget disponible (validé)', v:fmtF(k.totalDispo)+' FCFA', i:'✅', c:k.totalDispo<0?'kpi-red':'kpi-green', d:'Alloué '+fmtF(k.totalAlloue)+' — Engagé '+fmtF(k.totalEngage), click:'goTo(\'budget\')'}; })(),
     {l:'Reste à recouvrer', v:fmtF(encours)+' FCFA',   i:'⏳', c:encours>100000000?'kpi-red':'', d:DATA.clients.length+' souscripteurs + '+cessions.length+' cession(s)', click:'rarOuvrir()'},
+    {l:'Reste à recouvrer — dont Logements', v:fmtF(_core.resteLogements||0)+' FCFA', i:'🏠', c:'', d:'Souscriptions logements', click:'rarOuvrir()'},
+    {l:'Reste à recouvrer — dont Terrains',  v:fmtF(_core.resteTerrainsLot||0)+' FCFA', i:'🗺️', c:'', d:'Souscriptions terrains', click:'rarOuvrir()'},
+    {l:'Reste à recouvrer — dont Cessions',  v:fmtF(_core.resteCessions||0)+' FCFA', i:'🏞️', c:'', d:'Cessions foncières', click:'rarOuvrir()'},
     {l:'Taux de recouvrement',      v:tauxRecouv+'%',           i:'📈', c:tauxRecouv>=50?'kpi-green':'kpi-red', d:fmtF(totalVerse)+' / '+fmtF(totalDu)},
     {l:'Clients en retard',         v:retard,                   i:'⚠️', c:retard>0?'kpi-red':'kpi-green', d:retard+' dossiers à relancer', click:'goTo(\'relances\')'},
     (function(){ var ls=lotsStatsGlobal(); return {l:'Lots vendus', v:ls.vendus+' / '+DATA.lots.length, i:'🏠', c:'', d:ls.reserves+' réservé(s) (en cours) · '+ls.disponibles+' disponible(s)', click:'goTo(\'lots\')'}; })(),
@@ -29464,12 +29467,15 @@ function getRetardataires() {
 }
 
 function exportClients() {
-  var rows = [['Nom','Prénom','Tél','Email','Programme','Lot','Montant Total','Versé','Reste','Statut']];
+  var rows = [['Nom','Prénom','Tél','Email','Programme','Lot','Nature','Montant Total','Versé','Reste','Statut']];
   DATA.clients.forEach(function(c) {
     var versements = DATA.versements.filter(function(v) { return v.client_id === c.id; });
     var verse = versements.reduce(function(a, v) { return a + (parseFloat(v.montant) || 0); }, 0);
     var prog = DATA.programmes.find(function(p) { return p.id === c.programme_id; });
-    rows.push([c.nom, c.prenoms, c.tel, c.email || '', prog ? prog.nom : '', c.lot_id || '', c.montant_total || 0, verse, Math.max(0, (c.montant_total || 0) - verse), c.statut || 'actif']);
+    var lot = DATA.lots.find(function(l) { return l.id === c.lot_id; });
+    var lotLabel = lot ? ('Lot ' + lot.numero) : '';
+    var natureLabel = lot ? (lot.nature === 'terrain' ? 'Terrain' : 'Logement') : '';
+    rows.push([c.nom, c.prenoms, c.tel, c.email || '', prog ? prog.nom : '', lotLabel, natureLabel, c.montant_total || 0, verse, Math.max(0, (c.montant_total || 0) - verse), c.statut || 'actif']);
   });
   var csv = rows.map(function(r) { return r.map(function(v) { return '"' + String(v).replace(/"/g, '""') + '"'; }).join(';'); }).join('\n');
   var blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
@@ -37812,7 +37818,7 @@ function ckActions() {
           urgent: l.moisRetard >= 3,
           icone: '📞',
           titre: 'Relancer ' + l.nom,
-          detail: fmtF(l.duAJour) + ' F exigibles · ' + (l.nature==='cession'?'cession':'souscription')
+          detail: fmtF(l.duAJour) + ' F exigibles · ' + (l.nature==='cession'?'cession':('souscription '+(l.natureLot||'logement')))
                 + (l.moisRetard ? ' · retard ' + l.moisRetard + ' mois' : '')
                 + (l.commercial && l.commercial!=='—' ? ' · ' + l.commercial : ''),
           montant: l.duAJour,
@@ -38366,7 +38372,8 @@ function ckRecouvrement() {
   try { r = rarResteParCategorie(); } catch(e) { return; }
   var cartes = [
     { label:'Reste à recouvrer — Total', val:r.resteTotal, icone:'⏳', coul:'var(--rouge)', fn:'rarOuvrir()' },
-    { label:'Souscripteurs (ventes lots)', val:r.resteLots, icone:'🏠', coul:'#B87333', fn:'rarOuvrir()' },
+    { label:'Souscripteurs — Logements', val:r.resteLogements, icone:'🏠', coul:'#B87333', fn:'rarOuvrir()' },
+    { label:'Souscripteurs — Terrains', val:r.resteTerrainsLot, icone:'🗺️', coul:'#B87333', fn:'rarOuvrir()' },
     { label:'Cessions foncières', val:r.resteCessions, icone:'🏞️', coul:'#B87333', fn:'rarOuvrir()' },
     { label:'Partenaires financiers', val:r.resteFinanciers, icone:'🤝', coul:'#B87333', fn:"goTo('foncier');switchTab('foncier','financiers');finRender()" }
   ];
@@ -38452,11 +38459,15 @@ function buildDashTabCockpit() {
    (pas sur des lignes de versement filtrables) et Math.max(0, ...) par entité,
    pour qu'un trop-perçu sur un dossier ne compense pas un impayé sur un autre. */
 function rarResteParCategorie() {
-  var resteLots = (DATA.clients || []).reduce(function(s, c) {
+  var resteLogements = 0, resteTerrainsLot = 0;
+  (DATA.clients || []).forEach(function(c) {
     var verse = (DATA.versements || []).filter(function(v){ return v.client_id === c.id && v.statut !== 'annule'; })
       .reduce(function(a, v){ return a + (parseFloat(v.montant) || 0); }, 0);
-    return s + Math.max(0, (c.montant_total || 0) - verse);
-  }, 0);
+    var reste = Math.max(0, (c.montant_total || 0) - verse);
+    var lot = c.lot_id ? (DATA.lots || []).find(function(l){ return l.id === c.lot_id; }) : null;
+    if (lot && lot.nature === 'terrain') resteTerrainsLot += reste; else resteLogements += reste;
+  });
+  var resteLots = resteLogements + resteTerrainsLot;
 
   var resteCessions = (DATA.cessions_foncieres || []).reduce(function(s, cf) {
     return s + Math.max(0, (cf.prix_cession || 0) - (typeof crecVerse === 'function' ? crecVerse(cf) : (parseFloat(cf.montant_encaisse) || 0)));
@@ -38468,7 +38479,7 @@ function rarResteParCategorie() {
     return s + Math.max(0, (f.montant_engagement || 0) - verse);
   }, 0);
 
-  return { resteLots: resteLots, resteCessions: resteCessions, resteFinanciers: resteFinanciers, resteTotal: resteLots + resteCessions + resteFinanciers };
+  return { resteLots: resteLots, resteLogements: resteLogements, resteTerrainsLot: resteTerrainsLot, resteCessions: resteCessions, resteFinanciers: resteFinanciers, resteTotal: resteLots + resteCessions + resteFinanciers };
 }
 
 function _rarMensualite(c) {
@@ -38509,6 +38520,7 @@ function rarCollecter() {
       ? ('Lot ' + (lot.numero || '?') + (lot.ilot ? ' — îlot ' + lot.ilot : '') + (lot.superficie ? ' · ' + Math.round(lot.superficie) + ' m²' : ''))
       : '—';
     var typeBien = lot ? (lot.usage || lot.type || 'Lot') : '—';
+    var natureLot = lot && lot.nature === 'terrain' ? 'terrain' : 'logement';
 
     /* Le client porte normalement le nom du commercial en clair, mais les
        dossiers anciens n'ont parfois que commercial_id : même repli que pour
@@ -38524,7 +38536,7 @@ function rarCollecter() {
       nom: ((c.nom||'') + ' ' + (c.prenoms||'')).trim() || '—',
       dossier: c.dossier || '', tel: c.tel || '', email: c.email || '',
       commercial: commCli || '—',
-      bien: bien, typeBien: typeBien,
+      bien: bien, typeBien: typeBien, natureLot: natureLot,
       du: du, verse: verse, reste: reste,
       pctVerse: du > 0 ? Math.round(verse/du*100) : 0,
       duAJour: duAJour, moisRetard: moisRetard,
@@ -38603,6 +38615,14 @@ function rarOuvrir() {
      lecture globale de l'encours. */
   var total = lignes.reduce(function(s,l){ return s + l.reste; }, 0);
   var totalExigible = lignes.reduce(function(s,l){ return s + l.duAJour; }, 0);
+  /* Partenaires financiers : pas des dossiers relançables (pas de contact,
+     pas d'échéance individuelle) donc absents de la table détaillée, mais
+     comptés ici pour que ce total corresponde à la carte "Total" du Cockpit
+     (rarResteParCategorie) — sinon la carte et son propre détail affichent
+     deux chiffres différents. */
+  var resteFinanciersModal = 0;
+  try { resteFinanciersModal = rarResteParCategorie().resteFinanciers; } catch(e){}
+  var totalAvecFinanciers = total + resteFinanciersModal;
   var parClasse = {};
   lignes.forEach(function(l){
     var c = _rarClasse(l);
@@ -38618,7 +38638,7 @@ function rarOuvrir() {
   });
   var parType = {};
   lignes.forEach(function(l){
-    var k = l.typeBien || '—';
+    var k = l.nature === 'cession' ? 'Parcelle foncière (cession)' : (l.natureLot === 'terrain' ? 'Terrain (souscription)' : 'Logement (souscription)');
     parType[k] = parType[k] || { nb:0, montant:0 };
     parType[k].nb++; parType[k].montant += l.reste;
   });
@@ -38646,7 +38666,9 @@ function rarOuvrir() {
 
   var h = '';
   h += '<div class="kpi-grid" style="margin-bottom:14px;">'
-    + '<div class="kpi-card" data-icon="⏳"><div class="kpi-label">Reste à recouvrer</div><div class="kpi-value or" style="font-size:17px;">' + fmtF(total) + ' F</div><div class="kpi-delta">' + lignes.length + ' dossier(s) non soldé(s)</div></div>'
+    + '<div class="kpi-card" data-icon="⏳"><div class="kpi-label">Reste à recouvrer — Total</div><div class="kpi-value or" style="font-size:17px;">' + fmtF(totalAvecFinanciers) + ' F</div><div class="kpi-delta">' + lignes.length + ' dossier(s) non soldé(s)' + (resteFinanciersModal>0?' + partenaires financiers':'') + '</div></div>'
+    + '<div class="kpi-card" data-icon="📋"><div class="kpi-label">dont Souscripteurs + Cessions</div><div class="kpi-value or" style="font-size:17px;">' + fmtF(total) + ' F</div><div class="kpi-delta">dossiers relançables ci-dessous</div></div>'
+    + (resteFinanciersModal>0 ? '<div class="kpi-card" data-icon="🤝" style="cursor:pointer;" onclick="closeModal(\'modal-reste-recouvrer\');goTo(\'foncier\');switchTab(\'foncier\',\'financiers\');finRender()" title="Ouvrir le détail"><div class="kpi-label">dont Partenaires financiers</div><div class="kpi-value or" style="font-size:17px;">' + fmtF(resteFinanciersModal) + ' F</div><div class="kpi-delta">engagements non débloqués — voir Foncier</div></div>' : '')
     + '<div class="kpi-card ' + (totalExigible>0?'kpi-red':'kpi-green') + '" data-icon="🔥"><div class="kpi-label">Exigible immédiatement</div><div class="kpi-value or" style="font-size:17px;">' + fmtF(totalExigible) + ' F</div><div class="kpi-delta ' + (totalExigible>0?'negative':'positive') + '">échéances déjà dépassées</div></div>'
     + '<div class="kpi-card" data-icon="🎯"><div class="kpi-label">Concentration top 5</div><div class="kpi-value or" style="font-size:17px;">' + pctTop5 + ' %</div><div class="kpi-delta">' + fmtF(top5) + ' F sur 5 dossiers</div></div>'
     + '</div>';
@@ -38749,10 +38771,22 @@ function dashFinanceCore(pmin) {
   var duLots = (DATA.clients||[]).reduce(function(a,c){ return a + (parseFloat(c.montant_total)||0); }, 0);
   var duCes  = calcCessionsTotal('prix_cession');
   var du = duLots + duCes;
+  /* Encours : source unique rarResteParCategorie() (même calcul que le
+     Cockpit et Compta > Versements — un seul chiffre "Reste à recouvrer"
+     dans tout l'outil, plutôt que du − encaisse en agrégat qui compensait
+     un trop-perçu sur un dossier avec un impayé sur un autre, et ignorait
+     les partenaires financiers). Total indépendant de la période, comme
+     l'était déjà 'du'. */
+  var _rar = (typeof rarResteParCategorie === 'function') ? rarResteParCategorie() : null;
+  var encours = _rar ? _rar.resteTotal : Math.max(0, du - encaisse);
   var decaisse = dashDecaissements(fPeriode);
   return {
     encaisse: encaisse, encLots: encLots, encCes: encCes,
-    du: du, encours: Math.max(0, du - encaisse),
+    du: du, encours: encours,
+    resteLogements: _rar ? _rar.resteLogements : null,
+    resteTerrainsLot: _rar ? _rar.resteTerrainsLot : null,
+    resteCessions: _rar ? _rar.resteCessions : null,
+    resteFinanciers: _rar ? _rar.resteFinanciers : null,
     decaisse: decaisse, soldeNet: encaisse - decaisse,
     tauxRecouv: du > 0 ? Math.round((encaisse/du)*100) : 0
   };
@@ -91154,8 +91188,8 @@ function buildComptaVersementsKPIs(lignesLot, lignesFoncier) {
   /* Reste à recouvrer par catégorie — voir rarResteParCategorie(), source
      unique partagée avec le Cockpit (garantit que les deux vues concordent). */
   var _rar = rarResteParCategorie();
-  var resteLots = _rar.resteLots, resteCessions = _rar.resteCessions,
-      resteFinanciers = _rar.resteFinanciers, resteTotal = _rar.resteTotal;
+  var resteLots = _rar.resteLots, resteLogements = _rar.resteLogements, resteTerrainsLot = _rar.resteTerrainsLot,
+      resteCessions = _rar.resteCessions, resteFinanciers = _rar.resteFinanciers, resteTotal = _rar.resteTotal;
 
   el.innerHTML = [
     { label: 'Total encaissé', val: fmt(totalGeneral), icon: '📥', color: 'var(--vert)', cls: 'kpi-green' },
@@ -91167,6 +91201,8 @@ function buildComptaVersementsKPIs(lignesLot, lignesFoncier) {
     { label: 'Montant moyen / versement', val: fmt(Math.round(moyenne)), icon: '📊', color: 'var(--blanc)', cls: '' },
     { label: 'Reste à recouvrer — Total', val: fmt(resteTotal), icon: '⏳', color: 'var(--rouge)', cls: 'kpi-red' },
     { label: 'Reste à recouvrer — Souscripteurs lots', val: fmt(resteLots), icon: '🏠', color: 'var(--rouge)', cls: '' },
+    { label: 'Reste à recouvrer — dont Logements', val: fmt(resteLogements), icon: '🏠', color: 'var(--rouge)', cls: '' },
+    { label: 'Reste à recouvrer — dont Terrains', val: fmt(resteTerrainsLot), icon: '🗺️', color: 'var(--rouge)', cls: '' },
     { label: 'Reste à recouvrer — Cessions foncières', val: fmt(resteCessions), icon: '🏞️', color: 'var(--rouge)', cls: '' },
     { label: 'Reste à recouvrer — Partenaires financiers', val: fmt(resteFinanciers), icon: '🤝', color: 'var(--rouge)', cls: '' }
   ].map(function(k) {
@@ -91194,12 +91230,15 @@ function renderComptaVersements() {
     var comms = (DATA.commissions || []).filter(function(c){ return c.versement_id === v.id && c.statut !== 'annulee'; });
     var totComm = comms.reduce(function(s, c){ return s + (c.montant_comm || 0); }, 0);
     var payee = comms.some(function(c){ return c.statut === 'payee'; });
+    var lot = cl && cl.lot_id ? (DATA.lots || []).find(function(l){ return l.id === cl.lot_id; }) : null;
+    var estTerrain = !!(lot && lot.nature === 'terrain');
     return {
       ref: v.ref, date: v.date, nom: nom,
       typeTxt: typeLabels[v.type] || v.type || '—', typeBadge: 'badge-bleu',
       montant: parseFloat(v.montant) || 0, mode: modeLabels[v.mode] || v.mode || '—',
       commCount: comms.length, commTot: totComm, commPayee: payee, commNote: '',
-      source: 'lot', srcIcon: '🏠', srcTitle: 'Souscripteur — lot / programme',
+      source: 'lot', srcIcon: estTerrain ? '🗺️' : '🏠',
+      srcTitle: estTerrain ? 'Souscripteur — terrain' : 'Souscripteur — logement',
       editAction: "editVersement('" + v.id + "')",
       editTitle: 'Modifier (recalcule les commissions)'
     };
@@ -110463,10 +110502,20 @@ async function caisseSaveConfig() {
 }
 
 /* ── Ouverture de caisse ─────────────────────────────────────────────── */
-function caisseOuvrirModal(caisseId) {
+async function caisseOuvrirModal(caisseId) {
   var c = (DATA.caisses || []).find(function(x){ return x.id === caisseId; });
   if (!c) return;
-  if (caisseGetSessionOuverte(caisseId)) { toast('Cette caisse est déjà ouverte.', 'error'); return; }
+  /* [FIX multi-poste] Avant d'autoriser une ouverture, on rapatrie l'état
+     réel des sessions depuis le cloud si la connexion le permet — sans ça,
+     deux postes déconnectés l'un de l'autre peuvent chacun voir « fermée »
+     localement et ouvrir simultanément la même caisse : deux sessions
+     'ouverte' coexistent alors sans que personne ne le sache avant l'audit
+     d'intégrité. Best-effort : si hors-ligne ou échec, on continue quand
+     même sur les données locales (l'app doit rester utilisable offline). */
+  if (navigator.onLine && typeof syncPullStore === 'function') {
+    try { await syncPullStore('caisse_sessions'); } catch(e){}
+  }
+  if (caisseGetSessionOuverte(caisseId)) { toast('Cette caisse est déjà ouverte (session détectée après vérification cloud).', 'error'); caisseRenderListe(); return; }
   var derniere = caisseDernièreSessionCloturee(caisseId);
   var fondSuggere = derniere ? (parseFloat(derniere.fond_cloture_reel) || 0) : 0;
   document.getElementById('co-caisse-id').value = caisseId;
@@ -112628,6 +112677,21 @@ function caisseControleIntegrite() {
   var aTraiter = mvts.filter(function(m){ var s = idxSess[m.session_id]; return m.statut!=='ventile' && s && s.statut==='cloturee' && !(m.type==='sortie' && m.requiert_validation && !m.valide); });
   if (aTraiter.length) ok.push('ℹ️ ' + aTraiter.length + ' mouvement(s) prêt(s) à ventiler (session clôturée, validation OK).');
 
+  /* 12. Sessions ouvertes en double sur une même caisse (course entre postes
+     hors-ligne : chacun ouvre avant d'avoir vu l'ouverture de l'autre). Le
+     seul invariant de concurrence qui manquait ici — la collision de n° de
+     bons (#8) et les doublons de mouvements (#9) sont déjà couverts. */
+  var parCaisseOuv = {};
+  sessions.filter(function(s){ return s.statut==='ouverte'; }).forEach(function(s){
+    (parCaisseOuv[s.caisse_id] = parCaisseOuv[s.caisse_id] || []).push(s);
+  });
+  var caissesEnDouble = Object.keys(parCaisseOuv).filter(function(k){ return parCaisseOuv[k].length > 1; });
+  if (caissesEnDouble.length) {
+    pb.push('❌ ' + caissesEnDouble.length + ' caisse(s) avec plusieurs sessions ouvertes simultanément (ouvertures concurrentes entre postes) :\n   '
+      + caissesEnDouble.map(function(k){ var cn = idxCaisse[k]; return (cn?cn.nom:k) + ' : ' + parCaisseOuv[k].length + ' sessions ouvertes'; }).join('\n   ')
+      + '\n   → bouton « 🔀 Fusionner les sessions en double » pour rattacher les mouvements à la session la plus ancienne et clôturer les doublons.');
+  } else ok.push('✅ Aucune caisse avec sessions ouvertes en double.');
+
   var stats = document.getElementById('cci-stats');
   var rapport = document.getElementById('cci-rapport');
   if (stats) {
@@ -112636,7 +112700,56 @@ function caisseControleIntegrite() {
       : '<span style="color:var(--vert);">✅ Aucune anomalie — ' + mvts.length + ' mouvement(s) · ' + sessions.length + ' session(s) analysée(s)</span>';
   }
   if (rapport) rapport.textContent = (pb.length ? 'ANOMALIES\n\n' + pb.join('\n\n') + '\n\n\n' : '') + 'CONTRÔLES PASSÉS\n\n' + ok.join('\n');
+  var btnFusion = document.getElementById('cci-btn-fusion-sessions');
+  if (btnFusion) btnFusion.style.display = caissesEnDouble.length ? '' : 'none';
   openModal('modal-caisse-integrite');
+}
+
+/* ── Fusion des sessions ouvertes en double ──────────────────────────────
+   Pour chaque caisse concernée : conserve la session ouverte la plus
+   ancienne (ouverte_le), y rattache tous les mouvements des doublons, puis
+   clôture les doublons à ecart 0 (fond_ouverture des doublons non touché —
+   sa réconciliation reste une décision humaine via « ⚖️ Ajuster fond »,
+   le fond réel physique n'étant pas déductible automatiquement). */
+async function caisseFusionnerSessionsDoublons() {
+  if (!caisseRoleAdminLike()) { toast('Réservé au comptable / manager / admin.', 'error'); return; }
+  var sessions = DATA.caisse_sessions || [];
+  var parCaisse = {};
+  sessions.filter(function(s){ return s.statut==='ouverte'; }).forEach(function(s){
+    (parCaisse[s.caisse_id] = parCaisse[s.caisse_id] || []).push(s);
+  });
+  var cibles = Object.keys(parCaisse).filter(function(k){ return parCaisse[k].length > 1; });
+  if (!cibles.length) { toast('Aucune session en double à fusionner.', 'info'); return; }
+  if (!confirm(cibles.length + ' caisse(s) concernée(s). Les mouvements des sessions en double seront rattachés à la session la plus ancienne, puis les doublons seront clôturés (écart 0). Le fond d\'ouverture des doublons devra être vérifié manuellement ensuite (⚖️ Ajuster fond si besoin). Continuer ?')) return;
+  await caisseSnapshotAvantMasse('fusion sessions en double');
+  var nSessions = 0, nMvts = 0;
+  for (var i = 0; i < cibles.length; i++) {
+    var liste = parCaisse[cibles[i]].slice().sort(function(a,b){ return (a.ouverte_le||'').localeCompare(b.ouverte_le||''); });
+    var canonique = liste[0];
+    for (var j = 1; j < liste.length; j++) {
+      var doublon = liste[j];
+      var mvts = (DATA.caisse_mouvements || []).filter(function(m){ return m.session_id === doublon.id; });
+      for (var k = 0; k < mvts.length; k++) {
+        mvts[k].session_id = canonique.id;
+        await dbPut('caisse_mouvements', mvts[k]);
+        if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', mvts[k]);
+        nMvts++;
+      }
+      doublon.statut = 'cloturee';
+      doublon.fond_cloture_theorique = parseFloat(doublon.fond_ouverture) || 0;
+      doublon.fond_cloture_reel = parseFloat(doublon.fond_ouverture) || 0;
+      doublon.ecart = 0;
+      doublon.cloturee_par = 'Fusion automatique (session en double) — ' + ((APP.currentUser && APP.currentUser.nom) || '—');
+      doublon.cloturee_le = new Date().toISOString();
+      await dbPut('caisse_sessions', doublon);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_sessions', doublon);
+      nSessions++;
+    }
+  }
+  toast('🔀 ' + nSessions + ' session(s) fusionnée(s) · ' + nMvts + ' mouvement(s) rattaché(s). Vérifiez le fond d\'ouverture des sessions fusionnées.', 'success');
+  caisseRenderListe();
+  if (typeof caisseRenderDashboard === 'function') caisseRenderDashboard();
+  caisseControleIntegrite();
 }
 
 async function caisseAnnulerVentilationsAutoParRegle(motCle) {
@@ -113606,10 +113719,17 @@ async function caisseRegulariserTousEcarts(){
 /* ══════════════════════════════════════════════════════════════════════════
    HELPERS AGRÉGÉS CAISSE — consommés par le dashboard central et l'analyse 360
 ══════════════════════════════════════════════════════════════════════════ */
+/* Solde temps réel : session ouverte si elle existe, sinon fond réel compté
+   à la dernière clôture (l'argent reste physiquement dans la caisse entre
+   la clôture et la réouverture du lendemain — le compter à 0 dans cet
+   intervalle donnait l'impression d'un cash disparu sur tous les KPI qui
+   lisent cette fonction : Cockpit, Finance, Vue, synthèse PDG). */
 function caisseSoldeGlobalTempsReel(){
   return (DATA.caisses||[]).reduce(function(s,c){
     var sess = caisseGetSessionOuverte(c.id);
-    return s + (sess ? caisseSoldeSession(sess) : 0);
+    if (sess) return s + caisseSoldeSession(sess);
+    var derniere = caisseDernièreSessionCloturee(c.id);
+    return s + (derniere ? (parseFloat(derniere.fond_cloture_reel)||0) : 0);
   }, 0);
 }
 function caisseFluxPeriode(deb, fin){
@@ -117079,6 +117199,7 @@ goTo = function(page) {
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-caisse-integrite')">Fermer</button>
       <button class="btn btn-secondary" onclick="caisseReparerNumerosDupliques()">🔧 Réparer les numéros</button>
+      <button class="btn btn-secondary" id="cci-btn-fusion-sessions" style="display:none;" onclick="caisseFusionnerSessionsDoublons()">🔀 Fusionner les sessions en double</button>
       <button class="btn btn-primary" onclick="caisseControleIntegrite()">🔄 Relancer</button>
     </div>
   </div>
