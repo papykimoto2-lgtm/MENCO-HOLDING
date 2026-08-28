@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.105 · 2026-08-27 — CORRECTIF MAJEUR : Parc Auto / Logistique n\'était jamais câblé dans le système de rafraîchissement temps réel. Les données arrivaient pourtant bien en base sur tous les postes (le pull générique fonctionnait), mais l\'écran ouvert restait figé — un ajout de plein, d\'entretien, d\'affectation ou de course sur un poste n\'apparaissait chez les autres qu\'après un rechargement complet de la page. Les 5 tables du module (vehicules, vehicule_carburant, vehicule_entretiens, vehicule_affectations, vehicule_courses) sont maintenant enregistrées dans les deux tables de routage (RT_PAGE_REFRESH, RT_STORE_PAGE) utilisées par tous les autres modules déjà temps réel (Clients, Programmes, Compta…) — la page Parc Auto se rafraîchit désormais automatiquement dès qu\'un autre poste modifie une donnée du module, sans avoir à recharger. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.106 · 2026-08-27 — NOUVEAU : onglet « 🗂️ Catalogue » dans Stock — Matériaux & Fournitures, vue Liste/Grille de tous les articles de la bibliothèque (matériaux chantier ET fournitures/moyens généraux confondus), avec recherche, filtre (en stock / jamais mouvementé), prix indicatif, stock actuel et valeur en regard. Différent de « État des stocks » qui ne montre que les articles déjà mouvementés — le Catalogue montre tout ce qui existe dans la bibliothèque, y compris les articles jamais encore commandés. Actions rapides depuis chaque article : modifier la fiche, entrée de stock présélectionnée. Bouton « + Nouvel article » directement accessible depuis Stock, sans détour par Déboursé Sec. Corrigé au passage : eds_ressources (la bibliothèque d\'articles) n\'était pas câblée au rafraîchissement temps réel — un article ajouté/modifié sur un autre poste n\'apparaissait pas automatiquement, même bug que celui déjà corrigé pour Parc Auto. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -4835,6 +4835,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div class="etape-hd"><span class="etape-num">1</span>Suivi</div>
             <div class="etape-btns">
               <button class="tab-btn active" onclick="switchTab('stock','etat')"><i>📋</i>État des stocks</button>
+              <button class="tab-btn" onclick="switchTab('stock','catalogue')"><i>🗂️</i>Catalogue</button>
               <button class="tab-btn" onclick="switchTab('stock','depot')"><i>🏬</i>Par dépôt</button>
             </div>
           </div>
@@ -4860,6 +4861,23 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <tbody id="tbody-stock-etat"></tbody>
             </table></div>
           </div>
+        </div>
+        <div class="tab-pane" id="tab-stock-catalogue">
+          <div class="filters-bar" style="flex-wrap:wrap;margin-bottom:12px;">
+            <input type="text" class="search-input" id="cat-search" placeholder="🔍 Code, désignation..." oninput="stockRenderCatalogue()" style="flex:1;min-width:200px;">
+            <select class="form-control" id="cat-filter-stock" onchange="stockRenderCatalogue()" style="max-width:180px;">
+              <option value="">— Tous les articles —</option>
+              <option value="en_stock">En stock uniquement</option>
+              <option value="jamais">Jamais mouvementé</option>
+            </select>
+            <div style="display:flex;gap:4px;">
+              <button class="btn btn-secondary btn-sm" id="cat-vue-liste" onclick="stockCatalogueVue('liste')" title="Vue liste">☰ Liste</button>
+              <button class="btn btn-secondary btn-sm" id="cat-vue-grille" onclick="stockCatalogueVue('grille')" title="Vue grille">▦ Grille</button>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="edsOpenRes(null)">➕ Nouvel article</button>
+          </div>
+          <div id="stock-catalogue-liste"></div>
+          <div id="stock-catalogue-grille" style="display:none;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;"></div>
         </div>
         <div class="tab-pane" id="tab-stock-mouvements">
           <div class="card">
@@ -27017,6 +27035,7 @@ function switchTab(context, tab) {
   if (context === 'chantiers' && tab === 'controle' && typeof renderControleGestion === 'function') renderControleGestion();
   if (context === 'chantiers' && tab === 'cout' && typeof buildCoutRevient === 'function') buildCoutRevient();
   if (context === 'af' && tab === 'proprietaires' && typeof afRenderProprietairesListe === 'function') afRenderProprietairesListe();
+  if (context === 'stock' && tab === 'catalogue' && typeof stockRenderCatalogue === 'function') stockRenderCatalogue();
   if (context === 'budget') {
     if (tab === 'previsionnel' && typeof budgetRenderPrevisionnel === 'function') budgetRenderPrevisionnel();
     if (tab === 'fed' && typeof budgetRenderFed === 'function') budgetRenderFed();
@@ -70596,7 +70615,8 @@ var RT_PAGE_REFRESH = {
   leads:['renderLeads'], commissions:['renderCommissions'],
   parcelles:['renderParcelles'], af_operations:['afRenderPipeline','afRenderDashboard'],
   af_relances:['afRenderRelances'], conceptions:['renderConceptionsFull'],
-  situations:['renderSituations'], stock_mouvements:['renderStock'],
+  situations:['renderSituations'], stock_mouvements:['renderStock','stockRenderCatalogue'],
+  eds_ressources:['renderStock','stockRenderCatalogue'],
   declarations:['loadDeclarations'], conges_rh:['renderConges'],
   candidats_rh:['renderCandidats'], pointages:['renderPointages'],
   visites_rdv:['renderVisitesRDV'],
@@ -70626,7 +70646,7 @@ var RT_STORE_PAGE = {
   clients:'clients', programmes:'programmes', lots:'lots',
   versements:'paiements', employes:'rh-employes', bulletins:'rh-paie',
   ecritures:'comptabilite', conventions:'conventions', constructeurs:'constructeurs',
-  fournisseurs:'stock', bons_commande:'stock', factures_fournisseur:'stock',
+  fournisseurs:'stock', bons_commande:'stock', factures_fournisseur:'stock', eds_ressources:'stock',
   leads:'leads', commissions:'clients', parcelles:'foncier',
   af_operations:'foncierops', af_relances:'foncierops', conceptions:'conception',
   situations:'avancement', stock_mouvements:'stock', declarations:'rh-declarations',
@@ -92767,6 +92787,89 @@ function renderStock(){
   }
 }
 function stockSetSeuil(key,val){ var s=stockSeuils(); if(val===''||val==null){ delete s[key]; } else { s[key]=parseFloat(val)||0; } DATA.params.id='main'; dbPut('params',DATA.params); if(typeof syncToSupabase==='function')syncToSupabase('pi_params',DATA.params); renderStock(); }
+
+/* ── CATALOGUE — vue browsable de toute la bibliothèque d'articles ──────
+   Différent de l'État des stocks : celui-ci ne montre que les articles
+   ayant un historique de mouvement. Le Catalogue montre TOUS les articles
+   connus (bibliothèque eds_ressources, type matériau — chantier ET
+   moyens généraux confondus), avec leur stock actuel en regard (0 si
+   jamais mouvementé), pour parcourir/choisir un produit plutôt que de
+   suivre un flux. */
+var _catVue = 'liste';
+function stockCatalogueVue(v){
+  _catVue = v;
+  document.getElementById('cat-vue-liste').classList.toggle('btn-primary', v==='liste');
+  document.getElementById('cat-vue-liste').classList.toggle('btn-secondary', v!=='liste');
+  document.getElementById('cat-vue-grille').classList.toggle('btn-primary', v==='grille');
+  document.getElementById('cat-vue-grille').classList.toggle('btn-secondary', v!=='grille');
+  document.getElementById('stock-catalogue-liste').style.display = v==='liste' ? '' : 'none';
+  document.getElementById('stock-catalogue-grille').style.display = v==='grille' ? 'grid' : 'none';
+}
+function stockRenderCatalogue(){
+  var hostListe = document.getElementById('stock-catalogue-liste');
+  var hostGrille = document.getElementById('stock-catalogue-grille');
+  if (!hostListe || !hostGrille) return;
+  stockCatalogueVue(_catVue);
+
+  var q = ((document.getElementById('cat-search')||{}).value||'').toLowerCase().trim();
+  var fStock = (document.getElementById('cat-filter-stock')||{}).value||'';
+  var comp = stockCompute();
+
+  var articles = (DATA.eds_ressources||[]).filter(function(r){ return r.type==='materiau'; }).map(function(r){
+    var art = comp.byArticle['res:'+r.id];
+    return { res:r, qte: art?art.qte:0, cump: art?art.cump:0, valeur: art?art.valeur:0, enStock: !!art };
+  }).filter(function(x){
+    if (fStock==='en_stock' && !(x.qte>0)) return false;
+    if (fStock==='jamais' && x.enStock) return false;
+    if (q && !((x.res.code||'')+' '+(x.res.libelle||'')).toLowerCase().includes(q)) return false;
+    return true;
+  }).sort(function(a,b){ return (a.res.libelle||'').localeCompare(b.res.libelle||''); });
+
+  if (!articles.length) {
+    var vide = '<div class="alert alert-info">Aucun article. Cliquez « + Nouvel article » pour enrichir le catalogue.</div>';
+    hostListe.innerHTML = vide; hostGrille.innerHTML = vide;
+    return;
+  }
+
+  hostListe.innerHTML = '<div class="card"><div class="table-wrap"><table>'
+    + '<thead><tr><th>Code</th><th>Désignation</th><th>Unité</th><th style="text-align:right;">Prix indicatif</th><th style="text-align:right;">Stock actuel</th><th style="text-align:right;">Valeur</th><th></th></tr></thead><tbody>'
+    + articles.map(function(x){
+        var r = x.res;
+        return '<tr>'
+          + '<td style="font-family:monospace;font-size:11px;">'+escHtml(r.code||'—')+'</td>'
+          + '<td style="font-weight:600;">'+escHtml(r.libelle||'')+'</td>'
+          + '<td style="font-size:12px;">'+escHtml(r.unite||'—')+'</td>'
+          + '<td style="text-align:right;">'+fmtF(r.pu||0)+' F</td>'
+          + '<td style="text-align:right;font-weight:700;'+(x.qte<=0?'color:var(--blanc-dim);':'')+'">'+(x.enStock?fmtQ(x.qte):'—')+'</td>'
+          + '<td style="text-align:right;">'+(x.enStock?fmtF(Math.round(x.valeur))+' F':'—')+'</td>'
+          + '<td style="display:flex;gap:4px;"><button class="btn btn-secondary btn-sm btn-icon" onclick="edsOpenRes(\''+r.id+'\')" title="Modifier la fiche">✏️</button>'
+          + '<button class="btn btn-secondary btn-sm btn-icon" onclick="stockCatalogueEntreeRapide(\''+r.id+'\')" title="Entrée rapide">➕</button></td>'
+          + '</tr>';
+      }).join('')
+    + '</tbody></table></div></div>';
+
+  hostGrille.innerHTML = articles.map(function(x){
+    var r = x.res;
+    return '<div class="card" style="padding:14px;">'
+      + '<div style="font-weight:700;font-size:14px;">'+escHtml(r.libelle||'')+'</div>'
+      + '<div style="font-size:11px;color:var(--blanc-dim);font-family:monospace;margin-top:2px;">'+escHtml(r.code||'—')+'</div>'
+      + '<div style="margin-top:10px;font-size:12px;">💰 '+fmtF(r.pu||0)+' F / '+escHtml(r.unite||'—')+'</div>'
+      + '<div style="margin-top:4px;font-size:13px;font-weight:700;'+(x.qte<=0?'color:var(--blanc-dim);':'color:var(--vert);')+'">📦 '+(x.enStock?fmtQ(x.qte)+' '+escHtml(r.unite||''):'Jamais stocké')+'</div>'
+      + (x.enStock ? '<div style="font-size:11px;color:var(--blanc-dim);">Valeur : '+fmtF(Math.round(x.valeur))+' F</div>' : '')
+      + '<div style="display:flex;gap:6px;margin-top:10px;">'
+        + '<button class="btn btn-secondary btn-sm" style="flex:1;" onclick="edsOpenRes(\''+r.id+'\')">✏️ Modifier</button>'
+        + '<button class="btn btn-primary btn-sm" style="flex:1;" onclick="stockCatalogueEntreeRapide(\''+r.id+'\')">➕ Entrée</button>'
+      + '</div></div>';
+  }).join('');
+}
+/* Ouvre le formulaire Entrée avec l'article déjà présélectionné. */
+function stockCatalogueEntreeRapide(resId){
+  openStockEntree();
+  setTimeout(function(){
+    var sel = document.getElementById('se-res');
+    if (sel) { sel.value = resId; if (typeof stockFillFromRes === 'function') stockFillFromRes('se'); }
+  }, 100);
+}
 function stockMateriauxOptions(sel){
   var html='<option value="">— hors bibliothèque —</option>';
   (DATA.eds_ressources||[]).filter(function(r){return r.type==='materiau';}).forEach(function(r){
