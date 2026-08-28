@@ -633,6 +633,73 @@ function _genSalt(){
   else for (var i=0;i<16;i++) arr[i]=Math.floor(Math.random()*256);
   return Array.from(arr).map(function(b){return b.toString(16).padStart(2,'0');}).join('');
 }
+/* ── Synchro cloud des comptes MenkoHoldingDB — PORTÉ TEL QUEL depuis le hub
+   Menko Holding (index.html), même table, même clé de config localStorage,
+   même format d'échange. [FIX] La première version de ce correctif visait
+   à tort la table pi_users (comptes internes propres à l'ERP Menko Immo,
+   un système séparé) au lieu de menko_hub_users (la vraie table partagée
+   utilisée par le hub pour la SSO inter-applications). Comme le hub et
+   Agro sont servis depuis la même origine, la config renseignée UNE FOIS
+   dans le hub (Paramètres → Synchronisation) est déjà lisible ici via le
+   même localStorage — aucune configuration supplémentaire à faire côté
+   Agro. */
+var HUB_SB_CFG_KEY = 'menko_hub_sb';
+var HUB_SB_TABLE = 'menko_hub_users';
+function hubSbCfg(){
+  try { var c = JSON.parse(localStorage.getItem(HUB_SB_CFG_KEY)); return (c && c.url && c.key) ? c : null; } catch(e){ return null; }
+}
+function hubSbXHR(method, path, body, prefer){
+  return new Promise(function(resolve, reject){
+    var cfg = hubSbCfg();
+    if (!cfg) return reject(new Error('Supabase non configuré'));
+    var xhr = new XMLHttpRequest();
+    xhr.open(method, cfg.url.replace(/\/+$/,'') + '/rest/v1/' + path, true);
+    xhr.setRequestHeader('apikey', cfg.key); xhr.setRequestHeader('Authorization', 'Bearer '+cfg.key); xhr.setRequestHeader('Content-Type', 'application/json');
+    if (prefer) xhr.setRequestHeader('Prefer', prefer);
+    xhr.timeout = 15000;
+    xhr.onload = function(){
+      if (xhr.status >= 200 && xhr.status < 300) { try { resolve(xhr.responseText ? JSON.parse(xhr.responseText) : []); } catch(e){ resolve([]); } }
+      else reject(new Error('HTTP '+xhr.status+' '+xhr.responseText));
+    };
+    xhr.onerror = function(){ reject(new Error('Réseau indisponible')); };
+    xhr.ontimeout = function(){ reject(new Error('Délai dépassé')); };
+    xhr.send(body ? JSON.stringify(body) : null);
+  });
+}
+function _hubToCloud(u){
+  return { id:u.id, nom:u.nom||'', login:u.login||'', password_hash:u.password_hash||'', salt:u.salt||'',
+           role:u.role||'', actif:u.actif!==false, deleted:false, last_login:u.last_login||null,
+           created_at:u.createdAt||new Date().toISOString(), updated_at:u.updatedAt||new Date().toISOString() };
+}
+function _hubFromCloud(r){
+  return { id:r.id, nom:r.nom, login:r.login, password_hash:r.password_hash, salt:r.salt,
+           role:r.role, actif:r.actif!==false, last_login:r.last_login||null,
+           createdAt:r.created_at, updatedAt:r.updated_at, _deleted:!!r.deleted };
+}
+async function sbUsersPush(user){
+  if (!hubSbCfg()) return;
+  user.updatedAt = new Date().toISOString();
+  await hubSbXHR('POST', HUB_SB_TABLE, [_hubToCloud(user)], 'resolution=merge-duplicates,return=minimal');
+}
+async function sbUsersSoftDelete(id){
+  if (!hubSbCfg()) return;
+  await hubSbXHR('PATCH', HUB_SB_TABLE + '?id=eq.' + encodeURIComponent(id),
+    { deleted:true, updated_at:new Date().toISOString() }, 'return=minimal');
+}
+async function sbUsersPull(){
+  if (!hubSbCfg()) return false;
+  var rows = await hubSbXHR('GET', HUB_SB_TABLE + '?select=*', null);
+  var db = await openHoldDB();
+  var locals = await _holdUsers(db);
+  var map = {}; locals.forEach(function(u){ map[u.id]=u; });
+  for (var i=0;i<rows.length;i++){
+    var c = _hubFromCloud(rows[i]);
+    var l = map[c.id];
+    if (c._deleted) { if (l) await _holdDeleteUserById(db, c.id); continue; }
+    if (!l || new Date(c.updatedAt||0) >= new Date(l.updatedAt||0)) { delete c._deleted; await _holdSaveUser(db, c); }
+  }
+  return true;
+}
 function _agroBadge(u){
   var b=document.createElement('div');
   b.style.cssText='position:fixed;top:8px;right:8px;z-index:99999;background:#1A1A2E;color:#fff;font-size:11px;padding:5px 10px;border-radius:6px;font-family:Arial,sans-serif;display:flex;align-items:center;gap:8px;';
@@ -644,16 +711,26 @@ async function _agroDoLogin(){
   var login=(document.getElementById('agro-acc-user').value||'').trim();
   var pass=document.getElementById('agro-acc-pass').value||'';
   if(!login||!pass){ _agroAccErr('Identifiant et mot de passe requis.'); return; }
+  var btn=document.getElementById('agro-acc-btn');
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Connexion…'; }
   try{
+    /* [FIX] Comme le hub (index.html doLogin) : on tire d'abord le cloud
+       (menko_hub_users) — best-effort, ne bloque pas si hors-ligne — AVANT
+       de vérifier localement. Un compte créé sur un autre poste devient
+       ainsi utilisable ici dès la première tentative de connexion. */
+    try { await sbUsersPull(); } catch(e){}
     var db=await openHoldDB(); var users=await _holdUsers(db);
     var u=users.find(function(x){ return (x.login||'').toLowerCase()===login.toLowerCase(); });
-    if(!u){ _agroAccErr('Identifiant ou mot de passe incorrect.'); return; }
+    if(!u){ _agroAccErr('Identifiant ou mot de passe incorrect.'); if(btn){btn.disabled=false;btn.textContent='Se connecter';} return; }
+    if(u.actif===false){ _agroAccErr('Ce compte est désactivé. Contactez l\'administrateur.'); if(btn){btn.disabled=false;btn.textContent='Se connecter';} return; }
     var h=await hashPassword(pass,u.salt);
-    if(h!==u.password_hash){ _agroAccErr('Identifiant ou mot de passe incorrect.'); return; }
+    if(h!==u.password_hash){ _agroAccErr('Identifiant ou mot de passe incorrect.'); if(btn){btn.disabled=false;btn.textContent='Se connecter';} return; }
+    u.last_login = new Date().toISOString();
+    try { await _holdSaveUser(db, u); await sbUsersPush(u); } catch(e){}
     sessionStorage.setItem('menko_session', JSON.stringify({ id:u.id, nom:u.nom, login:u.login, role:u.role }));
     sessionStorage.setItem('menko_agro_unlocked', '1');
     location.reload();
-  }catch(e){ _agroAccErr('Erreur de connexion.'); }
+  }catch(e){ _agroAccErr('Erreur de connexion.'); if(btn){btn.disabled=false;btn.textContent='Se connecter';} }
 }
 function _agroAccessWindow(){
   var ov=document.createElement('div');
@@ -666,7 +743,9 @@ function _agroAccessWindow(){
     +'</div>';
   document.body.appendChild(ov);
   var body=ov.querySelector('#agro-acc-body');
-  openHoldDB().then(_holdUsers).then(function(users){
+  openHoldDB().then(async function(db){
+    try { await sbUsersPull(); } catch(e){}
+    var users = await _holdUsers(db);
     if(!users.length){
       body.innerHTML='<div style="font-size:13px;color:#444;line-height:1.6;">Aucun compte n\'existe encore. Créez le compte administrateur depuis le hub Menko Holding.</div>'
         +'<button onclick="location.href=\'index.html\'" style="width:100%;margin-top:14px;background:#1e3d2f;color:#fff;border:none;padding:11px;border-radius:8px;font-weight:700;cursor:pointer;">Aller au hub &#8594;</button>';
@@ -676,7 +755,7 @@ function _agroAccessWindow(){
       +'<input id="agro-acc-user" autocomplete="username" style="width:100%;box-sizing:border-box;padding:10px;border:1px solid #ddd;border-radius:8px;margin-bottom:10px;font-size:14px;">'
       +'<label style="display:block;font-size:12px;font-weight:600;color:#555;margin-bottom:4px;">Mot de passe</label>'
       +'<input id="agro-acc-pass" type="password" autocomplete="current-password" style="width:100%;box-sizing:border-box;padding:10px;border:1px solid #ddd;border-radius:8px;margin-bottom:14px;font-size:14px;" onkeydown="if(event.key===\'Enter\')_agroDoLogin()">'
-      +'<button onclick="_agroDoLogin()" style="width:100%;background:#1e3d2f;color:#fff;border:none;padding:11px;border-radius:8px;font-weight:700;cursor:pointer;">Acc&#233;der &#224; Menko Agro &#8594;</button>'
+      +'<button id="agro-acc-btn" onclick="_agroDoLogin()" style="width:100%;background:#1e3d2f;color:#fff;border:none;padding:11px;border-radius:8px;font-weight:700;cursor:pointer;">Acc&#233;der &#224; Menko Agro &#8594;</button>'
       +'<div style="text-align:center;margin-top:12px;"><a href="index.html" style="font-size:11px;color:#3a7a55;text-decoration:none;">&#8592; Retour au hub Menko Holding</a></div>';
     var uel=document.getElementById('agro-acc-user');
     try{ var hs=JSON.parse(sessionStorage.getItem('menko_session')||'{}'); if(uel && hs.login){ uel.value=hs.login; } }catch(e){}
@@ -9009,11 +9088,18 @@ create trigger agro_state_touch_trg before insert or update on public.agro_state
 
                 const db = await openHoldDB();
                 const holdUsers = await _holdUsers(db);
-                const doublon = holdUsers.find(h => (h.login || '').toLowerCase() === identifiant.toLowerCase() && (!ancienIdentifiant || (h.login || '').toLowerCase() !== ancienIdentifiant.toLowerCase()));
+                /* [FIX] Le contrôle de doublon ne portait que sur les comptes locaux
+                   à ce poste — un identifiant déjà pris côté cloud (créé depuis
+                   le hub, Agro sur un autre poste, ou Immo si un jour rattaché)
+                   pouvait être recréé ici sans avertissement. On tire d'abord le
+                   cloud pour avoir la vue la plus à jour possible. */
+                try { await sbUsersPull(); } catch(e){}
+                const holdUsersAJour = await _holdUsers(db);
+                const doublon = holdUsersAJour.find(h => (h.login || '').toLowerCase() === identifiant.toLowerCase() && (!ancienIdentifiant || (h.login || '').toLowerCase() !== ancienIdentifiant.toLowerCase()));
                 if (doublon) { _usrErr('Cet identifiant est déjà utilisé par un autre compte.'); if (btn) { btn.disabled = false; btn.textContent = '💾 Enregistrer'; } return; }
 
-                let compteHub = ancienIdentifiant ? holdUsers.find(h => (h.login || '').toLowerCase() === ancienIdentifiant.toLowerCase()) : null;
-                if (!compteHub) compteHub = holdUsers.find(h => (h.login || '').toLowerCase() === identifiant.toLowerCase());
+                let compteHub = ancienIdentifiant ? holdUsersAJour.find(h => (h.login || '').toLowerCase() === ancienIdentifiant.toLowerCase()) : null;
+                if (!compteHub) compteHub = holdUsersAJour.find(h => (h.login || '').toLowerCase() === identifiant.toLowerCase());
 
                 if (pass) {
                     const salt = _genSalt();
@@ -9029,6 +9115,13 @@ create trigger agro_state_touch_trg before insert or update on public.agro_state
                     compteHub.nom = nom; compteHub.login = identifiant; compteHub.role = role;
                     await _holdSaveUser(db, compteHub);
                 }
+                /* [FIX] Poussait uniquement en local malgré le commentaire ci-dessus
+                   affirmant une base « partagée par toutes les applications du
+                   groupe » — jamais vrai jusqu'ici. Même mécanisme que le hub
+                   (sbUsersPush → table menko_hub_users). Repli silencieux si hors
+                   ligne ou cloud non configuré : le compte reste utilisable
+                   localement, il se synchronisera à la prochaine occasion. */
+                if (compteHub) { try { await sbUsersPush(compteHub); } catch(e) { /* pas bloquant */ } }
 
                 if (id) { Object.assign(data.utilisateurs.find(x => x.id === id), { nom, identifiant, role, actif }); }
                 else { data.utilisateurs.push({ id: data.nextId.utilisateur++, nom, identifiant, role, actif }); }
@@ -9054,7 +9147,7 @@ create trigger agro_state_touch_trg before insert or update on public.agro_state
                     const db = await openHoldDB();
                     const holdUsers = await _holdUsers(db);
                     const compteHub = holdUsers.find(h => (h.login || '').toLowerCase() === u.identifiant.toLowerCase());
-                    if (compteHub) await _holdDeleteUserById(db, compteHub.id);
+                    if (compteHub) { await _holdDeleteUserById(db, compteHub.id); try { await sbUsersSoftDelete(compteHub.id); } catch(e){} }
                 } catch (e) { /* suppression locale déjà effectuée, on ignore l'échec d'accès au hub */ }
             }
             renderParametres();
