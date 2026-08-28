@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.106 · 2026-08-27 — NOUVEAU : onglet « 🗂️ Catalogue » dans Stock — Matériaux & Fournitures, vue Liste/Grille de tous les articles de la bibliothèque (matériaux chantier ET fournitures/moyens généraux confondus), avec recherche, filtre (en stock / jamais mouvementé), prix indicatif, stock actuel et valeur en regard. Différent de « État des stocks » qui ne montre que les articles déjà mouvementés — le Catalogue montre tout ce qui existe dans la bibliothèque, y compris les articles jamais encore commandés. Actions rapides depuis chaque article : modifier la fiche, entrée de stock présélectionnée. Bouton « + Nouvel article » directement accessible depuis Stock, sans détour par Déboursé Sec. Corrigé au passage : eds_ressources (la bibliothèque d\'articles) n\'était pas câblée au rafraîchissement temps réel — un article ajouté/modifié sur un autre poste n\'apparaissait pas automatiquement, même bug que celui déjà corrigé pour Parc Auto. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.107 · 2026-08-27 — Catalogue Stock : affectation d\'un dépôt par défaut à chaque article, directement depuis la liste ou la grille (menu déroulant inline, pas besoin de rouvrir la fiche). Ce dépôt affecté pré-remplit désormais automatiquement le formulaire Entrée (bouton rapide du Catalogue, et sélection normale d\'un article dans le formulaire) — sans jamais restreindre : reste modifiable à tout moment au moment de la saisie. Détail du stock par dépôt affiché sous la quantité (ex. « Magasin central : 40 · Chantier X : 12 ») dès qu\'un article est réparti sur plusieurs dépôts. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -92817,7 +92817,11 @@ function stockRenderCatalogue(){
 
   var articles = (DATA.eds_ressources||[]).filter(function(r){ return r.type==='materiau'; }).map(function(r){
     var art = comp.byArticle['res:'+r.id];
-    return { res:r, qte: art?art.qte:0, cump: art?art.cump:0, valeur: art?art.valeur:0, enStock: !!art };
+    /* Stock détaillé par dépôt pour cet article — comp.cells est déjà clé
+       par artKey+dépôt, on filtre ceux qui concernent cette ressource. */
+    var parDepot = Object.keys(comp.cells).map(function(ck){ return comp.cells[ck]; })
+      .filter(function(c){ return c.artKey==='res:'+r.id && c.qte>0.0001; });
+    return { res:r, qte: art?art.qte:0, cump: art?art.cump:0, valeur: art?art.valeur:0, enStock: !!art, parDepot: parDepot };
   }).filter(function(x){
     if (fStock==='en_stock' && !(x.qte>0)) return false;
     if (fStock==='jamais' && x.enStock) return false;
@@ -92832,15 +92836,19 @@ function stockRenderCatalogue(){
   }
 
   hostListe.innerHTML = '<div class="card"><div class="table-wrap"><table>'
-    + '<thead><tr><th>Code</th><th>Désignation</th><th>Unité</th><th style="text-align:right;">Prix indicatif</th><th style="text-align:right;">Stock actuel</th><th style="text-align:right;">Valeur</th><th></th></tr></thead><tbody>'
+    + '<thead><tr><th>Code</th><th>Désignation</th><th>Unité</th><th style="text-align:right;">Prix indicatif</th><th>Dépôt affecté</th><th style="text-align:right;">Stock actuel</th><th style="text-align:right;">Valeur</th><th></th></tr></thead><tbody>'
     + articles.map(function(x){
         var r = x.res;
+        var detailDepots = x.parDepot.length
+          ? '<div style="font-size:10px;color:var(--blanc-dim);margin-top:2px;">' + x.parDepot.map(function(c){ return escHtml(depotName(c.depot_id))+' : '+fmtQ(c.qte); }).join(' · ') + '</div>'
+          : '';
         return '<tr>'
           + '<td style="font-family:monospace;font-size:11px;">'+escHtml(r.code||'—')+'</td>'
           + '<td style="font-weight:600;">'+escHtml(r.libelle||'')+'</td>'
           + '<td style="font-size:12px;">'+escHtml(r.unite||'—')+'</td>'
           + '<td style="text-align:right;">'+fmtF(r.pu||0)+' F</td>'
-          + '<td style="text-align:right;font-weight:700;'+(x.qte<=0?'color:var(--blanc-dim);':'')+'">'+(x.enStock?fmtQ(x.qte):'—')+'</td>'
+          + '<td><select class="form-control" style="font-size:11px;padding:3px 6px;" onchange="stockAffecterDepot(\''+r.id+'\',this.value)"><option value="">— Aucun —</option>'+depotOptions(r.depot_id||'',false)+'</select></td>'
+          + '<td style="text-align:right;font-weight:700;'+(x.qte<=0?'color:var(--blanc-dim);':'')+'">'+(x.enStock?fmtQ(x.qte):'—')+detailDepots+'</td>'
           + '<td style="text-align:right;">'+(x.enStock?fmtF(Math.round(x.valeur))+' F':'—')+'</td>'
           + '<td style="display:flex;gap:4px;"><button class="btn btn-secondary btn-sm btn-icon" onclick="edsOpenRes(\''+r.id+'\')" title="Modifier la fiche">✏️</button>'
           + '<button class="btn btn-secondary btn-sm btn-icon" onclick="stockCatalogueEntreeRapide(\''+r.id+'\')" title="Entrée rapide">➕</button></td>'
@@ -92850,24 +92858,47 @@ function stockRenderCatalogue(){
 
   hostGrille.innerHTML = articles.map(function(x){
     var r = x.res;
+    var detailDepots = x.parDepot.length
+      ? '<div style="font-size:10px;color:var(--blanc-dim);margin-top:2px;">' + x.parDepot.map(function(c){ return escHtml(depotName(c.depot_id))+' : '+fmtQ(c.qte); }).join('<br>') + '</div>'
+      : '';
     return '<div class="card" style="padding:14px;">'
       + '<div style="font-weight:700;font-size:14px;">'+escHtml(r.libelle||'')+'</div>'
       + '<div style="font-size:11px;color:var(--blanc-dim);font-family:monospace;margin-top:2px;">'+escHtml(r.code||'—')+'</div>'
       + '<div style="margin-top:10px;font-size:12px;">💰 '+fmtF(r.pu||0)+' F / '+escHtml(r.unite||'—')+'</div>'
       + '<div style="margin-top:4px;font-size:13px;font-weight:700;'+(x.qte<=0?'color:var(--blanc-dim);':'color:var(--vert);')+'">📦 '+(x.enStock?fmtQ(x.qte)+' '+escHtml(r.unite||''):'Jamais stocké')+'</div>'
-      + (x.enStock ? '<div style="font-size:11px;color:var(--blanc-dim);">Valeur : '+fmtF(Math.round(x.valeur))+' F</div>' : '')
+      + (x.enStock ? '<div style="font-size:11px;color:var(--blanc-dim);">Valeur : '+fmtF(Math.round(x.valeur))+' F</div>'+detailDepots : '')
+      + '<div style="margin-top:8px;"><select class="form-control" style="width:100%;font-size:11px;" onchange="stockAffecterDepot(\''+r.id+'\',this.value)"><option value="">— Aucun dépôt affecté —</option>'+depotOptions(r.depot_id||'',false)+'</select></div>'
       + '<div style="display:flex;gap:6px;margin-top:10px;">'
         + '<button class="btn btn-secondary btn-sm" style="flex:1;" onclick="edsOpenRes(\''+r.id+'\')">✏️ Modifier</button>'
         + '<button class="btn btn-primary btn-sm" style="flex:1;" onclick="stockCatalogueEntreeRapide(\''+r.id+'\')">➕ Entrée</button>'
       + '</div></div>';
   }).join('');
 }
-/* Ouvre le formulaire Entrée avec l'article déjà présélectionné. */
+/* Affecte un dépôt par défaut à un article — pré-remplit ensuite les
+   opérations de stock (entrée rapide) avec ce dépôt, et sert de repère
+   visuel (« ce type d'article se range normalement ici »). Ne restreint
+   rien : un article reste manuellement déplaçable vers un autre dépôt au
+   moment de la saisie, ce champ n'est qu'un défaut pratique. */
+async function stockAffecterDepot(resId, depotId){
+  var r = (DATA.eds_ressources||[]).find(function(x){ return x.id===resId; });
+  if (!r) return;
+  r.depot_id = depotId || '';
+  r.maj = today();
+  await dbPut('eds_ressources', r);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_ressources', r);
+  toast('✅ '+r.libelle+' → '+(depotId?depotName(depotId):'aucun dépôt par défaut'), 'success');
+  stockRenderCatalogue();
+}
+/* Ouvre le formulaire Entrée avec l'article ET son dépôt affecté (si défini)
+   déjà présélectionnés. */
 function stockCatalogueEntreeRapide(resId){
   openStockEntree();
   setTimeout(function(){
     var sel = document.getElementById('se-res');
     if (sel) { sel.value = resId; if (typeof stockFillFromRes === 'function') stockFillFromRes('se'); }
+    var r = (DATA.eds_ressources||[]).find(function(x){ return x.id===resId; });
+    var selDep = document.getElementById('se-depot');
+    if (selDep && r && r.depot_id) selDep.value = r.depot_id;
   }, 100);
 }
 function stockMateriauxOptions(sel){
@@ -92888,7 +92919,13 @@ function stockChantierOptions(){
 function stockFillFromRes(pfx){
   var rid=document.getElementById(pfx+'-res').value;
   var r=(DATA.eds_ressources||[]).find(function(x){return x.id===rid;});
-  if(r){ document.getElementById(pfx+'-unite').value=r.unite||''; document.getElementById(pfx+'-pu').value=r.pu||0; document.getElementById(pfx+'-designation').value=''; }
+  if(r){
+    document.getElementById(pfx+'-unite').value=r.unite||''; document.getElementById(pfx+'-pu').value=r.pu||0; document.getElementById(pfx+'-designation').value='';
+    /* Dépôt affecté par défaut (voir Catalogue → « affecter article par
+       dépôt ») — uniquement pour le formulaire Entrée, seul à avoir un
+       champ dépôt directement lié au choix de l'article. */
+    if (pfx==='se' && r.depot_id) { var selD=document.getElementById('se-depot'); if(selD) selD.value=r.depot_id; }
+  }
 }
 function stockCellOptions(depotId){
   var comp=stockCompute(); var opts='<option value="">— choisir —</option>';
