@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.103 · 2026-08-27 — NOUVEAU : onglet « 🚕 Courses quotidiennes » dans Parc Auto — carnet de bord des déplacements courts (livraison, dépôt de documents, course de bureau), distinct des Ordres de Mission (déplacement formel pluri-journalier avec document officiel, module séparé déjà existant). Véhicule, chauffeur, date, horaires, km départ/retour (distance calculée automatiquement), destination/motif, passagers. Le km de départ se pré-remplit avec le dernier km connu du véhicule (dernière course, ou fiche véhicule) pour fiabiliser l\'enchaînement. Le km du véhicule (km_actuel) se met à jour automatiquement si la course est plus récente, même logique que Carburant/Entretien déjà en place. Nouveau store vehicule_courses câblé partout où les stores Parc Auto existants le sont (sync, permissions, DATA init). Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.105 · 2026-08-27 — CORRECTIF MAJEUR : Parc Auto / Logistique n\'était jamais câblé dans le système de rafraîchissement temps réel. Les données arrivaient pourtant bien en base sur tous les postes (le pull générique fonctionnait), mais l\'écran ouvert restait figé — un ajout de plein, d\'entretien, d\'affectation ou de course sur un poste n\'apparaissait chez les autres qu\'après un rechargement complet de la page. Les 5 tables du module (vehicules, vehicule_carburant, vehicule_entretiens, vehicule_affectations, vehicule_courses) sont maintenant enregistrées dans les deux tables de routage (RT_PAGE_REFRESH, RT_STORE_PAGE) utilisées par tous les autres modules déjà temps réel (Clients, Programmes, Compta…) — la page Parc Auto se rafraîchit désormais automatiquement dès qu\'un autre poste modifie une donnée du module, sans avoir à recharger. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -14739,6 +14739,11 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <option value="vendu">Vendu</option>
             </select>
             <select class="form-control" id="pa-filter-division" onchange="paRenderVehicules()" style="max-width:180px;"><option value="">— Toutes divisions —</option></select>
+            <select class="form-control" id="pa-filter-usage" onchange="paRenderVehicules()" style="max-width:180px;">
+              <option value="">— Fonction + Service —</option>
+              <option value="fonction">🧑‍💼 Fonction uniquement</option>
+              <option value="service">🚕 Service uniquement</option>
+            </select>
           </div>
           <div id="pa-vehicules-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;margin-top:14px;"></div>
         </div>
@@ -62283,6 +62288,11 @@ function dspRenderKPIs(){
    ═══════════════════════════════════════════════════════════════════════ */
 var PA_TYPES  = { voiture:'Voiture particulière', pickup:'Camionnette/Pickup', camion:'Camion', engin:'Engin de chantier', autre:'Autre' };
 var PA_STATUTS = { actif:'Actif', en_reparation:'En réparation', hors_service:'Hors service', vendu:'Vendu' };
+/* Fonction : affecté durablement à une personne nommée (onglet Affectations
+   — un affectataire à la fois, historique conservé). Service : véhicule
+   partagé sans affectataire fixe, disponible pour n'importe quel employé/
+   chauffeur via l'onglet Courses quotidiennes. */
+var PA_USAGES = { fonction:'🧑‍💼 Véhicule de fonction (affecté)', service:'🚕 Véhicule de service (pool, courses)' };
 var PA_ENTRETIEN_TYPES = { vidange:'Vidange', revision:'Révision', pneus:'Pneus', reparation:'Réparation', carrosserie:'Carrosserie', autre:'Autre' };
 var _paEditId = null;
 
@@ -62299,6 +62309,17 @@ function paEnter(){
 
 /* ── Helpers ────────────────────────────────────────────────────────── */
 function paVehicule(id){ return (DATA.vehicules||[]).find(function(v){ return v.id===id; }); }
+/* Usage effectif d'un véhicule : le champ explicite s'il est renseigné
+   (fiche créée/éditée depuis ce correctif) ; à défaut, déduit d'une
+   affectation active existante (véhicule déjà confié à une personne avant
+   l'ajout de ce champ) — jamais un « service » par défaut qui masquerait
+   silencieusement un véhicule de fonction déjà en usage. */
+function paVehiculeUsage(v){
+  if (!v) return 'service';
+  if (v.usage) return v.usage;
+  var aActif = (DATA.vehicule_affectations||[]).some(function(a){ return a.vehicule_id===v.id && a.statut==='active'; });
+  return aActif ? 'fonction' : 'service';
+}
 function paLabelVehicule(v){
   if (!v) return '—';
   return (v.immatriculation||'—') + ' — ' + escHtml(v.marque||'') + ' ' + escHtml(v.modele||'');
@@ -62318,7 +62339,7 @@ function paFillSelects(){
   var vehiculesActifs = (DATA.vehicules||[]).filter(function(v){ return v.statut!=='vendu'; })
     .sort(function(a,b){ return (a.immatriculation||'').localeCompare(b.immatriculation||''); });
   var optsV = '<option value="">— Sélectionner —</option>' + vehiculesActifs.map(function(v){
-    return '<option value="'+v.id+'">'+escHtml(v.immatriculation||'')+' — '+escHtml(v.marque||'')+' '+escHtml(v.modele||'')+'</option>';
+    return '<option value="'+v.id+'">'+escHtml(v.immatriculation||'')+' — '+escHtml(v.marque||'')+' '+escHtml(v.modele||'')+' ('+(PA_USAGES[paVehiculeUsage(v)]||'').replace(/^\S+\s/,'')+')</option>';
   }).join('');
   ['pac-vehicule','pae-vehicule','paa-vehicule','pco-vehicule'].forEach(function(id){
     var el=document.getElementById(id); if(el){ var cur=el.value; el.innerHTML=optsV; el.value=cur; }
@@ -62427,11 +62448,13 @@ function paRenderVehicules(){
   var fType = (document.getElementById('pa-filter-type')||{}).value||'';
   var fStatut = (document.getElementById('pa-filter-statut')||{}).value||'';
   var fDiv = (document.getElementById('pa-filter-division')||{}).value||'';
+  var fUsage = (document.getElementById('pa-filter-usage')||{}).value||'';
 
   var liste = (DATA.vehicules||[]).filter(function(v){
     if (fType && v.type!==fType) return false;
     if (fStatut && v.statut!==fStatut) return false;
     if (fDiv && v.division_id!==fDiv) return false;
+    if (fUsage && paVehiculeUsage(v)!==fUsage) return false;
     if (search && !((v.immatriculation||'')+' '+(v.marque||'')+' '+(v.modele||'')).toLowerCase().includes(search)) return false;
     return true;
   }).sort(function(a,b){ return (a.immatriculation||'').localeCompare(b.immatriculation||''); });
@@ -62444,14 +62467,18 @@ function paRenderVehicules(){
     var statutCouleur = { actif:'var(--vert)', en_reparation:'var(--or,#B87333)', hors_service:'var(--rouge)', vendu:'var(--blanc-dim)' }[v.statut] || 'var(--blanc-dim)';
     var alerteAssurance = v.assurance_fin && v.assurance_fin < t;
     var alerteVisite = v.visite_technique_expiration && v.visite_technique_expiration < t;
+    var usage = paVehiculeUsage(v);
+    var usageBadge = usage==='fonction'
+      ? '<span class="badge" style="background:rgba(184,115,51,0.15);color:var(--or,#B87333);border:1px solid var(--or,#B87333);margin-left:6px;">🧑‍💼 Fonction</span>'
+      : '<span class="badge" style="background:rgba(74,148,224,0.15);color:#4A94E0;border:1px solid #4A94E0;margin-left:6px;">🚕 Service</span>';
     return '<div class="card" style="padding:14px;border-left:3px solid '+statutCouleur+';cursor:pointer;" onclick="paOpenVehicule(\''+v.id+'\')">'
       + '<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
         + '<div><div style="font-weight:800;font-size:15px;">'+escHtml(v.immatriculation||'—')+'</div>'
         + '<div style="font-size:12px;color:var(--blanc-dim);">'+escHtml(v.marque||'')+' '+escHtml(v.modele||'')+(v.annee?' · '+v.annee:'')+'</div></div>'
         + '<span class="badge" style="background:'+statutCouleur+';color:#fff;">'+ (PA_STATUTS[v.statut]||v.statut) +'</span>'
       + '</div>'
-      + '<div style="font-size:11px;color:var(--blanc-dim);margin-top:6px;">'+ (PA_TYPES[v.type]||v.type) + (v.division_id ? ' · '+escHtml(_nomDivision(v.division_id)) : '') + '</div>'
-      + '<div style="font-size:12px;margin-top:8px;">👤 '+(chauffeur ? escHtml((chauffeur.prenoms?chauffeur.prenoms+' ':'')+chauffeur.nom) : '<span style="color:var(--blanc-dim);">Non affecté</span>')+'</div>'
+      + '<div style="font-size:11px;color:var(--blanc-dim);margin-top:6px;">'+ (PA_TYPES[v.type]||v.type) + (v.division_id ? ' · '+escHtml(_nomDivision(v.division_id)) : '') + usageBadge + '</div>'
+      + '<div style="font-size:12px;margin-top:8px;">👤 '+(chauffeur ? escHtml((chauffeur.prenoms?chauffeur.prenoms+' ':'')+chauffeur.nom) : (usage==='service' ? '<span style="color:var(--blanc-dim);">Pool — sans affectataire</span>' : '<span style="color:var(--blanc-dim);">Non affecté</span>'))+'</div>'
       + '<div style="font-size:12px;margin-top:2px;">🛣️ '+ (v.km_actuel ? fmtF(v.km_actuel)+' km' : '—') + '</div>'
       + (alerteAssurance ? '<div style="font-size:11px;color:var(--rouge);margin-top:4px;">🔴 Assurance expirée</div>' : '')
       + (alerteVisite ? '<div style="font-size:11px;color:var(--rouge);margin-top:2px;">🔴 Visite technique expirée</div>' : '')
@@ -62494,6 +62521,9 @@ function paOpenVehicule(id){
     + '<div class="form-group"><label>Année</label><input type="number" id="pav-annee" class="form-control" value="'+(v?v.annee||'':'')+'"></div>'
     + '<div class="form-group"><label>Statut</label><select id="pav-statut" class="form-control">'
         + Object.keys(PA_STATUTS).map(function(k){ return '<option value="'+k+'"'+(v&&v.statut===k?' selected':(!v&&k==='actif'?' selected':''))+'>'+PA_STATUTS[k]+'</option>'; }).join('')
+      + '</select></div>'
+    + '<div class="form-group"><label>Usage *</label><select id="pav-usage" class="form-control" title="Fonction : affecté durablement à une personne (voir onglet Affectations). Service : véhicule partagé, sans affectataire fixe, réservé aux courses ponctuelles.">'
+        + Object.keys(PA_USAGES).map(function(k){ return '<option value="'+k+'"'+((v?paVehiculeUsage(v):'service')===k?' selected':'')+'>'+PA_USAGES[k]+'</option>'; }).join('')
       + '</select></div>'
     + '<div class="form-group"><label>Division</label><select id="pav-division" class="form-control"><option value="">—</option>'
         + (DATA.divisions||[]).map(function(d){ return '<option value="'+d.id+'"'+(v&&v.division_id===d.id?' selected':'')+'>'+escHtml(d.nom)+'</option>'; }).join('')
@@ -62570,6 +62600,7 @@ async function paSaveVehicule(){
   v.modele = (document.getElementById('pav-modele')||{}).value || '';
   v.annee = parseInt((document.getElementById('pav-annee')||{}).value, 10) || null;
   v.statut = (document.getElementById('pav-statut')||{}).value || 'actif';
+  v.usage = (document.getElementById('pav-usage')||{}).value || 'service';
   v.division_id = (document.getElementById('pav-division')||{}).value || '';
   v.km_actuel = parseFloat((document.getElementById('pav-km')||{}).value) || 0;
   v.date_acquisition = (document.getElementById('pav-date-acq')||{}).value || '';
@@ -62868,6 +62899,15 @@ async function paSaveAffectation(){
   var employeId = (document.getElementById('paa-employe')||{}).value||'';
   var dateDebut = (document.getElementById('paa-date-debut')||{}).value||'';
   if (!vehiculeId || !employeId || !dateDebut) { toast('Véhicule, employé et date de début sont obligatoires.', 'error'); return; }
+  /* Pas un blocage — juste une confirmation : un véhicule marqué « Service »
+     est censé rester un véhicule de pool, disponible pour les courses de
+     n'importe qui. L'affecter durablement à une personne le transforme de
+     fait en véhicule de fonction, mais rien ne met à jour son usage
+     automatiquement — on le signale plutôt que de le faire en silence. */
+  var vAff = paVehicule(vehiculeId);
+  if (vAff && paVehiculeUsage(vAff) === 'service') {
+    if (!confirm('Ce véhicule est marqué « Service » (pool, sans affectataire fixe). L\'affecter durablement à '+ (DATA.employes.find(function(e){return e.id===employeId;})||{}).nom + ' le transformera en usage réel « Fonction ».\n\nContinuer, puis pensez à mettre à jour son usage sur la fiche véhicule ?')) return;
+  }
 
   /* Terminer toute affectation active existante pour ce véhicule — un
      véhicule n'a qu'un seul chauffeur affecté à la fois. */
@@ -70568,7 +70608,17 @@ var RT_PAGE_REFRESH = {
   evenements_calendrier:['renderCalendrier'],
   reunions_direction:['rdRenderDashboard','rdRenderSuivi','rdRenderODJ','rdRenderPresence'],
   actions_reunion:['rdRenderActionsLive','rdRenderSuivi','rdRenderDashboard'],
-  dossiersJuridiques:['renderDossiers'], cessions_foncieres:['cesRender','crecRender']
+  dossiersJuridiques:['renderDossiers'], cessions_foncieres:['cesRender','crecRender'],
+  /* ── Parc Auto (Logistique) — jamais câblé ici : les données arrivaient
+     bien en base via le pull générique de _rtApply, mais la page restait
+     figée jusqu'à un rechargement complet, exactement le symptôme signalé
+     (« pas mis à jour automatiquement, pas visible des autres postes en
+     temps réel »). Un seul point d'entrée (paEnter) rafraîchit tout
+     l'écran d'un coup — plus simple et plus sûr que 5 fonctions
+     partielles vu les dépendances croisées entre onglets (ex. le km d'un
+     véhicule est mis à jour par carburant ET par les courses). */
+  vehicules:['paEnter'], vehicule_carburant:['paEnter'], vehicule_entretiens:['paEnter'],
+  vehicule_affectations:['paEnter'], vehicule_courses:['paEnter']
 };
 
 /* MAP store → data-page pour détecter la page active */
@@ -70585,7 +70635,9 @@ var RT_STORE_PAGE = {
   messages:'messagerie', conversations:'messagerie',
   evenements_calendrier:'calendrier',
   reunions_direction:'reunion-direction', actions_reunion:'reunion-direction',
-  cessions_foncieres:'foncier'
+  cessions_foncieres:'foncier',
+  vehicules:'parc-auto', vehicule_carburant:'parc-auto', vehicule_entretiens:'parc-auto',
+  vehicule_affectations:'parc-auto', vehicule_courses:'parc-auto'
 };
 
 var RT_COLLAB_STORES = ['messages','conversations','evenements_calendrier','reunions_direction','actions_reunion'];
