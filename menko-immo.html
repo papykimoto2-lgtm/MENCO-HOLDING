@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.107 · 2026-08-27 — Catalogue Stock : affectation d\'un dépôt par défaut à chaque article, directement depuis la liste ou la grille (menu déroulant inline, pas besoin de rouvrir la fiche). Ce dépôt affecté pré-remplit désormais automatiquement le formulaire Entrée (bouton rapide du Catalogue, et sélection normale d\'un article dans le formulaire) — sans jamais restreindre : reste modifiable à tout moment au moment de la saisie. Détail du stock par dépôt affiché sous la quantité (ex. « Magasin central : 40 · Chantier X : 12 ») dès qu\'un article est réparti sur plusieurs dépôts. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.108 · 2026-08-27 — NOUVEAU : Paramètres → onglet « 🔍 Comptes Holding », diagnostic en lecture seule comparant menko_hub_users (identifiants hub/Agro) et pi_users (comptes ERP Immo) — comptes communs, comptes propres à chaque système, doublons internes. Intégré directement dans l\'app pour éviter le blocage CORS rencontré avec l\'outil autonome ouvert en file://. Réutilise la configuration Cloud/Sync déjà en place pour pi_users, et lit menko_hub_sb directement (même origine que le hub, aucune ressaisie). Réservé admin. Zéro écriture — uniquement deux requêtes GET et une comparaison en mémoire. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -5571,6 +5571,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div class="etape-hd"><span class="etape-num">6</span>Intégrations</div>
             <div class="etape-btns">
               <button class="tab-btn" onclick="switchTab('params','cloud')" title="Connexion Supabase, état et diagnostic de la synchronisation"><i>☁️</i>Cloud / Sync</button>
+              <button class="tab-btn" onclick="switchTab('params','holdingdiag')" title="Comparaison en lecture seule des comptes hub/Agro et des comptes ERP Immo"><i>🔍</i>Comptes Holding</button>
               <button class="tab-btn" onclick="switchTab('params','comms')" title="Messagerie sortante, SMS, WhatsApp"><i>📧</i>Communications</button>
               <button class="tab-btn" onclick="switchTab('params','reporting');renderParamsReporting()" title="Rapports périodiques et destinataires"><i>📊</i>Reporting</button>
             </div>
@@ -6529,6 +6530,17 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <button class="btn btn-secondary btn-sm" onclick="renderSyncStatus()">🔍 Vérifier l'état (local ↔ cloud)</button>
               <div id="sync-status-panel" style="margin-top:12px;font-size:12px;overflow-x:auto;"></div>
             </div>
+          </div>
+        </div>
+
+        <!-- Comptes Holding — diagnostic lecture seule -->
+        <div class="tab-pane" id="tab-params-holdingdiag">
+          <div class="alert alert-info" style="margin-bottom:16px;">
+            🔒 Lecture seule. Cet outil compare <code>menko_hub_users</code> (identifiants partagés hub/Agro) et <code>pi_users</code> (comptes internes ERP Immo) — aucune écriture, aucune modification n'est jamais effectuée ici. Réservé à l'administrateur.
+          </div>
+          <div class="card">
+            <button class="btn btn-primary btn-sm" onclick="lancerDiagHolding()" id="btn-diag-holding">🔍 Lancer le diagnostic</button>
+            <div id="diag-holding-result" style="margin-top:16px;"></div>
           </div>
         </div>
 
@@ -25752,6 +25764,113 @@ async function flushSyncOutbox() {
 if (typeof window !== 'undefined') {
   window.addEventListener('online', function(){ flushSyncOutbox(); });
   setInterval(function(){ if (navigator.onLine) flushSyncOutbox(); }, 60000);
+}
+
+/* ── Diagnostic Comptes Holding (lecture seule) ──────────────────────────
+   Compare menko_hub_users (identifiants partagés hub/Agro) et pi_users
+   (comptes ERP internes Menko Immo). Aucune écriture — deux GET, une
+   comparaison en mémoire, un rendu. Réutilise getSBConfig() (déjà
+   configuré dans l'app pour pi_users) et lit menko_hub_sb directement
+   depuis le localStorage : menko-immo.html est servi depuis la même
+   origine que le hub (voir APP_PATHS du hub), donc cette clé est déjà
+   présente si le hub a été configuré au moins une fois — pas de ressaisie
+   nécessaire. */
+function _diagEsc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+function _diagNormLogin(v){ return (v||'').toString().trim().toLowerCase(); }
+function _diagHubCfg(){
+  try { var c = JSON.parse(localStorage.getItem('menko_hub_sb')); return (c && c.url && c.key) ? c : null; } catch(e){ return null; }
+}
+async function _diagGet(cfg, table){
+  var url = cfg.url.replace(/\/+$/,'') + '/rest/v1/' + table + '?select=*';
+  var r = await fetch(url, { headers: { apikey: cfg.key, Authorization: 'Bearer '+cfg.key } });
+  if (!r.ok) throw new Error(table+' → HTTP '+r.status);
+  return await r.json();
+}
+function _diagUnwrapHub(r){ return { id:r.id, login:r.login||'', nom:r.nom||'', role:r.role||'', actif:r.actif!==false, deleted:!!r.deleted }; }
+function _diagUnwrapPi(r){
+  var d = (r && r.data && typeof r.data==='object') ? r.data : r;
+  return { id:d.id||r.id, login:d.login||d.identifiant||'', nom:d.nom||'', role:d.role||'', division:d.division_id||'', actif:d.actif!==false };
+}
+function _diagDoublons(liste){
+  var vus={}, doublons=[];
+  liste.forEach(function(u){ var k=_diagNormLogin(u.login); if(!k) return; if(vus[k]){doublons.push(u);doublons.push(vus[k]);} else vus[k]=u; });
+  var ids={}, out=[];
+  doublons.forEach(function(u){ var key=u.id+'|'+u.login; if(!ids[key]){ids[key]=true;out.push(u);} });
+  return out;
+}
+async function lancerDiagHolding(){
+  if (!hasRole('admin')) { toast('⛔ Réservé à l\'administrateur.', 'error'); return; }
+  var btn = document.getElementById('btn-diag-holding');
+  var resEl = document.getElementById('diag-holding-result');
+  resEl.innerHTML = '';
+  btn.disabled = true; btn.textContent = '⏳ Lecture en cours…';
+  try {
+    var piCfg = getSBConfig();
+    var hubCfg = _diagHubCfg();
+    if (!piCfg && !hubCfg) { resEl.innerHTML = '<div class="alert alert-error">Aucune configuration cloud trouvée (ni pi_users, ni menko_hub_users). Configurez d\'abord Cloud / Sync.</div>'; return; }
+
+    var hubRaw = [], piRaw = [], hubErr = null, piErr = null;
+    if (hubCfg) { try { hubRaw = await _diagGet(hubCfg, 'menko_hub_users'); } catch(e){ hubErr = e.message; } }
+    else hubErr = 'Configuration menko_hub_sb introuvable (le hub n\'a peut-être jamais été configuré sur ce poste).';
+    if (piCfg) { try { piRaw = await _diagGet(piCfg, 'pi_users'); } catch(e){ piErr = e.message; } }
+    else piErr = 'Configuration Cloud / Sync (pi_users) non renseignée.';
+
+    var hub = hubRaw.map(_diagUnwrapHub).filter(function(u){ return !u.deleted; });
+    var pi = piRaw.map(_diagUnwrapPi);
+    var hubByLogin = {}; hub.forEach(function(u){ var k=_diagNormLogin(u.login); if(k) hubByLogin[k]=u; });
+    var piByLogin = {}; pi.forEach(function(u){ var k=_diagNormLogin(u.login); if(k) piByLogin[k]=u; });
+    var communs=[], hubSeul=[], piSeul=[];
+    Object.keys(hubByLogin).forEach(function(k){ if(piByLogin[k]) communs.push({login:k,hub:hubByLogin[k],pi:piByLogin[k]}); else hubSeul.push(hubByLogin[k]); });
+    Object.keys(piByLogin).forEach(function(k){ if(!hubByLogin[k]) piSeul.push(piByLogin[k]); });
+    var doublonsHub = _diagDoublons(hub), doublonsPi = _diagDoublons(pi);
+
+    var h = '';
+    if (hubErr) h += '<div class="alert alert-error" style="margin-bottom:10px;">menko_hub_users illisible : '+_diagEsc(hubErr)+'</div>';
+    if (piErr) h += '<div class="alert alert-error" style="margin-bottom:10px;">pi_users illisible : '+_diagEsc(piErr)+'</div>';
+
+    h += '<div class="kpi-grid" style="margin-bottom:16px;">'
+      + '<div class="kpi-card"><div class="kpi-label">Comptes menko_hub_users</div><div class="kpi-value">'+hub.length+'</div></div>'
+      + '<div class="kpi-card"><div class="kpi-label">Comptes pi_users (ERP)</div><div class="kpi-value">'+pi.length+'</div></div>'
+      + '<div class="kpi-card"><div class="kpi-label">Identifiants communs</div><div class="kpi-value">'+communs.length+'</div></div>'
+      + '<div class="kpi-card '+(doublonsHub.length+doublonsPi.length?'kpi-red':'')+'"><div class="kpi-label">Doublons internes</div><div class="kpi-value">'+(doublonsHub.length+doublonsPi.length)+'</div></div>'
+      + '</div>';
+
+    h += '<div class="card" style="margin-bottom:14px;"><div class="form-section-title">✅ Identifiants communs aux deux tables ('+communs.length+')</div>';
+    h += communs.length ? '<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>Login</th><th>Nom (hub)</th><th>Rôle hub</th><th>Nom (ERP)</th><th>Rôle ERP</th><th>Division</th><th>Cohérence</th></tr></thead><tbody>'
+      + communs.map(function(c){
+          var diff = _diagNormLogin(c.hub.nom)!==_diagNormLogin(c.pi.nom);
+          return '<tr><td style="font-family:monospace;">'+_diagEsc(c.login)+'</td><td>'+_diagEsc(c.hub.nom)+'</td><td>'+_diagEsc(c.hub.role)+'</td>'
+            + '<td>'+_diagEsc(c.pi.nom)+'</td><td>'+_diagEsc(c.pi.role)+'</td><td>'+_diagEsc(c.pi.division||'—')+'</td>'
+            + '<td>'+(diff?'<span class="badge badge-or">Noms différents</span>':'<span class="badge badge-vert">Cohérent</span>')+'</td></tr>';
+        }).join('') + '</tbody></table></div>'
+      : '<div style="color:var(--blanc-dim);font-size:13px;margin-top:8px;">Aucun — aucun compte n\'est aujourd\'hui reconnu par les deux systèmes.</div>';
+    h += '</div>';
+
+    h += '<div class="card" style="margin-bottom:14px;"><div class="form-section-title">🔷 Hub / Agro seulement ('+hubSeul.length+')</div>';
+    h += hubSeul.length ? '<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>Login</th><th>Nom</th><th>Rôle hub</th><th>Actif</th></tr></thead><tbody>'
+      + hubSeul.map(function(u){ return '<tr><td style="font-family:monospace;">'+_diagEsc(u.login)+'</td><td>'+_diagEsc(u.nom)+'</td><td>'+_diagEsc(u.role)+'</td><td>'+(u.actif?'Oui':'<span class="badge badge-rouge">Non</span>')+'</td></tr>'; }).join('')
+      + '</tbody></table></div>' : '<div style="color:var(--blanc-dim);font-size:13px;margin-top:8px;">Aucun.</div>';
+    h += '</div>';
+
+    h += '<div class="card" style="margin-bottom:14px;"><div class="form-section-title">🔶 ERP Immo seulement ('+piSeul.length+')</div>';
+    h += piSeul.length ? '<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>Login</th><th>Nom</th><th>Rôle ERP</th><th>Division</th><th>Actif</th></tr></thead><tbody>'
+      + piSeul.map(function(u){ return '<tr><td style="font-family:monospace;">'+_diagEsc(u.login)+'</td><td>'+_diagEsc(u.nom)+'</td><td>'+_diagEsc(u.role)+'</td><td>'+_diagEsc(u.division||'—')+'</td><td>'+(u.actif?'Oui':'<span class="badge badge-rouge">Non</span>')+'</td></tr>'; }).join('')
+      + '</tbody></table></div>' : '<div style="color:var(--blanc-dim);font-size:13px;margin-top:8px;">Aucun.</div>';
+    h += '</div>';
+
+    if (doublonsHub.length || doublonsPi.length) {
+      h += '<div class="card" style="border-left:3px solid var(--rouge);"><div class="form-section-title" style="color:var(--rouge);">⚠️ Doublons internes (même login, plusieurs comptes)</div>';
+      if (doublonsHub.length) h += '<div style="font-size:12px;font-weight:700;margin:8px 0 4px;">Dans menko_hub_users :</div><div class="table-wrap"><table><thead><tr><th>id</th><th>Login</th><th>Nom</th></tr></thead><tbody>'
+        + doublonsHub.map(function(u){ return '<tr><td style="font-family:monospace;font-size:11px;">'+_diagEsc(u.id)+'</td><td style="font-family:monospace;">'+_diagEsc(u.login)+'</td><td>'+_diagEsc(u.nom)+'</td></tr>'; }).join('') + '</tbody></table></div>';
+      if (doublonsPi.length) h += '<div style="font-size:12px;font-weight:700;margin:12px 0 4px;">Dans pi_users :</div><div class="table-wrap"><table><thead><tr><th>id</th><th>Login</th><th>Nom</th></tr></thead><tbody>'
+        + doublonsPi.map(function(u){ return '<tr><td style="font-family:monospace;font-size:11px;">'+_diagEsc(u.id)+'</td><td style="font-family:monospace;">'+_diagEsc(u.login)+'</td><td>'+_diagEsc(u.nom)+'</td></tr>'; }).join('') + '</tbody></table></div>';
+      h += '</div>';
+    }
+    resEl.innerHTML = h;
+  } catch(e) {
+    resEl.innerHTML = '<div class="alert alert-error">'+_diagEsc(e.message||String(e))+'</div>';
+  }
+  btn.disabled = false; btn.textContent = '🔍 Lancer le diagnostic';
 }
 
 async function testConnection() {
