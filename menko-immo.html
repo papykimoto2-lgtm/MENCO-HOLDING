@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.109 · 2026-08-27 — CORRECTIF : bouton « 🖨️ Imprimer PV » de l\'aperçu Réunions de Direction ouvrait la page Chantier (_printFromElement(\'page-avancement\',\'PV Chantier\')) au lieu du PV de la réunion — erreur de copier-coller depuis le module Chantiers. Corrigé pour imprimer le bon aperçu (rd-pv-apercu), avec un titre reflétant la réunion réellement sélectionnée. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.110 · 2026-08-27 — NOUVEAU : déplacement (pan) du plan en cours de création dans l\'Éditeur de plans architecturaux. Trois façons : clic molette de la souris (actif en permanence, quel que soit l\'outil de dessin en cours — n\'interrompt jamais un tracé), nouvel outil dédié « ✋ Déplacer » (pratique au trackpad/tactile), et glisser à deux doigts sur tablette/mobile (combinable avec le pincer-zoomer déjà existant). Le zoom (molette, boutons, pincer, zoom cadré sur zone) fonctionnait déjà pendant la création — seul le déplacement manquait. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -9595,6 +9595,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                 <div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;font-weight:700;color:var(--dim);margin-bottom:10px;">Outils — Plan de masse</div>
                 <div style="display:flex;flex-direction:column;gap:6px;" id="archi-btns-masse">
                   <button class="archi-tool-btn active" data-tool="select" onclick="archiSetTool('select')">🖱️ Sélection</button>
+                  <button class="archi-tool-btn" data-tool="pan" onclick="archiSetTool('pan')" title="Cliquer-glisser pour déplacer la vue — aussi accessible via le clic molette, quel que soit l'outil actif">✋ Déplacer</button>
                   <button class="archi-tool-btn" data-tool="batiment" onclick="archiSetTool('batiment')">🏠 Bâtiment</button>
                   <button class="archi-tool-btn" data-tool="voirie" onclick="archiSetTool('voirie')">🛣️ Voirie</button>
                   <button class="archi-tool-btn" data-tool="espace_vert" onclick="archiSetTool('espace_vert')">🌳 Espace vert</button>
@@ -9657,6 +9658,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                 <div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;font-weight:700;color:var(--dim);margin-bottom:10px;">Outils — Plan intérieur</div>
                 <div style="display:flex;flex-direction:column;gap:6px;" id="archi-btns-interieur">
                   <button class="archi-tool-btn active" data-tool="select" onclick="archiSetTool('select')">🖱️ Sélection</button>
+                  <button class="archi-tool-btn" data-tool="pan" onclick="archiSetTool('pan')" title="Cliquer-glisser pour déplacer la vue — aussi accessible via le clic molette, quel que soit l'outil actif">✋ Déplacer</button>
                   <button class="archi-tool-btn" data-tool="mur" onclick="archiSetTool('mur')" title="Clic à chaque point (oblique libre), double-clic pour terminer">▪ Mur porteur</button>
                   <button class="archi-tool-btn" data-tool="mur_courbe" onclick="archiSetTool('mur_courbe')" title="3 clics : début, un point sur la courbe, fin">◠ Mur courbe</button>
                   <button class="archi-tool-btn" data-tool="cloison" onclick="archiSetTool('cloison')" title="Clic à chaque point (oblique libre), double-clic pour terminer">│ Cloison</button>
@@ -105934,6 +105936,7 @@ function qrSvgTag(text){
     document.querySelectorAll('.archi-tool-btn').forEach(function(b) {
       b.classList.toggle('active', b.dataset.tool === tool);
     });
+    if (ED.canvas) ED.canvas.style.cursor = (tool === 'pan') ? 'grab' : '';
     var labels = { select:'Sélection', batiment:'Bâtiment (cliquer-glisser)',
       voirie:'Voirie (cliquer-glisser)', espace_vert:'Espace vert',
       parking:'Parking', piece:'Pièce (cliquer-glisser)',
@@ -105956,7 +105959,8 @@ function qrSvgTag(text){
       dalle:'Dalle (cliquer-glisser sur l\'emprise à couvrir)',
       toiture:'Toiture (cliquer-glisser sur l\'emprise à couvrir)',
       equipement:'Équipement technique (clic)',
-      zoom_zone:'Zoomer sur une zone (cliquer-glisser un cadre autour de la partie à examiner)' };
+      zoom_zone:'Zoomer sur une zone (cliquer-glisser un cadre autour de la partie à examiner)',
+      pan:'Déplacer la vue (cliquer-glisser) — aussi accessible via le clic molette de la souris, quel que soit l\'outil actif' };
     var el = document.getElementById('archi-info-tool');
     if (el) el.textContent = 'Outil : ' + (labels[tool] || tool);
     ED.canvas.style.cursor = tool === 'select' ? 'default' : 'crosshair';
@@ -107142,26 +107146,30 @@ function qrSvgTag(text){
        zoomer autour du point médian ; à 1 doigt, comportement inchangé
        (dessin/sélection via _touchToMouse). */
     var _pinchDist = null;
+    var _pinchMid = null;
     c.addEventListener('touchstart', function(e){
-      if (e.touches.length === 2) { e.preventDefault(); _pinchDist = _archiPinchDist(e.touches); return; }
+      if (e.touches.length === 2) { e.preventDefault(); _pinchDist = _archiPinchDist(e.touches); _pinchMid = _archiPinchMid(e.touches, c.getBoundingClientRect()); return; }
       e.preventDefault(); _onDown(_touchToMouse(e));
     }, { passive: false });
     c.addEventListener('touchmove', function(e){
       if (e.touches.length === 2) {
         e.preventDefault();
         var d = _archiPinchDist(e.touches);
-        if (_pinchDist) {
-          var r = c.getBoundingClientRect();
-          var mid = _archiPinchMid(e.touches, r);
-          _archiZoomAt(d / _pinchDist, mid.x, mid.y);
-        }
-        _pinchDist = d;
+        var r = c.getBoundingClientRect();
+        var mid = _archiPinchMid(e.touches, r);
+        if (_pinchDist) _archiZoomAt(d / _pinchDist, mid.x, mid.y);
+        /* [Pan 2 doigts] En plus du pinch-zoom (écart entre les doigts),
+           on suit le déplacement du point médian entre les deux doigts —
+           standard tactile : pincer pour zoomer, glisser à 2 doigts pour
+           déplacer, simultanément possible (comme sur mobile/tablette). */
+        if (_pinchMid) { ED.offsetX += mid.x - _pinchMid.x; ED.offsetY += mid.y - _pinchMid.y; archiRedraw(); }
+        _pinchDist = d; _pinchMid = mid;
         return;
       }
       e.preventDefault(); _onMove(_touchToMouse(e));
     }, { passive: false });
     c.addEventListener('touchend', function(e){
-      if (e.touches.length < 2) _pinchDist = null;
+      if (e.touches.length < 2) { _pinchDist = null; _pinchMid = null; }
       if (e.touches.length === 0) { e.preventDefault(); _onUp(_touchToMouse(e)); }
     }, { passive: false });
     c.addEventListener('dblclick',   _onDblClick);
@@ -107237,6 +107245,21 @@ function qrSvgTag(text){
   }
 
   function _onDown(e) {
+    /* ── Déplacer la vue (pan) ────────────────────────────────────────────
+       Deux façons d'activer : bouton central de la souris (toujours actif,
+       quel que soit l'outil en cours — standard des logiciels de dessin),
+       ou l'outil dédié « ✋ Déplacer » pour un usage au clic gauche sans
+       molette (trackpad, tactile). Utilise les coordonnées écran brutes
+       (clientX/clientY), pas les coordonnées « monde » déjà transformées
+       par l'échelle — sinon le déplacement s'accélère/ralentit avec le
+       niveau de zoom au lieu de suivre le curseur au pixel près. */
+    if (e.button === 1 || ED.tool === 'pan') {
+      e.preventDefault();
+      ED._panning = true;
+      ED._panStart = { x: e.clientX, y: e.clientY, offX: ED.offsetX, offY: ED.offsetY };
+      if (ED.canvas) ED.canvas.style.cursor = 'grabbing';
+      return;
+    }
     var p = _canvasPos(e);
     var mx = _snap(p.mx), my = _snap(p.my);
 
@@ -107433,6 +107456,12 @@ function qrSvgTag(text){
   }
 
   function _onMove(e) {
+    if (ED._panning) {
+      ED.offsetX = ED._panStart.offX + (e.clientX - ED._panStart.x);
+      ED.offsetY = ED._panStart.offY + (e.clientY - ED._panStart.y);
+      archiRedraw();
+      return;
+    }
     var p = _canvasPos(e);
     var mx = _snap(p.mx), my = _snap(p.my);
     /* Info curseur */
@@ -107549,6 +107578,11 @@ function qrSvgTag(text){
   };
 
   function _onUp(e) {
+    if (ED._panning) {
+      ED._panning = false;
+      if (ED.canvas) ED.canvas.style.cursor = (ED.tool === 'pan') ? 'grab' : '';
+      return;
+    }
     if (ED.dragEl) {
       ED.dragEl = null;
       _archiUpdateSurfKpis();
