@@ -94258,20 +94258,30 @@ var BP_COMPTE_DEFAUT = {
 };
 
 function bpChampsGrid() {
-  var html = '<table class="data-table" style="width:100%;font-size:11px;"><thead><tr><th style="min-width:160px;">Catégorie</th>'
+  var html = '<table class="data-table" style="width:100%;"><thead><tr><th style="min-width:160px;">Catégorie</th>'
     + MOIS_LABELS.map(function(m){ return '<th style="text-align:right;">'+m.substring(0,3)+'</th>'; }).join('')
-    + '<th style="text-align:right;">Total</th></tr></thead><tbody>';
+    + '<th style="text-align:right;min-width:80px;">Total</th></tr></thead><tbody>';
   html += '<tr style="background:rgba(255,255,255,0.04);"><td colspan="14" style="font-weight:700;">📈 CHIFFRE D\'AFFAIRES / PRODUITS</td></tr>';
   CEXP_RUBRIQUES.filter(function(r){ return r.type==='produit'; }).forEach(function(r){ html += bpLigneHtml(r); });
+  html += bpLigneTotalMoisHtml('produits', 'TOTAL PRODUITS', 'var(--vert)');
   html += '<tr style="background:rgba(255,255,255,0.04);"><td colspan="14" style="font-weight:700;">📉 CHARGES</td></tr>';
   CEXP_RUBRIQUES.filter(function(r){ return r.type==='charge'; }).forEach(function(r){ html += bpLigneHtml(r); });
+  html += bpLigneTotalMoisHtml('charges', 'TOTAL CHARGES', 'var(--rouge)');
+  html += bpLigneTotalMoisHtml('resultat', 'RÉSULTAT PRÉVISIONNEL', null);
   html += '</tbody></table>';
   return html;
 }
 function bpLigneHtml(r) {
   var cells = '';
   for (var m = 1; m <= 12; m++) cells += '<td><input type="number" class="form-control bp-input" min="0" data-rubrique="'+r.cle+'" data-mois="'+m+'" value="0" oninput="bpMajTotaux()"></td>';
-  return '<tr><td>'+r.label+'</td>' + cells + '<td style="text-align:right;font-weight:700;" id="bp-tot-'+r.cle+'">0</td></tr>';
+  return '<tr><td>'+r.label+'</td>' + cells
+    + '<td><input type="number" class="form-control bp-total-input" min="0" data-rubrique="'+r.cle+'" value="0" onchange="bpVentilerDepuisTotal(\''+r.cle+'\')" title="Modifier ce total répartit automatiquement le montant sur les 12 mois, proportionnellement à la répartition déjà saisie."></td></tr>';
+}
+function bpLigneTotalMoisHtml(cle, label, couleur) {
+  var cells = '';
+  for (var m = 1; m <= 12; m++) cells += '<td style="text-align:right;font-weight:800;'+(couleur?'color:'+couleur+';':'')+'" id="bp-totmois-'+cle+'-'+m+'">0</td>';
+  return '<tr style="background:rgba(184,115,51,0.10);"><td style="font-weight:800;">'+label+'</td>' + cells
+    + '<td style="text-align:right;font-weight:800;'+(couleur?'color:'+couleur+';':'')+'" id="bp-totmois-'+cle+'-total">0</td></tr>';
 }
 function ouvrirMasqueBusinessPlan() {
   var selDiv = document.getElementById('bp-division');
@@ -94306,10 +94316,17 @@ function bpChargerExistant() {
 }
 function bpMajTotaux() {
   var totProduits = 0, totCharges = 0;
+  var totMoisProduits = Array(12).fill(0), totMoisCharges = Array(12).fill(0);
   CEXP_RUBRIQUES.forEach(function(r) {
     var tot = 0;
-    document.querySelectorAll('.bp-input[data-rubrique="'+r.cle+'"]').forEach(function(el){ tot += parseFloat(el.value)||0; });
-    var totEl = document.getElementById('bp-tot-'+r.cle); if (totEl) totEl.textContent = fmtF(tot);
+    document.querySelectorAll('.bp-input[data-rubrique="'+r.cle+'"]').forEach(function(el){
+      var v = parseFloat(el.value)||0;
+      var m = parseInt(el.dataset.mois,10)-1;
+      tot += v;
+      if (r.type === 'produit') totMoisProduits[m] += v; else totMoisCharges[m] += v;
+    });
+    var totInput = document.querySelector('.bp-total-input[data-rubrique="'+r.cle+'"]');
+    if (totInput && document.activeElement !== totInput) totInput.value = Math.round(tot);
     if (r.type === 'produit') totProduits += tot; else totCharges += tot;
   });
   document.getElementById('bp-total-produits').textContent = fmtF(totProduits);
@@ -94318,6 +94335,46 @@ function bpMajTotaux() {
   var resEl = document.getElementById('bp-resultat');
   resEl.textContent = fmtF(resultat);
   resEl.style.color = resultat >= 0 ? 'var(--vert)' : 'var(--rouge)';
+  /* Lignes de total par mois, dans le tableau lui-même */
+  for (var m = 1; m <= 12; m++) {
+    var elP = document.getElementById('bp-totmois-produits-'+m); if (elP) elP.textContent = fmtF(totMoisProduits[m-1]);
+    var elC = document.getElementById('bp-totmois-charges-'+m); if (elC) elC.textContent = fmtF(totMoisCharges[m-1]);
+    var elR = document.getElementById('bp-totmois-resultat-'+m); if (elR) {
+      var res = totMoisProduits[m-1] - totMoisCharges[m-1];
+      elR.textContent = fmtF(res); elR.style.color = res >= 0 ? 'var(--vert)' : 'var(--rouge)';
+    }
+  }
+  var totP = document.getElementById('bp-totmois-produits-total'); if (totP) totP.textContent = fmtF(totProduits);
+  var totC = document.getElementById('bp-totmois-charges-total'); if (totC) totC.textContent = fmtF(totCharges);
+  var totR = document.getElementById('bp-totmois-resultat-total'); if (totR) { totR.textContent = fmtF(resultat); totR.style.color = resultat >= 0 ? 'var(--vert)' : 'var(--rouge)'; }
+}
+/* Si l'utilisateur saisit directement le total annuel d'une catégorie, on
+   ventile automatiquement sur les 12 mois — proportionnellement à la
+   répartition déjà en place si elle existe (préserve la saisonnalité
+   déjà indiquée), sinon également (montant/12). */
+function bpVentilerDepuisTotal(cle) {
+  var totalInput = document.querySelector('.bp-total-input[data-rubrique="'+cle+'"]');
+  var nouveauTotal = Math.round(parseFloat(totalInput.value) || 0);
+  var moisInputs = document.querySelectorAll('.bp-input[data-rubrique="'+cle+'"]');
+  var sommeActuelle = 0;
+  moisInputs.forEach(function(el){ sommeActuelle += parseFloat(el.value)||0; });
+  var cumule = 0;
+  if (sommeActuelle > 0) {
+    var ratio = nouveauTotal / sommeActuelle;
+    moisInputs.forEach(function(el, i){
+      var val = (i === moisInputs.length-1) ? (nouveauTotal - cumule) : Math.round((parseFloat(el.value)||0) * ratio);
+      if (i < moisInputs.length-1) cumule += val;
+      el.value = val;
+    });
+  } else {
+    var mensuel = Math.round(nouveauTotal/12);
+    moisInputs.forEach(function(el, i){
+      var val = (i === moisInputs.length-1) ? (nouveauTotal - cumule) : mensuel;
+      if (i < moisInputs.length-1) cumule += val;
+      el.value = val;
+    });
+  }
+  bpMajTotaux();
 }
 async function bpSauver(soumettre) {
   var divisionId = document.getElementById('bp-division').value;
