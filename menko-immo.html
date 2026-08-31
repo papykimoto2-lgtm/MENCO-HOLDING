@@ -15004,6 +15004,22 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         </div>
       </div>
 
+      <!-- Modal : Suggestion de charge à partir de l'historique -->
+      <div class="modal-overlay" id="modal-suggestion-historique">
+        <div class="modal">
+          <div class="modal-header">
+            <h3>💡 Proposition basée sur l'historique — <span id="sh-rubrique-label"></span></h3>
+            <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-suggestion-historique')">✕</button>
+          </div>
+          <div class="modal-body">
+            <div id="sh-contenu"></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal('modal-suggestion-historique')">Annuler</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Modal : Fiche d'Engagement de Dépense (FED → DA à la validation) -->
       <div class="modal-overlay" id="modal-fed">
         <div class="modal modal-lg">
@@ -94829,6 +94845,78 @@ function _bpRestaurerEtatGrille(etat) {
   });
   bpMajTotaux();
 }
+/* ── Proposition de charge basée sur l'historique ────────────────────────
+   Compare, pour une rubrique de charge donnée, le réel comptabilisé
+   (DATA.ecritures, via _cexpReelParRubrique déjà utilisée par le Compte
+   d'exploitation prévisionnel) ET les budgets déjà validés, sur les 2-3
+   derniers exercices ANTÉRIEURS disponibles (ceux qui ont effectivement
+   une donnée non nulle) — moyenne mensuelle de chacun, côte à côte,
+   jamais imposée : l'utilisateur choisit quoi appliquer, ou rien du tout. */
+function _historiqueMoyenRubrique(divisionId, exerciceCourant, rubriqueCle, nbAnsMax) {
+  nbAnsMax = nbAnsMax || 3;
+  var sommeReel = Array(12).fill(0), sommeBudget = Array(12).fill(0);
+  var nbReel = 0, nbBudget = 0, exercicesUtilises = [];
+  for (var i = 1; i <= nbAnsMax; i++) {
+    var ex = parseInt(exerciceCourant, 10) - i;
+    var reel = (_cexpReelParRubrique(divisionId, ex)[rubriqueCle]) || Array(12).fill(0);
+    var budget = (_cexpBudgetParRubrique(divisionId, ex)[rubriqueCle]) || Array(12).fill(0);
+    var totReel = _cexpSomme12(reel), totBudget = _cexpSomme12(budget);
+    if (totReel > 0) { for (var m=0; m<12; m++) sommeReel[m] += reel[m]; nbReel++; }
+    if (totBudget > 0) { for (var m2=0; m2<12; m2++) sommeBudget[m2] += budget[m2]; nbBudget++; }
+    if (totReel > 0 || totBudget > 0) exercicesUtilises.push(ex);
+  }
+  return {
+    moyReel: nbReel ? sommeReel.map(function(v){ return v/nbReel; }) : Array(12).fill(0),
+    moyBudget: nbBudget ? sommeBudget.map(function(v){ return v/nbBudget; }) : Array(12).fill(0),
+    nbReel: nbReel, nbBudget: nbBudget,
+    exercices: exercicesUtilises.sort(function(a,b){ return b-a; })
+  };
+}
+function bpOuvrirSuggestion(cle) {
+  var divisionId = document.getElementById('bp-division').value;
+  var exercice = document.getElementById('bp-exercice').value;
+  if (!exercice) { toast('Renseignez d\'abord l\'exercice.', 'error'); return; }
+  var r = _toutesLesRubriques().find(function(x){ return x.cle===cle; }); if (!r) return;
+  document.getElementById('sh-rubrique-label').textContent = r.label;
+  var h = _historiqueMoyenRubrique(divisionId, exercice, cle, 3);
+  var contenu = document.getElementById('sh-contenu');
+  if (!h.nbReel && !h.nbBudget) {
+    contenu.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Aucun historique disponible pour cette rubrique sur les 3 exercices précédents (' + (parseInt(exercice,10)-3) + '-' + (parseInt(exercice,10)-1) + ') — ni réel comptabilisé, ni budget validé. Saisissez le montant manuellement.</div>';
+    openModal('modal-suggestion-historique');
+    return;
+  }
+  var totReel = _cexpSomme12(h.moyReel), totBudget = _cexpSomme12(h.moyBudget);
+  var html = '<div style="font-size:12px;color:var(--blanc-dim);margin-bottom:10px;">Moyenne sur ' + h.exercices.length + ' exercice(s) antérieur(s) disponible(s) : <b>' + h.exercices.join(', ') + '</b>. La courbe mensuelle (saisonnalité) est reprise telle quelle.</div>';
+  html += '<table class="data-table" style="width:100%;font-size:11px;"><thead><tr><th></th>'
+    + MOIS_LABELS.map(function(m){ return '<th style="text-align:right;">'+m.substring(0,3)+'</th>'; }).join('')
+    + '<th style="text-align:right;">Total</th></tr></thead><tbody>'
+    + '<tr><td>Réel moyen</td>' + h.moyReel.map(function(v){ return '<td style="text-align:right;">'+fmtF(Math.round(v))+'</td>'; }).join('') + '<td style="text-align:right;font-weight:700;color:var(--vert);">'+fmtF(Math.round(totReel))+'</td></tr>'
+    + '<tr><td>Budget validé moyen</td>' + h.moyBudget.map(function(v){ return '<td style="text-align:right;">'+fmtF(Math.round(v))+'</td>'; }).join('') + '<td style="text-align:right;font-weight:700;">'+fmtF(Math.round(totBudget))+'</td></tr>'
+    + '</tbody></table>';
+  html += '<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">'
+    + (h.nbReel ? '<button class="btn btn-primary btn-sm" onclick="bpAppliquerSuggestion(\''+cle+'\',\'reel\')">📊 Utiliser le réel moyen</button>' : '')
+    + (h.nbBudget ? '<button class="btn btn-secondary btn-sm" onclick="bpAppliquerSuggestion(\''+cle+'\',\'budget\')">📋 Utiliser le budget moyen</button>' : '')
+    + ((h.nbReel && h.nbBudget) ? '<button class="btn btn-secondary btn-sm" onclick="bpAppliquerSuggestion(\''+cle+'\',\'moyenne\')">⚖️ Moyenne des deux</button>' : '')
+    + '</div>';
+  contenu.innerHTML = html;
+  contenu.dataset.historique = JSON.stringify(h);
+  openModal('modal-suggestion-historique');
+}
+function bpAppliquerSuggestion(cle, choix) {
+  var h = JSON.parse(document.getElementById('sh-contenu').dataset.historique);
+  var valeurs;
+  if (choix === 'reel') valeurs = h.moyReel;
+  else if (choix === 'budget') valeurs = h.moyBudget;
+  else valeurs = h.moyReel.map(function(v,i){ return (v + h.moyBudget[i]) / 2; });
+  for (var m = 1; m <= 12; m++) {
+    var input = document.querySelector('.bp-input[data-rubrique="'+cle+'"][data-mois="'+m+'"]');
+    if (input) input.value = Math.round(valeurs[m-1]);
+  }
+  bpMajTotaux();
+  closeModal('modal-suggestion-historique');
+  toast('✅ Proposition appliquée — ajustez si besoin avant d\'enregistrer.', 'success');
+}
+
 function bpOuvrirAjoutLigne() {
   var type = prompt('Type de ligne : tapez "produit" (chiffre d\'affaires) ou "charge" (dépense)', 'charge');
   if (!type) return;
@@ -94890,7 +94978,8 @@ function bpLigneHtml(r) {
   var cells = '';
   for (var m = 1; m <= 12; m++) cells += '<td><input type="number" class="form-control bp-input" min="0" data-rubrique="'+r.cle+'" data-mois="'+m+'" value="0" oninput="bpMajTotaux()"></td>';
   var suppr = r.custom ? ' <button class="btn btn-danger btn-sm btn-icon" onclick="bpSupprimerLigneCustom(\''+r.cle+'\')" title="Supprimer cette ligne personnalisée">🗑️</button>' : '';
-  return '<tr><td>'+r.label+suppr+'</td>' + cells
+  var suggest = (r.type === 'charge') ? ' <button type="button" class="btn btn-secondary btn-sm" onclick="bpOuvrirSuggestion(\''+r.cle+'\')" title="Proposer un montant à partir de l\'historique (réel comptabilisé + budgets validés des exercices antérieurs)">💡 Suggérer</button>' : '';
+  return '<tr><td style="white-space:nowrap;">'+r.label+suppr+suggest+'</td>' + cells
     + '<td><input type="number" class="form-control bp-total-input" min="0" data-rubrique="'+r.cle+'" value="0" onchange="bpVentilerDepuisTotal(\''+r.cle+'\')" title="Modifier ce total répartit automatiquement le montant sur les 12 mois, proportionnellement à la répartition déjà saisie."></td></tr>';
 }
 function bpLigneTotalMoisHtml(cle, label, couleur) {
