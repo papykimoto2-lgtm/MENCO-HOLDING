@@ -16274,6 +16274,11 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             </select>
           </div>
           <div class="form-group">
+            <label>Surface souscrite (m²) <span style="font-weight:400;color:var(--blanc-dim);">— pré-remplie depuis le(s) lot(s), modifiable</span></label>
+            <input type="number" class="form-control" id="c-surface" placeholder="0" oninput="clientCompareSurface()">
+            <div id="c-surface-ecart" style="font-size:11px;margin-top:4px;display:none;"></div>
+          </div>
+          <div class="form-group">
             <label>Prix de vente total (FCFA)</label>
             <input type="number" class="form-control" id="c-montant-total" oninput="calcEcheancier()">
           </div>
@@ -29439,11 +29444,12 @@ function openClientModal(id) {
 
 function clearClientForm() {
   ['c-nom','c-prenoms','c-ddn','c-nationalite','c-profession','c-tel','c-email','c-adresse',
-   'c-piece-num','c-montant-total','c-apport','c-duree','c-date-debut','c-date-souscription','c-mensualite','c-type-logement',
+   'c-piece-num','c-montant-total','c-apport','c-duree','c-date-debut','c-date-souscription','c-mensualite','c-type-logement','c-surface',
    'c-commercial','c-apporteur'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.value = el.id === 'c-nationalite' ? 'Ivoirienne' : el.id === 'c-duree' ? '60' : el.id === 'c-apport' ? '0' : '';
   });
+  var svEcart = document.getElementById('c-surface-ecart'); if (svEcart) svEcart.style.display = 'none';
   document.getElementById('doc-btns').style.display = 'none';
   document.getElementById('doc-btns').innerHTML = '';
   var modeEl = document.getElementById('c-mode-livraison'); if (modeEl) modeEl.value = 'gros_oeuvre';
@@ -29458,7 +29464,7 @@ function fillClientForm(c) {
   var map = { 'c-nom': 'nom', 'c-prenoms': 'prenoms', 'c-ddn': 'ddn', 'c-nationalite': 'nationalite',
     'c-profession': 'profession', 'c-tel': 'tel', 'c-email': 'email', 'c-adresse': 'adresse',
     'c-piece-num': 'piece_num', 'c-montant-total': 'montant_total', 'c-apport': 'apport',
-    'c-duree': 'duree', 'c-date-debut': 'date_debut', 'c-date-souscription': 'date_souscription', 'c-type-logement': 'type_logement'
+    'c-duree': 'duree', 'c-date-debut': 'date_debut', 'c-date-souscription': 'date_souscription', 'c-type-logement': 'type_logement', 'c-surface': 'surface'
   };
   Object.keys(map).forEach(function(id) {
     var el = document.getElementById(id);
@@ -29475,6 +29481,7 @@ function fillClientForm(c) {
      lot_ids sauf le lot principal lot_id) pour affichage/modification. */
   APP._clientLotsSupplementaires = (typeof _lotIdsDeClient === 'function' ? _lotIdsDeClient(c) : (c.lot_ids||[])).filter(function(lid){ return lid !== c.lot_id; });
   if (typeof renderLotsSupplementairesListe === 'function') renderLotsSupplementairesListe();
+  if (typeof clientCompareSurface === 'function') clientCompareSurface();
   /* [FIX] Reflète l'état réel du dossier dans le sélecteur manuel : si
      nature_bien diverge de ce que le lot rattaché indiquerait tout seul (ou
      si aucun lot n'est rattaché mais que nature_bien est déjà connu — ex.
@@ -29738,6 +29745,7 @@ async function saveClient() {
     programme_id: document.getElementById('c-programme').value,
     lot_id: document.getElementById('c-lot').value,
     lot_ids: _tousLotIdsChoisis,
+    surface: parseFloat(document.getElementById('c-surface').value) || 0,
     /* Distingue une souscription pour un bien bâti (maison/appartement) d'une
        souscription pour un terrain nu (parcelle). Priorité : 1) choix manuel
        explicite (« Nature du bien »), 2) nature du lot rattaché, 3) sinon
@@ -43932,14 +43940,39 @@ function ajouterLotSupplementaireClient() {
     var mtEl = document.getElementById('c-montant-total');
     if (mtEl) mtEl.value = (parseFloat(mtEl.value)||0) + parseFloat(lot.prix);
   }
+  if (lot && lot.surface) {
+    var svEl = document.getElementById('c-surface');
+    if (svEl) svEl.value = (parseFloat(svEl.value)||0) + parseFloat(lot.surface);
+  }
   renderLotsSupplementairesListe();
   updateLotsSupplementairesSelect();
-  toast('Lot ajouté — montant total suggéré mis à jour (ajustez si besoin).', 'info', 2500);
+  if (typeof clientCompareSurface === 'function') clientCompareSurface();
+  toast('Lot ajouté — montant total et surface suggérés mis à jour (ajustez si besoin).', 'info', 2500);
+}
+/* Compare la surface saisie (souvent la surface contractuelle, potentiellement
+   arrondie/négociée) à la somme des surfaces réelles des lots rattachés —
+   simple indicateur, jamais bloquant : l'utilisateur reste libre de sa saisie. */
+function clientCompareSurface() {
+  var elEcart = document.getElementById('c-surface-ecart'); if (!elEcart) return;
+  var saisie = parseFloat(document.getElementById('c-surface').value) || 0;
+  var lotIds = [document.getElementById('c-lot').value].concat(APP._clientLotsSupplementaires||[]).filter(Boolean);
+  var reelle = lotIds.reduce(function(s,id){ var l=(DATA.lots||[]).find(function(x){return x.id===id;}); return s+(l&&l.surface?parseFloat(l.surface):0); }, 0);
+  if (!saisie || !reelle) { elEcart.style.display = 'none'; return; }
+  var ecart = saisie - reelle, ecartPct = (ecart/reelle)*100;
+  elEcart.style.display = '';
+  if (Math.abs(ecartPct) < 1) {
+    elEcart.style.color = 'var(--vert)';
+    elEcart.textContent = '✅ Conforme à la surface du/des lot(s) (' + reelle.toFixed(0) + ' m²).';
+  } else {
+    elEcart.style.color = Math.abs(ecartPct) >= 5 ? 'var(--rouge)' : '#E67E22';
+    elEcart.textContent = '⚠ Écart avec la surface du/des lot(s) au dossier (' + reelle.toFixed(0) + ' m²) : ' + (ecart>=0?'+':'') + ecart.toFixed(1) + ' m² (' + (ecartPct>=0?'+':'') + ecartPct.toFixed(1) + '%).';
+  }
 }
 function retirerLotSupplementaireClient(lotId) {
   APP._clientLotsSupplementaires = (APP._clientLotsSupplementaires || []).filter(function(id){ return id !== lotId; });
   renderLotsSupplementairesListe();
   updateLotsSupplementairesSelect();
+  if (typeof clientCompareSurface === 'function') clientCompareSurface();
 }
 function renderLotsSupplementairesListe() {
   var box = document.getElementById('c-lots-supplementaires-liste');
@@ -44014,12 +44047,14 @@ function onClientLotChange() {
   }
   document.getElementById('c-montant-total').value = lot.prix || '';
   document.getElementById('c-type-logement').value = lot.type || '';
+  if (document.getElementById('c-surface')) document.getElementById('c-surface').value = lot.surface || '';
   var modeLiv = lot.mode_livraison || 'gros_oeuvre';
   var modeLivEl = document.getElementById('c-mode-livraison');
   if (modeLivEl) modeLivEl.value = modeLiv;
   if (lot.standing) { var st = document.getElementById('c-standing'); if (st) st.value = lot.standing; }
   updateNatureBienUI(lot);
   if (typeof updateLotsSupplementairesSelect === 'function') updateLotsSupplementairesSelect();
+  if (typeof clientCompareSurface === 'function') clientCompareSurface();
   if (typeof calcEcheancier === 'function') calcEcheancier();
 }
 
