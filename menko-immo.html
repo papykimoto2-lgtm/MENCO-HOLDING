@@ -14750,6 +14750,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               </div>
             </div>
           </div>
+          <div id="cexp-verdict" style="margin-bottom:14px;padding:14px;border-radius:8px;font-size:14px;font-weight:700;text-align:center;"></div>
           <div class="kpi-grid" id="cexp-kpi" style="margin-bottom:14px;"></div>
           <div class="card">
             <div id="cexp-box" style="overflow-x:auto;"></div>
@@ -14951,13 +14952,18 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <div class="form-group"><label>Division *</label><select class="form-control" id="bp-division" onchange="bpChargerExistant()"><option value="">— Toutes divisions (consolidé) —</option></select></div>
               <div class="form-group"><label>Exercice *</label><input type="number" class="form-control" id="bp-exercice" min="2020" max="2100" onchange="bpChargerExistant()"></div>
             </div>
-            <div style="font-size:12px;color:var(--blanc-dim);margin-bottom:10px;">Remplissez votre prévision de chiffre d'affaires et de charges, mois par mois — comme un business plan classique. Aucune connaissance comptable requise : le rattachement au plan comptable se fait automatiquement en arrière-plan.</div>
+            <div style="font-size:12px;color:var(--blanc-dim);margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+              <span>Remplissez votre prévision de chiffre d'affaires et de charges, mois par mois — comme un business plan classique. Aucune connaissance comptable requise : le rattachement au plan comptable se fait automatiquement en arrière-plan.</span>
+              <button class="btn btn-secondary btn-sm" onclick="bpOuvrirAjoutLigne()" style="white-space:nowrap;">➕ Ajouter une ligne budgétaire</button>
+            </div>
             <div id="bp-grid" style="overflow-x:auto;"></div>
             <div style="margin-top:12px;padding:10px;background:rgba(184,115,51,0.08);border-radius:6px;font-size:13px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
               <span>Total produits : <b id="bp-total-produits" style="color:var(--vert);">0</b> F</span>
               <span>Total charges : <b id="bp-total-charges" style="color:var(--rouge);">0</b> F</span>
               <span>Résultat prévisionnel : <b id="bp-resultat">0</b> F</span>
+              <span>Marge prévisionnelle : <b id="bp-marge">0%</b></span>
             </div>
+            <div id="bp-verdict" style="margin-top:10px;padding:14px;border-radius:8px;font-size:14px;font-weight:700;text-align:center;"></div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal('modal-business-plan')">Annuler</button>
@@ -94088,8 +94094,9 @@ var CEXP_RUBRIQUES = [
 
 function _cexpRubriqueDuCompte(compte) {
   compte = String(compte||'');
-  for (var i = 0; i < CEXP_RUBRIQUES.length; i++) {
-    var r = CEXP_RUBRIQUES[i];
+  var toutes = _toutesLesRubriques();
+  for (var i = 0; i < toutes.length; i++) {
+    var r = toutes[i];
     if (r.prefixes.some(function(p){ return compte.indexOf(p) === 0; })) return r.cle;
   }
   return null;
@@ -94097,7 +94104,7 @@ function _cexpRubriqueDuCompte(compte) {
 
 /* Budget : { rubriqueCle: [m1..m12] } à partir des lignes caisse_budgets validées */
 function _cexpBudgetParRubrique(divisionId, exercice) {
-  var out = {}; CEXP_RUBRIQUES.forEach(function(r){ out[r.cle] = Array(12).fill(0); });
+  var out = {}; _toutesLesRubriques().forEach(function(r){ out[r.cle] = Array(12).fill(0); });
   (DATA.caisse_budgets||[]).filter(function(b){
     return b.statut === 'valide' && String(b.exercice) === String(exercice)
       && (!divisionId || (b.division_id||'') === divisionId || !b.division_id);
@@ -94112,7 +94119,8 @@ function _cexpBudgetParRubrique(divisionId, exercice) {
 /* Réel : { rubriqueCle: [m1..m12] } à partir des écritures comptables réelles,
    même logique de sens (D pour charges, C pour produits) que _calcResultat(). */
 function _cexpReelParRubrique(divisionId, exercice) {
-  var out = {}; CEXP_RUBRIQUES.forEach(function(r){ out[r.cle] = Array(12).fill(0); });
+  var toutes = _toutesLesRubriques();
+  var out = {}; toutes.forEach(function(r){ out[r.cle] = Array(12).fill(0); });
   DATA.ecritures.filter(function(e){
     return e.date && e.date.indexOf(String(exercice)) === 0 && (!divisionId || e.division === divisionId);
   }).forEach(function(e) {
@@ -94120,7 +94128,7 @@ function _cexpReelParRubrique(divisionId, exercice) {
     if (mIdx < 0 || mIdx > 11) return;
     ecrLignes(e).forEach(function(l) {
       var cle = _cexpRubriqueDuCompte(l.compte); if (!cle) return;
-      var r = CEXP_RUBRIQUES.find(function(x){ return x.cle===cle; });
+      var r = toutes.find(function(x){ return x.cle===cle; });
       var montant = parseFloat(l.montant)||0;
       if (r.type === 'produit' && l.sens === 'C') out[cle][mIdx] += montant;
       else if (r.type === 'produit' && l.sens === 'D') out[cle][mIdx] -= montant; /* ex: sortie de stock 71/72 */
@@ -94133,6 +94141,51 @@ function _cexpReelParRubrique(divisionId, exercice) {
 function _cexpSomme12(arr) { return arr.reduce(function(s,v){ return s+v; }, 0); }
 function _cexpCumul(arr) { var out=[], s=0; arr.forEach(function(v){ s+=v; out.push(s); }); return out; }
 
+/* ── Diagnostic de viabilité ────────────────────────────────────────────
+   Ne se limite pas au résultat annuel : un budget peut finir positif sur
+   l'année tout en creusant un trou de trésorerie profond en cours de
+   route (ex. grosses charges en début d'année, produits qui n'arrivent
+   qu'en fin d'année) — ce trou-là ferme une entreprise avant que le
+   résultat annuel n'ait le temps de se redresser. On regarde donc :
+   1) le résultat annuel et la marge, 2) le point de rentabilité cumulé
+   (premier mois où le cumul repasse positif), 3) le pire creux cumulé
+   de l'année (le risque de trésorerie réel). */
+function _diagnosticViabilite(moisProduits, moisCharges) {
+  var resultatMois = moisProduits.map(function(v,i){ return v - moisCharges[i]; });
+  var cumul = _cexpCumul(resultatMois);
+  var totProduits = _cexpSomme12(moisProduits), totCharges = _cexpSomme12(moisCharges);
+  var resultatAnnuel = totProduits - totCharges;
+  var marge = totProduits > 0 ? (resultatAnnuel / totProduits) * 100 : null;
+  var moisRentabilite = null;
+  for (var m = 0; m < 12; m++) { if (cumul[m] >= 0) { moisRentabilite = m; break; } }
+  var pireCreux = Math.min.apply(null, cumul);
+  var moisPireCreux = cumul.indexOf(pireCreux);
+  var niveau, icone, texte;
+  if (totProduits === 0 && totCharges === 0) {
+    niveau = 'neutre'; icone = 'ℹ️'; texte = "Aucun montant saisi pour l'instant.";
+  } else if (resultatAnnuel < 0) {
+    niveau = 'rouge'; icone = '🔴';
+    texte = 'BUDGET NON VIABLE — déficit prévisionnel de ' + fmtF(Math.round(Math.abs(resultatAnnuel))) + ' F sur l\'année'
+      + (marge!==null ? ' (marge ' + marge.toFixed(1) + '%)' : '') + '. Les charges dépassent les produits — revoir les charges à la baisse ou les objectifs de chiffre d\'affaires à la hausse avant de soumettre.';
+  } else if (pireCreux < 0) {
+    niveau = 'orange'; icone = '🟠';
+    texte = 'BUDGET À RISQUE — résultat annuel positif (' + fmtF(Math.round(resultatAnnuel)) + ' F, marge ' + (marge!==null?marge.toFixed(1):'—') + '%), mais trésorerie cumulée négative jusqu\'à ' + fmtF(Math.round(Math.abs(pireCreux))) + ' F en ' + MOIS_LABELS[moisPireCreux] + '. '
+      + (moisRentabilite!==null ? 'Le cumul ne redevient positif qu\'en ' + MOIS_LABELS[moisRentabilite] + '.' : 'Le cumul ne redevient jamais positif dans l\'année.')
+      + ' Prévoir un financement relais ou lisser les charges/produits sur l\'année.';
+  } else {
+    niveau = 'vert'; icone = '✅';
+    texte = 'BUDGET VIABLE — résultat prévisionnel de ' + fmtF(Math.round(resultatAnnuel)) + ' F sur l\'année (marge ' + (marge!==null?marge.toFixed(1):'—') + '%), trésorerie cumulée jamais négative.';
+  }
+  return { niveau:niveau, icone:icone, texte:texte, resultatAnnuel:resultatAnnuel, marge:marge, moisRentabilite:moisRentabilite, pireCreux:pireCreux, moisPireCreux:moisPireCreux };
+}
+function _appliquerVerdictDOM(elId, diag) {
+  var el = document.getElementById(elId); if (!el) return;
+  var couleurs = { vert:['rgba(46,160,67,0.15)','var(--vert)'], orange:['rgba(230,126,34,0.15)','#E67E22'], rouge:['rgba(220,53,69,0.15)','var(--rouge)'], neutre:['rgba(255,255,255,0.05)','var(--blanc-dim)'] };
+  var c = couleurs[diag.niveau];
+  el.style.background = c[0]; el.style.color = c[1]; el.style.border = '1px solid '+c[1];
+  el.innerHTML = diag.icone + ' ' + diag.texte;
+}
+
 function renderCompteExploitationPrevisionnel() {
   var box = document.getElementById('cexp-box'); if (!box) return;
   var divisionId = window._budgetFiltreDivision || '';
@@ -94140,6 +94193,7 @@ function renderCompteExploitationPrevisionnel() {
   if (!exercice) {
     box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Sélectionnez un exercice précis dans le filtre en haut de page (« Tous exercices » n\'est pas exploitable ici — un compte d\'exploitation se lit sur une année donnée).</div>';
     document.getElementById('cexp-kpi').innerHTML = '';
+    var vEl = document.getElementById('cexp-verdict'); if (vEl) vEl.innerHTML = '';
     return;
   }
   var cumul = document.getElementById('cexp-cumul').checked;
@@ -94165,8 +94219,8 @@ function renderCompteExploitationPrevisionnel() {
       + '<td style="text-align:right;font-weight:700;white-space:nowrap;color:'+((rubrique.type==='produit'?totR>=totB:totR<=totB)?'var(--vert)':'var(--rouge)')+';">'+fmtF(Math.round(totR))+'</td></tr>';
   }
 
-  var produits = CEXP_RUBRIQUES.filter(function(r){ return r.type==='produit'; });
-  var charges = CEXP_RUBRIQUES.filter(function(r){ return r.type==='charge'; });
+  var produits = _toutesLesRubriques().filter(function(r){ return r.type==='produit'; });
+  var charges = _toutesLesRubriques().filter(function(r){ return r.type==='charge'; });
   var totProdBudget = Array(12).fill(0), totProdReel = Array(12).fill(0), totChargeBudget = Array(12).fill(0), totChargeReel = Array(12).fill(0);
   produits.forEach(function(r){ for (var m=0;m<12;m++){ totProdBudget[m]+=budget[r.cle][m]; totProdReel[m]+=reel[r.cle][m]; } });
   charges.forEach(function(r){ for (var m=0;m<12;m++){ totChargeBudget[m]+=budget[r.cle][m]; totChargeReel[m]+=reel[r.cle][m]; } });
@@ -94214,6 +94268,9 @@ function renderCompteExploitationPrevisionnel() {
     { label:'Résultat prévisionnel (année)', val: fmtF(Math.round(resB))+' F', icon:'🎯' },
     { label:'Résultat réel (à date)',    val: fmtF(Math.round(resR))+' F', icon:'💰', cls: resR>=0 ? 'kpi-green' : 'kpi-red' }
   ].map(_kpiCard).join('');
+
+  var verdictEl = document.getElementById('cexp-verdict');
+  if (verdictEl) _appliquerVerdictDOM('cexp-verdict', _diagnosticViabilite(totProdBudget, totChargeBudget));
 }
 
 function imprimerCompteExploitationPrevisionnel() {
@@ -94257,15 +94314,86 @@ var BP_COMPTE_DEFAUT = {
   impots:'631', personnel:'641', chargesFin:'661', chargesHAO:'671', dotations:'681'
 };
 
+/* ── Lignes budgétaires personnalisées ─────────────────────────────────
+   Les 24 rubriques de CEXP_RUBRIQUES forment le socle standard (toujours
+   visible). L'utilisateur peut en ajouter d'autres, propres à son métier
+   — persistées dans DATA.params (comme les autres réglages de
+   l'application), donc synchronisées et partagées entre postes. */
+function _rubriquesCustom() { DATA.params = DATA.params || {}; return DATA.params.rubriques_budget_custom || []; }
+function _toutesLesRubriques() { return CEXP_RUBRIQUES.concat(_rubriquesCustom()); }
+async function _sauverRubriquesCustom(liste) {
+  DATA.params = DATA.params || {};
+  DATA.params.rubriques_budget_custom = liste;
+  await dbPut('params', DATA.params);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_params', DATA.params);
+}
+/* Récupère l'état actuellement saisi dans la grille avant reconstruction
+   (ajout/suppression d'une ligne régénère le HTML — sans ça, tout ce que
+   l'utilisateur avait déjà tapé serait perdu). */
+function _bpSauverEtatGrille() {
+  var etat = {};
+  document.querySelectorAll('.bp-input').forEach(function(el){ etat[el.dataset.rubrique+'|'+el.dataset.mois] = el.value; });
+  return etat;
+}
+function _bpRestaurerEtatGrille(etat) {
+  document.querySelectorAll('.bp-input').forEach(function(el){
+    var v = etat[el.dataset.rubrique+'|'+el.dataset.mois];
+    if (v !== undefined) el.value = v;
+  });
+  bpMajTotaux();
+}
+function bpOuvrirAjoutLigne() {
+  var type = prompt('Type de ligne : tapez "produit" (chiffre d\'affaires) ou "charge" (dépense)', 'charge');
+  if (!type) return;
+  type = type.trim().toLowerCase();
+  if (type !== 'produit' && type !== 'charge') { toast('Type invalide — tapez exactement "produit" ou "charge".', 'error'); return; }
+  var libelle = prompt('Libellé de la nouvelle ligne budgétaire (ex : "Frais de gardiennage weekend") :');
+  if (!libelle || !libelle.trim()) return;
+  var compte = prompt('Sous-compte comptable (3 chiffres minimum, ex : 6295) — sert uniquement au rattachement automatique à la comptabilité, en arrière-plan :', type==='produit' ? '709' : '629');
+  if (!compte || !compte.trim()) return;
+  compte = compte.trim();
+  if (!/^\d{3,}$/.test(compte)) { toast('Le sous-compte doit être numérique (3 chiffres minimum — ex : 6295).', 'error'); return; }
+  var cle = 'custom_' + uid();
+  if (_toutesLesRubriques().some(function(r){ return r.prefixes.some(function(p){ return compte.indexOf(p)===0 || p.indexOf(compte)===0; }); })) {
+    if (!confirm('Ce compte chevauche une rubrique déjà existante — les montants pourraient se mélanger dans le rapport. Continuer quand même ?')) return;
+  }
+  var liste = _rubriquesCustom();
+  liste.push({ cle:cle, label:libelle.trim(), prefixes:[compte], type:type, custom:true });
+  var etat = _bpSauverEtatGrille();
+  _sauverRubriquesCustom(liste).then(function() {
+    document.getElementById('bp-grid').innerHTML = bpChampsGrid();
+    _bpRestaurerEtatGrille(etat);
+    toast('✅ Ligne « '+libelle.trim()+' » ajoutée.', 'success');
+  });
+}
+async function bpSupprimerLigneCustom(cle) {
+  if (!confirm('Supprimer cette ligne budgétaire personnalisée ? Les montants déjà saisis pour toutes les divisions/exercices seront perdus (les budgets déjà validés restent, eux, protégés — un message l\'indiquera si c\'est le cas).')) return;
+  var divisionId = document.getElementById('bp-division').value;
+  var exercice = document.getElementById('bp-exercice').value;
+  var enregistrementsProteges = 0;
+  (DATA.caisse_budgets||[]).filter(function(b){ return _cexpRubriqueDuCompte(b.compte)===cle; }).forEach(function(b){
+    if (b.statut === 'valide') { enregistrementsProteges++; return; }
+    DATA.caisse_budgets = DATA.caisse_budgets.filter(function(x){ return x.id !== b.id; });
+    if (typeof deleteRecord === 'function') deleteRecord('caisse_budgets', b.id);
+  });
+  var liste = _rubriquesCustom().filter(function(r){ return r.cle !== cle; });
+  var etat = _bpSauverEtatGrille();
+  await _sauverRubriquesCustom(liste);
+  document.getElementById('bp-grid').innerHTML = bpChampsGrid();
+  _bpRestaurerEtatGrille(etat);
+  budgetRenderPrevisionnel();
+  toast('Ligne supprimée.' + (enregistrementsProteges ? ' ⚠️ '+enregistrementsProteges+' budget(s) déjà validé(s) sur cette ligne conservé(s) — utilisez un transfert pour les solder.' : ''), enregistrementsProteges ? 'info' : 'success');
+}
+
 function bpChampsGrid() {
   var html = '<table class="data-table" style="width:100%;"><thead><tr><th style="min-width:160px;">Catégorie</th>'
     + MOIS_LABELS.map(function(m){ return '<th style="text-align:right;">'+m.substring(0,3)+'</th>'; }).join('')
     + '<th style="text-align:right;min-width:80px;">Total</th></tr></thead><tbody>';
   html += '<tr style="background:rgba(255,255,255,0.04);"><td colspan="14" style="font-weight:700;">📈 CHIFFRE D\'AFFAIRES / PRODUITS</td></tr>';
-  CEXP_RUBRIQUES.filter(function(r){ return r.type==='produit'; }).forEach(function(r){ html += bpLigneHtml(r); });
+  _toutesLesRubriques().filter(function(r){ return r.type==='produit'; }).forEach(function(r){ html += bpLigneHtml(r); });
   html += bpLigneTotalMoisHtml('produits', 'TOTAL PRODUITS', 'var(--vert)');
   html += '<tr style="background:rgba(255,255,255,0.04);"><td colspan="14" style="font-weight:700;">📉 CHARGES</td></tr>';
-  CEXP_RUBRIQUES.filter(function(r){ return r.type==='charge'; }).forEach(function(r){ html += bpLigneHtml(r); });
+  _toutesLesRubriques().filter(function(r){ return r.type==='charge'; }).forEach(function(r){ html += bpLigneHtml(r); });
   html += bpLigneTotalMoisHtml('charges', 'TOTAL CHARGES', 'var(--rouge)');
   html += bpLigneTotalMoisHtml('resultat', 'RÉSULTAT PRÉVISIONNEL', null);
   html += '</tbody></table>';
@@ -94274,7 +94402,8 @@ function bpChampsGrid() {
 function bpLigneHtml(r) {
   var cells = '';
   for (var m = 1; m <= 12; m++) cells += '<td><input type="number" class="form-control bp-input" min="0" data-rubrique="'+r.cle+'" data-mois="'+m+'" value="0" oninput="bpMajTotaux()"></td>';
-  return '<tr><td>'+r.label+'</td>' + cells
+  var suppr = r.custom ? ' <button class="btn btn-danger btn-sm btn-icon" onclick="bpSupprimerLigneCustom(\''+r.cle+'\')" title="Supprimer cette ligne personnalisée">🗑️</button>' : '';
+  return '<tr><td>'+r.label+suppr+'</td>' + cells
     + '<td><input type="number" class="form-control bp-total-input" min="0" data-rubrique="'+r.cle+'" value="0" onchange="bpVentilerDepuisTotal(\''+r.cle+'\')" title="Modifier ce total répartit automatiquement le montant sur les 12 mois, proportionnellement à la répartition déjà saisie."></td></tr>';
 }
 function bpLigneTotalMoisHtml(cle, label, couleur) {
@@ -94300,7 +94429,7 @@ function bpChargerExistant() {
   var exercice = document.getElementById('bp-exercice').value;
   document.querySelectorAll('.bp-input').forEach(function(el){ el.value = 0; });
   if (!exercice) { bpMajTotaux(); return; }
-  CEXP_RUBRIQUES.forEach(function(r) {
+  _toutesLesRubriques().forEach(function(r) {
     var ligne = (DATA.caisse_budgets||[]).find(function(b){
       var cle = _cexpRubriqueDuCompte(b.compte);
       return cle === r.cle && (b.division_id||'') === (divisionId||'') && String(b.exercice) === String(exercice);
@@ -94317,7 +94446,7 @@ function bpChargerExistant() {
 function bpMajTotaux() {
   var totProduits = 0, totCharges = 0;
   var totMoisProduits = Array(12).fill(0), totMoisCharges = Array(12).fill(0);
-  CEXP_RUBRIQUES.forEach(function(r) {
+  _toutesLesRubriques().forEach(function(r) {
     var tot = 0;
     document.querySelectorAll('.bp-input[data-rubrique="'+r.cle+'"]').forEach(function(el){
       var v = parseFloat(el.value)||0;
@@ -94335,6 +94464,11 @@ function bpMajTotaux() {
   var resEl = document.getElementById('bp-resultat');
   resEl.textContent = fmtF(resultat);
   resEl.style.color = resultat >= 0 ? 'var(--vert)' : 'var(--rouge)';
+  var margeEl = document.getElementById('bp-marge');
+  var marge = totProduits > 0 ? (resultat/totProduits)*100 : 0;
+  margeEl.textContent = marge.toFixed(1)+'%';
+  margeEl.style.color = marge >= 0 ? 'var(--vert)' : 'var(--rouge)';
+  _appliquerVerdictDOM('bp-verdict', _diagnosticViabilite(totMoisProduits, totMoisCharges));
   /* Lignes de total par mois, dans le tableau lui-même */
   for (var m = 1; m <= 12; m++) {
     var elP = document.getElementById('bp-totmois-produits-'+m); if (elP) elP.textContent = fmtF(totMoisProduits[m-1]);
@@ -94381,8 +94515,8 @@ async function bpSauver(soumettre) {
   var exercice = document.getElementById('bp-exercice').value;
   if (!exercice) { toast('L\'exercice est obligatoire.', 'error'); return; }
   var reussies = 0, echecs = 0, ignorees = 0, idsAffectes = [];
-  for (var i = 0; i < CEXP_RUBRIQUES.length; i++) {
-    var r = CEXP_RUBRIQUES[i];
+  for (var i = 0; i < _toutesLesRubriques().length; i++) {
+    var r = _toutesLesRubriques()[i];
     var rep = {}; var total = 0;
     for (var m = 1; m <= 12; m++) {
       var input = document.querySelector('.bp-input[data-rubrique="'+r.cle+'"][data-mois="'+m+'"]');
@@ -94394,7 +94528,7 @@ async function bpSauver(soumettre) {
       return _cexpRubriqueDuCompte(b.compte) === r.cle && (b.division_id||'') === (divisionId||'') && String(b.exercice) === String(exercice);
     });
     if (existant && existant.statut === 'valide') { ignorees++; continue; } /* déjà validé — protégé, cf. budgetPrevisionnelSauver */
-    var compte = existant ? existant.compte : BP_COMPTE_DEFAUT[r.cle];
+    var compte = existant ? existant.compte : (BP_COMPTE_DEFAUT[r.cle] || r.prefixes[0]);
     var ligneCompte = compte.substring(0,2);
     var res = await budgetPrevisionnelSauver({
       id: existant ? existant.id : null,
