@@ -14702,6 +14702,11 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         <!-- ── Onglet Budget prévisionnel ── -->
         <div class="tab-pane active" id="tab-budget-previsionnel">
           <div class="kpi-grid" id="budget-kpi-previsionnel" style="margin-bottom:14px;"></div>
+          <div class="card" style="margin-bottom:14px;">
+            <div class="form-section-title">📋 Business plans prévisionnels</div>
+            <div style="font-size:12px;color:var(--blanc-dim);margin:6px 0 10px;">Un business plan par division × exercice — cliquez « Ouvrir » pour reprendre la saisie là où vous l'avez laissée.</div>
+            <div id="business-plans-liste-box"></div>
+          </div>
           <div class="card">
             <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
               <div style="font-size:12px;color:var(--blanc-dim);">Un budget par compte × division × exercice — soumis puis validé par le DG (ou tout rôle habilité) avant de devenir actif.</div>
@@ -42125,7 +42130,7 @@ var SYSTEM_ROLES = {
   comptable:  { id:'comptable',  label:'Comptable',      icon:'💼', level:2, system:true,
     permissions: Object.fromEntries(ALL_MODULES.map(function(m){
       return [m, ['Tableau de bord','Accueil','DQE & Cout de revient','Souscripteurs','Paiements',
-                  'Relances','Comptabilite','Tresorerie','Caisse','Paie','Declarations & Teledeclaration','Journaliers & Temporaires','Messagerie',
+                  'Relances','Comptabilite','Tresorerie','Caisse','Budget','Paie','Declarations & Teledeclaration','Journaliers & Temporaires','Messagerie',
                   'Gestion Locative','Investisseurs Diaspora'].includes(m)]; })) },
   commercial: { id:'commercial', label:'Commercial',     icon:'🎯', level:1, system:true,
     permissions: Object.fromEntries(ALL_MODULES.map(function(m){
@@ -94336,9 +94341,68 @@ function budgetRenderKpiTransferts() {
   ].map(_kpiCard).join('');
 }
 
+/* [Tableau récapitulatif] Un business plan = un couple division × exercice
+   ayant au moins une ligne caisse_budgets — regroupe les lignes existantes
+   (créées via le masque simplifié OU la saisie comptable détaillée, les
+   deux alimentent le même store) et calcule produits/charges/résultat via
+   les mêmes rubriques que le Compte d'exploitation prévisionnel, pour une
+   lecture cohérente entre les deux écrans. */
+function renderBusinessPlansListe() {
+  var box = document.getElementById('business-plans-liste-box'); if (!box) return;
+  var groupes = {};
+  (DATA.caisse_budgets||[]).forEach(function(b) {
+    var cle = (b.division_id||'') + '|' + b.exercice;
+    if (!groupes[cle]) groupes[cle] = { division_id: b.division_id||'', exercice: b.exercice, lignes: [] };
+    groupes[cle].lignes.push(b);
+  });
+  var cles = Object.keys(groupes).sort(function(a,b){ return groupes[b].exercice - groupes[a].exercice; });
+  if (!cles.length) {
+    box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Aucun business plan créé pour l\'instant. Cliquez « 🧾 Masque simplifié » ci-dessous pour commencer.</div>';
+    return;
+  }
+  var html = '<table class="data-table" style="width:100%;font-size:12px;"><thead><tr>'
+    + '<th>Division</th><th>Exercice</th><th style="text-align:right;">Produits</th><th style="text-align:right;">Charges</th><th style="text-align:right;">Résultat</th><th>Statut</th><th>Actions</th></tr></thead><tbody>';
+  cles.forEach(function(cle) {
+    var g = groupes[cle];
+    var totProduits = 0, totCharges = 0;
+    var nbValide = 0, nbAutre = 0;
+    g.lignes.forEach(function(b) {
+      var r = _cexpRubriqueDuCompte(b.compte);
+      var rubrique = (_toutesLesRubriques()).find(function(x){ return x.cle===r; });
+      var m = parseFloat(b.montant)||0;
+      if (rubrique) { if (rubrique.type==='produit') totProduits += m; else totCharges += m; }
+      if (b.statut === 'valide') nbValide++; else nbAutre++;
+    });
+    var resultat = totProduits - totCharges;
+    var statutHtml = nbAutre === 0
+      ? '<span class="badge" style="background:rgba(16,163,74,0.15);color:var(--vert);">✅ Entièrement validé</span>'
+      : nbValide === 0
+      ? '<span class="badge" style="background:rgba(255,255,255,0.08);color:var(--blanc-dim);">📝 Brouillon / en attente</span>'
+      : '<span class="badge" style="background:rgba(230,126,34,0.15);color:#E67E22;">🟠 Partiellement validé (' + nbValide + '/' + g.lignes.length + ')</span>';
+    html += '<tr>'
+      + '<td>' + escHtml(g.division_id ? _nomDivision(g.division_id) : 'Consolidé (toutes divisions)') + '</td>'
+      + '<td>' + g.exercice + '</td>'
+      + '<td style="text-align:right;color:var(--vert);">' + fmtF(totProduits) + ' F</td>'
+      + '<td style="text-align:right;color:var(--rouge);">' + fmtF(totCharges) + ' F</td>'
+      + '<td style="text-align:right;font-weight:700;' + (resultat>=0?'color:var(--vert);':'color:var(--rouge);') + '">' + fmtF(resultat) + ' F</td>'
+      + '<td>' + statutHtml + '</td>'
+      + '<td><button class="btn btn-secondary btn-sm" onclick="ouvrirBusinessPlanExistant(\'' + g.division_id + '\', ' + g.exercice + ')">✏️ Ouvrir</button></td>'
+      + '</tr>';
+  });
+  html += '</tbody></table>';
+  box.innerHTML = html;
+}
+/* Ouvre le masque pré-positionné sur un business plan déjà existant. */
+function ouvrirBusinessPlanExistant(divisionId, exercice) {
+  window._budgetFiltreDivision = divisionId || '';
+  window._budgetFiltreExercice = exercice;
+  ouvrirMasqueBusinessPlan();
+}
+
 function budgetRenderPrevisionnel() {
   budgetRenderDashboard();
   budgetRenderKpiPrevisionnel();
+  if (typeof renderBusinessPlansListe === 'function') renderBusinessPlansListe();
   var box = document.getElementById('budget-previsionnel-box'); if (!box) return;
   var lignes = (DATA.caisse_budgets||[]).filter(function(b){ return b.periode==='annuel' && _budgetPasseFiltre(b); });
   if (!lignes.length) { box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Aucun budget prévisionnel pour ce filtre. Cliquez « + Nouveau budget » pour en créer un.</div>'; return; }
