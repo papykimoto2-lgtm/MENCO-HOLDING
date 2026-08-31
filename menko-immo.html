@@ -3273,6 +3273,20 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             </select>
             <input type="month" class="filter-select" id="filter-mois-paiement" onchange="filterPaiements()">
           </div>
+          <div class="filters-bar" style="margin-top:-6px;align-items:flex-end;">
+            <div class="form-group" style="margin:0;"><label style="font-size:11px;">💰 Montant min (FCFA)</label><input type="number" class="filter-select" id="filter-paiement-montant-min" placeholder="0" oninput="_debInput('filterPaiements')"></div>
+            <div class="form-group" style="margin:0;"><label style="font-size:11px;">💰 Montant max (FCFA)</label><input type="number" class="filter-select" id="filter-paiement-montant-max" placeholder="Illimité" oninput="_debInput('filterPaiements')"></div>
+            <div class="form-group" style="margin:0;"><label style="font-size:11px;">↕️ Trier par</label>
+              <select class="filter-select" id="filter-paiement-tri" onchange="filterPaiements()">
+                <option value="date_desc">Date — plus récent d'abord</option>
+                <option value="date_asc">Date — plus ancien d'abord</option>
+                <option value="alpha_asc">Client — A → Z</option>
+                <option value="alpha_desc">Client — Z → A</option>
+                <option value="montant_desc">Montant — décroissant</option>
+                <option value="montant_asc">Montant — croissant</option>
+              </select>
+            </div>
+          </div>
           <div class="card">
             <div class="table-wrap">
               <table>
@@ -31370,6 +31384,9 @@ function renderVersements() {
   var search = (document.getElementById('search-paiements').value || '').toLowerCase();
   var filterMode = document.getElementById('filter-mode-paiement').value;
   var filterMois = document.getElementById('filter-mois-paiement').value;
+  var montantMin = parseFloat((document.getElementById('filter-paiement-montant-min')||{}).value) || null;
+  var montantMax = parseFloat((document.getElementById('filter-paiement-montant-max')||{}).value) || null;
+  var tri = (document.getElementById('filter-paiement-tri')||{}).value || 'date_desc';
 
   var list = DATA.versements.filter(function(v) {
     var client = DATA.clients.find(function(c) { return c.id === v.client_id; });
@@ -31377,8 +31394,25 @@ function renderVersements() {
     var matchSearch = !search || nom.indexOf(search) !== -1 || (v.ref || '').toLowerCase().indexOf(search) !== -1;
     var matchMode = !filterMode || v.mode === filterMode;
     var matchMois = !filterMois || (v.date && v.date.startsWith(filterMois));
-    return matchSearch && matchMode && matchMois;
-  }).sort(function(a, b) { return new Date(b.date) - new Date(a.date); });
+    var montant = parseFloat(v.montant) || 0;
+    var matchMontant = (montantMin===null || montant >= montantMin) && (montantMax===null || montant <= montantMax);
+    return matchSearch && matchMode && matchMois && matchMontant;
+  });
+
+  /* [Tri] Même modèle que le module Souscripteurs — appliqué après le
+     filtrage, sélectionnable par l'utilisateur (auparavant fixé en dur sur
+     date décroissante ; ce comportement reste la valeur par défaut). */
+  var nomClientDe = function(v){ var c = DATA.clients.find(function(x){ return x.id===v.client_id; }); return c ? (c.nom+' '+c.prenoms).trim().toLowerCase() : ''; };
+  var montantDe = function(v){ return parseFloat(v.montant) || 0; };
+  var comparateurs = {
+    date_desc:    function(a,b){ return new Date(b.date) - new Date(a.date); },
+    date_asc:     function(a,b){ return new Date(a.date) - new Date(b.date); },
+    alpha_asc:    function(a,b){ return nomClientDe(a).localeCompare(nomClientDe(b)); },
+    alpha_desc:   function(a,b){ return nomClientDe(b).localeCompare(nomClientDe(a)); },
+    montant_desc: function(a,b){ return montantDe(b) - montantDe(a); },
+    montant_asc:  function(a,b){ return montantDe(a) - montantDe(b); }
+  };
+  list.sort(comparateurs[tri] || comparateurs.date_desc);
 
   var tbody = document.getElementById('tbody-versements');
   if (!list.length) {
