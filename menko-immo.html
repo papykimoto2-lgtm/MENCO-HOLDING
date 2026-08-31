@@ -14766,9 +14766,11 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div class="page-sub">Véhicules · Carburant · Entretien · Affectations · Échéances</div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn btn-secondary" onclick="paForcerActualisation()" id="pa-btn-refresh">🔄 Actualiser les données</button>
             <button class="btn btn-primary" onclick="paOpenVehicule()">+ Véhicule</button>
           </div>
         </div>
+        <div id="pa-diag-connexion" style="display:none;margin-top:10px;"></div>
 
         <div id="pa-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px;"></div>
         <div id="pa-alertes-box" style="margin-bottom:14px;"></div>
@@ -14949,21 +14951,21 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           </div>
           <div class="modal-body">
             <div class="form-grid" style="margin-bottom:14px;">
-              <div class="form-group"><label>Division *</label><select class="form-control" id="bp-division" onchange="bpChargerExistant()"><option value="">— Toutes divisions (consolidé) —</option></select></div>
-              <div class="form-group"><label>Exercice *</label><input type="number" class="form-control" id="bp-exercice" min="2020" max="2100" onchange="bpChargerExistant()"></div>
+              <div class="form-group"><label>Division *</label><select class="form-control" id="bpm-division" onchange="bpChargerExistant()"><option value="">— Toutes divisions (consolidé) —</option></select></div>
+              <div class="form-group"><label>Exercice *</label><input type="number" class="form-control" id="bpm-exercice" min="2020" max="2100" onchange="bpChargerExistant()"></div>
             </div>
             <div style="font-size:12px;color:var(--blanc-dim);margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
               <span>Remplissez votre prévision de chiffre d'affaires et de charges, mois par mois — comme un business plan classique. Aucune connaissance comptable requise : le rattachement au plan comptable se fait automatiquement en arrière-plan.</span>
               <button class="btn btn-secondary btn-sm" onclick="bpOuvrirAjoutLigne()" style="white-space:nowrap;">➕ Ajouter une ligne budgétaire</button>
             </div>
-            <div id="bp-grid" style="overflow-x:auto;"></div>
+            <div id="bpm-grid" style="overflow-x:auto;"></div>
             <div style="margin-top:12px;padding:10px;background:rgba(184,115,51,0.08);border-radius:6px;font-size:13px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-              <span>Total produits : <b id="bp-total-produits" style="color:var(--vert);">0</b> F</span>
-              <span>Total charges : <b id="bp-total-charges" style="color:var(--rouge);">0</b> F</span>
-              <span>Résultat prévisionnel : <b id="bp-resultat">0</b> F</span>
-              <span>Marge prévisionnelle : <b id="bp-marge">0%</b></span>
+              <span>Total produits : <b id="bpm-total-produits" style="color:var(--vert);">0</b> F</span>
+              <span>Total charges : <b id="bpm-total-charges" style="color:var(--rouge);">0</b> F</span>
+              <span>Résultat prévisionnel : <b id="bpm-resultat">0</b> F</span>
+              <span>Marge prévisionnelle : <b id="bpm-marge">0%</b></span>
             </div>
-            <div id="bp-verdict" style="margin-top:10px;padding:14px;border-radius:8px;font-size:14px;font-weight:700;text-align:center;"></div>
+            <div id="bpm-verdict" style="margin-top:10px;padding:14px;border-radius:8px;font-size:14px;font-weight:700;text-align:center;"></div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal('modal-business-plan')">Annuler</button>
@@ -22711,7 +22713,13 @@ async function loadAllData() {
   /* v146 — Suivi budgétaire caisse */
   'caisse_budgets',
   /* v147 — Circuit budgétaire : DA + transferts */
-  'fiches_engagement_depense', 'transferts_budgetaires'
+  'fiches_engagement_depense', 'transferts_budgetaires',
+  /* [FIX audit synchro] Ces 4 stores étaient écrits (dbPut, certains même
+     synchronisés vers Supabase) mais JAMAIS relus au démarrage — DATA[store]
+     repartait vide à chaque rechargement de page jusqu'au premier pull (ou
+     restait vide indéfiniment pour conflits_sync, purement local). Symptôme
+     exact signalé : « valeurs différentes selon le poste/le moment ». */
+  'audit_log', 'cout_gestion_exercices', 'declarations_versement_financier', 'conflits_sync'
   ];
   /* Chargement en PARALLÈLE plutôt que séquentiel : chaque dbGetAll() ouvre
      sa propre transaction IndexedDB 'readonly' indépendante (voir dbGetAll
@@ -23632,8 +23640,9 @@ function _majBadgeSync(etat) {
     else document.body.appendChild(el);
   }
   if (etat === 'offline') {
-    el.textContent = '⚠ Hors ligne — données locales';
-    el.style.cssText += 'display:inline-flex;background:rgba(234,88,12,0.15);color:#EA580C;';
+    el.textContent = '⚠ Hors ligne — données locales (cliquer pour réessayer)';
+    el.style.cssText += 'display:inline-flex;background:rgba(234,88,12,0.15);color:#EA580C;cursor:pointer;';
+    el.onclick = function(){ if (typeof paForcerActualisation === 'function') paForcerActualisation(); else if (typeof pullFromCloudSilent === 'function') { SB._breakerOpen = false; pullFromCloudSilent(); } };
   } else {
     el.textContent = '☁ Sync rétablie';
     el.style.cssText += 'display:inline-flex;background:rgba(5,150,105,0.15);color:#059669;';
@@ -24172,6 +24181,10 @@ var SUPA_STORE_MAP = [
   ['pi_fiches_engagement_depense',         'fiches_engagement_depense'],
   ['pi_transferts_budgetaires', 'transferts_budgetaires'],
   ['pi_caisse_budgets',         'caisse_budgets'],
+  /* [FIX audit synchro] Poussée depuis portfinDeclarerVersement() mais
+     jamais tirée du cloud faute d'entrée ici — invisible sur tout autre
+     poste que celui qui a créé la déclaration. */
+  ['pi_declarations_versement_financier', 'declarations_versement_financier'],
   ['pi_vehicules',              'vehicules'],
   ['pi_vehicule_carburant',     'vehicule_carburant'],
   ['pi_vehicule_entretiens',    'vehicule_entretiens'],
@@ -62824,6 +62837,72 @@ var PA_USAGES = { fonction:'🧑‍💼 Véhicule de fonction (affecté)', servi
 var PA_ENTRETIEN_TYPES = { vidange:'Vidange', revision:'Révision', pneus:'Pneus', reparation:'Réparation', carrosserie:'Carrosserie', autre:'Autre' };
 var _paEditId = null;
 
+/* Bouton « Actualiser les données » — demande explicite : forcer une
+   tentative de synchro à la demande plutôt que d'attendre le cycle auto
+   (jusqu'à 60s) ou le disjoncteur réseau (jusqu'à 5 min avant nouvel essai).
+   Diagnostique aussi la cause probable si l'échec persiste : les erreurs
+   "CORS blocked" côté Supabase viennent presque toujours d'un projet en
+   pause (facturation/inactivité) ou d'une clé invalide — jamais d'un vrai
+   problème de CORS à corriger dans ce code, qui parle une API standard. */
+async function paForcerActualisation(){
+  var btn = document.getElementById('pa-btn-refresh');
+  var diag = document.getElementById('pa-diag-connexion');
+  if (btn) { btn.disabled = true; btn.textContent = '🔄 Actualisation…'; }
+  if (diag) diag.style.display = 'none';
+
+  /* Force une vraie tentative réseau, même si le disjoncteur était ouvert */
+  SB._breakerOpen = false;
+  getSBConfig();
+
+  var ok = false;
+  try {
+    if (!navigator.onLine) {
+      throw new Error('Le navigateur signale une absence de connexion internet.');
+    }
+    if (!SB.url || !SB.key) {
+      throw new Error('Aucune configuration Supabase (URL/clé) — voir Paramètres.');
+    }
+    if (typeof pullFromCloudSilent === 'function') await pullFromCloudSilent();
+    /* Le disjoncteur est réarmé (false) par sbFetch dès qu'une requête
+       aboutit — s'il est encore ouvert après la tentative, ça a échoué. */
+    ok = !SB._breakerOpen;
+  } catch(e) {
+    window._lastSupaError = e.message || String(e);
+    ok = false;
+  }
+
+  /* Rafraîchit l'affichage Parc Auto avec ce qui est disponible localement,
+     synchro réussie ou non — jamais d'écran vide sans raison expliquée. */
+  if (typeof paRenderVehicules === 'function') paRenderVehicules();
+  if (typeof paRenderKPIs === 'function') paRenderKPIs();
+  if (typeof paRenderAlertes === 'function') paRenderAlertes();
+  if (typeof paRenderCarburant === 'function') paRenderCarburant();
+  if (typeof paRenderEntretien === 'function') paRenderEntretien();
+  if (typeof paRenderAffectations === 'function') paRenderAffectations();
+  if (typeof paRenderCourses === 'function') paRenderCourses();
+
+  if (btn) { btn.disabled = false; btn.textContent = '🔄 Actualiser les données'; }
+
+  if (ok) {
+    toast('✅ Données synchronisées depuis le cloud.', 'success');
+    if (diag) diag.style.display = 'none';
+  } else {
+    toast('⚠️ Synchro toujours indisponible — voir le détail ci-dessous.', 'error');
+    if (diag) {
+      diag.style.display = '';
+      diag.innerHTML = '<div class="alert alert-error" style="font-size:12px;line-height:1.6;">'
+        + '<b>⚠️ Impossible de joindre le serveur cloud.</b><br>'
+        + 'Erreur technique : <code>' + escHtml(window._lastSupaError || 'inconnue') + '</code><br><br>'
+        + 'Un message « blocked by CORS policy » dans la console vient presque toujours de l\'une de ces causes (pas d\'un bug de cette application, qui utilise une API standard) :<br>'
+        + '<b>1.</b> Le projet Supabase est en pause (plan gratuit suspendu pour facturation ou inactivité) — se connecter sur supabase.com et vérifier l\'état du projet.<br>'
+        + '<b>2.</b> L\'URL ou la clé API Supabase configurée dans l\'app a changé ou expiré — voir Paramètres → Connexion cloud.<br>'
+        + '<b>3.</b> Coupure réseau locale ou pare-feu bloquant ce domaine.<br><br>'
+        + 'En attendant, l\'application continue de fonctionner avec les données déjà présentes sur cet appareil — rien n\'est perdu, la synchro reprendra automatiquement dès que l\'accès sera rétabli.'
+        + '</div>';
+    }
+  }
+}
+
 function paEnter(){
   paFillSelects();
   paRenderKPIs();
@@ -94661,15 +94740,15 @@ function bpOuvrirAjoutLigne() {
   liste.push({ cle:cle, label:libelle.trim(), prefixes:[compte], type:type, custom:true });
   var etat = _bpSauverEtatGrille();
   _sauverRubriquesCustom(liste).then(function() {
-    document.getElementById('bp-grid').innerHTML = bpChampsGrid();
+    document.getElementById('bpm-grid').innerHTML = bpChampsGrid();
     _bpRestaurerEtatGrille(etat);
     toast('✅ Ligne « '+libelle.trim()+' » ajoutée.', 'success');
   });
 }
 async function bpSupprimerLigneCustom(cle) {
   if (!confirm('Supprimer cette ligne budgétaire personnalisée ? Les montants déjà saisis pour toutes les divisions/exercices seront perdus (les budgets déjà validés restent, eux, protégés — un message l\'indiquera si c\'est le cas).')) return;
-  var divisionId = document.getElementById('bp-division').value;
-  var exercice = document.getElementById('bp-exercice').value;
+  var divisionId = document.getElementById('bpm-division').value;
+  var exercice = document.getElementById('bpm-exercice').value;
   var enregistrementsProteges = 0;
   (DATA.caisse_budgets||[]).filter(function(b){ return _cexpRubriqueDuCompte(b.compte)===cle; }).forEach(function(b){
     if (b.statut === 'valide') { enregistrementsProteges++; return; }
@@ -94679,7 +94758,7 @@ async function bpSupprimerLigneCustom(cle) {
   var liste = _rubriquesCustom().filter(function(r){ return r.cle !== cle; });
   var etat = _bpSauverEtatGrille();
   await _sauverRubriquesCustom(liste);
-  document.getElementById('bp-grid').innerHTML = bpChampsGrid();
+  document.getElementById('bpm-grid').innerHTML = bpChampsGrid();
   _bpRestaurerEtatGrille(etat);
   budgetRenderPrevisionnel();
   toast('Ligne supprimée.' + (enregistrementsProteges ? ' ⚠️ '+enregistrementsProteges+' budget(s) déjà validé(s) sur cette ligne conservé(s) — utilisez un transfert pour les solder.' : ''), enregistrementsProteges ? 'info' : 'success');
@@ -94713,11 +94792,11 @@ function bpLigneTotalMoisHtml(cle, label, couleur) {
     + '<td style="text-align:right;font-weight:800;'+(couleur?'color:'+couleur+';':'')+'" id="bp-totmois-'+cle+'-total">0</td></tr>';
 }
 function ouvrirMasqueBusinessPlan() {
-  var selDiv = document.getElementById('bp-division');
+  var selDiv = document.getElementById('bpm-division');
   selDiv.innerHTML = '<option value="">— Toutes divisions (consolidé) —</option>' + (DATA.divisions||[]).map(function(d){ return '<option value="'+d.id+'">'+escHtml(d.nom)+'</option>'; }).join('');
   selDiv.value = window._budgetFiltreDivision || '';
-  document.getElementById('bp-exercice').value = window._budgetFiltreExercice || new Date().getFullYear();
-  document.getElementById('bp-grid').innerHTML = bpChampsGrid();
+  document.getElementById('bpm-exercice').value = window._budgetFiltreExercice || new Date().getFullYear();
+  document.getElementById('bpm-grid').innerHTML = bpChampsGrid();
   bpChargerExistant();
   openModal('modal-business-plan');
 }
@@ -94725,8 +94804,8 @@ function ouvrirMasqueBusinessPlan() {
    depuis le masque OU depuis la saisie comptable détaillée) pour cette
    division/exercice — le masque devient alors aussi un écran de modification. */
 function bpChargerExistant() {
-  var divisionId = document.getElementById('bp-division').value;
-  var exercice = document.getElementById('bp-exercice').value;
+  var divisionId = document.getElementById('bpm-division').value;
+  var exercice = document.getElementById('bpm-exercice').value;
   document.querySelectorAll('.bp-input').forEach(function(el){ el.value = 0; });
   if (!exercice) { bpMajTotaux(); return; }
   _toutesLesRubriques().forEach(function(r) {
@@ -94758,17 +94837,17 @@ function bpMajTotaux() {
     if (totInput && document.activeElement !== totInput) totInput.value = Math.round(tot);
     if (r.type === 'produit') totProduits += tot; else totCharges += tot;
   });
-  document.getElementById('bp-total-produits').textContent = fmtF(totProduits);
-  document.getElementById('bp-total-charges').textContent = fmtF(totCharges);
+  document.getElementById('bpm-total-produits').textContent = fmtF(totProduits);
+  document.getElementById('bpm-total-charges').textContent = fmtF(totCharges);
   var resultat = totProduits - totCharges;
-  var resEl = document.getElementById('bp-resultat');
+  var resEl = document.getElementById('bpm-resultat');
   resEl.textContent = fmtF(resultat);
   resEl.style.color = resultat >= 0 ? 'var(--vert)' : 'var(--rouge)';
-  var margeEl = document.getElementById('bp-marge');
+  var margeEl = document.getElementById('bpm-marge');
   var marge = totProduits > 0 ? (resultat/totProduits)*100 : 0;
   margeEl.textContent = marge.toFixed(1)+'%';
   margeEl.style.color = marge >= 0 ? 'var(--vert)' : 'var(--rouge)';
-  _appliquerVerdictDOM('bp-verdict', _diagnosticViabilite(totMoisProduits, totMoisCharges));
+  _appliquerVerdictDOM('bpm-verdict', _diagnosticViabilite(totMoisProduits, totMoisCharges));
   /* Lignes de total par mois, dans le tableau lui-même */
   for (var m = 1; m <= 12; m++) {
     var elP = document.getElementById('bp-totmois-produits-'+m); if (elP) elP.textContent = fmtF(totMoisProduits[m-1]);
@@ -94811,8 +94890,8 @@ function bpVentilerDepuisTotal(cle) {
   bpMajTotaux();
 }
 async function bpSauver(soumettre) {
-  var divisionId = document.getElementById('bp-division').value;
-  var exercice = document.getElementById('bp-exercice').value;
+  var divisionId = document.getElementById('bpm-division').value;
+  var exercice = document.getElementById('bpm-exercice').value;
   if (!exercice) { toast('L\'exercice est obligatoire.', 'error'); return; }
   var reussies = 0, echecs = 0, ignorees = 0, idsAffectes = [];
   for (var i = 0; i < _toutesLesRubriques().length; i++) {
