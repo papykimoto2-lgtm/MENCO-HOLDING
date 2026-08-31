@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.111 · 2026-08-27 — Éditeur de plans architecturaux : suppression et modification d\'un objet existaient déjà (sélection → panneau propriétés → champs éditables + bouton Supprimer), mais sans raccourci clavier. Ajout des touches Suppr / Retour arrière pour supprimer l\'objet sélectionné, sans intercepter un Retour arrière tapé dans un champ de saisie (ex. le champ Nom du panneau), et seulement quand la page Conception est active. Vérification systématique de non-régression effectuée.';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.112 · 2026-08-31 — Session majeure : (1) Souscripteurs multi-lots sur un même programme avec échéancier/montant combiné unique (client.lot_ids, client.lot_id conservé comme lot principal pour compatibilité) ; (2) Surface relevée manuellement sur la fiche Lot et surface souscrite sur la fiche Souscripteur, comparées en direct à la surface au plan/aux lots rattachés ; (3) Nouveau module Budget : Compte d\'exploitation prévisionnel (Budget vs Réel comptable, mensualisé, par division), masque de saisie simplifié façon business-plan (24 rubriques dont 11 propres à l\'immobilier, lignes personnalisables), diagnostic de viabilité (résultat + trésorerie cumulée) ; (4) Cockpit étendu au Budget et au Parc Auto (file d\'actions + Pouls de santé) ; (5) Audit de synchronisation : 4 stores écrits/synchronisés mais jamais rechargés corrigés (declarations_versement_financier invisible sur tout autre poste, audit_log, cout_gestion_exercices, conflits_sync) ; (6) 4 sélecteurs de lots (souscription, lots supplémentaires, simulateur fiscal, livraison) désormais rafraîchis après création d\'un lot, localement et après synchro cloud ; (7) Correctif charge Supabase : pull de secours espacé de 60 s à ~6 min (Realtime reste le canal principal) suite à saturation du compute observée le 31/08 (527k requêtes/24h sur instance Nano) ; (8) Parc Auto : bouton "Actualiser les données" + badge "Hors ligne" cliquable avec diagnostic de la cause probable (projet en pause/clé invalide, jamais un vrai bug CORS).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -25310,25 +25310,38 @@ function demarrerSyncAuto() {
        indisponible sans que _RT le détecte comme déconnecté, ce singleton
        ne serait plus jamais retiré du cloud avant le prochain login. Un
        poste qui reste ouvert des heures sans jamais recharger la page
-       resterait alors sourd aux réglages changés ailleurs. Toutes les 4
-       passes (~2 min) suffit : ce ne sont pas des réglages qui changent
-       à la seconde. */
+       resterait alors sourd aux réglages changés ailleurs. Toutes les
+       ~13 min suffit : ce ne sont pas des réglages qui changent à la
+       seconde (allégé le 31/08 — voir note plus bas). */
     _tickAutoSync++;
     /* Vérification d'une nouvelle version déployée toutes les ~10 min
        (20 passes de 30 s). Coût négligeable : 4 Ko par contrôle. */
     if (_tickAutoSync % 20 === 0) {
       try { _verifierNouvelleVersion(); } catch(e){}
     }
-    if (_tickAutoSync % 4 === 0) {
+    if (_tickAutoSync % 12 === 0) {
       try { if (typeof _pullPlanComptableCloud === 'function') _pullPlanComptableCloud(); } catch(e){}
     }
-    /* Filet de secours général : si le canal Realtime est tombé silencieusement
-       (mobile en arrière-plan, veille, reconnexion ratée) sans que _RT le
-       détecte, aucune donnée entrante (session caisse ouverte par un collègue,
-       nouveau mouvement, etc.) ne remonterait plus jamais sans rechargement
-       manuel de la page. Un pull silencieux toutes les 60 s (2 passes)
-       garantit la fraîcheur même canal Realtime mort. */
-    if (_tickAutoSync % 2 === 0 && navigator.onLine) {
+    /* [FIX charge Supabase 31/08] Filet de secours général : si le canal
+       Realtime est tombé silencieusement (mobile en arrière-plan, veille,
+       reconnexion ratée) sans que _RT le détecte, aucune donnée entrante
+       (session caisse ouverte par un collègue, nouveau mouvement, etc.)
+       ne remonterait plus jamais sans rechargement manuel de la page.
+       AVANT : pull complet (~150 tables, séquentiel) toutes les 60 s SUR
+       CHAQUE POSTE. Avec plusieurs postes ouverts simultanément, ça
+       s'additionne en continu sur le compute — observé le 31/08 : 527k
+       requêtes/24h sur une instance Nano, connexions Postgres saturées,
+       toute l'application indisponible pendant ~1h.
+       Le Realtime reste le mécanisme PRINCIPAL (quasi instantané, un seul
+       websocket par poste, coût négligeable) — ce pull périodique n'est
+       qu'un filet de secours pour le cas où il tombe en panne silencieuse.
+       Un filet qui se déclenche toutes les ~6 min (12 passes) reste largement
+       suffisant pour ce rôle, tout en divisant par ~6 la charge de fond
+       générée par cette route. Si le besoin réel était une fraîcheur
+       infra-minute y compris quand Realtime est cassé, il vaudrait mieux
+       agrandir le compute Supabase (Nano → Micro/Small) que ré-accélérer
+       ce filet. */
+    if (_tickAutoSync % 12 === 0 && navigator.onLine) {
       try { if (typeof pullFromCloudSilent === 'function') pullFromCloudSilent(); } catch(e){}
     }
     /* Vérifie si cette session a été invalidée à distance (Paramétrage →
