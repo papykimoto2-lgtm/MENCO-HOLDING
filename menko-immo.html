@@ -16239,6 +16239,17 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             </select>
             <div id="c-lot-diag" style="display:none;"></div>
           </div>
+          <div class="form-group span-2">
+            <label>Autres lots de ce souscripteur (même programme, même échéancier/montant total)</label>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <select class="form-control" id="c-lot-supplementaire" style="flex:1;">
+                <option value="">— Ajouter un autre lot —</option>
+              </select>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="ajouterLotSupplementaireClient()" style="white-space:nowrap;">➕ Ajouter</button>
+            </div>
+            <div id="c-lots-supplementaires-liste" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;"></div>
+            <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">Un souscripteur peut acquérir plusieurs lots sur le même programme — le montant total et l'échéancier saisis ci-dessous couvrent alors l'ensemble de ces lots.</div>
+          </div>
           <div class="form-group span-2" id="c-nature-badge-wrap" style="display:none;">
             <div id="c-nature-badge" style="display:inline-block;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700;"></div>
           </div>
@@ -25697,6 +25708,39 @@ async function pullFromCloudSilent() {
       .forEach(function(fn){
         if (typeof window[fn] === 'function') { try { window[fn](); } catch(e){} }
       });
+    /* [FIX écart entre postes] Ces écrans (Cockpit budgétaire, Compte
+       d'exploitation prévisionnel, alertes Parc Auto…) ne sont PAS dans la
+       liste ci-dessus, donc un poste resté ouvert sur l'une de ces pages
+       continuait d'afficher des chiffres figés à l'instant du chargement,
+       même après une synchro réussie en arrière-plan — jusqu'à ce que
+       l'utilisateur change de page puis y revienne. Symptôme exact : « le
+       tableau de bord ne montre pas la même valeur sur deux postes ».
+       On ne rappelle QUE les fonctions d'affichage (jamais les fonctions
+       d'initialisation de filtre du type budgetInitFiltres) pour ne pas
+       réinitialiser sous les yeux de l'utilisateur une division/un exercice
+       qu'il avait sélectionné — uniquement si la page concernée est
+       actuellement affichée. */
+    try {
+      var pageActive = APP.currentPage;
+      if (pageActive === 'budget') {
+        if (typeof budgetRenderDashboard === 'function') budgetRenderDashboard();
+        if (typeof budgetRenderPrevisionnel === 'function') budgetRenderPrevisionnel();
+        if (typeof budgetRenderFed === 'function') budgetRenderFed();
+        if (typeof budgetRenderTransferts === 'function') budgetRenderTransferts();
+        if (typeof renderCompteExploitationPrevisionnel === 'function') renderCompteExploitationPrevisionnel();
+      }
+      if (pageActive === 'parc-auto' && typeof paRenderAlertes === 'function') paRenderAlertes();
+      if (pageActive === 'relances' && typeof detectRelances === 'function') detectRelances();
+      if (pageActive === 'commercialisation' && typeof renderCommercialisation === 'function') renderCommercialisation();
+      /* La barre de navigation (badges compteurs) doit rester juste même
+         hors de la page concernée — sinon le badge Parc Auto/Budget affiche
+         un nombre périmé jusqu'au prochain rechargement complet. */
+      if (typeof paCalculerAlertes === 'function') {
+        var badgePA = document.getElementById('badge-parc-auto');
+        if (badgePA) { var nAl = paCalculerAlertes().length; badgePA.textContent = String(nAl); badgePA.style.display = nAl ? 'inline-block' : 'none'; }
+      }
+      if (typeof iaaRefreshAlertes === 'function') iaaRefreshAlertes();
+    } catch(e){}
     /* Rôles/permissions peuvent arriver après le premier rendu de la sidebar
        (custom_roles créé/modifié sur un autre poste, pas encore synchronisé
        au moment du login). Sans ce recalcul, des modules autorisés restent
@@ -28034,7 +28078,7 @@ function cmrcBuildActions(leads, ticketMoyen) {
 
   /* 4. Réservations à confirmer (lots réservés non transformés en souscription). */
   var reservesNonClients = DATA.lots.filter(function(l){
-    return l.statut==='reserve' && !DATA.clients.some(function(c){ return c.lot_id===l.id; });
+    return l.statut==='reserve' && !l.client_id;
   });
   if (reservesNonClients.length) {
     actions.push({prio:2, icon:'📝', titre:reservesNonClients.length+' lot(s) réservé(s) sans dossier souscripteur', detail:'Finaliser la convention avant expiration de la réservation', action:"goTo('lots')"});
@@ -29401,6 +29445,8 @@ function clearClientForm() {
   var standEl = document.getElementById('c-standing'); if (standEl) standEl.value = 'economique';
   var natManEl = document.getElementById('c-nature-manuel'); if (natManEl) natManEl.value = 'auto';
   updateNatureBienUI(null);
+  APP._clientLotsSupplementaires = [];
+  if (typeof renderLotsSupplementairesListe === 'function') renderLotsSupplementairesListe();
 }
 
 function fillClientForm(c) {
@@ -29420,6 +29466,10 @@ function fillClientForm(c) {
   setSelectValue('c-programme', c.programme_id);
   setSelectValue('c-commercial', c.commercial_id || '');
   setSelectValue('c-apporteur', c.apporteur_id || '');
+  /* [multi-lot] Préremplit la liste des lots supplémentaires (tous les
+     lot_ids sauf le lot principal lot_id) pour affichage/modification. */
+  APP._clientLotsSupplementaires = (typeof _lotIdsDeClient === 'function' ? _lotIdsDeClient(c) : (c.lot_ids||[])).filter(function(lid){ return lid !== c.lot_id; });
+  if (typeof renderLotsSupplementairesListe === 'function') renderLotsSupplementairesListe();
   /* [FIX] Reflète l'état réel du dossier dans le sélecteur manuel : si
      nature_bien diverge de ce que le lot rattaché indiquerait tout seul (ou
      si aucun lot n'est rattaché mais que nature_bien est déjà connu — ex.
@@ -29501,44 +29551,63 @@ function ouvrirVersementApport(clientId, montantSuggere) {
 }
 
 /* Statut du lot selon le % encaissé : réservé jusqu'au seuil d'immobilisation, puis vendu */
+/* [multi-lot] Un souscripteur peut désormais avoir plusieurs lots sur un même
+   programme (c.lot_ids, tableau), avec UN SEUL échéancier/montant_total
+   combiné — c.lot_id reste le lot PRINCIPAL (1er de la liste), lu tel quel
+   par les ~50 endroits de l'app qui n'affichent/ne calculent qu'« un » lot
+   (fiche client, contrat, audits…) : aucun de ces usages n'est cassé.
+   Le statut réservé/vendu, calculé UNE FOIS sur le % payé du montant total
+   combiné, s'applique identiquement à CHAQUE lot du souscripteur — cohérent
+   avec le principe d'un seul échéancier pour l'ensemble. */
+function _lotIdsDeClient(c) {
+  if (Array.isArray(c.lot_ids) && c.lot_ids.length) return c.lot_ids;
+  return c.lot_id ? [c.lot_id] : [];
+}
 async function majStatutLotClient(clientId) {
   var c = DATA.clients.find(function(x){ return x.id === clientId; });
-  if (!c || !c.lot_id) return;
-  var lot = DATA.lots.find(function(l){ return l.id === c.lot_id; });
-  if (!lot) return;
+  if (!c) return;
+  var lotIds = _lotIdsDeClient(c);
+  if (!lotIds.length) return;
   var seuil = parseFloat((DATA.params||{}).seuil_immobilisation_pct) || 70;
   var total = parseFloat(c.montant_total) || 0;
   var paye = totalPayePrix(clientId);
   var pct = total > 0 ? (paye / total * 100) : 0;
   var nouveau = pct >= seuil ? 'vendu' : 'reserve';
-  if (lot.statut !== nouveau || lot.client_id !== clientId) {
-    /* CORRECTIF : date_reservation n'était jamais écrite alors qu'elle est lue
-       ailleurs (ancienneté des réservations, alerte de délai de validité). On la
-       fixe à la première mise en réservation, et on la réinitialise si le lot
-       change de souscripteur (nouvelle réservation) ou repasse dispo → reserve. */
-    if (nouveau === 'reserve' && (lot.statut !== 'reserve' || lot.client_id !== clientId || !lot.date_reservation)) {
-      lot.date_reservation = today();
+  var dernierStatut = nouveau;
+  for (var i = 0; i < lotIds.length; i++) {
+    var lot = DATA.lots.find(function(l){ return l.id === lotIds[i]; });
+    if (!lot) continue;
+    if (lot.statut !== nouveau || lot.client_id !== clientId) {
+      /* CORRECTIF : date_reservation n'était jamais écrite alors qu'elle est lue
+         ailleurs (ancienneté des réservations, alerte de délai de validité). On la
+         fixe à la première mise en réservation, et on la réinitialise si le lot
+         change de souscripteur (nouvelle réservation) ou repasse dispo → reserve. */
+      if (nouveau === 'reserve' && (lot.statut !== 'reserve' || lot.client_id !== clientId || !lot.date_reservation)) {
+        lot.date_reservation = today();
+      }
+      if (nouveau === 'vendu') { lot.date_vente = lot.date_vente || today(); }
+      /* 4.5 - Historique des changements de statut : traçabilité en cas de litige (double vente, erreur de saisie) */
+      lot.historique_statuts = (lot.historique_statuts || []).concat([{
+        date: new Date().toISOString(), ancien: lot.statut || null, nouveau: nouveau,
+        client_id: clientId, user: (APP.currentUser && (APP.currentUser.nom || APP.currentUser.login)) || 'system'
+      }]);
+      lot.statut = nouveau; lot.client_id = clientId;
+      await dbPut('lots', lot);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_lots', lot);
     }
-    if (nouveau === 'vendu') { lot.date_vente = lot.date_vente || today(); }
-    /* 4.5 - Historique des changements de statut : traçabilité en cas de litige (double vente, erreur de saisie) */
-    lot.historique_statuts = (lot.historique_statuts || []).concat([{
-      date: new Date().toISOString(), ancien: lot.statut || null, nouveau: nouveau,
-      client_id: clientId, user: (APP.currentUser && (APP.currentUser.nom || APP.currentUser.login)) || 'system'
-    }]);
-    lot.statut = nouveau; lot.client_id = clientId;
-    await dbPut('lots', lot);
-    if (typeof syncToSupabase === 'function') syncToSupabase('pi_lots', lot);
+    /* Reconnaissance comptable du produit à la vente — terrain OU logement,
+       selon la nature réelle du lot (les deux cas doivent être couverts).
+       Faite PAR LOT (chaque lot est un actif distinct) même si le paiement
+       qui déclenche le seuil est combiné sur l'ensemble des lots. */
+    if (lot.nature === 'terrain') {
+      if (nouveau === 'vendu') { await comptabiliserVenteTerrain(lot); }
+      else { await supprimerVenteTerrain(lot.id); }
+    } else {
+      if (nouveau === 'vendu') { await comptabiliserVenteLogement(lot); }
+      else { await supprimerVenteLogement(lot.id); }
+    }
   }
-  /* Reconnaissance comptable du produit à la vente — terrain OU logement,
-     selon la nature réelle du lot (les deux cas doivent être couverts). */
-  if (lot.nature === 'terrain') {
-    if (nouveau === 'vendu') { await comptabiliserVenteTerrain(lot); }
-    else { await supprimerVenteTerrain(lot.id); }
-  } else {
-    if (nouveau === 'vendu') { await comptabiliserVenteLogement(lot); }
-    else { await supprimerVenteLogement(lot.id); }
-  }
-  return nouveau;
+  return dernierStatut;
 }
 
 /* Statistiques lots par statut — source unique pour les KPI « Lots vendus »
@@ -29629,8 +29698,10 @@ async function saveClient() {
   // ── Verrou anti-double-réservation : re-vérifié ici (indépendamment du filtrage
   //    du <select>) car le DOM peut être obsolète (import concurrent, sync distante). ──
   var _lotIdChoisi = document.getElementById('c-lot') ? document.getElementById('c-lot').value : '';
-  if (_lotIdChoisi) {
-    var _lotVerif = DATA.lots.find(function(l) { return l.id === _lotIdChoisi; });
+  var _lotIdsSupplémentaires = (APP._clientLotsSupplementaires || []).slice();
+  var _tousLotIdsChoisis = _lotIdChoisi ? [_lotIdChoisi].concat(_lotIdsSupplémentaires) : _lotIdsSupplémentaires.slice();
+  for (var _li = 0; _li < _tousLotIdsChoisis.length; _li++) {
+    var _lotVerif = DATA.lots.find(function(l) { return l.id === _tousLotIdsChoisis[_li]; });
     if (_lotVerif && _lotVerif.client_id && _lotVerif.client_id !== APP.editingId) {
       var _proprietaire = DATA.clients.find(function(c) { return c.id === _lotVerif.client_id; });
       var _nomProprietaire = _proprietaire ? ((_proprietaire.prenoms || '') + ' ' + (_proprietaire.nom || '')).trim() : 'un autre souscripteur';
@@ -29642,8 +29713,9 @@ async function saveClient() {
   APP._savingClient = true;
   var id = APP.editingId || uid();
   var _ancienLotId = null;
+  var _ancienLotIds = [];
   var _dossier = '';
-  if (APP.editingId) { var _exC = DATA.clients.find(function(c){ return c.id === id; }); if (_exC) { _ancienLotId = _exC.lot_id || null; _dossier = _exC.dossier || ''; } }
+  if (APP.editingId) { var _exC = DATA.clients.find(function(c){ return c.id === id; }); if (_exC) { _ancienLotId = _exC.lot_id || null; _ancienLotIds = _lotIdsDeClient(_exC); _dossier = _exC.dossier || ''; } }
   if (!_dossier) _dossier = genererCodeDossier();
   var client = {
     id: id,
@@ -29660,6 +29732,7 @@ async function saveClient() {
     piece_num: document.getElementById('c-piece-num').value,
     programme_id: document.getElementById('c-programme').value,
     lot_id: document.getElementById('c-lot').value,
+    lot_ids: _tousLotIdsChoisis,
     /* Distingue une souscription pour un bien bâti (maison/appartement) d'une
        souscription pour un terrain nu (parcelle). Priorité : 1) choix manuel
        explicite (« Nature du bien »), 2) nature du lot rattaché, 3) sinon
@@ -29710,13 +29783,14 @@ async function saveClient() {
       APP.editingId = client.id; /* évite un 2e enregistrement en doublon */
     }
 
-    /* ── Interconnexion lot : libérer l'ancien lot, réserver le nouveau ── */
-    if (_ancienLotId && _ancienLotId !== client.lot_id) {
-      var oldLot = DATA.lots.find(function(l){ return l.id === _ancienLotId; });
+    /* ── Interconnexion lots : libérer ceux retirés, réserver les nouveaux ── */
+    var _lotsALiberer = _ancienLotIds.filter(function(lid){ return _tousLotIdsChoisis.indexOf(lid) === -1; });
+    for (var _lr = 0; _lr < _lotsALiberer.length; _lr++) {
+      var oldLot = DATA.lots.find(function(l){ return l.id === _lotsALiberer[_lr]; });
       if (oldLot) { oldLot.statut = 'disponible'; oldLot.client_id = null; await dbPut('lots', oldLot); if (typeof syncToSupabase === 'function') syncToSupabase('pi_lots', oldLot); }
     }
-    if (client.lot_id) {
-      var lot = DATA.lots.find(function(l) { return l.id === client.lot_id; });
+    for (var _ln = 0; _ln < _tousLotIdsChoisis.length; _ln++) {
+      var lot = DATA.lots.find(function(l) { return l.id === _tousLotIdsChoisis[_ln]; });
       if (lot) { lot.client_id = id; await dbPut('lots', lot); }
     }
 
@@ -38706,7 +38780,7 @@ function ckActions() {
   /* R5 — Lots réservés sans aucun souscripteur rattaché : une réservation
      fantôme stérilise un lot vendable. */
   var resOrphelins = (DATA.lots||[]).filter(function(l){
-    return l.statut==='reserve' && !(DATA.clients||[]).some(function(c){ return c.lot_id===l.id; });
+    return l.statut==='reserve' && !l.client_id;
   });
   if (resOrphelins.length) push({
     aid: 'resorph_'+resOrphelins.length, prio: 45, icone: '🏷️',
@@ -38870,8 +38944,11 @@ function ckActions() {
   });
 
   /* R-BUDGET — Lignes en dépassement (urgent, un transfert peut régler ça
-     immédiatement) et validations budgétaires en attente (chaque jour
-     d'attente retarde un décaissement en aval, à la caisse). */
+     immédiatement), validations budgétaires en attente (chaque jour
+     d'attente retarde un décaissement en aval, à la caisse), transferts en
+     attente, et viabilité du budget prévisionnel de l'exercice en cours
+     (résultat déficitaire ou trésorerie cumulée qui passe dans le rouge en
+     cours d'année — cf. Compte d'exploitation prévisionnel). */
   try {
     var kBud = (typeof _budgetKpiGlobal === 'function') ? _budgetKpiGlobal() : null;
     if (kBud) {
@@ -38901,6 +38978,70 @@ function ckActions() {
           boutons: [ { lib:'✅ Aller valider', fn:"goTo('budget')" } ]
         });
       }
+      if (kBud.transfertsEnAttente > 0) {
+        push({
+          aid: 'budtransferts_attente', prio: 65, urgent: false, icone: '🔀',
+          titre: kBud.transfertsEnAttente + ' transfert(s) budgétaire(s) en attente de validation',
+          detail: 'Une ligne en dépassement attend peut-être ce transfert pour être régularisée.',
+          boutons: [ { lib:'✅ Aller valider', fn:"goTo('budget')" } ]
+        });
+      }
+    }
+  } catch(e){}
+
+  /* R-BUDGET-VIABILITE — Sur l'exercice en cours, un budget prévisionnel
+     validé mais déficitaire (ou dont la trésorerie cumulée passe dans le
+     rouge en cours d'année) doit être corrigé avant que le réel ne
+     confirme le problème — voir Compte d'exploitation prévisionnel. */
+  try {
+    if (typeof _cexpBudgetParRubrique === 'function' && typeof _diagnosticViabilite === 'function') {
+      var anneeCourante = new Date().getFullYear();
+      var perimetres = [{ id:'', nom:'Consolidé (toutes divisions)' }].concat(
+        (DATA.divisions||[]).map(function(d){ return { id:d.id, nom:d.nom }; })
+      );
+      perimetres.forEach(function(p){
+        var budget = _cexpBudgetParRubrique(p.id, anneeCourante);
+        var toutes = _toutesLesRubriques();
+        var moisProduits = Array(12).fill(0), moisCharges = Array(12).fill(0);
+        toutes.forEach(function(r){
+          for (var m=0;m<12;m++){ if (r.type==='produit') moisProduits[m]+=budget[r.cle][m]; else moisCharges[m]+=budget[r.cle][m]; }
+        });
+        var totBud = _cexpSomme12(moisProduits) + _cexpSomme12(moisCharges);
+        if (totBud <= 0) return;   /* pas de budget saisi pour ce périmètre — rien à signaler */
+        var diag = _diagnosticViabilite(moisProduits, moisCharges);
+        if (diag.niveau !== 'rouge' && diag.niveau !== 'orange') return;
+        push({
+          aid: 'budviab_' + (p.id||'consolide') + '_' + anneeCourante,
+          prio: diag.niveau === 'rouge' ? 85 : 70, urgent: diag.niveau === 'rouge', icone: diag.niveau === 'rouge' ? '🔴' : '🟠',
+          titre: (diag.niveau === 'rouge' ? 'Budget non viable' : 'Budget à risque') + ' — ' + p.nom + ' ' + anneeCourante,
+          detail: diag.texte,
+          boutons: [ { lib:'📈 Voir le compte d\'exploitation', fn:"goTo('budget')" } ]
+        });
+      });
+    }
+  } catch(e){}
+
+  /* R-LOGISTIQUE — Parc auto : réutilise paCalculerAlertes() (assurance,
+     visite technique, vidange par km/date) — source unique déjà partagée
+     avec le badge du module Parc Auto, pour ne pas faire dériver deux
+     logiques d'échéances en parallèle. */
+  try {
+    if (typeof paCalculerAlertes === 'function') {
+      var alertesVeh = paCalculerAlertes();
+      var parVehicule = {};
+      alertesVeh.forEach(function(a){ (parVehicule[a.vehicule_id] = parVehicule[a.vehicule_id] || []).push(a); });
+      Object.keys(parVehicule).forEach(function(vid){
+        var al = parVehicule[vid];
+        var rouge = al.some(function(a){ return a.niveau==='rouge'; });
+        var v = (DATA.vehicules||[]).find(function(x){ return x.id===vid; });
+        push({
+          aid: 'vehdoc_' + vid,
+          prio: rouge ? 92 : 55, urgent: rouge, icone: '🚗',
+          titre: (rouge ? 'Document véhicule expiré' : 'Échéance véhicule proche') + ' — ' + (v ? v.immatriculation : 'véhicule'),
+          detail: al.map(function(a){ return a.texte; }).join(' · '),
+          boutons: [ { lib:'🚗 Ouvrir le Parc Auto', fn:"goTo('parc-auto')" } ]
+        });
+      });
     }
   } catch(e){}
 
@@ -39138,7 +39279,7 @@ function ckSante() {
         incomplets ? incomplets+' dossier(s) incomplet(s) sur '+totD : 'Dossiers complets', 'clients');
   } else dom('Données','🧬',100,'Aucun dossier','clients');
 
-  /* Commercial : leads sans mouvement depuis 14 jours. */
+  /* Pipeline : leads sans mouvement depuis 14 jours. */
   var leads = (DATA.leads||[]).filter(function(l){ return l.stade!=='reservation' && l.stade!=='perdu'; });
   if (leads.length) {
     /* Les leads ne portent pas d'updated_at : les champs réellement alimentés
@@ -39155,6 +39296,33 @@ function ckSante() {
     dom('Pipeline','🎯', 100 - Math.round(froids/leads.length*100),
         froids ? froids+' lead(s) sans contact depuis 14 j sur '+leads.length : 'Pipeline animé', 'leads');
   } else dom('Pipeline','🎯',100,'Aucun lead actif','leads');
+
+  /* Budget prévisionnel : taux d'utilisation des lignes (0 dépassement =
+     100, chaque ligne en dépassement grignote le score) + viabilité du
+     compte d'exploitation prévisionnel consolidé de l'exercice en cours. */
+  try {
+    var kBud = (typeof _budgetKpiGlobal === 'function') ? _budgetKpiGlobal() : null;
+    if (kBud && kBud.nbLignesActives > 0) {
+      var scBud = 100 - Math.min(70, kBud.enDepassement.length * 20) - Math.min(20, kBud.procheEpuisement.length * 5);
+      var causeBud = kBud.enDepassement.length
+        ? kBud.enDepassement.length+' ligne(s) en dépassement (taux moyen '+kBud.tauxMoyen+'%)'
+        : (kBud.procheEpuisement.length ? kBud.procheEpuisement.length+' ligne(s) proche(s) de l\'épuisement' : 'Taux d\'utilisation moyen '+kBud.tauxMoyen+'%');
+      dom('Budget','📊', scBud, causeBud, 'budget');
+    }
+  } catch(e){}
+
+  /* Parc auto : documents (assurance, visite technique, vidange) — même
+     source que paCalculerAlertes(), déjà utilisée par le badge du module. */
+  try {
+    var vehsActifs = (DATA.vehicules||[]).filter(function(v){ return v.statut!=='vendu'; });
+    if (vehsActifs.length && typeof paCalculerAlertes === 'function') {
+      var alertesVehSc = paCalculerAlertes();
+      var nbRougeVehSc = alertesVehSc.filter(function(a){ return a.niveau==='rouge'; }).length;
+      var nbTotalVehSc = alertesVehSc.length;
+      dom('Parc auto','🚗', 100 - Math.min(70, nbRougeVehSc*20) - Math.min(20, (nbTotalVehSc-nbRougeVehSc)*5),
+          nbTotalVehSc ? nbTotalVehSc+' échéance(s) sur '+vehsActifs.length+' véhicule(s) ('+nbRougeVehSc+' expirée(s))' : 'Assurances, visites techniques et vidanges à jour', 'parc-auto');
+    }
+  } catch(e){}
 
   return doms.map(function(d){
     var col = d.score>=75 ? 'var(--vert)' : (d.score>=45 ? '#EF9F27' : 'var(--rouge)');
@@ -43663,6 +43831,7 @@ function updateLotsByProgramme(gardeSelection) {
   if (wrapDiag2) { wrapDiag2.style.display = 'none'; wrapDiag2.innerHTML = ''; }
   var fmt = function(l){
     return '<option value="' + l.id + '">Lot ' + l.numero + (l.ilot ? ' / Îlot ' + l.ilot : '')
+      + (l.superficie ? ' — ' + Math.round(l.superficie) + ' m²' : '')
       + ' — ' + (l.type || '') + ' — ' + new Intl.NumberFormat('fr-FR').format(l.prix || 0) + ' FCFA</option>';
   };
   dispo.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
@@ -43675,19 +43844,75 @@ function updateLotsByProgramme(gardeSelection) {
       + reservesAutrui.map(function(l){
           var propr = (DATA.clients||[]).find(function(c){ return c.id === l.client_id; });
           var nomPropr = propr ? ((propr.prenoms||'')+' '+(propr.nom||'')).trim() : '';
-          return '<option value="" disabled>Lot ' + l.numero + (l.ilot ? ' / Îlot ' + l.ilot : '') + ' — réservé' + (nomPropr ? ' (' + nomPropr + ')' : '') + '</option>';
+          return '<option value="" disabled>Lot ' + l.numero + (l.ilot ? ' / Îlot ' + l.ilot : '') + (l.superficie ? ' — ' + Math.round(l.superficie) + ' m²' : '') + ' — réservé' + (nomPropr ? ' (' + nomPropr + ')' : '') + '</option>';
         }).join('')
       + '</optgroup>';
   }
   if (vendus.length) {
     html += '<optgroup label="Déjà vendus (' + vendus.length + ', non sélectionnables)">'
-      + vendus.map(function(l){ return '<option value="" disabled>Lot ' + l.numero + (l.ilot ? ' / Îlot ' + l.ilot : '') + ' — vendu</option>'; }).join('')
+      + vendus.map(function(l){ return '<option value="" disabled>Lot ' + l.numero + (l.ilot ? ' / Îlot ' + l.ilot : '') + (l.superficie ? ' — ' + Math.round(l.superficie) + ' m²' : '') + ' — vendu</option>'; }).join('')
       + '</optgroup>';
   }
   lotSelect.innerHTML = html;
   if (selectionPrecedente && dispo.some(function(l){ return l.id === selectionPrecedente; })) {
     lotSelect.value = selectionPrecedente;
   }
+  if (typeof updateLotsSupplementairesSelect === 'function') updateLotsSupplementairesSelect();
+}
+
+/* [multi-lot] Un souscripteur peut avoir plusieurs lots sur le MÊME programme,
+   avec un seul montant_total/échéancier combiné (cf. c.lot_id conservé comme
+   lot principal pour compatibilité, c.lot_ids = tous les lots). Ces 3
+   fonctions gèrent la liste éditable dans le formulaire client. */
+function updateLotsSupplementairesSelect() {
+  var sel = document.getElementById('c-lot-supplementaire');
+  if (!sel) return;
+  var progId = document.getElementById('c-programme').value;
+  var principalId = document.getElementById('c-lot').value;
+  var editingClientId = APP.editingId || null;
+  var deja = (APP._clientLotsSupplementaires || []).concat(principalId ? [principalId] : []);
+  if (!progId) { sel.innerHTML = '<option value="">— Choisissez d\'abord un programme —</option>'; return; }
+  var candidats = (DATA.lots||[]).filter(function(l) {
+    if (l.programme_id !== progId) return false;
+    if (deja.indexOf(l.id) !== -1) return false;
+    if (l.statut === 'vendu') return false;
+    if (l.statut === 'reserve' && l.client_id && l.client_id !== editingClientId) return false;
+    return true;
+  }).sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
+  sel.innerHTML = '<option value="">— Ajouter un autre lot (' + candidats.length + ' disponible(s) sur ce programme) —</option>'
+    + candidats.map(function(l){ return '<option value="'+l.id+'">Lot '+l.numero+(l.ilot?' / Îlot '+l.ilot:'')+(l.superficie?' — '+Math.round(l.superficie)+' m²':'')+' — '+(l.type||'')+' — '+new Intl.NumberFormat('fr-FR').format(l.prix||0)+' FCFA</option>'; }).join('');
+}
+function ajouterLotSupplementaireClient() {
+  var sel = document.getElementById('c-lot-supplementaire');
+  if (!sel || !sel.value) return;
+  var lot = (DATA.lots||[]).find(function(l){ return l.id===sel.value; });
+  APP._clientLotsSupplementaires = (APP._clientLotsSupplementaires || []).concat([sel.value]);
+  /* Pré-incrémente le montant total du prix du lot ajouté — point de départ
+     raisonnable pour l'échéancier combiné, librement ajustable ensuite. */
+  if (lot && lot.prix) {
+    var mtEl = document.getElementById('c-montant-total');
+    if (mtEl) mtEl.value = (parseFloat(mtEl.value)||0) + parseFloat(lot.prix);
+  }
+  renderLotsSupplementairesListe();
+  updateLotsSupplementairesSelect();
+  toast('Lot ajouté — montant total suggéré mis à jour (ajustez si besoin).', 'info', 2500);
+}
+function retirerLotSupplementaireClient(lotId) {
+  APP._clientLotsSupplementaires = (APP._clientLotsSupplementaires || []).filter(function(id){ return id !== lotId; });
+  renderLotsSupplementairesListe();
+  updateLotsSupplementairesSelect();
+}
+function renderLotsSupplementairesListe() {
+  var box = document.getElementById('c-lots-supplementaires-liste');
+  if (!box) return;
+  var ids = APP._clientLotsSupplementaires || [];
+  if (!ids.length) { box.innerHTML = '<span style="font-size:11px;color:var(--blanc-dim);">Aucun lot supplémentaire.</span>'; return; }
+  box.innerHTML = ids.map(function(id) {
+    var l = (DATA.lots||[]).find(function(x){ return x.id===id; });
+    var label = l ? ('Lot '+l.numero+(l.ilot?' / Îlot '+l.ilot:'')+(l.superficie?' — '+Math.round(l.superficie)+' m²':'')) : id;
+    return '<span style="display:inline-flex;align-items:center;gap:5px;background:rgba(184,115,51,0.12);border:1px solid var(--or);border-radius:20px;padding:3px 6px 3px 10px;font-size:11px;">'
+      + escHtml(label) + '<button type="button" onclick="retirerLotSupplementaireClient(\''+id+'\')" style="background:none;border:none;color:var(--rouge);cursor:pointer;font-weight:700;padding:0 4px;" title="Retirer ce lot">✕</button></span>';
+  }).join('');
 }
 
 /* La souscription se fait aussi bien pour des maisons (villas, appartements...)
@@ -43755,6 +43980,7 @@ function onClientLotChange() {
   if (modeLivEl) modeLivEl.value = modeLiv;
   if (lot.standing) { var st = document.getElementById('c-standing'); if (st) st.value = lot.standing; }
   updateNatureBienUI(lot);
+  if (typeof updateLotsSupplementairesSelect === 'function') updateLotsSupplementairesSelect();
   if (typeof calcEcheancier === 'function') calcEcheancier();
 }
 
@@ -46772,7 +46998,7 @@ function lancerAuditIntegrite(){
 
   /* ─── 5. INCOHÉRENCES MÉTIER ───────────────────────────────── */
   (DATA.lots||[]).forEach(function(l){
-    if(l.statut==='vendu' && !(DATA.clients||[]).some(function(c){return c.lot_id===l.id;})) A('mineur','Métier','Lot vendu sans souscripteur','Lot '+(l.numero||l.id)+' marqué « vendu » mais aucun client ne le référence.','lots',_fixAuto('Repasser en « disponible »',_auditFixSetField('lots',l.id,'statut','disponible')));
+    if(l.statut==='vendu' && !l.client_id) A('mineur','Métier','Lot vendu sans souscripteur','Lot '+(l.numero||l.id)+' marqué « vendu » mais aucun client ne le référence.','lots',_fixAuto('Repasser en « disponible »',_auditFixSetField('lots',l.id,'statut','disponible')));
   });
   /* CORRECTIF : détecte le cas critique inverse — un même lot référencé par
      PLUSIEURS souscripteurs (double réservation/vente). Aucune correction
