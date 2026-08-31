@@ -3178,6 +3178,22 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         </div>
 
         <div class="filters-bar" style="margin-top:-6px;align-items:flex-end;">
+          <div class="form-group" style="margin:0;"><label style="font-size:11px;">💰 Montant min (FCFA)</label><input type="number" class="filter-select" id="filter-client-montant-min" placeholder="0" oninput="_debInput('filterClients')"></div>
+          <div class="form-group" style="margin:0;"><label style="font-size:11px;">💰 Montant max (FCFA)</label><input type="number" class="filter-select" id="filter-client-montant-max" placeholder="Illimité" oninput="_debInput('filterClients')"></div>
+          <div class="form-group" style="margin:0;"><label style="font-size:11px;">↕️ Trier par</label>
+            <select class="filter-select" id="filter-client-tri" onchange="filterClients()">
+              <option value="">Par défaut</option>
+              <option value="date_desc">Date — plus récent d'abord</option>
+              <option value="date_asc">Date — plus ancien d'abord</option>
+              <option value="alpha_asc">Nom — A → Z</option>
+              <option value="alpha_desc">Nom — Z → A</option>
+              <option value="montant_desc">Montant — décroissant</option>
+              <option value="montant_asc">Montant — croissant</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="filters-bar" style="margin-top:-6px;align-items:flex-end;">
           <div class="form-group" style="margin:0;"><label style="font-size:11px;">📅 Souscrit depuis</label><input type="date" class="filter-select" id="filter-client-date-debut" onchange="filterClients()"></div>
           <div class="form-group" style="margin:0;"><label style="font-size:11px;">📅 Jusqu'au</label><input type="date" class="filter-select" id="filter-client-date-fin" onchange="filterClients()"></div>
           <button class="btn btn-secondary btn-sm" onclick="clientsPeriodeReset()">✕ Réinitialiser la période</button>
@@ -30003,6 +30019,9 @@ function renderClients() {
   var filterCA = (document.getElementById('filter-commercial-client')||{}).value || '';
   var dDeb = (document.getElementById('filter-client-date-debut')||{}).value || '';
   var dFin = (document.getElementById('filter-client-date-fin')||{}).value || '';
+  var montantMin = parseFloat((document.getElementById('filter-client-montant-min')||{}).value) || null;
+  var montantMax = parseFloat((document.getElementById('filter-client-montant-max')||{}).value) || null;
+  var tri = (document.getElementById('filter-client-tri')||{}).value || '';
 
   /* Index O(1)/O(n) construits UNE SEULE FOIS pour tout l'écran — remplacent
      des appels répétés PAR CLIENT (jusqu'à 2× par client, en comptant le
@@ -30037,8 +30056,28 @@ function renderClients() {
     var filtStat = !filterStat || statut === filterStat;
     var dateRef = (c.date_souscription || c.date_debut || c.created_at || '').slice(0, 10);
     var matchPeriode = (!dDeb || dateRef >= dDeb) && (!dFin || dateRef <= dFin);
-    return match && prog && stand && filtStat && ca && matchPeriode;
+    var montant = parseFloat(c.montant_total) || 0;
+    var matchMontant = (montantMin===null || montant >= montantMin) && (montantMax===null || montant <= montantMax);
+    return match && prog && stand && filtStat && ca && matchPeriode && matchMontant;
   });
+
+  /* [Tri] Appliqué APRÈS le filtrage — la date de référence est la même que
+     celle utilisée pour le filtre période (souscription, sinon début, sinon
+     création), pour rester cohérent entre les deux. */
+  if (tri) {
+    var dateDe = function(c){ return (c.date_souscription || c.date_debut || c.created_at || ''); };
+    var nomDe = function(c){ return ((c.nom||'') + ' ' + (c.prenoms||'')).trim().toLowerCase(); };
+    var montantDe = function(c){ return parseFloat(c.montant_total) || 0; };
+    var comparateurs = {
+      date_desc:    function(a,b){ return dateDe(b).localeCompare(dateDe(a)); },
+      date_asc:     function(a,b){ return dateDe(a).localeCompare(dateDe(b)); },
+      alpha_asc:    function(a,b){ return nomDe(a).localeCompare(nomDe(b)); },
+      alpha_desc:   function(a,b){ return nomDe(b).localeCompare(nomDe(a)); },
+      montant_desc: function(a,b){ return montantDe(b) - montantDe(a); },
+      montant_asc:  function(a,b){ return montantDe(a) - montantDe(b); }
+    };
+    if (comparateurs[tri]) list.sort(comparateurs[tri]);
+  }
 
   var periodeInfoBox = document.getElementById('clients-periode-info');
   if (periodeInfoBox) {
