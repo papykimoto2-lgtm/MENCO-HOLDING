@@ -14689,6 +14689,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <button class="tab-btn active" onclick="switchTab('budget','previsionnel')">📋 Budget prévisionnel</button>
           <button class="tab-btn" onclick="switchTab('budget','fed')">📝 Engagements de dépense</button>
           <button class="tab-btn" onclick="switchTab('budget','transferts')">🔀 Transferts</button>
+          <button class="tab-btn" onclick="switchTab('budget','exploitation')">📈 Compte d'exploitation prévisionnel</button>
         </div>
 
         <!-- ── Onglet Budget prévisionnel ── -->
@@ -14724,6 +14725,23 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <button class="btn btn-primary btn-sm" onclick="transfertOuvrir()">➕ Nouveau transfert</button>
             </div>
             <div id="budget-transferts-box"></div>
+          </div>
+        </div>
+
+        <!-- ── Onglet Compte d'exploitation prévisionnel ── -->
+        <div class="tab-pane" id="tab-budget-exploitation">
+          <div class="card" style="margin-bottom:14px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+              <div style="font-size:12px;color:var(--blanc-dim);">Produits et charges budgétés (comptes classe 7 / classe 6, lignes validées) confrontés au réel comptable, mois par mois, sur l'exercice — pour la division sélectionnée dans le filtre en haut de page. Nécessite un exercice précis (pas « Tous exercices »).</div>
+              <div style="display:flex;gap:8px;">
+                <label style="font-size:12px;color:var(--blanc-dim);display:flex;align-items:center;gap:6px;"><input type="checkbox" id="cexp-cumul" onchange="renderCompteExploitationPrevisionnel()"> Vue cumulée</label>
+                <button class="btn btn-secondary btn-sm" onclick="imprimerCompteExploitationPrevisionnel()">🖨️ Imprimer</button>
+              </div>
+            </div>
+          </div>
+          <div class="kpi-grid" id="cexp-kpi" style="margin-bottom:14px;"></div>
+          <div class="card">
+            <div id="cexp-box" style="overflow-x:auto;"></div>
           </div>
         </div>
       </div>
@@ -14906,6 +14924,30 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <button class="btn btn-secondary" onclick="closeModal('modal-caisse-budget')">Annuler</button>
             <button class="btn btn-danger" id="cbud-btn-suppr" style="display:none;" onclick="budgetPrevisionnelSupprimer(document.getElementById('cbud-id').value).then(function(){ closeModal('modal-caisse-budget'); budgetRenderPrevisionnel(); })">🗑️ Supprimer</button>
             <button class="btn btn-primary" onclick="budgetPrevisionnelSauverDepuisForm()">💾 Enregistrer</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal : Répartition mensuelle d'une ligne budgétaire (compte d'exploitation prévisionnel) -->
+      <div class="modal-overlay" id="modal-repartition-mensuelle">
+        <div class="modal">
+          <div class="modal-header">
+            <h3>📅 Répartition mensuelle — <span id="rm-compte-label"></span></h3>
+            <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-repartition-mensuelle')">✕</button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="rm-id">
+            <div style="font-size:12px;color:var(--blanc-dim);margin-bottom:10px;">Montant annuel : <b id="rm-montant-annuel"></b> F. Par défaut réparti également sur les 12 mois — ajustez selon votre saisonnalité (ex : plus de charges en décembre, plus de ventes en été…).</div>
+            <div id="rm-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;"></div>
+            <div style="text-align:right;margin-top:12px;font-size:13px;">Total réparti : <b id="rm-total"></b> F <span id="rm-ecart" style="margin-left:8px;"></span></div>
+            <div style="margin-top:8px;">
+              <button class="btn btn-secondary btn-sm" onclick="rmRepartirEgal()">↔️ Répartir également</button>
+              <button class="btn btn-secondary btn-sm" onclick="rmReinitialiser()">↩️ Retirer la ventilation (revenir au lissage automatique)</button>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal('modal-repartition-mensuelle')">Annuler</button>
+            <button class="btn btn-primary" onclick="rmSauver()">💾 Enregistrer la répartition</button>
           </div>
         </div>
       </div>
@@ -27161,6 +27203,7 @@ function switchTab(context, tab) {
     if (tab === 'previsionnel' && typeof budgetRenderPrevisionnel === 'function') budgetRenderPrevisionnel();
     if (tab === 'fed' && typeof budgetRenderFed === 'function') budgetRenderFed();
     if (tab === 'transferts' && typeof budgetRenderTransferts === 'function') budgetRenderTransferts();
+    if (tab === 'exploitation' && typeof renderCompteExploitationPrevisionnel === 'function') renderCompteExploitationPrevisionnel();
   }
 
   /* Mettre à jour les boutons .tab-btn du même contexte */
@@ -93697,6 +93740,7 @@ function budgetAppliquerFiltres() {
   budgetRenderPrevisionnel();
   budgetRenderFed();
   budgetRenderTransferts();
+  if (typeof renderCompteExploitationPrevisionnel === 'function' && document.getElementById('tab-budget-exploitation') && document.getElementById('tab-budget-exploitation').classList.contains('active')) renderCompteExploitationPrevisionnel();
 }
 function budgetInitFiltres() {
   var selDiv = document.getElementById('budget-filtre-division');
@@ -93873,17 +93917,272 @@ function budgetRenderPrevisionnel() {
           else if (b.statut === 'rejete') actions = '<span style="font-size:11px;color:var(--blanc-dim);">'+escHtml(b.motif_rejet||'')+'</span> '
             + '<button class="btn btn-secondary btn-sm" onclick="budgetPrevisionnelOuvrir(\''+b.id+'\')">✏️ Modifier et resoumettre</button>';
           return '<tr>'
-            + '<td style="padding-left:24px;">↳ <b>'+escHtml(b.compte)+'</b>'+(b.libelle?' — '+escHtml(b.libelle):'')+'</td>'
+            + '<td style="padding-left:24px;">↳ <b>'+escHtml(b.compte)+'</b>'+(b.libelle?' — '+escHtml(b.libelle):'')+(b.repartition_mensuelle?' <span style="font-size:10px;color:var(--vert);" title="Ventilation mensuelle personnalisée">📅</span>':'')+'</td>'
             + '<td colspan="2" style="font-size:11px;color:var(--blanc-dim);"></td>'
             + '<td style="text-align:right;">'+fmtF(b.montant)+' F</td>'
             + '<td style="text-align:right;'+(dispo!==null && dispo<0 ? 'color:var(--rouge);font-weight:700;' : '')+'">'+(dispo!==null ? fmtF(dispo)+' F' : '—')+'</td>'
             + '<td>'+_budgetStatutBadge(b.statut)+'</td>'
-            + '<td style="white-space:nowrap;">'+actions+'</td>'
+            + '<td style="white-space:nowrap;">'+actions+' <button class="btn btn-secondary btn-sm" onclick="budgetOuvrirRepartitionMensuelle(\''+b.id+'\')" title="Répartir ce montant sur les 12 mois (par défaut : réparti également)">📅</button></td>'
             + '</tr>';
         }).join('');
         return enTete + sousLignesHtml;
       }).join('')
     + '</tbody></table></div>';
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   RÉPARTITION MENSUELLE d'une ligne budgétaire (optionnelle) — permet de
+   passer d'un budget annuel plat à une vraie courbe mensuelle (saisonnalité).
+   Purement additive : une ligne sans répartition explicite continue de
+   fonctionner exactement comme avant (montant annuel, lissé également sur
+   12 mois pour les besoins du Compte d'exploitation prévisionnel).
+   ════════════════════════════════════════════════════════════════════ */
+var MOIS_LABELS = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+
+/* Retourne un tableau de 12 montants pour une ligne budgétaire donnée :
+   sa répartition personnalisée si elle existe, sinon le montant annuel
+   lissé également (montant/12) — jamais de mois "manquant". */
+function _budgetRepartitionMois(ligne) {
+  if (ligne.repartition_mensuelle) {
+    var r = [];
+    for (var m = 1; m <= 12; m++) r.push(parseFloat(ligne.repartition_mensuelle[m]) || 0);
+    return r;
+  }
+  var mensuel = (parseFloat(ligne.montant) || 0) / 12;
+  return Array(12).fill(mensuel);
+}
+
+function budgetOuvrirRepartitionMensuelle(id) {
+  var b = (DATA.caisse_budgets||[]).find(function(x){ return x.id===id; }); if (!b) return;
+  document.getElementById('rm-id').value = id;
+  var c = (APP.planComptable||[]).find(function(x){return x.code===b.compte;});
+  document.getElementById('rm-compte-label').textContent = b.compte + (c ? ' — '+c.label : '') + (b.libelle ? ' ('+b.libelle+')' : '');
+  document.getElementById('rm-montant-annuel').textContent = fmtF(b.montant);
+  var rep = _budgetRepartitionMois(b);
+  document.getElementById('rm-grid').innerHTML = MOIS_LABELS.map(function(lbl, i) {
+    return '<div class="form-group"><label style="font-size:11px;">'+lbl+'</label>'
+      + '<input type="number" class="form-control rm-input" min="0" value="'+Math.round(rep[i])+'" oninput="rmMajTotal()"></div>';
+  }).join('');
+  rmMajTotal();
+  openModal('modal-repartition-mensuelle');
+}
+function rmMajTotal() {
+  var inputs = document.querySelectorAll('#rm-grid .rm-input');
+  var total = 0; inputs.forEach(function(el){ total += parseFloat(el.value)||0; });
+  document.getElementById('rm-total').textContent = fmtF(total);
+  var annuelTxt = document.getElementById('rm-montant-annuel').textContent.replace(/\D/g,'');
+  var annuel = parseFloat(annuelTxt)||0;
+  var ecartEl = document.getElementById('rm-ecart');
+  var ecart = total - annuel;
+  ecartEl.textContent = ecart === 0 ? '✅ Conforme au montant annuel' : ('⚠️ Écart de '+fmtF(Math.abs(ecart))+' F par rapport au montant annuel ('+(ecart>0?'excédent':'manque')+')');
+  ecartEl.style.color = ecart === 0 ? 'var(--vert)' : 'var(--rouge)';
+}
+function rmRepartirEgal() {
+  var annuelTxt = document.getElementById('rm-montant-annuel').textContent.replace(/\D/g,'');
+  var annuel = parseFloat(annuelTxt)||0;
+  var mensuel = Math.round(annuel/12);
+  document.querySelectorAll('#rm-grid .rm-input').forEach(function(el, i){ el.value = (i===11) ? (annuel - mensuel*11) : mensuel; });
+  rmMajTotal();
+}
+function rmReinitialiser() {
+  var id = document.getElementById('rm-id').value;
+  var b = (DATA.caisse_budgets||[]).find(function(x){ return x.id===id; }); if (!b) return;
+  delete b.repartition_mensuelle;
+  b._modifie = new Date().toISOString();
+  dbPut('caisse_budgets', b).then(function(){
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_budgets', b);
+    closeModal('modal-repartition-mensuelle');
+    toast('Répartition mensuelle retirée — retour au lissage automatique (montant/12).', 'info');
+    budgetRenderPrevisionnel();
+  });
+}
+async function rmSauver() {
+  var id = document.getElementById('rm-id').value;
+  var b = (DATA.caisse_budgets||[]).find(function(x){ return x.id===id; }); if (!b) return;
+  var inputs = document.querySelectorAll('#rm-grid .rm-input');
+  var rep = {};
+  inputs.forEach(function(el, i){ rep[i+1] = parseFloat(el.value)||0; });
+  b.repartition_mensuelle = rep;
+  b._modifie = new Date().toISOString();
+  await dbPut('caisse_budgets', b);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_budgets', b);
+  closeModal('modal-repartition-mensuelle');
+  toast('✅ Répartition mensuelle enregistrée.', 'success');
+  budgetRenderPrevisionnel();
+  if (typeof renderCompteExploitationPrevisionnel === 'function') renderCompteExploitationPrevisionnel();
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   COMPTE D'EXPLOITATION PRÉVISIONNEL — budget (produits classe 7 /
+   charges classe 6, lignes validées) confronté au réel comptable
+   (DATA.ecritures), mois par mois, sur l'exercice et la division
+   sélectionnés. Mêmes rubriques SYSCOHADA que _calcResultat() (compte de
+   résultat réel), pour une lecture cohérente entre les deux écrans.
+   ════════════════════════════════════════════════════════════════════ */
+var CEXP_RUBRIQUES = [
+  { cle:'ventes',      label:'Ventes',                          prefixes:['70'],       type:'produit' },
+  { cle:'prodStockee', label:'Production stockée',               prefixes:['71','72'],  type:'produit' },
+  { cle:'autresProd',  label:'Autres produits',                  prefixes:['73','74','75'], type:'produit' },
+  { cle:'prodFin',     label:'Produits financiers',              prefixes:['76'],       type:'produit' },
+  { cle:'prodHAO',     label:'Produits HAO',                     prefixes:['77'],       type:'produit' },
+  { cle:'reprises',    label:'Reprises',                         prefixes:['78'],       type:'produit' },
+  { cle:'achats',      label:'Achats',                           prefixes:['60'],       type:'charge' },
+  { cle:'transports',  label:'Transports',                       prefixes:['61'],       type:'charge' },
+  { cle:'servExt',     label:'Services extérieurs',              prefixes:['62'],       type:'charge' },
+  { cle:'impots',      label:'Impôts et taxes',                  prefixes:['63'],       type:'charge' },
+  { cle:'personnel',   label:'Charges de personnel',             prefixes:['64'],       type:'charge' },
+  { cle:'autresCh',    label:'Autres charges',                   prefixes:['65'],       type:'charge' },
+  { cle:'chargesFin',  label:'Charges financières',              prefixes:['66'],       type:'charge' },
+  { cle:'chargesHAO',  label:'Charges HAO',                      prefixes:['67'],       type:'charge' },
+  { cle:'dotations',   label:'Dotations aux amortissements',     prefixes:['68'],       type:'charge' }
+];
+
+function _cexpRubriqueDuCompte(compte) {
+  compte = String(compte||'');
+  for (var i = 0; i < CEXP_RUBRIQUES.length; i++) {
+    var r = CEXP_RUBRIQUES[i];
+    if (r.prefixes.some(function(p){ return compte.indexOf(p) === 0; })) return r.cle;
+  }
+  return null;
+}
+
+/* Budget : { rubriqueCle: [m1..m12] } à partir des lignes caisse_budgets validées */
+function _cexpBudgetParRubrique(divisionId, exercice) {
+  var out = {}; CEXP_RUBRIQUES.forEach(function(r){ out[r.cle] = Array(12).fill(0); });
+  (DATA.caisse_budgets||[]).filter(function(b){
+    return b.statut === 'valide' && String(b.exercice) === String(exercice)
+      && (!divisionId || (b.division_id||'') === divisionId || !b.division_id);
+  }).forEach(function(b) {
+    var cle = _cexpRubriqueDuCompte(b.compte); if (!cle) return;
+    var mois = _budgetRepartitionMois(b);
+    for (var m = 0; m < 12; m++) out[cle][m] += mois[m];
+  });
+  return out;
+}
+
+/* Réel : { rubriqueCle: [m1..m12] } à partir des écritures comptables réelles,
+   même logique de sens (D pour charges, C pour produits) que _calcResultat(). */
+function _cexpReelParRubrique(divisionId, exercice) {
+  var out = {}; CEXP_RUBRIQUES.forEach(function(r){ out[r.cle] = Array(12).fill(0); });
+  DATA.ecritures.filter(function(e){
+    return e.date && e.date.indexOf(String(exercice)) === 0 && (!divisionId || e.division === divisionId);
+  }).forEach(function(e) {
+    var mIdx = parseInt(e.date.substring(5,7), 10) - 1;
+    if (mIdx < 0 || mIdx > 11) return;
+    ecrLignes(e).forEach(function(l) {
+      var cle = _cexpRubriqueDuCompte(l.compte); if (!cle) return;
+      var r = CEXP_RUBRIQUES.find(function(x){ return x.cle===cle; });
+      var montant = parseFloat(l.montant)||0;
+      if (r.type === 'produit' && l.sens === 'C') out[cle][mIdx] += montant;
+      else if (r.type === 'produit' && l.sens === 'D') out[cle][mIdx] -= montant; /* ex: sortie de stock 71/72 */
+      else if (r.type === 'charge' && l.sens === 'D') out[cle][mIdx] += montant;
+    });
+  });
+  return out;
+}
+
+function _cexpSomme12(arr) { return arr.reduce(function(s,v){ return s+v; }, 0); }
+function _cexpCumul(arr) { var out=[], s=0; arr.forEach(function(v){ s+=v; out.push(s); }); return out; }
+
+function renderCompteExploitationPrevisionnel() {
+  var box = document.getElementById('cexp-box'); if (!box) return;
+  var divisionId = window._budgetFiltreDivision || '';
+  var exercice = window._budgetFiltreExercice || '';
+  if (!exercice) {
+    box.innerHTML = '<div class="alert alert-info" style="font-size:12px;">Sélectionnez un exercice précis dans le filtre en haut de page (« Tous exercices » n\'est pas exploitable ici — un compte d\'exploitation se lit sur une année donnée).</div>';
+    document.getElementById('cexp-kpi').innerHTML = '';
+    return;
+  }
+  var cumul = document.getElementById('cexp-cumul').checked;
+  var budget = _cexpBudgetParRubrique(divisionId, exercice);
+  var reel = _cexpReelParRubrique(divisionId, exercice);
+  var moisEnCours = (new Date().getFullYear() === parseInt(exercice,10)) ? new Date().getMonth() : 11;
+
+  function ligneHtml(rubrique, cls) {
+    var b = cumul ? _cexpCumul(budget[rubrique.cle]) : budget[rubrique.cle];
+    var r = cumul ? _cexpCumul(reel[rubrique.cle]) : reel[rubrique.cle];
+    var totB = _cexpSomme12(budget[rubrique.cle]), totR = _cexpSomme12(reel[rubrique.cle]);
+    var cells = '';
+    for (var m = 0; m < 12; m++) {
+      var futur = m > moisEnCours;
+      var favorable = rubrique.type === 'produit' ? (r[m] >= b[m]) : (r[m] <= b[m]);
+      cells += '<td style="text-align:right;white-space:nowrap;">'
+        + '<div style="font-size:10px;color:var(--blanc-dim);">'+fmtF(Math.round(b[m]))+'</div>'
+        + (futur ? '<div style="font-size:10px;color:var(--blanc-dim);">—</div>' : '<div style="font-weight:700;color:'+(favorable?'var(--vert)':'var(--rouge)')+';">'+fmtF(Math.round(r[m]))+'</div>')
+        + '</td>';
+    }
+    return '<tr class="'+(cls||'')+'"><td style="white-space:nowrap;">'+rubrique.label+'</td>' + cells
+      + '<td style="text-align:right;font-weight:700;white-space:nowrap;">'+fmtF(Math.round(totB))+'</td>'
+      + '<td style="text-align:right;font-weight:700;white-space:nowrap;color:'+((rubrique.type==='produit'?totR>=totB:totR<=totB)?'var(--vert)':'var(--rouge)')+';">'+fmtF(Math.round(totR))+'</td></tr>';
+  }
+
+  var produits = CEXP_RUBRIQUES.filter(function(r){ return r.type==='produit'; });
+  var charges = CEXP_RUBRIQUES.filter(function(r){ return r.type==='charge'; });
+  var totProdBudget = Array(12).fill(0), totProdReel = Array(12).fill(0), totChargeBudget = Array(12).fill(0), totChargeReel = Array(12).fill(0);
+  produits.forEach(function(r){ for (var m=0;m<12;m++){ totProdBudget[m]+=budget[r.cle][m]; totProdReel[m]+=reel[r.cle][m]; } });
+  charges.forEach(function(r){ for (var m=0;m<12;m++){ totChargeBudget[m]+=budget[r.cle][m]; totChargeReel[m]+=reel[r.cle][m]; } });
+  var resultatBudget = totProdBudget.map(function(v,i){ return v - totChargeBudget[i]; });
+  var resultatReel = totProdReel.map(function(v,i){ return v - totChargeReel[i]; });
+
+  function ligneTotalHtml(label, arrB, arrR, boldColor) {
+    var b = cumul ? _cexpCumul(arrB) : arrB, r = cumul ? _cexpCumul(arrR) : arrR;
+    var totB = _cexpSomme12(arrB), totR = _cexpSomme12(arrR);
+    var cells = '';
+    for (var m = 0; m < 12; m++) {
+      var futur = m > moisEnCours;
+      cells += '<td style="text-align:right;white-space:nowrap;">'
+        + '<div style="font-size:10px;color:var(--blanc-dim);">'+fmtF(Math.round(b[m]))+'</div>'
+        + (futur ? '<div style="font-size:10px;color:var(--blanc-dim);">—</div>' : '<div style="font-weight:800;">'+fmtF(Math.round(r[m]))+'</div>')
+        + '</td>';
+    }
+    return '<tr style="background:rgba(184,115,51,0.12);font-weight:800;"><td>'+label+'</td>' + cells
+      + '<td style="text-align:right;">'+fmtF(Math.round(totB))+'</td>'
+      + '<td style="text-align:right;'+(boldColor?'color:'+boldColor+';':'')+'">'+fmtF(Math.round(totR))+'</td></tr>';
+  }
+
+  var enteteMois = MOIS_LABELS.map(function(m){ return '<th style="text-align:right;font-size:10px;">'+m.substring(0,3)+'</th>'; }).join('');
+  var html = '<table class="data-table" style="width:100%;font-size:11px;"><thead><tr><th>Rubrique</th>'+enteteMois+'<th style="text-align:right;">Total budget</th><th style="text-align:right;">Total réel</th></tr>'
+    + '<tr><td colspan="15" style="font-size:9px;color:var(--blanc-dim);padding:2px 8px;">Chaque cellule : budget (petit, gris) au-dessus / réel (couleur) en dessous — vert si favorable, rouge sinon. « — » = mois futur, pas encore de réel.</td></tr></thead><tbody>'
+    + '<tr style="background:rgba(255,255,255,0.04);"><td colspan="15" style="font-weight:700;padding-top:8px;">PRODUITS</td></tr>'
+    + produits.map(function(r){ return ligneHtml(r); }).join('')
+    + ligneTotalHtml('Total produits', totProdBudget, totProdReel)
+    + '<tr style="background:rgba(255,255,255,0.04);"><td colspan="15" style="font-weight:700;padding-top:8px;">CHARGES</td></tr>'
+    + charges.map(function(r){ return ligneHtml(r); }).join('')
+    + ligneTotalHtml('Total charges', totChargeBudget, totChargeReel)
+    + ligneTotalHtml('RÉSULTAT PRÉVISIONNEL', resultatBudget, resultatReel, _cexpSomme12(resultatReel) >= _cexpSomme12(resultatBudget) ? 'var(--vert)' : 'var(--rouge)')
+    + '</tbody></table>';
+  box.innerHTML = html;
+
+  var kpiEl = document.getElementById('cexp-kpi');
+  var totBudgetProd = _cexpSomme12(totProdBudget), totReelProd = _cexpSomme12(totProdReel);
+  var totBudgetCharge = _cexpSomme12(totChargeBudget), totReelCharge = _cexpSomme12(totChargeReel);
+  var resB = totBudgetProd - totBudgetCharge, resR = totReelProd - totReelCharge;
+  kpiEl.innerHTML = [
+    { label:'Produits budgétés (année)', val: fmtF(Math.round(totBudgetProd))+' F', icon:'📈' },
+    { label:'Produits réels (à date)',   val: fmtF(Math.round(totReelProd))+' F',   icon:'✅', cls: totReelProd>=totBudgetProd*((moisEnCours+1)/12) ? 'kpi-green' : 'kpi-red' },
+    { label:'Charges budgétées (année)', val: fmtF(Math.round(totBudgetCharge))+' F', icon:'📉' },
+    { label:'Charges réelles (à date)',  val: fmtF(Math.round(totReelCharge))+' F',   icon:'⚠️', cls: totReelCharge<=totBudgetCharge*((moisEnCours+1)/12) ? 'kpi-green' : 'kpi-red' },
+    { label:'Résultat prévisionnel (année)', val: fmtF(Math.round(resB))+' F', icon:'🎯' },
+    { label:'Résultat réel (à date)',    val: fmtF(Math.round(resR))+' F', icon:'💰', cls: resR>=0 ? 'kpi-green' : 'kpi-red' }
+  ].map(_kpiCard).join('');
+}
+
+function imprimerCompteExploitationPrevisionnel() {
+  var divisionId = window._budgetFiltreDivision || '';
+  var exercice = window._budgetFiltreExercice || '';
+  if (!exercice) { toast('Sélectionnez un exercice précis avant d\'imprimer.', 'error'); return; }
+  var divLabel = divisionId ? _nomDivision(divisionId) : 'Toutes divisions (consolidé)';
+  var contenu = document.getElementById('cexp-box').innerHTML;
+  var kpiContenu = document.getElementById('cexp-kpi').innerHTML;
+  var w = window.open('', '_blank');
+  w.document.write('<html><head><title>Compte d\'exploitation prévisionnel '+exercice+'</title>'
+    + '<style>body{font-family:Arial,sans-serif;padding:24px;color:#111;} table{border-collapse:collapse;width:100%;font-size:10px;} td,th{border:1px solid #ccc;padding:4px 6px;} .kpi-grid{display:none;} h1{font-size:16px;} h2{font-size:12px;color:#555;font-weight:400;}</style>'
+    + '</head><body>'
+    + '<h1>Compte d\'exploitation prévisionnel — Exercice '+exercice+'</h1>'
+    + '<h2>Division : '+escHtml(divLabel)+' — édité le '+dateShort(today())+'</h2>'
+    + contenu + '</body></html>');
+  w.document.close();
+  setTimeout(function(){ w.print(); }, 300);
 }
 
 function budgetRenderFed() {
