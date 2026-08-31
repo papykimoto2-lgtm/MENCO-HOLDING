@@ -14698,7 +14698,10 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="card">
             <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
               <div style="font-size:12px;color:var(--blanc-dim);">Un budget par compte × division × exercice — soumis puis validé par le DG (ou tout rôle habilité) avant de devenir actif.</div>
-              <button class="btn btn-primary btn-sm" onclick="budgetPrevisionnelOuvrir()">➕ Nouveau budget</button>
+              <div style="display:flex;gap:8px;">
+                <button class="btn btn-primary btn-sm" onclick="ouvrirMasqueBusinessPlan()">🧾 Masque simplifié (business plan)</button>
+                <button class="btn btn-secondary btn-sm" onclick="budgetPrevisionnelOuvrir()">➕ Ligne comptable détaillée</button>
+              </div>
             </div>
             <div id="budget-previsionnel-box"></div>
           </div>
@@ -14733,7 +14736,8 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="card" style="margin-bottom:14px;">
             <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
               <div style="font-size:12px;color:var(--blanc-dim);">Produits et charges budgétés (comptes classe 7 / classe 6, lignes validées) confrontés au réel comptable, mois par mois, sur l'exercice — pour la division sélectionnée dans le filtre en haut de page. Nécessite un exercice précis (pas « Tous exercices »).</div>
-              <div style="display:flex;gap:8px;">
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="btn btn-primary btn-sm" onclick="ouvrirMasqueBusinessPlan()">🧾 Remplir le business plan (masque simplifié)</button>
                 <label style="font-size:12px;color:var(--blanc-dim);display:flex;align-items:center;gap:6px;"><input type="checkbox" id="cexp-cumul" onchange="renderCompteExploitationPrevisionnel()"> Vue cumulée</label>
                 <button class="btn btn-secondary btn-sm" onclick="imprimerCompteExploitationPrevisionnel()">🖨️ Imprimer</button>
               </div>
@@ -14924,6 +14928,34 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <button class="btn btn-secondary" onclick="closeModal('modal-caisse-budget')">Annuler</button>
             <button class="btn btn-danger" id="cbud-btn-suppr" style="display:none;" onclick="budgetPrevisionnelSupprimer(document.getElementById('cbud-id').value).then(function(){ closeModal('modal-caisse-budget'); budgetRenderPrevisionnel(); })">🗑️ Supprimer</button>
             <button class="btn btn-primary" onclick="budgetPrevisionnelSauverDepuisForm()">💾 Enregistrer</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal : Masque simplifié — Business plan prévisionnel (sans code comptable) -->
+      <div class="modal-overlay" id="modal-business-plan">
+        <div class="modal modal-lg">
+          <div class="modal-header">
+            <h3>🧾 Business plan prévisionnel</h3>
+            <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-business-plan')">✕</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-grid" style="margin-bottom:14px;">
+              <div class="form-group"><label>Division *</label><select class="form-control" id="bp-division" onchange="bpChargerExistant()"><option value="">— Toutes divisions (consolidé) —</option></select></div>
+              <div class="form-group"><label>Exercice *</label><input type="number" class="form-control" id="bp-exercice" min="2020" max="2100" onchange="bpChargerExistant()"></div>
+            </div>
+            <div style="font-size:12px;color:var(--blanc-dim);margin-bottom:10px;">Remplissez votre prévision de chiffre d'affaires et de charges, mois par mois — comme un business plan classique. Aucune connaissance comptable requise : le rattachement au plan comptable se fait automatiquement en arrière-plan.</div>
+            <div id="bp-grid" style="overflow-x:auto;"></div>
+            <div style="margin-top:12px;padding:10px;background:rgba(184,115,51,0.08);border-radius:6px;font-size:13px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+              <span>Total produits : <b id="bp-total-produits" style="color:var(--vert);">0</b> F</span>
+              <span>Total charges : <b id="bp-total-charges" style="color:var(--rouge);">0</b> F</span>
+              <span>Résultat prévisionnel : <b id="bp-resultat">0</b> F</span>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal('modal-business-plan')">Annuler</button>
+            <button class="btn btn-secondary" onclick="bpSauver(false)">💾 Enregistrer (brouillon)</button>
+            <button class="btn btn-primary" onclick="bpSauver(true)">📤 Enregistrer et soumettre pour validation</button>
           </div>
         </div>
       </div>
@@ -93416,6 +93448,7 @@ async function budgetPrevisionnelSauver(champs) {
   b.libelle = (champs.libelle||'').trim();
   b.ligne_compte = ligneC; b.compte = sousC; b.division_id = champs.division_id||''; b.exercice = parseInt(champs.exercice,10);
   b.montant = parseFloat(champs.montant); b.periode = 'annuel'; b.mois = '';
+  if (champs.repartition_mensuelle) b.repartition_mensuelle = champs.repartition_mensuelle;
   /* Remise à brouillon si on corrige un budget rejeté — sans ça, une fois
      rejeté, un enregistrement restait bloqué à vie sans moyen de le
      corriger et resoumettre, malgré l'intention claire de l'utilisateur. */
@@ -94183,6 +94216,132 @@ function imprimerCompteExploitationPrevisionnel() {
     + contenu + '</body></html>');
   w.document.close();
   setTimeout(function(){ w.print(); }, 300);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   MASQUE SIMPLIFIÉ — BUSINESS PLAN PRÉVISIONNEL (sans code comptable)
+   Un utilisateur métier remplit son CA et ses charges prévisionnels par
+   catégorie claire (Ventes, Personnel, Achats…), mois par mois — comme un
+   business plan. Derrière, chaque catégorie est mappée à un compte
+   représentatif (configurable) et sauvegardée via le même moteur que la
+   saisie comptable détaillée (budgetPrevisionnelSauver) : mêmes garde-fous
+   (verrouillage si déjà validé, cohérence ligne/sous-compte), même
+   workflow d'approbation. Le masque n'est qu'une façade plus accessible.
+   ════════════════════════════════════════════════════════════════════ */
+/* Compte représentatif par défaut pour chaque rubrique — cohérent avec les
+   préfixes déjà utilisés par _cexpRubriqueDuCompte/_calcResultat. Un
+   utilisateur avancé peut toujours affiner via « Ligne comptable détaillée »
+   puis 📅, le masque ne fait qu'initialiser une ligne raisonnable. */
+var BP_COMPTE_DEFAUT = {
+  ventes:'701', prodStockee:'713', autresProd:'758', prodFin:'761', prodHAO:'775', reprises:'798',
+  achats:'601', transports:'614', servExt:'628', impots:'631', personnel:'641', autresCh:'658', chargesFin:'661', chargesHAO:'671', dotations:'681'
+};
+
+function bpChampsGrid() {
+  var html = '<table class="data-table" style="width:100%;font-size:11px;"><thead><tr><th style="min-width:160px;">Catégorie</th>'
+    + MOIS_LABELS.map(function(m){ return '<th style="text-align:right;">'+m.substring(0,3)+'</th>'; }).join('')
+    + '<th style="text-align:right;">Total</th></tr></thead><tbody>';
+  html += '<tr style="background:rgba(255,255,255,0.04);"><td colspan="14" style="font-weight:700;">📈 CHIFFRE D\'AFFAIRES / PRODUITS</td></tr>';
+  CEXP_RUBRIQUES.filter(function(r){ return r.type==='produit'; }).forEach(function(r){ html += bpLigneHtml(r); });
+  html += '<tr style="background:rgba(255,255,255,0.04);"><td colspan="14" style="font-weight:700;">📉 CHARGES</td></tr>';
+  CEXP_RUBRIQUES.filter(function(r){ return r.type==='charge'; }).forEach(function(r){ html += bpLigneHtml(r); });
+  html += '</tbody></table>';
+  return html;
+}
+function bpLigneHtml(r) {
+  var cells = '';
+  for (var m = 1; m <= 12; m++) cells += '<td><input type="number" class="form-control bp-input" min="0" data-rubrique="'+r.cle+'" data-mois="'+m+'" value="0" oninput="bpMajTotaux()" style="width:80px;padding:3px 5px;text-align:right;"></td>';
+  return '<tr><td>'+r.label+'</td>' + cells + '<td style="text-align:right;font-weight:700;" id="bp-tot-'+r.cle+'">0</td></tr>';
+}
+function ouvrirMasqueBusinessPlan() {
+  var selDiv = document.getElementById('bp-division');
+  selDiv.innerHTML = '<option value="">— Toutes divisions (consolidé) —</option>' + (DATA.divisions||[]).map(function(d){ return '<option value="'+d.id+'">'+escHtml(d.nom)+'</option>'; }).join('');
+  selDiv.value = window._budgetFiltreDivision || '';
+  document.getElementById('bp-exercice').value = window._budgetFiltreExercice || new Date().getFullYear();
+  document.getElementById('bp-grid').innerHTML = bpChampsGrid();
+  bpChargerExistant();
+  openModal('modal-business-plan');
+}
+/* Pré-remplit la grille avec les lignes budgétaires déjà existantes (créées
+   depuis le masque OU depuis la saisie comptable détaillée) pour cette
+   division/exercice — le masque devient alors aussi un écran de modification. */
+function bpChargerExistant() {
+  var divisionId = document.getElementById('bp-division').value;
+  var exercice = document.getElementById('bp-exercice').value;
+  document.querySelectorAll('.bp-input').forEach(function(el){ el.value = 0; });
+  if (!exercice) { bpMajTotaux(); return; }
+  CEXP_RUBRIQUES.forEach(function(r) {
+    var ligne = (DATA.caisse_budgets||[]).find(function(b){
+      var cle = _cexpRubriqueDuCompte(b.compte);
+      return cle === r.cle && (b.division_id||'') === (divisionId||'') && String(b.exercice) === String(exercice);
+    });
+    if (!ligne) return;
+    var rep = _budgetRepartitionMois(ligne);
+    for (var m = 1; m <= 12; m++) {
+      var input = document.querySelector('.bp-input[data-rubrique="'+r.cle+'"][data-mois="'+m+'"]');
+      if (input) input.value = Math.round(rep[m-1]);
+    }
+  });
+  bpMajTotaux();
+}
+function bpMajTotaux() {
+  var totProduits = 0, totCharges = 0;
+  CEXP_RUBRIQUES.forEach(function(r) {
+    var tot = 0;
+    document.querySelectorAll('.bp-input[data-rubrique="'+r.cle+'"]').forEach(function(el){ tot += parseFloat(el.value)||0; });
+    var totEl = document.getElementById('bp-tot-'+r.cle); if (totEl) totEl.textContent = fmtF(tot);
+    if (r.type === 'produit') totProduits += tot; else totCharges += tot;
+  });
+  document.getElementById('bp-total-produits').textContent = fmtF(totProduits);
+  document.getElementById('bp-total-charges').textContent = fmtF(totCharges);
+  var resultat = totProduits - totCharges;
+  var resEl = document.getElementById('bp-resultat');
+  resEl.textContent = fmtF(resultat);
+  resEl.style.color = resultat >= 0 ? 'var(--vert)' : 'var(--rouge)';
+}
+async function bpSauver(soumettre) {
+  var divisionId = document.getElementById('bp-division').value;
+  var exercice = document.getElementById('bp-exercice').value;
+  if (!exercice) { toast('L\'exercice est obligatoire.', 'error'); return; }
+  var reussies = 0, echecs = 0, ignorees = 0, idsAffectes = [];
+  for (var i = 0; i < CEXP_RUBRIQUES.length; i++) {
+    var r = CEXP_RUBRIQUES[i];
+    var rep = {}; var total = 0;
+    for (var m = 1; m <= 12; m++) {
+      var input = document.querySelector('.bp-input[data-rubrique="'+r.cle+'"][data-mois="'+m+'"]');
+      var val = input ? (parseFloat(input.value)||0) : 0;
+      rep[m] = val; total += val;
+    }
+    if (total <= 0) continue; /* catégorie non renseignée — on ne crée pas de ligne vide */
+    var existant = (DATA.caisse_budgets||[]).find(function(b){
+      return _cexpRubriqueDuCompte(b.compte) === r.cle && (b.division_id||'') === (divisionId||'') && String(b.exercice) === String(exercice);
+    });
+    if (existant && existant.statut === 'valide') { ignorees++; continue; } /* déjà validé — protégé, cf. budgetPrevisionnelSauver */
+    var compte = existant ? existant.compte : BP_COMPTE_DEFAUT[r.cle];
+    var ligneCompte = compte.substring(0,2);
+    var res = await budgetPrevisionnelSauver({
+      id: existant ? existant.id : null,
+      ligne_compte: ligneCompte, compte: compte,
+      division_id: divisionId, exercice: exercice,
+      montant: total, libelle: r.label,
+      repartition_mensuelle: rep
+    });
+    if (res) { reussies++; idsAffectes.push(res.id); } else echecs++;
+  }
+  if (soumettre) {
+    for (var j = 0; j < idsAffectes.length; j++) await budgetPrevisionnelSoumettre(idsAffectes[j]);
+  }
+  if (reussies || ignorees) {
+    closeModal('modal-business-plan');
+    budgetRenderPrevisionnel();
+    if (typeof renderCompteExploitationPrevisionnel === 'function') renderCompteExploitationPrevisionnel();
+    var msg = '✅ Business plan enregistré (' + reussies + ' catégorie(s))' + (soumettre ? ', soumis pour validation' : ' en brouillon');
+    if (ignorees) msg += ' · ' + ignorees + ' catégorie(s) déjà validée(s) non modifiée(s) — utilisez un transfert pour les ajuster';
+    if (echecs) msg += ' · ' + echecs + ' erreur(s), voir messages ci-dessus';
+    toast(msg + '.', ignorees || echecs ? 'info' : 'success');
+  } else {
+    toast('Aucune catégorie renseignée.', 'error');
+  }
 }
 
 function budgetRenderFed() {
