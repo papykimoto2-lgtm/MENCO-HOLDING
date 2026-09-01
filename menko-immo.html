@@ -11572,6 +11572,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <button class="tab-btn active" onclick="switchTab('caisse','ventilation')">🧾 Ventilation comptable des mouvements de caisse</button>
             <button class="tab-btn" onclick="switchTab('caisse','decaissements')">💵 Décaissements à faire</button>
             <button class="tab-btn" onclick="switchTab('caisse','tiers')">💰 Comptabilité tiers</button>
+            <button class="tab-btn" id="caisse-tab-btn-audit" onclick="switchTab('caisse','audit')" style="display:none;" title="Réservé aux administrateurs">🔍 Audit</button>
           </div>
         </div>
 
@@ -11622,6 +11623,24 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             </div>
             <div style="font-size:10.5px;color:var(--dim);margin-top:8px;">Échéance = date de contrat + délai de règlement du tiers. Postes soldés exclus.</div>
           </div>
+        </div>
+
+        <!-- ══ Audit — réservé aux administrateurs (visibilité JS, cf. caisseEnter) ══ -->
+        <div class="tab-pane" id="tab-caisse-audit">
+          <div class="card" style="margin-bottom:14px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+              <div>
+                <div class="card-title" style="margin-bottom:2px;">🔍 Audit de la caisse</div>
+                <div style="font-size:11px;color:var(--dim);">Rupture de chaîne entre sessions · soldes théoriques impossibles · réserves jamais soldées par un retour en caisse</div>
+              </div>
+              <div style="display:flex;gap:8px;">
+                <select class="filter-select" id="caisse-audit-caisse-id" onchange="renderCaisseAudit()"></select>
+                <button class="btn btn-secondary btn-sm" onclick="imprimerRapportAuditCaisse()">🖨️ Rapport d'audit</button>
+              </div>
+            </div>
+          </div>
+          <div class="kpi-grid" id="caisse-audit-kpi" style="margin-bottom:14px;"></div>
+          <div id="caisse-audit-box"></div>
         </div>
       </div>
 
@@ -27272,6 +27291,7 @@ function switchTab(context, tab) {
     if (tab==='ventilation' && typeof caisseRenderVentilation==='function') caisseRenderVentilation();
     if (tab==='decaissements' && typeof caisseRenderDecaissementsAFaire==='function') caisseRenderDecaissementsAFaire();
     if (tab==='tiers' && typeof caisseRenderBalanceAgee==='function') caisseRenderBalanceAgee();
+    if (tab==='audit' && typeof renderCaisseAudit==='function') renderCaisseAudit();
   }
   if (context==='lbcft') {
     if (tab==='alertes' && typeof lbcRenderAlertes==='function') lbcRenderAlertes();
@@ -113166,6 +113186,148 @@ function _caisseBucketAge(joursRetard) {
   return 'plus90';
 }
 
+/* ════════════════════════════════════════════════════════════════════
+   AUDIT DE CAISSE — réservé aux administrateurs (hasRole('admin'), voir
+   caisseEnter). Automatise les 3 contrôles menés manuellement lors de
+   l'audit de la Caisse Principale (session du 01/09) :
+   1) Rupture de chaîne entre sessions (fond_ouverture ≠ solde réel de
+      clôture de la session précédente).
+   2) Solde théorique négatif (physiquement impossible, signe d'un
+      mouvement erroné/dupliqué).
+   3) Cycle « réserve / retour en caisse » jamais soldé — une réserve
+      (sortie) sans retour (entrée) correspondant, y compris quand
+      plusieurs réserves sont soldées ensemble par un retour groupé.
+   ════════════════════════════════════════════════════════════════════ */
+
+function _caisseAuditChaineSessions(caisseId) {
+  var sessions = (DATA.caisse_sessions||[]).filter(function(s){ return s.caisse_id===caisseId; })
+    .slice().sort(function(a,b){ return (a.date||'').localeCompare(b.date||'') || String(a.id).localeCompare(String(b.id)); });
+  var ruptures = [];
+  for (var i = 1; i < sessions.length; i++) {
+    var prec = sessions[i-1], cur = sessions[i];
+    if (prec.statut !== 'cloturee' || prec.fond_cloture_reel === null || prec.fond_cloture_reel === undefined) continue;
+    var attendu = parseFloat(prec.fond_cloture_reel) || 0;
+    var reel = parseFloat(cur.fond_ouverture) || 0;
+    if (Math.abs(attendu - reel) > 1) {
+      ruptures.push({ session: cur, precedente: prec, attendu: attendu, obtenu: reel, ecart: reel - attendu });
+    }
+  }
+  return ruptures;
+}
+
+function _caisseAuditTheoriqueImpossible(caisseId) {
+  return (DATA.caisse_sessions||[]).filter(function(s){
+    return s.caisse_id===caisseId && s.fond_cloture_theorique !== null && s.fond_cloture_theorique !== undefined
+      && parseFloat(s.fond_cloture_theorique) < 0;
+  });
+}
+
+/* Apparie chaque sortie « RESERVE... » avec son retour (entrée « RETOUR »
+   ou « ANNULATION » de motif proche) — en 3 passes, de la plus simple à la
+   plus permissive, pour ne garder en anomalie que ce qui résiste aux trois :
+   1) montant strictement identique ; 2) retour groupé (somme de plusieurs
+   réserves = un seul retour, ou l'inverse) sur une fenêtre de ±45 jours ;
+   3) ce qui reste est remonté comme non soldé. */
+function _caisseAuditReserveRetour(caisseId) {
+  var mvts = (DATA.caisse_mouvements||[]).filter(function(m){ return m.caisse_id===caisseId; });
+  var estReserve = function(m){ return m.type==='sortie' && /RESERVE|RÉSERVE/i.test(m.motif||''); };
+  var estRetour = function(m){ return m.type==='entree' && /RETOUR|ANNULATION/i.test(m.motif||''); };
+  var reserves = mvts.filter(estReserve).map(function(m){ return {m:m, soldee:false}; });
+  var retours = mvts.filter(estRetour).map(function(m){ return {m:m, utilisee:false}; });
+
+  /* Passe 1 — montant identique, la plus ancienne réserve non soldée d'abord */
+  reserves.sort(function(a,b){ return (a.m.date||'').localeCompare(b.m.date||''); });
+  reserves.forEach(function(r){
+    var candidat = retours.find(function(e){ return !e.utilisee && Math.round(parseFloat(e.m.montant)) === Math.round(parseFloat(r.m.montant)); });
+    if (candidat) { candidat.utilisee = true; r.soldee = true; }
+  });
+
+  /* Passe 2 — regroupement par fenêtre glissante de 45 jours : si la somme
+     des réserves non soldées de la fenêtre == somme des retours non
+     utilisés de la même fenêtre, tout le groupe est considéré soldé
+     (cas des retours groupés couvrant plusieurs réserves à la fois). */
+  var joursEntre = function(d1,d2){ return Math.abs((new Date(d2)) - (new Date(d1))) / 86400000; };
+  reserves.filter(function(r){ return !r.soldee; }).forEach(function(r0){
+    if (r0.soldee) return;
+    var fenReserves = reserves.filter(function(r){ return !r.soldee && joursEntre(r0.m.date, r.m.date) <= 45; });
+    var fenRetours = retours.filter(function(e){ return !e.utilisee && joursEntre(r0.m.date, e.m.date) <= 45; });
+    var totR = fenReserves.reduce(function(s,r){ return s+(parseFloat(r.m.montant)||0); }, 0);
+    var totE = fenRetours.reduce(function(s,e){ return s+(parseFloat(e.m.montant)||0); }, 0);
+    if (fenReserves.length && Math.abs(totR - totE) < 1) {
+      fenReserves.forEach(function(r){ r.soldee = true; });
+      fenRetours.forEach(function(e){ e.utilisee = true; });
+    }
+  });
+
+  return reserves.filter(function(r){ return !r.soldee; }).map(function(r){ return r.m; });
+}
+
+function renderCaisseAudit() {
+  if (!hasRole('admin')) { var b=document.getElementById('caisse-audit-box'); if (b) b.innerHTML = '<div class="alert alert-error">Réservé aux administrateurs.</div>'; return; }
+  var selCaisse = document.getElementById('caisse-audit-caisse-id');
+  if (selCaisse && !selCaisse.dataset.rempli) {
+    selCaisse.innerHTML = (DATA.caisses||[]).map(function(c){ return '<option value="'+c.id+'">'+escHtml(c.nom)+'</option>'; }).join('');
+    selCaisse.dataset.rempli = '1';
+  }
+  var caisseId = selCaisse ? selCaisse.value : ((DATA.caisses||[])[0]||{}).id;
+  if (!caisseId) { document.getElementById('caisse-audit-box').innerHTML = '<div class="alert alert-info">Aucune caisse.</div>'; return; }
+
+  var ruptures = _caisseAuditChaineSessions(caisseId);
+  var theoImpossible = _caisseAuditTheoriqueImpossible(caisseId);
+  var reservesNonSoldees = _caisseAuditReserveRetour(caisseId);
+  var montantEnJeu = reservesNonSoldees.reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+
+  document.getElementById('caisse-audit-kpi').innerHTML = [
+    { label:'Ruptures de chaîne', val: ruptures.length, icon:'⛓️‍💥', cls: ruptures.length?'kpi-red':'kpi-green' },
+    { label:'Soldes théoriques impossibles', val: theoImpossible.length, icon:'🔴', cls: theoImpossible.length?'kpi-red':'kpi-green' },
+    { label:'Réserves jamais soldées', val: reservesNonSoldees.length, icon:'📦', cls: reservesNonSoldees.length?'kpi-red':'kpi-green' },
+    { label:'Montant en jeu', val: fmtF(montantEnJeu)+' F', icon:'💰', cls: montantEnJeu?'kpi-red':'kpi-green' }
+  ].map(_kpiCard).join('');
+
+  var html = '';
+  if (!ruptures.length && !theoImpossible.length && !reservesNonSoldees.length) {
+    html = '<div class="alert alert-info" style="text-align:center;padding:24px;">✅ Aucune anomalie détectée sur cette caisse.</div>';
+  } else {
+    if (ruptures.length) {
+      html += '<div class="card" style="margin-bottom:14px;"><div class="card-title">⛓️‍💥 Ruptures de chaîne entre sessions</div>'
+        + '<table class="data-table" style="width:100%;font-size:12px;"><thead><tr><th>Session</th><th>Devrait ouvrir sur</th><th>Ouvre réellement sur</th><th>Écart</th></tr></thead><tbody>'
+        + ruptures.map(function(r){ return '<tr><td>'+dateShort(r.session.date)+'</td><td style="text-align:right;">'+fmtF(r.attendu)+' F</td><td style="text-align:right;">'+fmtF(r.obtenu)+' F</td><td style="text-align:right;font-weight:700;color:var(--rouge);">'+(r.ecart>=0?'+':'')+fmtF(r.ecart)+' F</td></tr>'; }).join('')
+        + '</tbody></table></div>';
+    }
+    if (theoImpossible.length) {
+      html += '<div class="card" style="margin-bottom:14px;"><div class="card-title">🔴 Soldes théoriques négatifs (impossibles)</div>'
+        + '<table class="data-table" style="width:100%;font-size:12px;"><thead><tr><th>Session</th><th>Solde théorique</th><th>Solde réel compté</th><th>Écart</th></tr></thead><tbody>'
+        + theoImpossible.map(function(s){ var e=(parseFloat(s.fond_cloture_reel)||0)-(parseFloat(s.fond_cloture_theorique)||0); return '<tr><td>'+dateShort(s.date)+'</td><td style="text-align:right;color:var(--rouge);font-weight:700;">'+fmtF(s.fond_cloture_theorique)+' F</td><td style="text-align:right;">'+fmtF(s.fond_cloture_reel)+' F</td><td style="text-align:right;font-weight:700;">'+(e>=0?'+':'')+fmtF(e)+' F</td></tr>'; }).join('')
+        + '</tbody></table></div>';
+    }
+    if (reservesNonSoldees.length) {
+      html += '<div class="card"><div class="card-title">📦 Réserves jamais soldées par un retour en caisse</div>'
+        + '<div style="font-size:11px;color:var(--dim);margin-bottom:8px;">Une sortie « RESERVE... » sans retour correspondant (même montant, ou en groupe avec d\'autres réserves de la période) — à vérifier auprès de la personne ayant enregistré la ligne avant toute correction.</div>'
+        + '<table class="data-table" style="width:100%;font-size:12px;"><thead><tr><th>Date</th><th>Montant</th><th>Libellé</th><th>Saisi par</th></tr></thead><tbody>'
+        + reservesNonSoldees.map(function(m){ return '<tr><td>'+dateShort(m.date)+'</td><td style="text-align:right;font-weight:700;">'+fmtF(m.montant)+' F</td><td>'+escHtml(m.motif||'')+'</td><td style="font-size:11px;color:var(--dim);">'+escHtml((m.created_by||'').replace(' (import CSV)',''))+'</td></tr>'; }).join('')
+        + '</tbody></table></div>';
+    }
+  }
+  document.getElementById('caisse-audit-box').innerHTML = html;
+}
+
+function imprimerRapportAuditCaisse() {
+  if (!hasRole('admin')) { toast('Réservé aux administrateurs.', 'error'); return; }
+  var caisseId = document.getElementById('caisse-audit-caisse-id').value;
+  var c = (DATA.caisses||[]).find(function(x){ return x.id===caisseId; });
+  var kpiHtml = document.getElementById('caisse-audit-kpi').innerHTML;
+  var boxHtml = document.getElementById('caisse-audit-box').innerHTML;
+  var w = window.open('', '_blank');
+  w.document.write('<html><head><title>Rapport d\'audit — '+escHtml(c?c.nom:'')+'</title>'
+    + '<style>body{font-family:Arial,sans-serif;padding:24px;color:#111;} table{border-collapse:collapse;width:100%;font-size:11px;margin-bottom:10px;} td,th{border:1px solid #ccc;padding:4px 6px;} .kpi-grid{display:flex;gap:16px;margin-bottom:20px;flex-wrap:wrap;} .card{margin-bottom:16px;} .card-title{font-weight:700;margin-bottom:6px;} h1{font-size:16px;} h2{font-size:12px;color:#555;font-weight:400;}</style>'
+    + '</head><body>'
+    + '<h1>🔍 Rapport d\'audit — '+escHtml(c?c.nom:'')+'</h1>'
+    + '<h2>Édité le '+dateShort(today())+' par '+escHtml((APP.currentUser&&APP.currentUser.nom)||'')+' — document réservé, usage interne</h2>'
+    + kpiHtml + boxHtml + '</body></html>');
+  w.document.close();
+  setTimeout(function(){ w.print(); }, 300);
+}
+
 function caisseRenderBalanceAgee() {
   var thead = document.getElementById('caisse-tiers-thead');
   var tbody = document.getElementById('caisse-tiers-tbody');
@@ -113246,6 +113408,13 @@ async function caisseEnter() {
 
   var btnNew = document.getElementById('btn-caisse-nouvelle');
   if (btnNew) btnNew.style.display = caisseRoleAdminLike() ? '' : 'none';
+  /* [Audit] Onglet strictement réservé aux administrateurs — demande explicite,
+     plus restrictif que caisseRoleAdminLike() (qui inclut aussi manager et
+     comptable) : les écarts remontés ici peuvent révéler des soupçons sur
+     une personne précise avant toute vérification, donc accès volontairement
+     le plus étroit possible. */
+  var btnAudit = document.getElementById('caisse-tab-btn-audit');
+  if (btnAudit) btnAudit.style.display = hasRole('admin') ? '' : 'none';
   caisseRenderDashboard();
   caisseRenderListe();
   document.getElementById('caisse-brouillard-box').innerHTML = '';
