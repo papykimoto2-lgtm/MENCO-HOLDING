@@ -38920,6 +38920,27 @@ async function ckEnvoyerFileActionsMessagerie() {
 }
 
 /* ── Moteur de règles ────────────────────────────────────────────────────── */
+/* Exécute les 3 contrôles d'audit caisse (chaîne, théorique impossible,
+   réserve/retour) sur TOUTES les caisses, groupés par secteur d'activité
+   (division). Réutilisée par le Cockpit (file d'actions + Pouls de santé)
+   ET par l'onglet Audit lui-même — un seul moteur, deux points d'entrée.
+   Résultat filtré : uniquement les caisses avec au moins une anomalie. */
+function _caisseAuditToutesLesCaisses() {
+  return (DATA.caisses||[]).map(function(c){
+    var ruptures = _caisseAuditChaineSessions(c.id);
+    var theoImpossible = _caisseAuditTheoriqueImpossible(c.id);
+    var reservesNonSoldees = _caisseAuditReserveRetour(c.id);
+    var montantEnJeu = reservesNonSoldees.reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+    return {
+      caisse: c,
+      secteur: c.division_id ? _nomDivision(c.division_id) : 'Non affecté',
+      ruptures: ruptures, theoImpossible: theoImpossible, reservesNonSoldees: reservesNonSoldees,
+      montantEnJeu: montantEnJeu,
+      nbAnomalies: ruptures.length + theoImpossible.length + reservesNonSoldees.length
+    };
+  }).filter(function(r){ return r.nbAnomalies > 0; });
+}
+
 function ckActions() {
   var A = [];
   var now = new Date();
@@ -39282,6 +39303,36 @@ function ckActions() {
     }
   } catch(e){}
 
+  /* R-CAISSE-AUDIT — Réservé aux administrateurs, comme l'onglet Audit lui-
+     même : les anomalies remontées ici (rupture de chaîne, solde impossible,
+     réserve non soldée) peuvent pointer vers une personne précise avant
+     toute vérification — jamais visible d'un rôle non-admin, même dans le
+     cockpit. Une action par SECTEUR D'ACTIVITÉ (division) concerné, pas par
+     caisse individuelle, pour rester lisible si plusieurs caisses d'un même
+     secteur ont des anomalies. */
+  try {
+    if (hasRole('admin') && typeof _caisseAuditToutesLesCaisses === 'function') {
+      var auditsCaisse = _caisseAuditToutesLesCaisses();
+      var parSecteur = {};
+      auditsCaisse.forEach(function(r){ (parSecteur[r.secteur] = parSecteur[r.secteur] || []).push(r); });
+      Object.keys(parSecteur).forEach(function(secteur){
+        var caissesConcernees = parSecteur[secteur];
+        var totalAnomalies = caissesConcernees.reduce(function(s,r){ return s+r.nbAnomalies; }, 0);
+        var totalMontant = caissesConcernees.reduce(function(s,r){ return s+r.montantEnJeu; }, 0);
+        var urgent = caissesConcernees.some(function(r){ return r.theoImpossible.length > 0; });
+        push({
+          aid: 'caisseaudit_' + secteur.replace(/\s+/g,'_'),
+          prio: urgent ? 90 : 68, urgent: urgent, icone: '🔍',
+          titre: 'Anomalie(s) de caisse — ' + secteur,
+          detail: totalAnomalies + ' anomalie(s) sur ' + caissesConcernees.length + ' caisse(s) ('
+            + caissesConcernees.map(function(r){ return r.caisse.nom; }).join(', ') + ')'
+            + (totalMontant ? ' · ' + fmtF(totalMontant) + ' F en jeu' : ''),
+          boutons: [ { lib:'🔍 Ouvrir l\'audit', fn:"goTo('caisse'); setTimeout(function(){ switchTab('caisse','audit'); }, 300)" } ]
+        });
+      });
+    }
+  } catch(e){}
+
   A.sort(function(a,b){ return b.prio - a.prio; });
   return A;
 }
@@ -39558,6 +39609,25 @@ function ckSante() {
       var nbTotalVehSc = alertesVehSc.length;
       dom('Parc auto','🚗', 100 - Math.min(70, nbRougeVehSc*20) - Math.min(20, (nbTotalVehSc-nbRougeVehSc)*5),
           nbTotalVehSc ? nbTotalVehSc+' échéance(s) sur '+vehsActifs.length+' véhicule(s) ('+nbRougeVehSc+' expirée(s))' : 'Assurances, visites techniques et vidanges à jour', 'parc-auto');
+    }
+  } catch(e){}
+
+  /* Audit caisse : réservé aux administrateurs — même restriction que
+     l'onglet Audit et la file d'actions (R-CAISSE-AUDIT). Score global tous
+     secteurs confondus ; le détail par secteur reste dans l'onglet Audit
+     lui-même, pas ici (une carte de synthèse, pas un rapport). */
+  try {
+    if (hasRole('admin') && typeof _caisseAuditToutesLesCaisses === 'function') {
+      var auditsCaisseSc = _caisseAuditToutesLesCaisses();
+      if (auditsCaisseSc.length) {
+        var nbAnomaliesSc = auditsCaisseSc.reduce(function(s,r){ return s+r.nbAnomalies; }, 0);
+        var nbTheoImpossibleSc = auditsCaisseSc.reduce(function(s,r){ return s+r.theoImpossible.length; }, 0);
+        var nbSecteursSc = new Set(auditsCaisseSc.map(function(r){ return r.secteur; })).size;
+        dom('Audit caisse','🔍', 100 - Math.min(70, nbTheoImpossibleSc*35) - Math.min(25, (nbAnomaliesSc-nbTheoImpossibleSc)*10),
+            nbAnomaliesSc+' anomalie(s) sur '+nbSecteursSc+' secteur(s) d\'activité', 'caisse');
+      } else {
+        dom('Audit caisse','🔍', 100, 'Aucune anomalie détectée, toutes caisses confondues', 'caisse');
+      }
     }
   } catch(e){}
 
