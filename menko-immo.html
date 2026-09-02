@@ -25763,6 +25763,78 @@ async function _pullTable(table) {
   return { rows: all, incremental: false };
 }
 
+/* Traite les lignes déjà récupérées pour UNE table (fusion remote-wins,
+   tombstones, avancement du curseur) — extrait de la boucle historique pour
+   être appelable aussi bien depuis le nouveau chemin groupé (RPC, un seul
+   aller-retour pour les ~150 tables) que depuis l'ancien chemin séquentiel
+   (repli automatique si la fonction RPC est indisponible). Retourne le
+   nombre de lignes effectivement appliquées. */
+async function _appliquerLignesPullTable(table, store, rows) {
+  var appliquees = 0;
+  if (!rows || !rows.length) return 0;
+  var _tsMax = _pullCurseurs()[table] || '';
+  if (!DATA[store]) DATA[store] = [];
+  var byId = {};
+  DATA[store].forEach(function(x){ if (x && x.id !== undefined) byId[String(x.id)] = x; });
+  for (var j = 0; j < rows.length; j++) {
+    var r = _supaUnwrap(table, rows[j]);
+    if (!r || r.id === undefined) continue;
+    if (typeof tombHas === 'function' && tombHas(store, r.id)) { try { if (typeof deleteFromSupabase === 'function') deleteFromSupabase(table, r.id); } catch(e){} continue; }
+    var ex = byId[String(r.id)];
+    if (_remoteWins(r, ex)) {
+      byId[String(r.id)] = r;
+      try { await dbPut(store, r); } catch(e) {}
+      appliquees++;
+    }
+  }
+  for (var jt = 0; jt < rows.length; jt++) {
+    var _u = rows[jt] && rows[jt].updated_at;
+    if (_u && (!_tsMax || _u > _tsMax)) _tsMax = _u;
+  }
+  if (_tsMax) _pullCurseurSet(table, _tsMax);
+  DATA[store] = Object.keys(byId).map(function(k){ return byId[k]; });
+  return appliquees;
+}
+
+/* [Correctif charge Supabase — 02/09] La synchro incrémentale, bien que
+   correcte table par table, faisait ~150 ALLERS-RETOURS HTTP SÉPARÉS par
+   cycle — un par table du SUPA_STORE_MAP — même quand rien n'avait changé.
+   Avec plusieurs postes ouverts, ce volume de requêtes (indépendant du
+   volume réel de données) suffit à lui seul à saturer un compute réduit.
+   Cette fonction regroupe tout en UN SEUL appel RPC côté base
+   (pull_incremental), qui interroge les ~150 tables côté serveur et
+   renvoie tout d'un coup. Repli automatique et silencieux sur l'ancienne
+   méthode séquentielle si la fonction RPC n'existe pas encore côté
+   Supabase (compatible avant/après migration) ou si l'appel échoue pour
+   toute autre raison — jamais de blocage total de la synchro sur ce point. */
+async function _pullBatchViaRPC() {
+  var curseurs = {};
+  var tablesConcernees = [];
+  for (var i = 0; i < SUPA_STORE_MAP.length; i++) {
+    var table = SUPA_STORE_MAP[i][0], store = SUPA_STORE_MAP[i][1];
+    if (store === 'suppressions_sync') continue;
+    var complet = PULL_TOUJOURS_COMPLET.indexOf(table) !== -1 || PULL_INCR_INAPTES[table];
+    curseurs[table] = complet ? '' : (_pullCurseurs()[table] || '');
+    tablesConcernees.push([table, store]);
+  }
+  var body = JSON.stringify({ cursors: curseurs });
+  var url = SB.url.replace(/\/+$/,'') + '/rest/v1/rpc/pull_incremental';
+  var resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'apikey': SB.key, 'Authorization': 'Bearer ' + SB.key, 'Content-Type': 'application/json' },
+    body: body
+  });
+  if (!resp.ok) throw new Error('RPC pull_incremental indisponible (' + resp.status + ')');
+  var data = await resp.json();
+  var total = 0;
+  for (var k = 0; k < tablesConcernees.length; k++) {
+    var t = tablesConcernees[k][0], s = tablesConcernees[k][1];
+    var rows = data && data[t];
+    if (rows && rows.length) total += await _appliquerLignesPullTable(t, s, rows);
+  }
+  return total;
+}
+
 async function pullFromCloudSilent() {
   if (!navigator.onLine) return;
   getSBConfig();
@@ -25792,51 +25864,28 @@ async function pullFromCloudSilent() {
       }
     } catch(e) { /* suppressions inaccessibles → le filet de fin de cycle reste actif */ }
 
+    /* ── PHASE 1 — Tentative du chemin groupé (1 seul aller-retour RPC pour
+       les ~150 tables) — bien plus léger pour le serveur qu'une boucle de
+       150 requêtes séparées. Si la fonction pull_incremental n'existe pas
+       encore côté Supabase (avant migration) ou échoue pour toute autre
+       raison, repli SILENCIEUX et complet sur l'ancienne méthode
+       séquentielle juste en dessous — aucune perte de service. ── */
+    var _rpcReussi = false;
+    try {
+      var _totalRPC = await _pullBatchViaRPC();
+      total += _totalRPC;
+      _rpcReussi = true;
+    } catch(eRpc) { _rpcReussi = false; }
+
+    if (!_rpcReussi) {
     for (var i = 0; i < SUPA_STORE_MAP.length; i++) {
       var table = SUPA_STORE_MAP[i][0], store = SUPA_STORE_MAP[i][1];
       if (store === 'suppressions_sync') continue; /* déjà traité en phase 0 */
       try {
         var _res = await _pullTable(table);
         var rows = _res.rows;
-        var _tsMax = _pullCurseurs()[table] || '';
-        if (!rows || !rows.length) {
-          /* [FIX] On n'avance PLUS le curseur sur l'horloge locale.
-             L'ancien code posait le curseur à new Date() du POSTE : dès que
-             cette horloge devançait celle du serveur — décalage de quelques
-             minutes, fuseau mal réglé, simple latence — toutes les lignes
-             créées par un autre poste dans cet intervalle passaient
-             définitivement sous le curseur et n'étaient JAMAIS tirées. Symptôme
-             exact : « un collaborateur a enregistré, je ne vois rien même après
-             synchronisation », sans aucun message d'erreur.
-             Le curseur n'avance désormais que sur un updated_at réellement
-             reçu du serveur (voir plus bas) : c'est la seule horloge commune.
-             Ne pas avancer coûte une requête vide au cycle suivant — sans
-             comparaison avec la perte silencieuse de données. */
-          continue;
-        }
-        if (!DATA[store]) DATA[store] = [];
-        var byId = {};
-        DATA[store].forEach(function(x){ if (x && x.id !== undefined) byId[String(x.id)] = x; });
-        for (var j = 0; j < rows.length; j++) {
-          var r = _supaUnwrap(table, rows[j]);
-          if (!r || r.id === undefined) continue;
-          if (typeof tombHas === 'function' && tombHas(store, r.id)) { try { if (typeof deleteFromSupabase === 'function') deleteFromSupabase(table, r.id); } catch(e){} continue; }
-          var ex = byId[String(r.id)];
-          if (_remoteWins(r, ex)) {
-            byId[String(r.id)] = r;
-            try { await dbPut(store, r); } catch(e) {}   // _pulling=true → pas marqué dirty
-            total++;
-          }
-        }
-        /* Curseur = horodatage serveur le plus récent réellement reçu. On ne
-           prend pas l'heure locale : une horloge de poste décalée ferait
-           sauter des enregistrements au cycle suivant. */
-        for (var jt = 0; jt < rows.length; jt++) {
-          var _u = rows[jt] && rows[jt].updated_at;
-          if (_u && (!_tsMax || _u > _tsMax)) _tsMax = _u;
-        }
-        if (_tsMax) _pullCurseurSet(table, _tsMax);
-        DATA[store] = Object.keys(byId).map(function(k){ return byId[k]; });
+        var _appliquees = await _appliquerLignesPullTable(table, store, rows);
+        total += _appliquees;
         /* NB : pour 'custom_roles', on NE reconstruit PAS CUSTOM_ROLES ici en
            copiant les lignes brutes — cela réinjecterait les surcharges de
            rôles système (is_override, id "xxx_override") comme de faux rôles
@@ -25844,6 +25893,7 @@ async function pullFromCloudSilent() {
            bas dès que total > 0, s'en charge correctement en repliant chaque
            surcharge sur le rôle système d'origine. */
       } catch(tableErr) { /* une table en erreur ne bloque pas les autres */ }
+    }
     }
   } finally {
     _pulling = false;
