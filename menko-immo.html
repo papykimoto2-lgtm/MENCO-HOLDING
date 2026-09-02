@@ -114991,9 +114991,27 @@ function caisseRenderBrouillardSession(sessionId) {
 function caisseImprimerBon(mvtId) {
   var m = (DATA.caisse_mouvements || []).find(function(x){ return x.id === mvtId; });
   if (!m) return;
+  /* [Blocage impression sans visa] Un mouvement soumis à validation ne peut
+     être imprimé qu'une fois VALIDÉ par la hiérarchie — jamais avant, jamais
+     s'il a été rejeté. Le bon imprimé porte alors le visa (qui, quand) en
+     plus des signatures habituelles, comme preuve que la validation a bien
+     eu lieu avant tout décaissement/encaissement physique. */
+  if (m.requiert_validation === true && m.rejete === true) {
+    toast('⛔ Impression impossible — ce mouvement a été rejeté par la hiérarchie' + (m.motif_rejet ? ' (' + m.motif_rejet + ')' : '') + '.', 'error');
+    return;
+  }
+  if (m.requiert_validation === true && m.valide !== true) {
+    toast('🔒 Impression impossible — ce mouvement attend encore le visa de la hiérarchie (Pilotage → Validations).', 'error');
+    return;
+  }
   var c = (DATA.caisses || []).find(function(x){ return x.id === m.caisse_id; });
   var p = DATA.params || {};
   var titre = m.type === 'entree' ? 'Bon d\'entrée de caisse' : 'Bon de sortie de caisse';
+  var visaHtml = m.requiert_validation === true && m.valide === true
+    ? '<div style="margin-top:14px;padding:8px 12px;background:#F0FDF4;border:1px solid #16A34A;border-radius:6px;font-size:12px;">'
+      + '<b>✅ Visa de la hiérarchie</b> — validé par ' + escHtml(m.valide_par||'—') + ' le ' + (m.valide_le ? (m.valide_le||'').replace('T',' ').slice(0,16) : '—')
+      + '</div>'
+    : '';
   var html = '<div style="font-family:Georgia,serif;max-width:640px;margin:0 auto;">'
     + '<div style="text-align:center;margin-bottom:18px;">'
     + '<div style="font-size:16px;font-weight:800;">' + escHtml(p.societe || 'ImmoSuite ERP') + '</div>'
@@ -115008,6 +115026,7 @@ function caisseImprimerBon(mvtId) {
     + '<tr><td style="padding:6px 0;color:#666;">' + (m.type === 'entree' ? 'Déposant' : 'Bénéficiaire') + '</td><td style="padding:6px 0;">' + escHtml(m.beneficiaire||'—') + '</td></tr>'
     + '<tr><td style="padding:6px 0;color:#666;">Montant</td><td style="padding:10px 0;font-size:20px;font-weight:800;">' + fmtF(m.montant) + ' FCFA</td></tr>'
     + '</table>'
+    + visaHtml
     + '<div style="display:flex;justify-content:space-between;margin-top:60px;font-size:12px;">'
     + '<div>Caissière<br><br><br>___________________<br>' + escHtml(m.created_by||'') + '</div>'
     + '<div>' + (m.type === 'entree' ? 'Déposant / Versé par' : 'Bénéficiaire / Reçu par') + '<br><br><br>___________________</div>'
