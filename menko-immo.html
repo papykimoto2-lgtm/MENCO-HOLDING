@@ -115224,7 +115224,15 @@ async function caisseCloturer() {
 /* ── Envoi de l'état de caisse (messagerie interne + email hiérarchie) ─── */
 async function caisseGetOrCreateConversation(c) {
   var userId = (APP.currentUser && APP.currentUser.id) || 'system';
-  var membres = [userId].concat(c.destinataires_internes || []).concat(c.caissiere_ids || []);
+  /* [FIX] Les validateurs habilités (droit de vue Caisse) sont inclus dès la
+     construction de la liste de membres — pas seulement ajoutés après coup.
+     Sans ça, une caisse neuve sans destinataires_internes/caissiere_ids
+     configurés manuellement échouait à créer sa conversation du tout
+     (membres.length < 2), et la notification de demande de validation
+     partait dans le vide silencieusement : personne notifié, rien jamais
+     validé. */
+  var validateurs = (typeof _utilisateursValidateursCaisse === 'function') ? _utilisateursValidateursCaisse() : [];
+  var membres = [userId].concat(c.destinataires_internes || []).concat(c.caissiere_ids || []).concat(validateurs);
   membres = membres.filter(function(v,i,a){ return v && a.indexOf(v) === i; }); /* dédoublonnage */
 
   var conv = c.conversation_id ? (DATA.conversations || []).find(function(x){ return x.id === c.conversation_id; }) : null;
@@ -116590,6 +116598,25 @@ async function caisseNotifierValidation(mvt, evenement) {
     }
     await caisseEnvoyerMessageInterne(c, texte);
   } catch(e) { /* notification best-effort — jamais bloquant */ }
+}
+
+/* Tout utilisateur actif dont le rôle a un droit de vue sur le module Caisse
+   (module non désactivé, ET chaîne de droits absente — non restreint — ou
+   contenant 'v') est considéré habilité à valider. Volontairement large :
+   mieux vaut notifier quelqu'un qui ne pourra finalement pas approuver
+   (plafond insuffisant, visible dans l'écran de validation) que rater le
+   seul responsable réellement habilité parce que le filtre était trop
+   strict. */
+function _utilisateursValidateursCaisse() {
+  var roles = (typeof getAllRoles === 'function') ? getAllRoles() : {};
+  return (DATA.users || []).filter(function(u){
+    if (!u || u.actif === false) return false;
+    var r = roles[u.role]; if (!r) return false;
+    if (r.permissions && r.permissions.Caisse === false) return false;
+    var d = r.droits && r.droits.Caisse;
+    if (d === undefined || d === null) return true;
+    return String(d).indexOf('v') !== -1;
+  }).map(function(u){ return u.id; });
 }
 
 /* ── Configuration des règles de ventilation automatique (mot-clé → compte) ──
