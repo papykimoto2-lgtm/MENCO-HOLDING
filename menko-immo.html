@@ -11598,7 +11598,16 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <button class="tab-btn active" onclick="switchTab('caisse','ventilation')">🧾 Ventilation comptable des mouvements de caisse</button>
             <button class="tab-btn" onclick="switchTab('caisse','decaissements')">💵 Décaissements à faire</button>
             <button class="tab-btn" onclick="switchTab('caisse','tiers')">💰 Comptabilité tiers</button>
+            <button class="tab-btn" onclick="switchTab('caisse','mesdemandes')">📋 Mes demandes de validation <span class="nav-badge" id="badge-tab-mesdemandes" style="display:none;position:static;margin-left:4px;">0</span></button>
             <button class="tab-btn" id="caisse-tab-btn-audit" onclick="switchTab('caisse','audit')" style="display:none;" title="Réservé aux administrateurs">🔍 Audit</button>
+          </div>
+        </div>
+
+        <div class="tab-pane" id="tab-caisse-mesdemandes">
+          <div class="card">
+            <div class="card-title" style="margin-bottom:2px;">📋 Mes demandes de validation</div>
+            <div style="font-size:11px;color:var(--dim);margin-bottom:10px;">Tous vos mouvements soumis à validation — en attente, validés ou rejetés — pour suivre où en est chaque demande sans avoir à redemander.</div>
+            <div id="caisse-mesdemandes-box"></div>
           </div>
         </div>
 
@@ -27319,6 +27328,7 @@ function switchTab(context, tab) {
     if (tab==='decaissements' && typeof caisseRenderDecaissementsAFaire==='function') caisseRenderDecaissementsAFaire();
     if (tab==='tiers' && typeof caisseRenderBalanceAgee==='function') caisseRenderBalanceAgee();
     if (tab==='audit' && typeof renderCaisseAudit==='function') renderCaisseAudit();
+    if (tab==='mesdemandes' && typeof caisseRenderMesDemandes==='function') caisseRenderMesDemandes();
   }
   if (context==='validations' && typeof renderPageValidations==='function') renderPageValidations();
   if (context==='lbcft') {
@@ -113523,6 +113533,7 @@ async function caisseEnter() {
      fil des tentatives de reconnexion réseau. */
   try { caisseRenderBalanceAgee(); } catch(e) { console.warn('[Caisse] Balance tiers non affichée :', e); }
   try { caisseRenderDecaissementsAFaire(); } catch(e) { console.warn('[Caisse] Décaissements à faire non affichés :', e); }
+  try { if (typeof caisseRenderMesDemandes === 'function') caisseRenderMesDemandes(); } catch(e) { console.warn('[Caisse] Mes demandes non affichées :', e); }
   /* [Retiré v14.60] caisseRenderBudgets() — voir note dans le HTML de la page Caisse */
 
   var btnNew = document.getElementById('btn-caisse-nouvelle');
@@ -116341,6 +116352,55 @@ function caisseDecaissementsEnAttente() {
   return (DATA.caisse_mouvements || []).filter(function(m){
     return (m.type === 'sortie' || m.type === 'entree') && m.requiert_validation === true && !m.valide && !m.rejete;
   }).sort(function(a,b){ return (a.demande_le||a.date||'').localeCompare(b.demande_le||b.date||''); });
+}
+
+/* [Suivi caissière] Tous les mouvements soumis à validation par
+   l'utilisateur courant, quel que soit leur statut (en attente / validé /
+   rejeté) — contrairement à caisseDecaissementsEnAttente() qui ne montre
+   que le "en attente". Match par nom (demande_par) : aucun id d'auteur
+   n'est porté par le mouvement, cohérent avec demande_par/valide_par/
+   rejete_par déjà utilisés partout ailleurs dans ce module. */
+function caisseMesDemandes() {
+  var monNom = (APP.currentUser && APP.currentUser.nom) || '';
+  if (!monNom) return [];
+  return (DATA.caisse_mouvements || []).filter(function(m){
+    return m.requiert_validation === true && m.demande_par === monNom;
+  }).sort(function(a,b){ return (b.demande_le||b.date||'').localeCompare(a.demande_le||a.date||''); });
+}
+function caisseRenderMesDemandes() {
+  var box = document.getElementById('caisse-mesdemandes-box'); if (!box) return;
+  var liste = caisseMesDemandes();
+  var enAttente = liste.filter(function(m){ return !m.valide && !m.rejete; }).length;
+  var badge = document.getElementById('badge-tab-mesdemandes');
+  if (badge) { badge.textContent = enAttente; badge.style.display = enAttente ? 'inline-block' : 'none'; }
+  if (!liste.length) { box.innerHTML = '<div class="alert alert-info" style="text-align:center;padding:20px;">Aucune demande de validation soumise pour l\'instant.</div>'; return; }
+
+  var html = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Date</th><th>Type</th><th>Caisse</th><th>Motif</th><th style="text-align:right;">Montant</th><th>Statut</th><th>Décision</th></tr></thead><tbody>';
+  liste.forEach(function(m) {
+    var c = (DATA.caisses || []).find(function(x){ return x.id === m.caisse_id; });
+    var estSortie = m.type === 'sortie';
+    var statutHtml, decisionHtml = '—';
+    if (m.valide === true) {
+      statutHtml = '<span class="badge" style="background:rgba(16,163,74,0.15);color:var(--vert);">✅ Validé</span>';
+      decisionHtml = escHtml(m.valide_par||'') + '<br><span style="font-size:10px;color:var(--blanc-dim);">' + (m.valide_le||'').replace('T',' ').slice(0,16) + '</span>';
+    } else if (m.rejete === true) {
+      statutHtml = '<span class="badge" style="background:rgba(220,53,69,0.15);color:var(--rouge);">✖ Rejeté</span>';
+      decisionHtml = escHtml(m.rejete_par||'') + (m.motif_rejet ? '<br><span style="font-size:10px;color:var(--rouge);">' + escHtml(m.motif_rejet) + '</span>' : '');
+    } else {
+      statutHtml = '<span class="badge" style="background:rgba(184,115,51,0.15);color:var(--or);">⏳ En attente</span>';
+    }
+    html += '<tr>'
+      + '<td>' + (m.date||'').slice(0,10) + '</td>'
+      + '<td><span class="badge" style="background:' + (estSortie?'rgba(220,53,69,0.15);color:var(--rouge)':'rgba(16,163,74,0.15);color:var(--vert)') + ';">' + (estSortie?'↓ Sortie':'↑ Entrée') + '</span></td>'
+      + '<td>' + escHtml(c ? c.nom : '') + '</td>'
+      + '<td>' + escHtml(m.motif||'') + '</td>'
+      + '<td style="text-align:right;font-weight:700;">' + fmtF(m.montant) + ' F</td>'
+      + '<td>' + statutHtml + '</td>'
+      + '<td style="font-size:11px;">' + decisionHtml + '</td>'
+      + '</tr>';
+  });
+  html += '</tbody></table></div>';
+  box.innerHTML = html;
 }
 
 function caisseRenderValidations() {
