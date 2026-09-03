@@ -14795,6 +14795,8 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <button class="tab-btn" onclick="switchTab('budget','fed')">📝 Engagements de dépense</button>
           <button class="tab-btn" onclick="switchTab('budget','transferts')">🔀 Transferts</button>
           <button class="tab-btn" onclick="switchTab('budget','exploitation')">📈 Compte d'exploitation prévisionnel</button>
+          <button class="tab-btn" onclick="switchTab('budget','da')">🖨️ Demandes d'Achat <span class="nav-badge" id="badge-tab-budget-da" style="display:none;position:static;margin-left:4px;">0</span></button>
+          <button class="tab-btn" onclick="switchTab('budget','mesdemandes')">📋 Mes demandes <span class="nav-badge" id="badge-tab-budget-mesdemandes" style="display:none;position:static;margin-left:4px;">0</span></button>
         </div>
 
         <!-- ── Onglet Budget prévisionnel ── -->
@@ -14858,6 +14860,23 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="card">
             <div id="cexp-box" style="overflow-x:auto;"></div>
           </div>
+        </div>
+
+        <!-- ── Onglet Demandes d'Achat (DA) — FED validées, prêtes à imprimer ── -->
+        <div class="tab-pane" id="tab-budget-da">
+          <div class="card" style="margin-bottom:14px;">
+            <div style="font-size:12px;color:var(--blanc-dim);">Fiches d'engagement de dépense validées, devenues Demandes d'Achat — imprimables et suivies jusqu'à leur décaissement en caisse.</div>
+          </div>
+          <div id="budget-da-box"></div>
+        </div>
+
+        <!-- ── Onglet Mes demandes — FED et transferts soumis par l'utilisateur courant ── -->
+        <div class="tab-pane" id="tab-budget-mesdemandes">
+          <div class="card" style="margin-bottom:14px;">
+            <div class="card-title" style="margin-bottom:2px;">📋 Mes demandes</div>
+            <div style="font-size:11px;color:var(--dim);">Tous vos engagements de dépense et transferts budgétaires soumis — en attente, validés ou rejetés — pour suivre où en est chaque demande sans avoir à redemander.</div>
+          </div>
+          <div id="budget-mesdemandes-box"></div>
         </div>
       </div>
 
@@ -27519,6 +27538,8 @@ function switchTab(context, tab) {
     if (tab === 'fed' && typeof budgetRenderFed === 'function') budgetRenderFed();
     if (tab === 'transferts' && typeof budgetRenderTransferts === 'function') budgetRenderTransferts();
     if (tab === 'exploitation' && typeof renderCompteExploitationPrevisionnel === 'function') renderCompteExploitationPrevisionnel();
+    if (tab === 'da' && typeof budgetRenderDA === 'function') budgetRenderDA();
+    if (tab === 'mesdemandes' && typeof budgetRenderMesDemandes === 'function') budgetRenderMesDemandes();
   }
 
   /* Mettre à jour les boutons .tab-btn du même contexte */
@@ -94329,6 +94350,127 @@ async function daSupprimer(id) {
   toast('Supprimée.', 'info');
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   ONGLET « Demandes d'Achat » — fiches validées (donc devenues DA),
+   listées pour impression et suivi jusqu'au décaissement. Symétrique de
+   « Décaissements à faire » côté Caisse.
+   ══════════════════════════════════════════════════════════════════════ */
+function budgetRenderDA() {
+  var box = document.getElementById('budget-da-box'); if (!box) return;
+  var liste = (DATA.fiches_engagement_depense||[]).filter(function(d){ return d.statut === 'validee' || d.statut === 'decaissee'; })
+    .sort(function(a,b){ return (b.valide_le||'').localeCompare(a.valide_le||''); });
+  var badge = document.getElementById('badge-tab-budget-da');
+  var nbAImprimer = liste.filter(function(d){ return d.statut === 'validee'; }).length;
+  if (badge) { badge.textContent = nbAImprimer; badge.style.display = nbAImprimer ? 'inline-block' : 'none'; }
+  if (!liste.length) { box.innerHTML = '<div class="alert alert-info" style="text-align:center;padding:20px;">Aucune Demande d\'Achat pour l\'instant — une fiche apparaît ici dès qu\'elle est validée.</div>'; return; }
+
+  var html = '<div class="card"><div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>N° DA</th><th>Objet</th><th>Ligne</th><th style="text-align:right;">Montant</th><th>Validée par</th><th>Statut</th><th></th></tr></thead><tbody>';
+  liste.forEach(function(d) {
+    html += '<tr>'
+      + '<td><b>' + escHtml(d.numero_da||'') + '</b><div style="font-size:10px;color:var(--blanc-dim);">ex-' + escHtml(d.numero_fed||'') + '</div></td>'
+      + '<td>' + escHtml(d.objet||'') + '</td><td>' + escHtml(d.compte||'') + '</td>'
+      + '<td style="text-align:right;font-weight:700;">' + fmtF(d.montant) + ' F</td>'
+      + '<td style="font-size:11px;">' + escHtml(d.valide_par||'') + '<br><span style="color:var(--blanc-dim);">' + (d.valide_le||'').slice(0,10) + '</span></td>'
+      + '<td>' + (d.statut === 'decaissee'
+          ? '<span class="badge" style="background:rgba(16,163,74,0.15);color:var(--vert);">✅ Payée le ' + dateShort(d.decaisse_le) + '</span>'
+          : '<span class="badge" style="background:rgba(184,115,51,0.15);color:var(--or);">🕓 À décaisser</span>')
+      + '</td>'
+      + '<td><button class="btn btn-secondary btn-sm btn-icon" title="Imprimer la DA" onclick="imprimerDA(\'' + d.id + '\')">🖨️</button></td>'
+      + '</tr>';
+  });
+  html += '</tbody></table></div></div>';
+  box.innerHTML = html;
+}
+
+function imprimerDA(id) {
+  var d = (DATA.fiches_engagement_depense||[]).find(function(x){ return x.id===id; }); if (!d) return;
+  if (d.statut !== 'validee' && d.statut !== 'decaissee') { toast('🔒 Seule une Demande d\'Achat validée peut être imprimée.', 'error'); return; }
+  var p = DATA.params || {};
+  var divLabel = d.division_id ? _nomDivision(d.division_id) : '';
+  var lignesHtml = (d.lignes||[]).map(function(l){
+    return '<tr><td style="padding:6px 0;">' + escHtml(l.designation) + '</td>'
+      + '<td style="text-align:right;padding:6px 0;">' + (l.qte||0) + '</td>'
+      + '<td style="text-align:right;padding:6px 0;">' + fmtF(l.pu) + ' F</td>'
+      + '<td style="text-align:right;padding:6px 0;font-weight:700;">' + fmtF((l.qte||0)*(l.pu||0)) + ' F</td></tr>';
+  }).join('');
+  var visaHtml = '<div style="margin-top:14px;padding:8px 12px;background:#F0FDF4;border:1px solid #16A34A;border-radius:6px;font-size:12px;">'
+    + '<b>✅ Visa de la hiérarchie</b> — validée par ' + escHtml(d.valide_par||'—') + ' le ' + (d.valide_le ? (d.valide_le||'').replace('T',' ').slice(0,16) : '—')
+    + '</div>';
+  var html = '<div style="font-family:Georgia,serif;max-width:680px;margin:0 auto;">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #B87333;padding-bottom:16px;margin-bottom:20px;">'
+    + '<div style="display:flex;align-items:center;gap:12px;">'
+    + (getLogoForPrint() ? '<img src="'+getLogoForPrint()+'" style="height:48px;object-fit:contain;"/>' : '')
+    + '<div><h2 style="color:#B87333;font-size:18px;margin:0;">'+escHtml(p.societe||'ImmoSuite ERP')+'</h2></div></div>'
+    + '<div style="text-align:right;"><h3 style="color:#B87333;margin:0;">DEMANDE D\'ACHAT</h3><p style="font-size:13px;margin:2px 0 0;">'+escHtml(d.numero_da||'')+'</p></div>'
+    + '</div>'
+    + '<table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:14px;">'
+    + '<tr><td style="padding:4px 0;width:35%;color:#666;">Objet</td><td style="padding:4px 0;font-weight:700;">' + escHtml(d.objet||'') + '</td></tr>'
+    + '<tr><td style="padding:4px 0;color:#666;">Ligne budgétaire</td><td style="padding:4px 0;">' + escHtml(d.compte||'') + '</td></tr>'
+    + (divLabel ? '<tr><td style="padding:4px 0;color:#666;">Division</td><td style="padding:4px 0;">' + escHtml(divLabel) + '</td></tr>' : '')
+    + '<tr><td style="padding:4px 0;color:#666;">Bénéficiaire / Fournisseur</td><td style="padding:4px 0;">' + escHtml(d.beneficiaire||'') + '</td></tr>'
+    + '</table>'
+    + '<table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr style="border-bottom:2px solid #333;"><th style="text-align:left;padding:6px 0;">Désignation</th><th style="text-align:right;">Qté</th><th style="text-align:right;">P.U.</th><th style="text-align:right;">Total</th></tr></thead>'
+    + '<tbody>' + lignesHtml + '</tbody>'
+    + '<tfoot><tr style="border-top:2px solid #333;font-weight:800;"><td colspan="3" style="padding:8px 0;text-align:right;">TOTAL</td><td style="text-align:right;padding:8px 0;font-size:16px;">' + fmtF(d.montant) + ' F</td></tr></tfoot></table>'
+    + visaHtml
+    + '<div style="display:flex;justify-content:space-between;margin-top:60px;font-size:12px;">'
+    + '<div>Demandeur<br><br><br>___________________<br>' + escHtml(d.soumis_par||'') + '</div>'
+    + '<div>Fournisseur / Bénéficiaire<br><br><br>___________________</div>'
+    + '</div></div>';
+  openPrintPreview(html, 'DA — ' + (d.numero_da||''));
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   ONGLET « Mes demandes » — engagements de dépense ET transferts
+   budgétaires soumis par l'utilisateur courant, tous statuts confondus.
+   Symétrique de « Mes demandes de validation » côté Caisse.
+   ══════════════════════════════════════════════════════════════════════ */
+function budgetRenderMesDemandes() {
+  var box = document.getElementById('budget-mesdemandes-box'); if (!box) return;
+  var monNom = (APP.currentUser && APP.currentUser.nom) || '';
+  var fed = (DATA.fiches_engagement_depense||[]).filter(function(d){ return d.soumis_par === monNom; })
+    .map(function(d){ return { type:'FED', ref: fedLabelDocument(d), objet: d.objet, montant: d.montant, statut: d.statut, motif_rejet: d.motif_rejet, valide_par: d.valide_par, valide_le: d.valide_le, tri: d.soumis_le||d.created_at }; });
+  var transferts = (DATA.transferts_budgetaires||[]).filter(function(t){ return t.soumis_par === monNom; })
+    .map(function(t){ return { type:'Transfert', ref: (t.compte_source||'')+' → '+(t.compte_dest||''), objet: t.motif, montant: t.montant, statut: t.statut, motif_rejet: t.motif_rejet, valide_par: t.valide_par, valide_le: t.valide_le, tri: t.soumis_le||t.created_at }; });
+  var liste = fed.concat(transferts).sort(function(a,b){ return (b.tri||'').localeCompare(a.tri||''); });
+
+  var enAttente = liste.filter(function(x){ return x.statut === 'soumise' || x.statut === 'soumis'; }).length;
+  var badge = document.getElementById('badge-tab-budget-mesdemandes');
+  if (badge) { badge.textContent = enAttente; badge.style.display = enAttente ? 'inline-block' : 'none'; }
+  if (!liste.length) { box.innerHTML = '<div class="alert alert-info" style="text-align:center;padding:20px;">Aucune demande soumise pour l\'instant.</div>'; return; }
+
+  var STATUT_BADGE = {
+    brouillon:   '<span class="badge" style="background:rgba(255,255,255,0.08);color:var(--blanc-dim);">📝 Brouillon</span>',
+    soumise:     '<span class="badge" style="background:rgba(184,115,51,0.15);color:var(--or);">⏳ En attente</span>',
+    soumis:      '<span class="badge" style="background:rgba(184,115,51,0.15);color:var(--or);">⏳ En attente</span>',
+    validee:     '<span class="badge" style="background:rgba(16,163,74,0.15);color:var(--vert);">✅ Validé</span>',
+    valide:      '<span class="badge" style="background:rgba(16,163,74,0.15);color:var(--vert);">✅ Validé</span>',
+    decaissee:   '<span class="badge" style="background:rgba(16,163,74,0.15);color:var(--vert);">✅ Payée</span>',
+    rejetee:     '<span class="badge" style="background:rgba(220,53,69,0.15);color:var(--rouge);">✖ Rejeté</span>',
+    rejete:      '<span class="badge" style="background:rgba(220,53,69,0.15);color:var(--rouge);">✖ Rejeté</span>'
+  };
+
+  var html = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Type</th><th>N°</th><th>Objet / Motif</th><th style="text-align:right;">Montant</th><th>Statut</th><th>Décision</th></tr></thead><tbody>';
+  liste.forEach(function(x) {
+    var decisionHtml = '—';
+    if (x.statut === 'validee' || x.statut === 'valide' || x.statut === 'decaissee') {
+      decisionHtml = escHtml(x.valide_par||'') + '<br><span style="font-size:10px;color:var(--blanc-dim);">' + (x.valide_le||'').slice(0,16).replace('T',' ') + '</span>';
+    } else if (x.statut === 'rejetee' || x.statut === 'rejete') {
+      decisionHtml = escHtml(x.valide_par||'') + (x.motif_rejet ? '<br><span style="font-size:10px;color:var(--rouge);">' + escHtml(x.motif_rejet) + '</span>' : '');
+    }
+    html += '<tr>'
+      + '<td><span class="badge" style="background:rgba(255,255,255,0.08);">' + x.type + '</span></td>'
+      + '<td>' + escHtml(x.ref||'') + '</td>'
+      + '<td>' + escHtml(x.objet||'') + '</td>'
+      + '<td style="text-align:right;font-weight:700;">' + fmtF(x.montant) + ' F</td>'
+      + '<td>' + (STATUT_BADGE[x.statut] || x.statut) + '</td>'
+      + '<td style="font-size:11px;">' + decisionHtml + '</td>'
+      + '</tr>';
+  });
+  html += '</tbody></table></div>';
+  box.innerHTML = html;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════
    RENDU DES 3 LISTES — Budget prévisionnel, Fiches d'Engagement/DA, Transferts
    ═══════════════════════════════════════════════════════════════════════ */
@@ -116085,7 +116227,7 @@ function caisseControleIntegrite() {
   else ok.push('✅ Aucun doublon détecté.');
 
   /* 9. Décaissements en attente depuis trop longtemps */
-  var enAttente = mvts.filter(function(m){ return m.type==='sortie' && m.requiert_validation && !m.valide && !m.rejete; });
+  var enAttente = mvts.filter(function(m){ return m.requiert_validation && !m.valide && !m.rejete; });
   var vieux = enAttente.filter(function(m){ return (Date.now() - new Date(m.demande_le || m.created_at || Date.now()).getTime()) > 7*24*3600*1000; });
   if (vieux.length) pb.push('⚠️ ' + vieux.length + ' décaissement(s) en attente de validation depuis plus de 7 jours (bloquent leur ventilation).');
 
@@ -116094,7 +116236,7 @@ function caisseControleIntegrite() {
   ok.push('ℹ️ ' + nbAuto + ' mouvement(s) ventilé(s) automatiquement par règle · ' + mvts.filter(function(m){ return m.statut==='ventile' && !m.ventile_auto; }).length + ' manuellement.');
 
   /* 11. Mouvements non ventilés sur sessions clôturées (en attente de traitement) */
-  var aTraiter = mvts.filter(function(m){ var s = idxSess[m.session_id]; return m.statut!=='ventile' && s && s.statut==='cloturee' && !(m.type==='sortie' && m.requiert_validation && !m.valide); });
+  var aTraiter = mvts.filter(function(m){ var s = idxSess[m.session_id]; return m.statut!=='ventile' && s && s.statut==='cloturee' && !(m.requiert_validation && !m.valide); });
   if (aTraiter.length) ok.push('ℹ️ ' + aTraiter.length + ' mouvement(s) prêt(s) à ventiler (session clôturée, validation OK).');
 
   /* 12. Sessions ouvertes en double sur une même caisse (course entre postes
@@ -116315,12 +116457,12 @@ async function caisseRestaurerSnapshot(cle) {
 }
 
 async function genererEcritureCaisseMouvement(mvt, compteContrepartie, viaAuto) {
-  /* Un décaissement encore en attente de validation (montant au-delà du
-     plafond de son auteur) ne peut pas être ventilé/comptabilisé : tant
-     qu'aucun responsable habilité ne l'a approuvé, l'argent n'est pas réputé
-     sorti et l'écriture ne doit pas exister. */
-  if (mvt.type === 'sortie' && mvt.requiert_validation && !mvt.valide) {
-    try { toast('🔒 Ce décaissement (' + fmtF(mvt.montant) + ' FCFA) est en attente de validation par un responsable habilité — ventilation impossible avant approbation.', 'error'); } catch(e){}
+  /* Un mouvement encore en attente de validation ne peut pas être
+     ventilé/comptabilisé : tant qu'aucun responsable habilité ne l'a
+     approuvé, l'argent n'est pas réputé entré ou sorti et l'écriture ne
+     doit pas exister — vaut pour entrée ET sortie. */
+  if (mvt.requiert_validation && !mvt.valide) {
+    try { toast('🔒 Ce mouvement (' + fmtF(mvt.montant) + ' FCFA) est en attente de validation par un responsable habilité — ventilation impossible avant approbation.', 'error'); } catch(e){}
     return null;
   }
   var caisse = (DATA.caisses || []).find(function(c){ return c.id === mvt.caisse_id; });
