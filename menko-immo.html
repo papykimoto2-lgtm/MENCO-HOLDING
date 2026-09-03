@@ -34118,7 +34118,15 @@ function rebuildPlanComptable() {
   var supprimes = p.plan_comptable_supprimes || [];
   var modifs    = p.plan_comptable_modifs || {};
   var ajouts    = p.plan_comptable_custom || [];
+  /* [FIX] Garde-fou étendu à baseSource elle-même — jusqu'ici seuls les
+     comptes personnalisés (ajouts) étaient filtrés contre les entrées
+     null/undefined ; si la base (chargée depuis le cloud/params) contenait
+     ne serait-ce qu'un trou, tout .find(c => c.code === ...) en aval de
+     l'application plantait sur "Cannot read properties of undefined
+     (reading 'code')" — confirmé en production sur l'onglet Ventilation
+     de caisse (03/09). */
   APP.planComptable = baseSource
+    .filter(function(c){ return c && c.code; })
     .filter(function(c){ return supprimes.indexOf(c.code) === -1; })
     .map(function(c){ return modifs[c.code] ? Object.assign({}, c, modifs[c.code]) : c; })
     .concat((ajouts || []).filter(function(c){ return c && c.code; })); /* garde-fou : rejette null/undefined/entrées sans code — évite un plan comptable corrompu de faire planter l'arborescence */
@@ -115721,7 +115729,7 @@ function caisseAppliquerPrincipal(principalInputId, compteSelectId, infoId) {
   if (!inp || !sel) return;
   var raw = inp.value.trim();
   var code = (raw.match(/^(\S+)/) || [null, ''])[1];
-  var cpt = code ? (APP.planComptable || []).find(function(c){ return c.code === code; }) : null;
+  var cpt = code ? (APP.planComptable || []).find(function(c){ return c && c.code === code; }) : null;
 
   if (!cpt) {
     sel.innerHTML = '';
