@@ -116444,6 +116444,21 @@ function caisseMesDemandes() {
     return m.requiert_validation === true && m.demande_par === monNom;
   }).sort(function(a,b){ return (b.demande_le||b.date||'').localeCompare(a.demande_le||a.date||''); });
 }
+async function caisseDecaisserMouvement(mvtId) {
+  var m = (DATA.caisse_mouvements || []).find(function(x){ return x.id === mvtId; });
+  if (!m) return;
+  if (!(m.requiert_validation !== true || m.valide === true)) { toast('🔒 Ce mouvement doit d\'abord être validé par la hiérarchie.', 'error'); return; }
+  if (m.decaisse === true) { toast('Déjà marqué comme décaissé.', 'info'); return; }
+  if (!confirm((m.type==='entree'?'Confirmer l\'encaissement':'Confirmer le décaissement') + ' de ' + fmtF(m.montant) + ' FCFA (' + (m.motif||'') + ') — l\'argent a-t-il été physiquement remis ?')) return;
+  m.decaisse = true;
+  m.decaisse_par = (APP.currentUser && APP.currentUser.nom) || '—';
+  m.decaisse_le = new Date().toISOString();
+  await dbPut('caisse_mouvements', m);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_caisse_mouvements', m);
+  toast('✅ ' + (m.type==='entree'?'Encaissement':'Décaissement') + ' confirmé.', 'success');
+  if (typeof caisseRenderMesDemandes === 'function') caisseRenderMesDemandes();
+}
+
 function caisseRenderMesDemandes() {
   var box = document.getElementById('caisse-mesdemandes-box'); if (!box) return;
   var liste = caisseMesDemandes();
@@ -116452,7 +116467,7 @@ function caisseRenderMesDemandes() {
   if (badge) { badge.textContent = enAttente; badge.style.display = enAttente ? 'inline-block' : 'none'; }
   if (!liste.length) { box.innerHTML = '<div class="alert alert-info" style="text-align:center;padding:20px;">Aucune demande de validation soumise pour l\'instant.</div>'; return; }
 
-  var html = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Date</th><th>Type</th><th>Caisse</th><th>Motif</th><th style="text-align:right;">Montant</th><th>Statut</th><th>Décision</th></tr></thead><tbody>';
+  var html = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Date</th><th>Type</th><th>Caisse</th><th>Motif</th><th style="text-align:right;">Montant</th><th>Statut</th><th>Décision</th><th>Actions</th></tr></thead><tbody>';
   liste.forEach(function(m) {
     var c = (DATA.caisses || []).find(function(x){ return x.id === m.caisse_id; });
     var estSortie = m.type === 'sortie';
@@ -116466,6 +116481,18 @@ function caisseRenderMesDemandes() {
     } else {
       statutHtml = '<span class="badge" style="background:rgba(184,115,51,0.15);color:var(--or);">⏳ En attente</span>';
     }
+    /* [Boutons Décaisser/Imprimer] — visibles UNIQUEMENT si validé, comme le
+       blocage déjà en place sur caisseImprimerBon() (défense en profondeur :
+       même si le bouton n'était pas caché, la fonction refuserait quand
+       même). "Décaisser" fixe une confirmation distincte de la validation
+       elle-même — l'argent physiquement remis, pas juste approuvé. */
+    var actionsHtml = '—';
+    if (m.valide === true) {
+      actionsHtml = (m.decaisse === true
+        ? '<span style="font-size:10px;color:var(--vert);">✅ ' + (m.type==='entree'?'Encaissé':'Décaissé') + ' le ' + (m.decaisse_le||'').slice(0,10) + '<br>par ' + escHtml(m.decaisse_par||'') + '</span>'
+        : '<button class="btn btn-primary btn-sm" onclick="caisseDecaisserMouvement(\'' + m.id + '\')">💰 ' + (m.type==='entree'?'Encaisser':'Décaisser') + '</button>')
+        + ' <button class="btn btn-secondary btn-sm btn-icon" title="Imprimer le bon" onclick="caisseImprimerBon(\'' + m.id + '\')">🖨️</button>';
+    }
     html += '<tr>'
       + '<td>' + (m.date||'').slice(0,10) + '</td>'
       + '<td><span class="badge" style="background:' + (estSortie?'rgba(220,53,69,0.15);color:var(--rouge)':'rgba(16,163,74,0.15);color:var(--vert)') + ';">' + (estSortie?'↓ Sortie':'↑ Entrée') + '</span></td>'
@@ -116474,6 +116501,7 @@ function caisseRenderMesDemandes() {
       + '<td style="text-align:right;font-weight:700;">' + fmtF(m.montant) + ' F</td>'
       + '<td>' + statutHtml + '</td>'
       + '<td style="font-size:11px;">' + decisionHtml + '</td>'
+      + '<td style="white-space:nowrap;">' + actionsHtml + '</td>'
       + '</tr>';
   });
   html += '</tbody></table></div>';
