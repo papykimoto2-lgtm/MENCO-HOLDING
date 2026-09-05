@@ -14951,6 +14951,10 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               par la CENTIF (liste 1267 / communiqué de presse) avant de lancer le criblage.
             </div>
             <div class="form-group"><label>Source / résolution</label><input type="text" class="form-control" id="sfc-import-source" placeholder="Ex. Résolution 1267 CSNU — Liste EIIL (Daech) et Al-Qaida"></div>
+            <div class="form-group">
+              <label>Fichier .txt (une entrée par ligne, même format)</label>
+              <input type="file" class="form-control" id="sfc-import-fichier" accept=".txt" onchange="sfcChargerFichier(this)">
+            </div>
             <div class="form-group"><label>Entrées</label><textarea class="form-control" id="sfc-import-texte" rows="10" placeholder="Nom Prénom | alias1;alias2 | QDi.123 | personne"></textarea></div>
           </div>
           <div class="modal-footer">
@@ -52480,12 +52484,28 @@ function sfcOpenImport(){
   if(s) s.value=(DATA.params&&DATA.params.lbcft&&DATA.params.lbcft.sfc_liste_source)||'Résolution 1267 CSNU — Liste EIIL (Daech) et Al-Qaida';
   openModal('modal-sfc-import');
 }
+function sfcChargerFichier(input){
+  var f=input.files&&input.files[0]; if(!f) return;
+  var r=new FileReader();
+  r.onload=function(e){
+    var t=document.getElementById('sfc-import-texte');
+    if(t) t.value=String(e.target.result||'');
+    toast('Fichier chargé ('+f.name+') — cliquez « Importer ».','success');
+  };
+  r.onerror=function(){ toast('Lecture du fichier impossible.','error'); };
+  r.readAsText(f,'utf-8');
+}
 async function sfcImporterListe(){
   var texte=(document.getElementById('sfc-import-texte')||{}).value||'';
   var source=((document.getElementById('sfc-import-source')||{}).value||'').trim();
   var lignes=texte.split('\n').map(function(l){return l.trim();}).filter(Boolean);
   if(!lignes.length){ toast('Collez au moins une entrée à importer.','error'); return; }
   var liste=_sfcListe(); var ajoutes=0;
+  var btn=document.querySelector('#modal-sfc-import .btn-primary');
+  if(btn){ btn.disabled=true; btn.textContent='Import en cours…'; }
+  /* [Volume] Une liste officielle (RSNU 1267) peut compter plusieurs centaines
+     d'entrées : dbPut + syncToSupabase à chaque itération sans jamais rendre
+     la main gèlerait l'UI. Cession de la boucle toutes les 25 entrées. */
   for(var i=0;i<lignes.length;i++){
     var p=lignes[i].split('|').map(function(x){return x.trim();});
     var nom=p[0]; if(!nom) continue;
@@ -52499,6 +52519,7 @@ async function sfcImporterListe(){
     try{ await dbPut('sfc_liste',entree); }catch(e){}
     if(typeof syncToSupabase==='function') syncToSupabase('pi_sfc_liste',entree);
     ajoutes++;
+    if(i%25===0){ await new Promise(function(res){ setTimeout(res,0); }); if(btn) btn.textContent='Import en cours… ('+(i+1)+'/'+lignes.length+')'; }
   }
   DATA.params=DATA.params||{}; DATA.params.id=DATA.params.id||'main';
   DATA.params.lbcft=DATA.params.lbcft||{};
@@ -52506,6 +52527,7 @@ async function sfcImporterListe(){
   DATA.params._modifie=new Date().toISOString();
   try{ await dbPut('params',DATA.params); }catch(e){}
   if(typeof syncToSupabase==='function') syncToSupabase('pi_params',DATA.params);
+  if(btn){ btn.disabled=false; btn.textContent='Importer'; }
   closeModal('modal-sfc-import');
   sfcRenderListe();
   toast(ajoutes+' entrée(s) ajoutée(s) — '+(lignes.length-ajoutes)+' déjà en base ou ignorée(s).','success');
