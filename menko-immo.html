@@ -52368,25 +52368,22 @@ function sanixQrHtml(typeDoc, reference){
       prérempli (chiffres clés) ; le rapport imprimé (PDF) doit alors
       être joint à la main, comme n'importe quel site le ferait. */
 function sanixPartager(titre, resumeTexte){
-  if (navigator.share) {
-    if (navigator.canShare) {
-      try {
-        var nomFichier = titre.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-zA-Z0-9]+/g,'-').toLowerCase()+'.txt';
-        var file = new File([new Blob([resumeTexte],{type:'text/plain'})], nomFichier, {type:'text/plain'});
-        if (navigator.canShare({ files:[file] })) {
-          navigator.share({ title: titre, text: resumeTexte, files:[file] }).catch(function(){});
-          return;
-        }
-      } catch(e){}
-    }
-    navigator.share({ title: titre, text: resumeTexte }).catch(function(){});
-    return;
-  }
-  sanixPartagerMenu(resumeTexte, titre);
+  /* [FIX] navigator.share() AVEC fichier ouvrait le sélecteur natif Windows/
+     Chrome, qui reste bloqué en chargement sur desktop : aucune application
+     n'y est enregistrée comme cible de partage de FICHIER (WhatsApp Web et
+     Gmail sont des sites, pas des cibles de partage OS). Le bouton semblait
+     "ne pas fonctionner" alors que le navigateur attendait une réponse qui
+     ne viendrait jamais. Le menu direct (liens WhatsApp/Email) est donc
+     maintenant la voie principale, fiable sur desktop comme sur mobile ;
+     le partage natif — sans fichier, pour éviter le même blocage — n'est
+     proposé qu'en option secondaire, et seulement sur un appareil tactile
+     où un vrai sélecteur d'apps (WhatsApp, Mail…) est réellement disponible. */
+  var estTactile = ('ontouchstart' in window) || (navigator.maxTouchPoints||0) > 0;
+  sanixPartagerMenu(resumeTexte, titre, estTactile && !!navigator.share);
 }
-/* Repli sans navigator.share (desktop) : petit menu avec les deux options
-   directes plutôt qu'un choix binaire imposé au clic du bouton. */
-function sanixPartagerMenu(texte, sujet){
+/* Menu de partage — liens directs WhatsApp Web / Email, fiables partout.
+   Partage natif proposé en option seulement sur mobile (voir sanixPartager). */
+function sanixPartagerMenu(texte, sujet, avecNatif){
   var id='sanix-partage-menu';
   var ex=document.getElementById(id); if (ex) ex.remove();
   var div=document.createElement('div');
@@ -52395,6 +52392,7 @@ function sanixPartagerMenu(texte, sujet){
   div.innerHTML = '<div style="color:#fff;font-size:12px;font-weight:700;margin-bottom:4px;">Partager le rapport</div>'
     + '<button style="background:#25D366;color:#fff;border:none;border-radius:6px;padding:8px;font-size:12px;cursor:pointer;" onclick="window.open(\'https://wa.me/?text=\'+encodeURIComponent(sanixPartageTexteActuel),\'_blank\');document.getElementById(\''+id+'\').remove();">📱 WhatsApp</button>'
     + '<button style="background:#3b82f6;color:#fff;border:none;border-radius:6px;padding:8px;font-size:12px;cursor:pointer;" onclick="window.location.href=\'mailto:?subject=\'+encodeURIComponent(sanixPartageSujetActuel)+\'&body=\'+encodeURIComponent(sanixPartageTexteActuel);document.getElementById(\''+id+'\').remove();">✉️ Email</button>'
+    + (avecNatif ? '<button style="background:#475569;color:#fff;border:none;border-radius:6px;padding:8px;font-size:12px;cursor:pointer;" onclick="document.getElementById(\''+id+'\').remove();navigator.share({title:sanixPartageSujetActuel,text:sanixPartageTexteActuel}).catch(function(){});">📲 Autre application…</button>' : '')
     + '<button style="background:transparent;color:#94a3b8;border:none;padding:4px;font-size:11px;cursor:pointer;" onclick="document.getElementById(\''+id+'\').remove();">Annuler</button>';
   window.sanixPartageTexteActuel = texte;
   window.sanixPartageSujetActuel = sujet;
