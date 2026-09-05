@@ -32227,6 +32227,11 @@ function renderVersements() {
 function filterPaiements() { renderVersements(); }
 
 async function deleteVersement(id) {
+  /* Vérification explicite en plus du filet de deleteRecord (défense en
+     profondeur, même pattern que les validations Budget/Caisse) : message
+     clair immédiatement, avant même la confirmation, plutôt que de laisser
+     échouer silencieusement après un "OK" de l'utilisateur. */
+  if (!exigerDroit('Paiements', 's', 'la suppression de ce versement')) return;
   if (!confirm('Supprimer ce versement ?')) return;
   var v = DATA.versements.find(function(x){ return x.id === id; });
   var clientId = v ? v.client_id : null;
@@ -32247,15 +32252,34 @@ async function deleteVersement(id) {
     try{ await deleteRecord('commissions', c.id); }catch(e){}
   }
   DATA.commissions = (DATA.commissions||[]).filter(function(c){ return c.versement_id !== id || c.statut === 'payee'; });
+  /* [FIX cascade] Deux liens supplémentaires laissés orphelins jusqu'ici :
+     1) l'écriture de frais de passerelle (mobile money) générée par
+        payOnlineReconcilier() — id déterministe 'ecr_frais_<transaction_id>' ;
+     2) le paiement en ligne source (paiements_online) qui reste marqué
+        "réconcilié" avec un versement_id pointant vers un enregistrement
+        supprimé — il faut le rouvrir pour qu'un nouveau rapprochement
+        redevienne possible, sinon le paiement reste bloqué à vie. */
+  var poLie = (DATA.paiements_online||[]).find(function(p){ return p.versement_id === id; });
+  if (poLie) {
+    var ecrFraisId = 'ecr_frais_' + poLie.transaction_id;
+    if ((DATA.ecritures||[]).some(function(e){ return e.id === ecrFraisId; })) {
+      try{ await deleteRecord('ecritures', ecrFraisId, { skipIntegrity: true }); }catch(e){}
+    }
+    poLie.reconcilie = false; poLie.versement_id = null; poLie.frais = 0; poLie._modifie = new Date().toISOString();
+    try{ await dbPut('paiements_online', poLie); }catch(e){}
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_paiements_online', poLie);
+  }
   if (typeof renderCommissions === 'function') renderCommissions();
   if (typeof buildBalance === 'function') buildBalance();
   if (typeof buildGrandLivre === 'function') buildGrandLivre();
   if (clientId && typeof majStatutLotClient === 'function') await majStatutLotClient(clientId);
   renderVersements();
+  if (typeof payOnlineRender === 'function') payOnlineRender();
   refreshDashboard();
   toast('Versement et écriture comptable supprimés.'
     + (commsLiees.length>commsPayees.length ? ' '+(commsLiees.length-commsPayees.length)+' commission(s) liée(s) supprimée(s).' : '')
-    + (commsPayees.length ? ' ⚠️ '+commsPayees.length+' commission(s) déjà payée(s) conservée(s) — à régulariser manuellement.' : ''), 'info');
+    + (commsPayees.length ? ' ⚠️ '+commsPayees.length+' commission(s) déjà payée(s) conservée(s) — à régulariser manuellement.' : '')
+    + (poLie ? ' Paiement en ligne '+(poLie.transaction_id||'')+' remis en attente de rapprochement.' : ''), 'info');
 }
 
 function loadEcheancier() {
