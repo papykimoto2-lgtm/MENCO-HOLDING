@@ -74526,9 +74526,6 @@ async function startApp() {
     });
   });
 
-  // ── Migration silencieuse des mots de passe en clair ───────────────
-  await migratePasswords();
-
   // ── Correction silencieuse CMU/CNPS sur bulletins déjà enregistrés
   //    (employés non déclarés / consultants facturés à tort avant fix) ──
   try { await repairBulletinsExoCnps(); } catch(e){}
@@ -74556,6 +74553,19 @@ async function startApp() {
     try { demarrerSyncAuto(); } catch(e){}
     try { _majBadgeStaffSession(); } catch(e){}
     try { setTimeout(function(){ pullFromCloudSilent(); }, 1500); } catch(e){}
+    /* [FIX régression RLS] migratePasswords() se trouvait AVANT ce bloc :
+       demarrerSyncAuto() est ce qui appelle staffCharger() et rétablit le
+       jeton "authenticated" émis par staff-login. Exécutée plus tôt, la
+       migration des mots de passe tentait TOUJOURS son envoi cloud avec la
+       seule clé anonyme — bloquée depuis le durcissement RLS (exige
+       authenticated). L'envoi échouait silencieusement à chaque démarrage,
+       le cloud restait figé sur l'ancienne version, et le prochain
+       rechargement de page revivait la migration en boucle avec un nouveau
+       sel à chaque fois — invalidant la session courante et affichant
+       "mot de passe modifié" alors qu'aucun administrateur n'était en
+       cause. Un court délai laisse le jeton staff se rétablir avant de
+       tenter la synchro de la migration. */
+    setTimeout(function(){ migratePasswords().catch(function(){}); }, 2000);
     goTo('dashboard');
     /* Démarrage Realtime après login */
     try { setTimeout(startRealtime, 1500); } catch(e){}
