@@ -27065,11 +27065,11 @@ async function checkSession() {
   if (!token) return null;
   try {
     var parts = token.split('.');
-    if (parts.length !== 2) throw 0;
+    if (parts.length !== 2) throw {r:'invalide'};
     var expected = await _signSession(parts[0]);
-    if (parts[1] !== expected) throw 0;                       /* signature invalide → rejet */
+    if (parts[1] !== expected) throw {r:'invalide'};                       /* signature invalide → rejet */
     var payload = JSON.parse(decodeURIComponent(escape(atob(parts[0]))));
-    if (!payload.exp || payload.exp < Date.now()) throw 0;
+    if (!payload.exp || payload.exp < Date.now()) throw {r:'expiree'};
     /* [Déconnexion forcée à distance] Un admin peut invalider TOUTES les
        sessions ouvertes (autres postes/onglets restés connectés avec un cache
        local périmé) depuis Paramétrage → Sécurité. Toute session émise avant
@@ -27077,12 +27077,20 @@ async function checkSession() {
        payload.iat absent (anciens tokens émis avant cette version) = traité
        comme antérieur à toute epoch, donc invalidé dès la première purge. */
     var epoch = (DATA.params || {}).force_logout_epoch || 0;
-    if (epoch && (!payload.iat || payload.iat < epoch)) throw 0;
+    if (epoch && (!payload.iat || payload.iat < epoch)) throw {r:'distance'};
     var u = DATA.users.find(function(x){ return x.id === payload.id; });
-    if (!u) throw 0;
-    if ((u.password_hash || '').slice(0, 16) !== (payload.ph || '')) throw 0; /* hash changé → invalidé */
+    if (!u) throw {r:'invalide'};
+    /* [FIX] Un hash différent ne signifie pas toujours "invalidée par un
+       administrateur" : migratePasswords() (exécutée une fois au démarrage,
+       silencieusement, pour convertir un mot de passe en clair vers un hash)
+       change u.password_hash sans lien avec une action d'un administrateur —
+       une session ouverte AVANT cette migration se retrouvait invalidée avec
+       le même message alarmant "terminée à distance par un administrateur",
+       alors qu'il ne s'agissait que d'une mise à jour de format interne.
+       Message désormais différencié selon la cause réelle. */
+    if ((u.password_hash || '').slice(0, 16) !== (payload.ph || '')) throw {r:'motdepasse'};
     return u;
-  } catch (e) { localStorage.removeItem('pici_auth_token'); return null; }
+  } catch (e) { localStorage.removeItem('pici_auth_token'); window._lastSessionInvalideRaison = (e&&e.r)||'invalide'; return null; }
 }
 
 /** Vérifie le rôle de l'utilisateur courant (hiérarchie admin > comptable > commercial) */
@@ -27183,7 +27191,14 @@ async function _verifierSessionEncoreValide() {
        libérer la connexion tout de suite compte, plutôt que de la laisser
        vivre encore 1,5 s pendant l'affichage du message. */
     if (typeof stopRealtime === 'function') { try { stopRealtime(); } catch(e){} }
-    try { if (typeof toast === 'function') toast('🔒 Session terminée à distance par un administrateur.', 'info'); } catch(e){}
+    var messages = {
+      distance: '🔒 Session terminée à distance par un administrateur.',
+      motdepasse: '🔑 Votre mot de passe a été modifié — reconnectez-vous.',
+      expiree: '⏱️ Votre session a expiré — reconnectez-vous.',
+      invalide: '🔒 Session invalide — reconnectez-vous.'
+    };
+    var msg = messages[window._lastSessionInvalideRaison] || messages.invalide;
+    try { if (typeof toast === 'function') toast(msg, 'info'); } catch(e){}
     setTimeout(function(){ location.reload(); }, 1500);
   }
 }
