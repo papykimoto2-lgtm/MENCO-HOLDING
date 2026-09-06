@@ -4686,7 +4686,10 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div style="margin-top:10px;">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
                 <label style="margin:0;">Soldes par compte *</label>
-                <button type="button" class="btn btn-secondary btn-sm" onclick="boAjouterLigne()">➕ Ajouter une ligne</button>
+                <div style="display:flex;gap:8px;">
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="boOuvrirImport()">📋 Coller/Importer</button>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="boAjouterLigne()">➕ Ajouter une ligne</button>
+                </div>
               </div>
               <div id="bo-lignes-wrap"></div>
             </div>
@@ -17142,6 +17145,30 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-cesresil-remb')">Annuler</button>
       <button class="btn btn-primary" onclick="cesResilierConfirmerRemboursement()">💰 Confirmer le remboursement</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Import Bilan d'ouverture -->
+<div class="modal-overlay" id="modal-bo-import">
+  <div class="modal">
+    <div class="modal-header"><h3>📋 Importer le bilan d'ouverture</h3><button class="btn btn-secondary btn-icon" onclick="closeModal('modal-bo-import')">✕</button></div>
+    <div class="modal-body">
+      <div class="alert alert-info" style="font-size:11.5px;">
+        Une ligne par compte, format <code>compte|sens|montant</code> — sens = <b>D</b> (débiteur) ou <b>C</b> (créditeur).
+        Collez directement depuis un tableau préparé (Excel, ou le tableau que je vous ai fourni).<br>
+        Exemple : <code>571|D|12688</code>
+      </div>
+      <div class="form-group"><label>Coller les lignes ici</label><textarea class="form-control" id="bo-import-texte" rows="12" placeholder="571|D|12688
+521|D|500000
+101|C|8022150
+12|D|64302814
+401|C|56793352"></textarea></div>
+      <div id="bo-import-apercu" style="font-size:11.5px;color:var(--blanc-dim);margin-top:8px;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-bo-import')">Annuler</button>
+      <button class="btn btn-primary" onclick="boConfirmerImport()">✅ Charger dans le formulaire</button>
     </div>
   </div>
 </div>
@@ -62700,6 +62727,43 @@ function boCheckEquilibre() {
     ? '✔ Bilan équilibré — Actif (débiteur) ' + fmtF(totD) + ' FCFA = Passif (créditeur) ' + fmtF(totC) + ' FCFA (' + lignesValides.length + ' compte(s))'
     : '⚠ Déséquilibre — Débiteur ' + fmtF(totD) + ' ≠ Créditeur ' + fmtF(totC) + ' (écart ' + fmtF(Math.abs(totD-totC)) + ' FCFA). Vérifiez vos soldes avant d\'enregistrer.';
   return { ok: ok, totD: totD, totC: totC };
+}
+
+/* Import par collage — évite de ressaisir manuellement une à une des lignes
+   déjà préparées (ex. reprise depuis une liasse fiscale déposée à la DGI :
+   plusieurs dizaines de comptes pour une seule entité, ligne par ligne dans
+   l'écran serait long et propice aux erreurs de recopie). */
+function boOuvrirImport(){
+  document.getElementById('bo-import-texte').value = '';
+  document.getElementById('bo-import-apercu').textContent = '';
+  openModal('modal-bo-import');
+}
+function boConfirmerImport(){
+  var texte = (document.getElementById('bo-import-texte')||{}).value || '';
+  var lignes = texte.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+  if (!lignes.length){ toast('Collez au moins une ligne.','error'); return; }
+  var importees = [];
+  var erreurs = [];
+  lignes.forEach(function(l, idx){
+    var p = l.split('|').map(function(x){ return x.trim(); });
+    if (p.length < 3) { erreurs.push('Ligne ' + (idx+1) + ' : format invalide (' + l + ')'); return; }
+    var compte = p[0], sens = p[1].toUpperCase(), montant = parseFloat((p[2]||'').replace(/[^\d.-]/g,''));
+    if (!compte) { erreurs.push('Ligne ' + (idx+1) + ' : compte manquant'); return; }
+    if (sens !== 'D' && sens !== 'C') { erreurs.push('Ligne ' + (idx+1) + ' : sens « ' + p[1] + ' » invalide (D ou C attendu)'); return; }
+    if (!montant || montant <= 0) { erreurs.push('Ligne ' + (idx+1) + ' : montant invalide (' + p[2] + ')'); return; }
+    importees.push({ compte: compte, sens: sens, montant: montant });
+  });
+  if (!importees.length) { toast('Aucune ligne valide à importer.', 'error'); return; }
+  _boLignes = importees;
+  boRenderLignes();
+  closeModal('modal-bo-import');
+  var totD = importees.filter(function(l){return l.sens==='D';}).reduce(function(s,l){return s+l.montant;},0);
+  var totC = importees.filter(function(l){return l.sens==='C';}).reduce(function(s,l){return s+l.montant;},0);
+  toast(importees.length + ' ligne(s) chargée(s)'
+    + (erreurs.length ? ' — ⚠️ ' + erreurs.length + ' ligne(s) ignorée(s) (voir console).' : '')
+    + (Math.abs(totD-totC) < 1 ? ' — équilibré ✅' : ' — ⚠️ déséquilibre à vérifier.'),
+    erreurs.length ? 'warning' : 'success');
+  if (erreurs.length) console.warn('[Bilan ouverture — import]', erreurs.join('\n'));
 }
 
 /** Recharge le formulaire pour l'exercice sélectionné : préremplit si un bilan d'ouverture existe déjà */
