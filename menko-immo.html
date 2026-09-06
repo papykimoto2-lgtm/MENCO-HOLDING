@@ -4192,9 +4192,9 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <!-- Dotations annuelles -->
           <div id="amort-pane-dotations" style="display:none;">
             <div class="alert alert-info" style="margin-bottom:10px;font-size:11.5px;">
-              ℹ️ Cet onglet ne comptabilise que le foncier (biens acquis par le promoteur). Pour un véhicule ou du
-              matériel, générez sa dotation depuis l'onglet 🏢 <b>Immobilisations Société</b> — bouton « Générer
-              dotations de l'exercice » (registre distinct, pour éviter toute double comptabilisation).
+              ℹ️ Comptabilise le foncier <b>et</b> les véhicules/matériel (Immobilisations Société) en une seule action —
+              identifiant d'écriture identique quel que soit le bouton utilisé (ici ou dans l'onglet Immobilisations
+              Société), aucun risque de double comptabilisation.
             </div>
             <div class="filters-bar">
               <select class="filter-select" id="filter-amort-annee" onchange="buildDotations()"></select>
@@ -62080,22 +62080,27 @@ async function genererDotationsAnnuelles() {
   for (var i = 0; i < list.length; i++) {
     var im = list[i];
     var c = immoSocCalc(im, year);
+    /* [FIX] id déterministe — remplace uid() (aléatoire). Avec un id
+       aléatoire, un reclic ou une resynchronisation après coupure réseau
+       pouvait créer une DEUXIÈME écriture pour la même dotation au lieu
+       d'écraser proprement la même (dbPut fait un upsert par id). Même
+       convention que comptabiliserDotations() (foncier) : ecr_<source>_<id>_<année>
+       — garantit qu'appeler cette fonction OU le bouton unifié "Comptabiliser
+       dotations 681" pour le même véhicule/année produit exactement la même
+       écriture, jamais un doublon. */
     var ec = {
-      id: uid(), ref: 'DOT-' + year + '-' + String(i+1).padStart(3,'0'), date: year+'-12-31', piece: 'DOTATION',
+      id: 'ecr_immosoc_dot_'+im.id+'_'+year, ref: 'DOT-' + year + '-' + String(i+1).padStart(3,'0'), date: year+'-12-31', piece: 'DOTATION',
       type: 'charge', libelle: 'Dotation amortissement ' + year + ' — ' + im.designation,
       lignes: [ { compte: cptDotation, sens:'D', montant: c.dotationAnnuelle, libelle:'Dotation' }, { compte: cptCumul, sens:'C', montant: c.dotationAnnuelle, libelle:'Amortissement cumulé' } ],
       compte: cptDotation, compte_debit: cptDotation, compte_credit: cptCumul, montant: c.dotationAnnuelle,
       mode: 'od', programme_id: '', division: im.division_id||'', notes: 'Immobilisation ' + im.designation + ' — année ' + (c.anneesEcoulees) + '/' + c.duree, created_at: today()
     };
-    DATA.ecritures.push(ec); await dbPut('ecritures', ec);
+    var idxEc = DATA.ecritures.findIndex(function(e){ return e.id === ec.id; });
+    if (idxEc >= 0) DATA.ecritures[idxEc] = ec; else DATA.ecritures.push(ec);
+    await dbPut('ecritures', ec);
     if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ec);
-    im.dotations_generees = im.dotations_generees || []; im.dotations_generees.push(year);
-    /* [FIX] Ces écritures de dotation ont un id ALÉATOIRE (uid()), pas
-       déterministe comme les autres modules — impossible de les retrouver par
-       motif de nommage à la suppression de l'immobilisation. On trace donc
-       explicitement leurs ids sur la fiche pour permettre une cascade fiable
-       (cf. deleteImmoSociete ci-dessous). */
-    im.ecritures_dotation_ids = im.ecritures_dotation_ids || []; im.ecritures_dotation_ids.push(ec.id);
+    im.dotations_generees = im.dotations_generees || []; if (im.dotations_generees.indexOf(year)===-1) im.dotations_generees.push(year);
+    im.ecritures_dotation_ids = im.ecritures_dotation_ids || []; if (im.ecritures_dotation_ids.indexOf(ec.id)===-1) im.ecritures_dotation_ids.push(ec.id);
     await dbPut('immobilisations', im);
     if (typeof syncToSupabase === 'function') syncToSupabase('pi_immobilisations', im);
   }
@@ -64023,7 +64028,13 @@ function buildDotations() {
     for(var a=anneeN;a>=anneeN-5;a--){var o=document.createElement('option');o.value=a;o.textContent=a;sel.appendChild(o);}
   }
   var annee=parseInt(sel?sel.value||anneeN:anneeN);
-  var biens=DATA.biens_amort||[];
+  /* [Unification] Élargi au registre Immobilisations Société (véhicules,
+     matériel — Parc Auto) : jusqu'ici seul le foncier apparaissait ici,
+     ce qui laissait croire qu'un véhicule ne pouvait jamais être amorti
+     à ce niveau. Sûr grâce à l'id déterministe de comptabiliserDotations()
+     ci-dessous : comptabiliser depuis ici ou depuis Immobilisations Société
+     produit exactement la même écriture, jamais un doublon. */
+  var biens=_amortTousBiens();
   var tbody=document.getElementById('tbody-dotations');
   var alertEl=document.getElementById('dotations-alerte');
   if(!tbody)return;
@@ -64051,7 +64062,7 @@ function buildDotations() {
     totalDot+=dot; totalCumul+=cumulN; totalVNC+=vnc;
     var amorti=dot===0;
     return '<tr>'
-      +'<td style="font-family:monospace;font-size:11px;color:var(--or);">'+(b.dossier||'—')+'</td>'
+      +'<td style="font-family:monospace;font-size:11px;color:var(--or);">'+(b._source==='immobilisations'?'🚗':'🏠')+' '+(b.dossier||'—')+'</td>'
       +'<td style="font-size:12px;">'+b.designation.slice(0,30)+'</td>'
       +'<td>'+fmtF(b.valeur_origine)+' FCFA</td>'
       +'<td style="color:var(--dim);">'+fmtF(cumulAnt)+' FCFA</td>'
@@ -64075,13 +64086,8 @@ function buildDotations() {
 async function comptabiliserDotations() {
   var sel=document.getElementById('filter-amort-annee');
   var annee=parseInt(sel?sel.value||new Date().getFullYear():new Date().getFullYear());
-  var biens=DATA.biens_amort||[];
+  var biens=_amortTousBiens();
   if(!biens.length){toast('Aucun bien à amortir.','error');return;}
-  /* [FIX] Aucun garde-fou exercice clos ici, contrairement à la fonction
-     sœur genererDotationsAnnuelles() (module Immobilisations). Sans lui,
-     dbPut rejette silencieusement chaque écriture sur un exercice clos,
-     mais la boucle continuait, affichant « ✅ N dotations comptabilisées »
-     alors qu'aucune ne persistait réellement. */
   if (typeof exerciceEstClos === 'function' && exerciceEstClos(annee+'-12-31')) {
     toast('🔒 Exercice ' + annee + ' clôturé — dotations bloquées.', 'error'); return;
   }
@@ -64092,9 +64098,14 @@ async function comptabiliserDotations() {
     var b=biens[i];
     var dot=calcAnnuite(b,annee);
     if(dot<=0)continue;
+    /* [Unification] Identifiant déterministe différent selon le registre
+       d'origine, mais IDENTIQUE à celui que produirait l'autre bouton
+       (genererDotationsAnnuelles pour un véhicule) — upsert sûr, jamais
+       de double écriture même si les deux boutons sont utilisés. */
+    var ecrId = b._source==='immobilisations' ? ('ecr_immosoc_dot_'+b.id+'_'+annee) : ('ecr_681_'+b.id+'_'+annee);
     var ecr={
-      id:'ecr_681_'+b.id+'_'+annee,
-      ref:'DAP-'+annee+'-'+b.dossier,
+      id:ecrId,
+      ref:'DAP-'+annee+'-'+(b.dossier||b.id.slice(-6).toUpperCase()),
       date:date31dec,
       piece:'681/'+b.compte_amort,
       libelle:'Dotation amortissement '+annee+' — '+b.designation.slice(0,50)+(b.dossier?' ('+b.dossier+')':''),
@@ -64105,15 +64116,11 @@ async function comptabiliserDotations() {
       type:'charge',
       mode:'interne',
       division:b.division_id||'',
-      notes:'Amortissement linéaire — '+b.duree+' ans',
+      notes:'Amortissement '+b.methode+' — '+b.duree+' ans',
       created_at:date31dec,
     };
     var idxDot = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; });
     if (idxDot >= 0) DATA.ecritures[idxDot] = ecr; else DATA.ecritures.push(ecr);
-    /* [FIX] Retour de dbPut vérifié — même filet que genererDotationsAnnuelles()
-       et genererEcritureCaisseMouvement(), sinon une écriture rejetée reste
-       fantôme en mémoire (visible dans la session en cours) sans jamais être
-       persistée ni synchronisée. */
     var _ok = await dbPut('ecritures',ecr);
     if (_ok === false) {
       var _idx2 = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; });
@@ -64122,17 +64129,30 @@ async function comptabiliserDotations() {
       continue;
     }
     if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecr);
+    /* Traçabilité sur la fiche réelle (pas l'objet adapté) — même champs
+       que genererDotationsAnnuelles(), pour que les deux boutons tiennent
+       le même registre de suivi sur l'immobilisation. */
+    if (b._source==='immobilisations') {
+      var imReel = (DATA.immobilisations||[]).find(function(x){ return x.id===b.id; });
+      if (imReel) {
+        imReel.dotations_generees = imReel.dotations_generees || []; if (imReel.dotations_generees.indexOf(annee)===-1) imReel.dotations_generees.push(annee);
+        imReel.ecritures_dotation_ids = imReel.ecritures_dotation_ids || []; if (imReel.ecritures_dotation_ids.indexOf(ecr.id)===-1) imReel.ecritures_dotation_ids.push(ecr.id);
+        await dbPut('immobilisations', imReel);
+        if (typeof syncToSupabase === 'function') syncToSupabase('pi_immobilisations', imReel);
+      }
+    }
     count++;
   }
   toast('✅ '+count+' dotation(s) comptabilisée(s) — Débit 681 / Crédit 281 pour '+annee+'.'+(refuses?' · ⛔ '+refuses+' refusée(s) (exercice clos).':''), refuses?'warning':'success');
   buildDotations();
   buildAmortBiens();
+  if (typeof renderImmoSociete === 'function') renderImmoSociete();
 }
 
 function exportDotationsCSV(){
   var sel=document.getElementById('filter-amort-annee');
   var annee=parseInt(sel?sel.value||new Date().getFullYear():new Date().getFullYear());
-  var biens=DATA.biens_amort||[];
+  var biens=_amortTousBiens();
   var rows=['Référence,Bien,Valeur origine,Amort. antérieur,Dotation '+annee+',Amort. cumulé,VNC'];
   biens.forEach(function(b){
     rows.push([b.dossier,b.designation,b.valeur_origine,calcAmortCumul(b,annee-1),calcAnnuite(b,annee),calcAmortCumul(b,annee),calcVNC(b,annee)].join(','));
