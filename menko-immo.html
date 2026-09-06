@@ -16885,6 +16885,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <label>Surface souscrite (m²) <span style="font-weight:400;color:var(--blanc-dim);">— pré-remplie depuis le(s) lot(s), modifiable</span></label>
             <input type="number" class="form-control" id="c-surface" placeholder="0" oninput="clientCompareSurface()">
             <div id="c-surface-ecart" style="font-size:11px;margin-top:4px;display:none;"></div>
+            <div id="c-surface-regul-action" style="margin-top:6px;"></div>
           </div>
           <div class="form-group">
             <label>Prix de vente total (FCFA)</label>
@@ -17151,6 +17152,32 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-cesresil-remb')">Annuler</button>
       <button class="btn btn-primary" onclick="cesResilierConfirmerRemboursement()">💰 Confirmer le remboursement</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Régularisation de surface -->
+<div class="modal-overlay" id="modal-regul-surface">
+  <div class="modal">
+    <div class="modal-header"><h3>📐 Facturer l'écart de surface</h3><button class="btn btn-secondary btn-icon" onclick="closeModal('modal-regul-surface')">✕</button></div>
+    <div class="modal-body">
+      <input type="hidden" id="rs2-client-id">
+      <div class="alert alert-info" style="font-size:11.5px;">
+        La surface réelle du terrain (relevé, bornage) dépasse la surface déclarée à la souscription. Le surplus est
+        facturé au souscripteur, au prix au m² du lot — génère un avenant signable et met à jour le montant total du contrat.
+      </div>
+      <div class="form-grid">
+        <div class="form-group"><label>Surface déclarée (m²)</label><input type="number" class="form-control" id="rs2-surface-declaree" disabled></div>
+        <div class="form-group"><label>Surface réelle (m²)</label><input type="number" class="form-control" id="rs2-surface-reelle" disabled></div>
+        <div class="form-group"><label>Écart facturable (m²)</label><input type="number" class="form-control" id="rs2-ecart" disabled></div>
+        <div class="form-group"><label>Prix au m² (FCFA)</label><input type="number" class="form-control" id="rs2-prix-m2" oninput="rs2Recalculer()"></div>
+      </div>
+      <div class="form-group"><label>Montant complémentaire dû</label><input type="text" class="form-control" id="rs2-montant" disabled style="font-weight:700;color:var(--or,#B87333);"></div>
+      <div class="form-group"><label>Motif / justification (obligatoire)</label><textarea class="form-control" id="rs2-motif" rows="2" placeholder="Ex. Relevé topographique du géomètre-expert du 12/09/2026 — bornage définitif."></textarea></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-regul-surface')">Annuler</button>
+      <button class="btn btn-primary" onclick="confirmerRegularisationSurface()">📐 Enregistrer et générer l'avenant</button>
     </div>
   </div>
 </div>
@@ -28689,13 +28716,35 @@ function buildDashTabCompta() {
       if (inYear) soldesAnnee[l.compte] = (soldesAnnee[l.compte]||0) + v;
     });
   });
-  function _sum(map,codes){ var t=0; (APP.planComptable||[]).forEach(function(c){ if(codes.some(function(p){return c.code.indexOf(p)===0;})) t+=map[c.code]||0; }); return t; }
+  /* [FIX structurel] Itérait sur APP.planComptable (≈158 comptes "courants"
+     pour les listes déroulantes) au lieu des comptes RÉELLEMENT postés dans
+     les écritures. Tout sous-compte utilisé en pratique mais absent de cette
+     liste curatée (ex. 4451/4453/4454/4455/4456 — confirmés utilisés par le
+     décompte à l'avancement, les factures fournisseur et le lettrage FNP/FAE,
+     mais seul 4452 de cette famille figure dans les 158) contribuait pour
+     zéro à CHAQUE KPI de cet écran (résultat, charges, trésorerie, dettes),
+     pas seulement la TVA — silencieusement, sans aucune anomalie visible
+     puisque le calcul ne plantait pas, il ignorait juste une partie réelle
+     des mouvements. */
+  function _sum(map,codes){ var t=0; for(var code in map){ if(codes.some(function(p){return code.indexOf(p)===0;})) t+=map[code]||0; } return t; }
   function S(codes){ return _sum(soldes,codes); }        /* cumulatif → bilan */
   function SA(codes){ return _sum(soldesAnnee,codes); }   /* exercice → résultat */
   var produits=-SA(['7']), charges=SA(['6']), resultat=produits-charges;
-  var tvaColl=-S(['443']), tvaDed=S(['445']), tvaDue=tvaColl-tvaDed;
+  /* [FIX v2] Après vérification complète : 4451-4456 sont des sous-comptes
+     RÉELLEMENT utilisés par plusieurs fonctions de comptabilisation
+     (décompte à l'avancement, factures fournisseur, lettrage FNP/FAE) — le
+     module "Déclaration de TVA" (calculerTVA/TVA_DEDUCTIBLE) le confirme
+     indépendamment. Seul le compte "445" PARENT (nu, 3 chiffres) est
+     réellement "TVA à décaisser" (une dette) dans ce plan — ses propres
+     sous-comptes numérotés servent à tout autre chose (récupérable). D'où
+     la liste explicite ci-dessous plutôt qu'un simple préfixe '445', qui
+     aurait à tort réintégré le parent lui-même dans le déductible. */
+  var tvaColl=-S(['443']), tvaDed=S(['444','4451','4452','4453','4454','4455','4456']), tvaDue=tvaColl-tvaDed;
   var treso=S(['51','52','53','55','57']);
-  var dFourn=Math.abs(S(['401','402','408'])), dSoc=Math.abs(S(['431','447','448'])), dPers=Math.abs(S(['422']));
+  /* [FIX] 432 (ITS à payer), 441 (Impôts et taxes) et 445 (TVA à décaisser —
+     la vraie dette, absente d'ici alors qu'elle y a précisément sa place)
+     manquaient de cette rubrique "Dettes sociales & fiscales". */
+  var dFourn=Math.abs(S(['401','402','408'])), dSoc=Math.abs(S(['431','432','441','445','447','448'])), dPers=Math.abs(S(['422']));
 
   var cards=[
     {l:'Résultat '+year,v:fmtF(Math.round(resultat))+' F',c:resultat>=0?'kpi-green':'kpi-red',d:(resultat>=0?'Bénéfice':'Perte')+' · produits '+fmtF(Math.round(produits))},
@@ -28707,7 +28756,7 @@ function buildDashTabCompta() {
   if(kpi) kpi.innerHTML=cards.map(function(k){return '<div class="kpi-card '+k.c+'"><div class="kpi-label">'+k.l+'</div><div class="kpi-value or" style="font-size:16px;">'+k.v+'</div><div class="kpi-delta '+(k.c==='kpi-red'?'negative':k.c==='kpi-green'?'positive':'')+'">'+k.d+'</div></div>';}).join('');
 
   var tv=document.getElementById('dash-compta-treso');
-  if(tv) tv.innerHTML=_cRow('TVA collectée (443)',tvaColl)+_cRow('TVA déductible (445)',tvaDed)
+  if(tv) tv.innerHTML=_cRow('TVA collectée (443)',tvaColl)+_cRow('TVA déductible (444)',tvaDed)
     +_cRow('<strong>TVA nette due</strong>',tvaDue,tvaDue>0?'var(--rouge)':'var(--vert)')
     +'<div style="height:8px"></div>'
     +_cRow('Produits (Cl.7)',produits)+_cRow('Charges (Cl.6)',charges)
@@ -28717,7 +28766,7 @@ function buildDashTabCompta() {
 
   var dt=document.getElementById('dash-compta-dettes');
   if(dt) dt.innerHTML=_cRow('Fournisseurs (401/402/408)',dFourn,'var(--or)')
-    +_cRow('Dettes sociales & fiscales (431/447/448)',dSoc,'var(--or)')
+    +_cRow('Dettes sociales & fiscales (431/432/441/445/447/448)',dSoc,'var(--or)')
     +_cRow('Personnel — net à payer (422)',dPers,'var(--or)')
     +'<div style="height:8px"></div>'
     +_cRow('<strong>Total dettes court terme</strong>',dFourn+dSoc+dPers,'var(--rouge)')
@@ -31050,6 +31099,12 @@ async function deleteClient(id) {
      sanction SFC ne doit jamais pouvoir être supprimé — la suppression
      effacerait la preuve du gel, contraire à l'obligation de conservation. */
   if (cli && cli.gele) { alert('Impossible : ce souscripteur est GELÉ (sanction SFC).\nLa suppression effacerait la preuve du gel. Traitez-le d\'abord dans Conformité LBC/FT → Criblage SFC.'); return; }
+  /* [FIX cohérence] La résiliation existe précisément pour conserver un
+     historique auditable (montants versés, décompte, écritures de
+     remboursement/retenue) au lieu d'une suppression pure — supprimer le
+     client APRÈS coup effacerait ce même historique, écritures de
+     résiliation devenant orphelines (aucun client à référencer). */
+  if (cli && cli.resiliation) { alert('Impossible : ce souscripteur a une résiliation enregistrée le '+dateShort(cli.resiliation.date)+'.\nLa suppression effacerait cet historique (décompte, écritures de remboursement/retenue). La fiche doit être conservée telle quelle.'); return; }
   if (!confirm('Supprimer ce souscripteur et tous ses versements ?')) return;
   await logAudit('clients', id, 'delete', cli || null, null);
 
@@ -31224,6 +31279,7 @@ function resilierOuvrir(clientId){
   if (!c) return;
   if (!exigerDroit('Souscripteurs', 'v', 'la résiliation de cette souscription')) return;
   if (c.gele) { alert('Impossible : ce souscripteur est GELÉ (sanction SFC).\nTraitez-le dans Conformité LBC/FT → Criblage SFC avant toute résiliation.'); return; }
+  if (c.statut === 'resilie') { toast('Ce souscripteur est déjà résilié le '+dateShort(c.resiliation&&c.resiliation.date)+'.','error'); return; }
   document.getElementById('rs-client-id').value = clientId;
   document.getElementById('rs-justification').value = '';
   document.getElementById('rs-confirme').checked = false;
@@ -31285,6 +31341,7 @@ async function resilierConfirmer(){
   var clientId = document.getElementById('rs-client-id').value;
   var c = (DATA.clients||[]).find(function(x){return x.id===clientId;});
   if (!c) { toast('Souscripteur introuvable.','error'); return; }
+  if (!exigerDroit('Souscripteurs', 'v', 'la résiliation de cette souscription')) return;
   var motif = document.getElementById('rs-motif').value;
   var justification = document.getElementById('rs-justification').value.trim();
   if (!justification) { toast('La justification est obligatoire — pièce du dossier juridique.','error'); return; }
@@ -31346,6 +31403,14 @@ async function resilierConfirmer(){
 
   /* 4) Statut client — trace conservée, PAS de suppression */
   c.statut = 'resilie';
+  /* [FIX] lot_id/lot_ids n'étaient jamais vidés ici — le lot est bien libéré
+     (statut, client_id) sur SA propre fiche juste au-dessus, mais la fiche
+     du souscripteur résilié continuait d'afficher ce même lot comme le sien
+     (colonne "Lot" de la liste, fiche client...). Dès qu'un nouveau
+     souscripteur reprend ce lot, DEUX fiches clients l'auraient affiché
+     simultanément. L'historique reste consultable via resiliation.lots_liberes. */
+  c.lot_id = null;
+  c.lot_ids = [];
   c.resiliation = { date:dat, motif:motif, justification:justification, montant_verse:verse,
     taux_remboursement:Math.round(taux*100), montant_rembourse:rembourse, montant_retenu:retenu,
     commissions_annulees:nbAnnulees, commissions_a_recuperer:nbARecuperer,
@@ -39472,25 +39537,55 @@ function buildBilan() {
     });
   });
 
+  /* [FIX structurel] Même défaut que celui corrigé dans buildDashTabCompta() :
+     itérait sur APP.planComptable (≈158 comptes "courants") au lieu des
+     comptes RÉELLEMENT postés dans les écritures. Tout sous-compte utilisé en
+     pratique mais absent de cette liste curatée (4451/4453/4454/4455/4456 —
+     confirmés utilisés par le décompte à l'avancement, une opération
+     courante pour un promoteur) contribuait pour zéro au Bilan, quel que
+     soit le préfixe demandé. Les 4 bilans d'ouverture déjà saisis restent
+     corrects (comptes tous dans la liste curatée), mais le Bilan se serait
+     déséquilibré dès la première vraie transaction sur un de ces sous-comptes. */
   function getSolde(codes) {
     var tot = 0;
-    codes.forEach(function(code) {
-      APP.planComptable.filter(function(c){ return c.code.startsWith(code); }).forEach(function(c) {
-        tot += soldes[c.code] || 0;
-      });
-    });
+    for (var code in soldes) {
+      if (codes.some(function(p){ return code.indexOf(p) === 0; })) tot += soldes[code] || 0;
+    }
     return tot;
   }
 
   // ACTIF
   var actifImmo = getSolde(['21','22','23','24','27']);
   var stocks = getSolde(['31','32','33','34','35','36']);
-  var creances = getSolde(['411','412','418','421','423','441','445','461','471']);
+  /* [FIX] Le "FIX SYSCOHADA" précédent (retiré ci-dessous) supposait la
+     numérotation SYSCOHADA standard où 445 = TVA récupérable — vérification
+     faite contre LE plan comptable réel de ce logiciel : ici 444 = TVA
+     récupérable (actif, jusqu'ici absent de tout le Bilan) et 445 = TVA À
+     DÉCAISSER (passif réel — une dette, pas une créance). Même défaut sur
+     441 "État — Impôts et taxes", tagué passif dans le plan, pas débiteur.
+     409 (Fournisseurs débiteurs — avances données, un actif réel) ajouté au
+     passage, absent lui aussi jusqu'ici. */
+  var creances = getSolde(['411','412','418','409','421','423','444','461','471']);
   var tresorerie = getSolde(['51','52','53','55','57']);
   var totalActif = actifImmo + stocks + creances + tresorerie;
 
   // PASSIF
-  var capitaux = getSolde(['101','106','111']);
+  /* [FIX] Ancienne formule : capitaux = getSolde(['101','106','111']) — brute,
+     sans redressement de signe. Un capital exceptionnellement négatif (posté
+     en débit, cas réel rencontré) était traité identiquement à un capital
+     positif, et surtout : AUCUN compte de résultat cumulé (121 bénéfice, 129
+     perte, 109, 119) n'était pris en compte — une perte reportée à l'ouverture
+     n'apparaissait nulle part dans le Bilan, ni comme actif ni comme réduction
+     des capitaux propres. Formule validée par simulation numérique sur 4
+     structures réelles du groupe (bilans d'ouverture 2026) avant déploiement :
+     les comptes normalement créditeurs (101 Capital, 106 Réserves, 109, 111
+     Report à nouveau créditeur, 121 Bénéfice) contribuent positivement une
+     fois leur signe inversé (et non passés en Math.abs(), qui écraserait à
+     tort un capital réellement négatif) ; les comptes normalement débiteurs
+     contraires (119 Report à nouveau débiteur, 129 Perte) sont soustraits. */
+  var capitauxCredit = -getSolde(['101','106','109','111','121']);
+  var capitauxDebitContra = getSolde(['119','129']);
+  var capitaux = capitauxCredit - capitauxDebitContra;
   /* Résultat provisoire = solde net des comptes de gestion (classe 7 − classe 6),
      strictement issu du grand livre — c'est la seule valeur qui garantit
      l'égalité Actif = Passif avant clôture. Le Compte de Résultat affiche par
@@ -39500,26 +39595,29 @@ function buildBilan() {
      une incohérence à corriger, injecter cet IS estimé ici casserait l'équilibre
      du Bilan puisqu'aucune écriture réelle ne le contrebalancerait au passif. */
   var resultBrut = getSolde(['7']) - getSolde(['6']);
-  var dettesLT = getSolde(['16','17','18']);
+  /* [FIX] Math.abs() manquant ici alors que TOUTES les autres catégories de
+     dettes ci-dessous l'utilisent — invisible tant qu'aucune entité du groupe
+     n'avait de solde réel sur les comptes 16-18 (emprunts, provisions),
+     démasqué par le premier cas réel rencontré (compte 168, MENKO SARL) :
+     Bilan déséquilibré de deux fois le montant de la provision. */
+  var dettesLT = Math.abs(getSolde(['16','17','18']));
   var dettesFournisseurs = Math.abs(getSolde(['401','402','408']));
-  /* [FIX SYSCOHADA] 441 (État, subventions à recevoir) et 445 (État, TVA
-     récupérable) sont des comptes normalement DÉBITEURS — des créances, pas
-     des dettes. Ils étaient inclus ici sous Math.abs(), ce qui transformait
-     une TVA récupérable (souvent un solde important pour un promoteur qui
-     paie beaucoup de TVA sur ses travaux) en fausse dette fiscale au passif,
-     sans jamais l'ajouter nulle part à l'actif — un vrai bilan aurait alors
-     paru équilibré par un double défaut qui se compense, ou franchement faux.
-     Cohérent avec calculerTVA() qui traite déjà 445 en sens Débit (déductible). */
-  var dettesFiscalesSociales = Math.abs(getSolde(['431','432','443','447','448']));
+  /* [FIX] 441 et 445 retirés d'ici (replacés dans creances par erreur d'un
+     fix précédent, voir commentaire ci-dessus) — ce sont bien des dettes
+     fiscales dans CE plan comptable, pas des créances. */
+  var dettesFiscalesSociales = Math.abs(getSolde(['431','432','441','443','445','447','448']));
   var dettesPersonnel = Math.abs(getSolde(['422']));
-  /* [FIX] Compte 45 (Groupe et associés — 451 dans ce plan) et 48 (Créances
-     et dettes HAO) jamais reconnus par le Bilan. Correctif précédent utilisait
-     '46' par erreur — vérification faite contre le plan comptable réel : ce
-     préfixe n'existe dans AUCUN compte de ce logiciel (seul 451 existe,
-     classe 4). Une dette réelle sur 451/48x disparaissait purement et
-     simplement de l'écran (ni actif, ni aucune des 4 catégories de dettes),
-     tout en existant bel et bien au grand livre. */
-  var dettesDiverses = Math.abs(getSolde(['45','48']));
+  /* [FIX] Comptes 419 (Clients créditeurs — avances reçues : LE compte crédité
+     par chaque versement encaissé via genererEcritureVersement — sans doute le
+     compte le plus utilisé de tout le logiciel, et pourtant absent du Bilan
+     jusqu'ici), 462 (Créditeurs divers), 467/468 (Commissions commerciaux/
+     apporteurs à payer), 472 (Comptes de régularisation passif), 4651
+     (Financeurs — apports reçus sur programmes) ajoutés — tous absents de
+     toute rubrique. Un versement client, l'opération la plus fréquente de ce
+     logiciel, ne s'affichait donc dans AUCUNE ligne du Bilan avant ce correctif.
+     Compte 45 (Associés/groupe, 451 dans ce plan) et 48 (dettes HAO) déjà
+     couverts par un fix antérieur, regroupés ici avec les autres. */
+  var dettesDiverses = Math.abs(getSolde(['419','45','462','467','468','472','48','4651']));
   var totalPassif = capitaux + resultBrut + dettesLT + dettesFournisseurs + dettesFiscalesSociales + dettesPersonnel + dettesDiverses;
 
   function bilanRow(label, val, color, detailHTML) {
@@ -39545,7 +39643,7 @@ function buildBilan() {
     + bilanRow('Immobilisations corporelles (terrains, bâtiments)', actifImmo, 'var(--blanc)', _rubriqueDetailHTML(['21','22','23','24','27'], soldes))
     + '<tr><td colspan="2" style="padding:6px 0;font-weight:600;color:var(--blanc-dim);font-size:11px;text-transform:uppercase;letter-spacing:1px;">Actif Circulant (Cl. 3-4)</td></tr>'
     + bilanRow('Stocks (lots, travaux en cours)', stocks, 'var(--blanc)', _rubriqueDetailHTML(['31','32','33','34','35','36'], soldes))
-    + bilanRow('Créances clients, État (TVA récupérable) et débiteurs divers', creances, 'var(--blanc)', _rubriqueDetailHTML(['411','412','418','421','423','441','445','461','471'], soldes))
+    + bilanRow('Créances clients, État (TVA récupérable) et débiteurs divers', creances, 'var(--blanc)', _rubriqueDetailHTML(['411','412','418','409','421','423','444','461','471'], soldes))
     + '<tr><td colspan="2" style="padding:6px 0;font-weight:600;color:var(--blanc-dim);font-size:11px;text-transform:uppercase;letter-spacing:1px;">Trésorerie (Cl. 5)</td></tr>'
     + bilanRow('Banques, caisses, Mobile Money', tresorerie, 'var(--vert)', _rubriqueDetailHTML(['51','52','53','55','57'], soldes))
     + '<tr style="font-weight:700;border-top:2px solid var(--bleu);"><td>TOTAL ACTIF</td><td style="text-align:right;color:var(--bleu);font-size:15px;">' + fmtF(totalActif) + '</td></tr>'
@@ -39555,15 +39653,15 @@ function buildBilan() {
     + '<table style="width:100%;font-size:13px;">'
     + '<thead><tr><th style="text-align:left;">Rubriques SYSCOHADA</th><th style="text-align:right;">Montant (FCFA)</th></tr></thead><tbody>'
     + '<tr><td colspan="2" style="padding:6px 0;font-weight:600;color:var(--blanc-dim);font-size:11px;text-transform:uppercase;letter-spacing:1px;">Capitaux Propres (Cl. 1)</td></tr>'
-    + bilanRow('Capital social', Math.abs(capitaux), 'var(--blanc)', _rubriqueDetailHTML(['101','106','111'], soldes))
+    + bilanRow('Capitaux propres (net du résultat cumulé)', Math.abs(capitaux), 'var(--blanc)', _rubriqueDetailHTML(['101','106','109','111','119','121','129'], soldes))
     + bilanRow('Résultat de l\'exercice ' + year, resultBrut, resultBrut >= 0 ? 'var(--vert)' : 'var(--rouge)')
     + '<tr><td colspan="2" style="padding:6px 0;font-weight:600;color:var(--blanc-dim);font-size:11px;text-transform:uppercase;letter-spacing:1px;">Dettes Financières (Cl. 1)</td></tr>'
     + bilanRow('Emprunts et dettes à long terme', Math.abs(dettesLT), 'var(--blanc)', _rubriqueDetailHTML(['16','17','18'], soldes))
     + '<tr><td colspan="2" style="padding:6px 0;font-weight:600;color:var(--blanc-dim);font-size:11px;text-transform:uppercase;letter-spacing:1px;">Dettes à Court Terme (Cl. 4)</td></tr>'
     + bilanRow('Fournisseurs et comptes rattachés', dettesFournisseurs, 'var(--blanc)', _rubriqueDetailHTML(['401','402','408'], soldes))
-    + bilanRow('Dettes fiscales et sociales (CNPS, ITS, IS)', dettesFiscalesSociales, 'var(--blanc)', _rubriqueDetailHTML(['431','432','443','447','448'], soldes))
+    + bilanRow('Dettes fiscales et sociales (CNPS, ITS, IS, TVA)', dettesFiscalesSociales, 'var(--blanc)', _rubriqueDetailHTML(['431','432','441','443','445','447','448'], soldes))
     + bilanRow('Dettes envers le personnel', dettesPersonnel, 'var(--blanc)', _rubriqueDetailHTML(['422'], soldes))
-    + bilanRow('Associés, groupe et dettes HAO', dettesDiverses, 'var(--blanc)', _rubriqueDetailHTML(['45','48'], soldes))
+    + bilanRow('Avances clients, associés et dettes diverses', dettesDiverses, 'var(--blanc)', _rubriqueDetailHTML(['419','45','462','467','468','472','48','4651'], soldes))
     + '<tr style="font-weight:700;border-top:2px solid var(--or);"><td>TOTAL PASSIF</td><td style="text-align:right;color:var(--or);font-size:15px;">' + fmtF(totalPassif) + '</td></tr>'
     + '</tbody></table></div>'
     + '</div>'
@@ -45559,9 +45657,11 @@ function ajouterLotSupplementaireClient() {
    simple indicateur, jamais bloquant : l'utilisateur reste libre de sa saisie. */
 function clientCompareSurface() {
   var elEcart = document.getElementById('c-surface-ecart'); if (!elEcart) return;
+  var elAction = document.getElementById('c-surface-regul-action');
   var saisie = parseFloat(document.getElementById('c-surface').value) || 0;
   var lotIds = [document.getElementById('c-lot').value].concat(APP._clientLotsSupplementaires||[]).filter(Boolean);
   var reelle = lotIds.reduce(function(s,id){ var l=(DATA.lots||[]).find(function(x){return x.id===id;}); return s+(l&&l.surface?parseFloat(l.surface):0); }, 0);
+  if (elAction) elAction.innerHTML = '';
   if (!saisie || !reelle) { elEcart.style.display = 'none'; return; }
   var ecart = saisie - reelle, ecartPct = (ecart/reelle)*100;
   elEcart.style.display = '';
@@ -45571,7 +45671,117 @@ function clientCompareSurface() {
   } else {
     elEcart.style.color = Math.abs(ecartPct) >= 5 ? 'var(--rouge)' : '#E67E22';
     elEcart.textContent = '⚠ Écart avec la surface du/des lot(s) au dossier (' + reelle.toFixed(0) + ' m²) : ' + (ecart>=0?'+':'') + ecart.toFixed(1) + ' m² (' + (ecartPct>=0?'+':'') + ecartPct.toFixed(1) + '%).';
+    /* [Nouveau] La surface réelle du terrain (relevé/bornage) dépasse la
+       surface déclarée à la souscription — cas fréquent en foncier : le
+       surplus se facture au souscripteur. Jusqu'ici l'écart était affiché
+       à titre indicatif seulement, sans aucune action pour en tirer la
+       conséquence financière. Ne propose l'action que pour un souscripteur
+       DÉJÀ existant (APP.editingId) — à la création, on ajuste simplement
+       le prix total directement, pas besoin d'un avenant séparé. */
+    if (ecart < 0 && APP.editingId) {
+      elAction.innerHTML = '<button type="button" class="btn btn-secondary btn-sm" style="margin-top:2px;" onclick="ouvrirRegularisationSurface()">📐 Facturer l\'écart de surface au souscripteur</button>';
+    }
   }
+}
+
+function ouvrirRegularisationSurface(){
+  var clientId = APP.editingId;
+  var c = (DATA.clients||[]).find(function(x){ return x.id===clientId; });
+  if (!c) { toast('Enregistrez d\'abord le souscripteur avant de régulariser la surface.','error'); return; }
+  if (!exigerDroit('Souscripteurs', 'v', 'la facturation d\'un écart de surface')) return;
+  var saisie = parseFloat(document.getElementById('c-surface').value) || 0;
+  var lotIds = [document.getElementById('c-lot').value].concat(APP._clientLotsSupplementaires||[]).filter(Boolean);
+  var lots = lotIds.map(function(id){ return (DATA.lots||[]).find(function(l){return l.id===id;}); }).filter(Boolean);
+  var reelle = lots.reduce(function(s,l){ return s+(parseFloat(l.surface)||0); }, 0);
+  var ecart = reelle - saisie;
+  if (ecart <= 0) { toast('Aucun écart positif à facturer.','error'); return; }
+  /* Prix au m² : celui du lot principal s'il en a un, sinon dérivé du prix
+     total déclaré / surface déclarée — dernier recours, à vérifier avant
+     de valider (un prix au m² réel peut différer du simple prorata). */
+  var lotPrincipal = lots[0];
+  var prixM2 = (lotPrincipal && parseFloat(lotPrincipal.prix_m2)) || (saisie>0 ? (c.montant_total||0)/saisie : 0);
+  document.getElementById('rs2-client-id').value = clientId;
+  document.getElementById('rs2-surface-declaree').value = saisie;
+  document.getElementById('rs2-surface-reelle').value = reelle;
+  document.getElementById('rs2-ecart').value = ecart.toFixed(2);
+  document.getElementById('rs2-prix-m2').value = Math.round(prixM2);
+  document.getElementById('rs2-motif').value = '';
+  rs2Recalculer();
+  openModal('modal-regul-surface');
+}
+function rs2Recalculer(){
+  var ecart = parseFloat(document.getElementById('rs2-ecart').value) || 0;
+  var prixM2 = parseFloat(document.getElementById('rs2-prix-m2').value) || 0;
+  document.getElementById('rs2-montant').value = fcfa(Math.round(ecart * prixM2));
+}
+async function confirmerRegularisationSurface(){
+  var clientId = document.getElementById('rs2-client-id').value;
+  var c = (DATA.clients||[]).find(function(x){ return x.id===clientId; });
+  if (!c) { toast('Souscripteur introuvable.','error'); return; }
+  if (!exigerDroit('Souscripteurs', 'v', 'la facturation d\'un écart de surface')) return;
+  var surfaceDeclaree = parseFloat(document.getElementById('rs2-surface-declaree').value) || 0;
+  var surfaceReelle = parseFloat(document.getElementById('rs2-surface-reelle').value) || 0;
+  var ecart = parseFloat(document.getElementById('rs2-ecart').value) || 0;
+  var prixM2 = parseFloat(document.getElementById('rs2-prix-m2').value) || 0;
+  var motif = document.getElementById('rs2-motif').value.trim();
+  var montant = Math.round(ecart * prixM2);
+  if (montant <= 0) { toast('Montant à facturer invalide.','error'); return; }
+  if (!motif) { toast('Précisez le motif (relevé topographique, bornage...).','error'); return; }
+
+  c.regularisations_surface = c.regularisations_surface || [];
+  var regul = { id: uid(), date: today(), surface_declaree: surfaceDeclaree, surface_reelle: surfaceReelle,
+    ecart_m2: ecart, prix_m2: prixM2, montant: montant, motif: motif,
+    valide_par: (APP.currentUser&&APP.currentUser.nom)||'—' };
+  c.regularisations_surface.push(regul);
+  /* Même principe que l'ajout de lot supplémentaire : le montant total est
+     la seule source de vérité de ce qui est dû. Les commissions et le
+     recouvrement suivent automatiquement via les futurs versements — pas
+     de traitement rétroactif nécessaire (voir échange précédent). */
+  c.montant_total = (parseFloat(c.montant_total)||0) + montant;
+  c.surface = surfaceReelle;
+  c._modifie = new Date().toISOString();
+  await logAudit('clients', clientId, 'regularisation_surface', null, regul);
+  await dbPut('clients', c);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_clients', c);
+
+  closeModal('modal-regul-surface');
+  var mtEl = document.getElementById('c-montant-total'); if (mtEl) mtEl.value = c.montant_total;
+  var svEl = document.getElementById('c-surface'); if (svEl) svEl.value = surfaceReelle;
+  clientCompareSurface();
+  toast('✅ Régularisation enregistrée — montant total mis à jour (+'+fcfa(montant)+'). N\'oubliez pas d\'ajuster l\'échéancier/durée si besoin.', 'success');
+  imprimerRegularisationSurface(regul, c);
+}
+function imprimerRegularisationSurface(regul, c){
+  var soc = (DATA.params&&(DATA.params.societe||DATA.params.nom))||'';
+  var w = window.open('','_blank');
+  if (!w) { toast('Autorisez les fenêtres surgissantes.','error'); return; }
+  w.document.write('<html><head><title>Avenant — Régularisation de surface</title>'
+    +'<style>body{font-family:Georgia,serif;padding:38px;color:#111;font-size:13px;line-height:1.55;}'
+    +'h1{font-size:17px;margin:0 0 4px;}table{width:100%;border-collapse:collapse;margin:10px 0;}'
+    +'td{padding:5px 8px;border:1px solid #ccc;}td.k{width:45%;background:#f5f5f5;}'
+    +'.pied{margin-top:26px;font-size:11px;color:#555;}</style></head><body>'
+    +sanixQrHtml('Avenant régularisation surface', c.dossier||c.id)
+    +'<h1>'+escHtml(soc)+'</h1>'
+    +'<h1 style="margin-top:14px;">Avenant — Régularisation de surface</h1>'
+    +'<div style="color:#555;font-size:11.5px;">Réf. souscripteur : '+escHtml(c.dossier||c.id)+' — '+new Date().toLocaleDateString('fr-FR')+'</div>'
+    +'<h2>Souscripteur</h2><table><tbody>'
+    +'<tr><td class="k">Nom</td><td>'+escHtml(((c.nom||'')+' '+(c.prenoms||'')).trim())+'</td></tr>'
+    +'</tbody></table>'
+    +'<h2>Constat</h2><p>'+escHtml(regul.motif)+'</p>'
+    +'<table><tbody>'
+    +'<tr><td class="k">Surface déclarée à la souscription</td><td>'+regul.surface_declaree+' m²</td></tr>'
+    +'<tr><td class="k">Surface réelle constatée</td><td>'+regul.surface_reelle+' m²</td></tr>'
+    +'<tr><td class="k">Écart facturable</td><td>'+regul.ecart_m2.toFixed(2)+' m²</td></tr>'
+    +'<tr><td class="k">Prix au m²</td><td>'+fcfa(regul.prix_m2)+'</td></tr>'
+    +'<tr><td class="k"><b>Montant complémentaire dû</b></td><td><b>'+fcfa(regul.montant)+'</b></td></tr>'
+    +'<tr><td class="k">Nouveau montant total du contrat</td><td>'+fcfa(c.montant_total)+'</td></tr>'
+    +'</tbody></table>'
+    +'<div class="pied">Le présent avenant complète et modifie le contrat de souscription initial à hauteur du montant ci-dessus, '
+    +'sans emporter aucune autre modification des conditions convenues.<br><br>'
+    +'Fait à '+escHtml((DATA.params&&DATA.params.ville)||'Abidjan')+', le '+new Date().toLocaleDateString('fr-FR')+'<br><br>'
+    +'Pour '+escHtml(soc)+' : ___________________________<br><br>Le souscripteur (bon pour accord) : ___________________________</div>'
+    +'</body></html>');
+  w.document.close(); w.print();
 }
 function retirerLotSupplementaireClient(lotId) {
   APP._clientLotsSupplementaires = (APP._clientLotsSupplementaires || []).filter(function(id){ return id !== lotId; });
@@ -53708,6 +53918,7 @@ async function resilierConfirmerRemboursement(){
   var c = (DATA.clients||[]).find(function(x){return x.id===clientId;});
   if (!c || !c.resiliation) { toast('Résiliation introuvable.','error'); return; }
   if (c.resiliation.rembourse) { toast('Déjà remboursé.','error'); return; }
+  if (!exigerDroit('Comptabilite', 'v', 'ce remboursement de résiliation')) return;
   var dat = document.getElementById('rr-date').value || today();
   var mode = document.getElementById('rr-mode').value;
   var reference = document.getElementById('rr-reference').value.trim();
@@ -53782,6 +53993,7 @@ async function cesResilierConfirmer(){
   var cessionId = document.getElementById('cr-cession-id').value;
   var c = (DATA.cessions_foncieres||[]).find(function(x){return x.id===cessionId;});
   if (!c) { toast('Cession introuvable.','error'); return; }
+  if (!exigerDroit('Comptabilite', 'v', 'la résiliation de cette cession')) return;
   var motif = document.getElementById('cr-motif').value;
   var justification = document.getElementById('cr-justification').value.trim();
   if (!justification) { toast('La justification est obligatoire.','error'); return; }
@@ -53908,6 +54120,7 @@ async function cesResilierConfirmerRemboursement(){
   var cessionId = document.getElementById('crr-cession-id').value;
   var c = (DATA.cessions_foncieres||[]).find(function(x){return x.id===cessionId;});
   if (!c || !c.resiliation || c.resiliation.rembourse) { toast('Remboursement introuvable ou déjà acté.','error'); return; }
+  if (!exigerDroit('Comptabilite', 'v', 'ce remboursement de résiliation')) return;
   var dat = document.getElementById('crr-date').value || today();
   var mode = document.getElementById('crr-mode').value;
   var reference = document.getElementById('crr-reference').value.trim();
@@ -82063,44 +82276,67 @@ function etatBalance() {
 function etatBilan() {
   var year = _comptaYear();
   var soldes = {};
-  DATA.ecritures.filter(function(e){ return e.date && e.date < ((+year + 1) + '-01-01'); }).forEach(function(e){
-    var cd = e.compte_debit || e.compte, cc = e.compte_credit;
-    if (!soldes[cd]) soldes[cd] = 0; soldes[cd] += e.montant;
-    if (cc) { if (!soldes[cc]) soldes[cc] = 0; soldes[cc] -= e.montant; }
+  /* [FIX] Aucun filtre par division ici — "Imprimer Bilan" pour une entité
+     précise imprimait en réalité le cumul de TOUTES les divisions mélangées,
+     un document officiel donné à une banque ou un auditeur pouvait donc être
+     complètement faux. Même filtre que buildBilan() (écran), pour qu'écran
+     et impression donnent toujours le même résultat. */
+  var divFEtat = (typeof _comptaDivisionFilter === 'function') ? _comptaDivisionFilter() : '';
+  DATA.ecritures.filter(function(e){ return e.date && e.date < ((+year + 1) + '-01-01') && (!divFEtat || e.division === divFEtat); }).forEach(function(e){
+    ecrLignes(e).forEach(function(l){
+      if (!l.compte) return;
+      soldes[l.compte] = (soldes[l.compte]||0) + (l.sens === 'D' ? 1 : -1) * (parseFloat(l.montant)||0);
+    });
   });
+  /* [FIX structurel] Même défaut que buildBilan()/buildDashTabCompta() :
+     itérait sur APP.planComptable (comptes "courants") au lieu des comptes
+     réellement postés — tout sous-compte hors de cette liste curatée
+     (4451/4453-4456, notamment) contribuait pour zéro au document imprimé. */
   function gs(codes) {
     var t = 0;
-    codes.forEach(function(code){
-      APP.planComptable.filter(function(c){ return c.code.indexOf(code) === 0; }).forEach(function(c){ t += soldes[c.code] || 0; });
-    });
+    for (var code in soldes) { if (codes.some(function(p){ return code.indexOf(p) === 0; })) t += soldes[code] || 0; }
     return t;
   }
   var actifImmo = gs(['21','22','23','24','27']);
   var stocks    = gs(['31','32','33','34','35','36']);
-  var creances  = gs(['411','412','418','421','423','461','471']);
+  /* [FIX] 441/445 retirés (passif fiscal réel dans ce plan comptable, pas des
+     créances) ; 444 (TVA récupérable) et 409 (avances fournisseurs) ajoutés —
+     même correction que buildBilan(), voir son commentaire pour le détail. */
+  var creances  = gs(['411','412','418','409','421','423','444','461','471']);
   var treso     = gs(['51','52','53','55','57']);
   var totalActif = actifImmo + stocks + creances + treso;
-  var capitaux  = gs(['101','106','111']);
+  /* [FIX] Formule signée correctement (pas de simple abs() qui écraserait à
+     tort un capital réellement négatif) et étendue à 109/119/121/129 — un
+     résultat cumulé antérieur (bénéfice ou perte) n'apparaissait nulle part
+     avant ce correctif. Même formule validée numériquement que buildBilan(). */
+  var capitauxCredit = -gs(['101','106','109','111','121']);
+  var capitauxDebitContra = gs(['119','129']);
+  var capitaux  = capitauxCredit - capitauxDebitContra;
   var resultBrut = gs(['7']) - gs(['6']);
-  var dettesLT  = gs(['16','17','18']);
+  var dettesLT  = Math.abs(gs(['16','17','18']));
   var dF  = Math.abs(gs(['401','402','408']));
   var dFS = Math.abs(gs(['431','432','441','443','445','447','448']));
   var dP  = Math.abs(gs(['422']));
-  var totalPassif = capitaux + resultBrut + dettesLT + dF + dFS + dP;
+  /* [FIX] 419 (avances clients — le compte de chaque versement encaissé),
+     451 (groupe/associés), 462/467/468/472/4651 : absents jusqu'ici, comme
+     dans buildBilan() avant correction. */
+  var dDiv = Math.abs(gs(['419','45','462','467','468','472','48','4651']));
+  var totalPassif = capitaux + resultBrut + dettesLT + dF + dFS + dP + dDiv;
   function r(l, v){ return '<tr><td>' + l + '</td><td class="num">' + fmtF(Math.abs(v)) + '</td></tr>'; }
   var actif = '<h3>ACTIF</h3><table><thead><tr><th>Rubriques SYSCOHADA</th><th class="num">Montant (FCFA)</th></tr></thead><tbody>'
     + r('Immobilisations corporelles (Cl.2)', actifImmo)
     + r('Stocks (lots, travaux en cours)', stocks)
-    + r('Créances clients & débiteurs', creances)
+    + r('Créances clients, TVA récupérable & débiteurs', creances)
     + r('Trésorerie (banques, caisses, MM)', treso)
     + '<tr class="total"><td>TOTAL ACTIF</td><td class="num">' + fmtF(totalActif) + '</td></tr></tbody></table>';
   var passif = '<h3>PASSIF</h3><table><thead><tr><th>Rubriques SYSCOHADA</th><th class="num">Montant (FCFA)</th></tr></thead><tbody>'
-    + r('Capital social', Math.abs(capitaux))
+    + r('Capitaux propres (net du résultat cumulé)', Math.abs(capitaux))
     + r('Résultat de l\'exercice ' + year, resultBrut)
-    + r('Emprunts & dettes à LT', Math.abs(dettesLT))
+    + r('Emprunts & dettes à LT', dettesLT)
     + r('Fournisseurs', dF)
     + r('Dettes fiscales & sociales', dFS)
     + r('Dettes envers le personnel', dP)
+    + r('Avances clients, associés et dettes diverses', dDiv)
     + '<tr class="total"><td>TOTAL PASSIF</td><td class="num">' + fmtF(totalPassif) + '</td></tr></tbody></table>';
   var eq = Math.abs(totalActif - totalPassif) < 100 ? '✔ Bilan équilibré (Actif = Passif)'
     : '⚠ Écart Actif / Passif : ' + fmtF(Math.abs(totalActif - totalPassif)) + ' FCFA';
@@ -100809,8 +101045,15 @@ async function backfillEcrituresCessions() {
 /* [v31] Duplicata supprimé : ancienne version de cesSave() — la définition active est plus bas dans ce fichier. */
 
 async function cesDelete() {
-  if (!_cesId || !confirm('Supprimer cette cession ? Les écritures liées seront retirées.')) return;
+  if (!_cesId) return;
   var c=DATA.cessions_foncieres.find(function(x){return x.id===_cesId;});
+  if (!exigerDroit('Comptabilite', 's', 'la suppression de cette cession')) return;
+  /* [FIX cohérence] Même garde que deleteClient : une cession déjà résiliée
+     porte un historique auditable (décompte, écritures de remboursement/
+     retenue) que la suppression effacerait, laissant en plus les écritures
+     de résiliation orphelines (aucune cession à référencer). */
+  if (c && c.resiliation) { alert('Impossible : cette cession a une résiliation enregistrée le '+dateShort(c.resiliation.date)+'.\nLa suppression effacerait cet historique. La fiche doit être conservée telle quelle.'); return; }
+  if (!confirm('Supprimer cette cession ? Les écritures liées seront retirées.')) return;
   if (c) {
     if (c.ecriture_vente_id && typeof deleteRecord==='function') await deleteRecord('ecritures', c.ecriture_vente_id);
     if (c.ecriture_enc_id && typeof deleteRecord==='function') await deleteRecord('ecritures', c.ecriture_enc_id);
