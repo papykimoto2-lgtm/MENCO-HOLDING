@@ -26468,6 +26468,15 @@ async function _pullBatchViaRPC() {
        été corrigée pour exclure pi_users ; le client fait de même ici et la
        synchronise via _syncUsersSeul() (méthode dédiée, colonnes à plat). */
     if (table === 'pi_users') continue;
+    /* [FIX] pi_portail_medias stocke des photos compressées en base64
+       directement dans la colonne data — un lot de plusieurs images peut
+       représenter plusieurs Mo. Combinée aux 154 autres tables dans la
+       MÊME réponse JSON du lot RPC, elle risque de faire échouer (ou
+       tronquer silencieusement) tout le cycle de synchro dès qu'un
+       utilisateur publie plusieurs photos d'un coup — symptôme observé :
+       miniatures vides sur un autre poste alors que l'upload avait
+       réussi côté auteur. Synchronisée à part, comme pi_users. */
+    if (table === 'pi_portail_medias') continue;
     var complet = PULL_TOUJOURS_COMPLET.indexOf(table) !== -1 || PULL_INCR_INAPTES[table];
     curseurs[table] = complet ? '' : (_pullCurseurs()[table] || '');
     tablesConcernees.push([table, store]);
@@ -26488,6 +26497,10 @@ async function _pullBatchViaRPC() {
     if (rows && rows.length) total += await _appliquerLignesPullTable(t, s, rows);
   }
   try { total += await _syncUsersSeul(); } catch(e) { console.warn('[Sync] pi_users non synchronisée ce cycle :', e); }
+  try {
+    var _resMedias = await _pullTable('pi_portail_medias');
+    total += await _appliquerLignesPullTable('pi_portail_medias', 'portail_medias', _resMedias.rows);
+  } catch(e) { console.warn('[Sync] pi_portail_medias non synchronisée ce cycle :', e); }
   return total;
 }
 
@@ -39499,14 +39512,14 @@ function buildBilan() {
      Cohérent avec calculerTVA() qui traite déjà 445 en sens Débit (déductible). */
   var dettesFiscalesSociales = Math.abs(getSolde(['431','432','443','447','448']));
   var dettesPersonnel = Math.abs(getSolde(['422']));
-  /* [FIX] Comptes 46 (Associés et groupe) et 48 (Créances et dettes HAO —
-     hors activités ordinaires) jamais reconnus par le Bilan : ni actif, ni
-     aucune des 4 catégories de dettes ci-dessus. Une dette réelle sur ces
-     comptes disparaissait purement et simplement de l'écran (ni dans le
-     total, ni dans aucune rubrique visible), tout en existant bel et bien
-     au grand livre — un bilan qui semblait équilibré à tort, ou un écart
-     inexpliqué selon ce qu'il y avait en face. */
-  var dettesDiverses = Math.abs(getSolde(['46','48']));
+  /* [FIX] Compte 45 (Groupe et associés — 451 dans ce plan) et 48 (Créances
+     et dettes HAO) jamais reconnus par le Bilan. Correctif précédent utilisait
+     '46' par erreur — vérification faite contre le plan comptable réel : ce
+     préfixe n'existe dans AUCUN compte de ce logiciel (seul 451 existe,
+     classe 4). Une dette réelle sur 451/48x disparaissait purement et
+     simplement de l'écran (ni actif, ni aucune des 4 catégories de dettes),
+     tout en existant bel et bien au grand livre. */
+  var dettesDiverses = Math.abs(getSolde(['45','48']));
   var totalPassif = capitaux + resultBrut + dettesLT + dettesFournisseurs + dettesFiscalesSociales + dettesPersonnel + dettesDiverses;
 
   function bilanRow(label, val, color, detailHTML) {
@@ -39550,7 +39563,7 @@ function buildBilan() {
     + bilanRow('Fournisseurs et comptes rattachés', dettesFournisseurs, 'var(--blanc)', _rubriqueDetailHTML(['401','402','408'], soldes))
     + bilanRow('Dettes fiscales et sociales (CNPS, ITS, IS)', dettesFiscalesSociales, 'var(--blanc)', _rubriqueDetailHTML(['431','432','443','447','448'], soldes))
     + bilanRow('Dettes envers le personnel', dettesPersonnel, 'var(--blanc)', _rubriqueDetailHTML(['422'], soldes))
-    + bilanRow('Associés, groupe et dettes HAO', dettesDiverses, 'var(--blanc)', _rubriqueDetailHTML(['46','48'], soldes))
+    + bilanRow('Associés, groupe et dettes HAO', dettesDiverses, 'var(--blanc)', _rubriqueDetailHTML(['45','48'], soldes))
     + '<tr style="font-weight:700;border-top:2px solid var(--or);"><td>TOTAL PASSIF</td><td style="text-align:right;color:var(--or);font-size:15px;">' + fmtF(totalPassif) + '</td></tr>'
     + '</tbody></table></div>'
     + '</div>'
