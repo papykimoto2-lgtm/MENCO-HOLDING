@@ -26415,6 +26415,16 @@ async function _pullBatchViaRPC() {
   for (var i = 0; i < SUPA_STORE_MAP.length; i++) {
     var table = SUPA_STORE_MAP[i][0], store = SUPA_STORE_MAP[i][1];
     if (store === 'suppressions_sync') continue;
+    /* [FIX] pi_users a un schéma à plat (login, password_hash, salt…) —
+       PAS de colonne "data" jsonb comme les 155 autres tables. La fonction
+       RPC pull_incremental() plantait dessus (colonne inexistante), ce qui
+       remontait un objet JSON malformé/vide pour cette table : le client
+       l'appliquait quand même, écrasant password_hash en mémoire par du
+       vide — d'où les déconnexions "mot de passe modifié" répétées sans
+       qu'aucun mot de passe n'ait réellement changé. La fonction serveur a
+       été corrigée pour exclure pi_users ; le client fait de même ici et la
+       synchronise via _syncUsersSeul() (méthode dédiée, colonnes à plat). */
+    if (table === 'pi_users') continue;
     var complet = PULL_TOUJOURS_COMPLET.indexOf(table) !== -1 || PULL_INCR_INAPTES[table];
     curseurs[table] = complet ? '' : (_pullCurseurs()[table] || '');
     tablesConcernees.push([table, store]);
@@ -26434,7 +26444,33 @@ async function _pullBatchViaRPC() {
     var rows = data && data[t];
     if (rows && rows.length) total += await _appliquerLignesPullTable(t, s, rows);
   }
+  try { total += await _syncUsersSeul(); } catch(e) { console.warn('[Sync] pi_users non synchronisée ce cycle :', e); }
   return total;
+}
+
+/* Synchronisation dédiée de pi_users (schéma à plat, distinct des 155
+   autres tables) — colonnes réelles renvoyées directement par PostgREST,
+   pas de colonne "data" à déballer. Ne remplace un utilisateur local que
+   si la version cloud est réellement plus récente (même règle de
+   confiance que le reste de la synchro), pour ne jamais écraser un
+   changement local pas encore poussé. */
+async function _syncUsersSeul(){
+  if (!SB.url || !SB.key) return 0;
+  var rows = await sbFetch('pi_users?select=*', 'GET');
+  if (!rows || !rows.length) return 0;
+  var n = 0;
+  for (var i=0;i<rows.length;i++){
+    var ru = rows[i];
+    if (!ru || !ru.id) continue;
+    var idx = DATA.users.findIndex(function(x){ return x.id === ru.id; });
+    var local = idx>=0 ? DATA.users[idx] : null;
+    var cloudPlusRecent = !local || !local._modifie || !ru._modifie || ru._modifie >= local._modifie;
+    if (!cloudPlusRecent) continue;
+    if (idx>=0) DATA.users[idx] = ru; else DATA.users.push(ru);
+    try{ _pulling = true; await dbPut('users', ru); } finally { _pulling = false; }
+    n++;
+  }
+  return n;
 }
 
 async function pullFromCloudSilent() {
