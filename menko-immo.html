@@ -4129,6 +4129,11 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
 
           <!-- Liste des biens amortissables -->
           <div id="amort-pane-biens">
+            <div class="alert alert-info" style="margin-bottom:10px;font-size:11.5px;">
+              ℹ️ Foncier et biens immobiliers acquis par le promoteur uniquement. Véhicules, matériel et mobilier :
+              onglet 🏢 <b>Immobilisations Société</b> — mais le sélecteur du Tableau d'amortissement (onglet suivant)
+              liste bien les deux registres.
+            </div>
             <div class="filters-bar">
               <input type="text" class="search-input" id="search-amort" placeholder="🔍 Référence, désignation du bien..." oninput="buildAmortBiens()">
               <select class="filter-select" id="filter-amort-methode" onchange="buildAmortBiens()">
@@ -4186,6 +4191,11 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
 
           <!-- Dotations annuelles -->
           <div id="amort-pane-dotations" style="display:none;">
+            <div class="alert alert-info" style="margin-bottom:10px;font-size:11.5px;">
+              ℹ️ Cet onglet ne comptabilise que le foncier (biens acquis par le promoteur). Pour un véhicule ou du
+              matériel, générez sa dotation depuis l'onglet 🏢 <b>Immobilisations Société</b> — bouton « Générer
+              dotations de l'exercice » (registre distinct, pour éviter toute double comptabilisation).
+            </div>
             <div class="filters-bar">
               <select class="filter-select" id="filter-amort-annee" onchange="buildDotations()"></select>
               <button class="btn btn-primary btn-sm" onclick="comptabiliserDotations()">⚡ Comptabiliser dotations 681</button>
@@ -63648,6 +63658,28 @@ function buildTiers461() {
 */
 
 /* ─── Calcul annuité ─────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   MISE À NIVEAU — Tableau d'amortissement limité au foncier (biens_amort),
+   jamais aux véhicules/matériel (DATA.immobilisations, module Immobilisations
+   Société / Parc Auto) : deux registres aux champs différents, jamais
+   unifiés dans les vues de consultation. Adaptateur en lecture seule —
+   ne touche jamais aux données réelles, ne crée jamais d'écriture (la
+   génération des dotations reste séparée : comptabiliserDotations() pour
+   le foncier, genererDotationsAnnuelles() pour Immobilisations Société —
+   les fusionner risquerait une double comptabilisation de la même dotation). */
+function _amortAdapterImmo(im){
+  return {
+    id: im.id, dossier: '', designation: im.designation||'', _source: 'immobilisations',
+    compte_immo: im.compte||'24', compte_amort: '28'+String(im.compte||'24').slice(1),
+    valeur_origine: parseFloat(im.valeur_acquisition)||0, valeur_residuelle: parseFloat(im.valeur_residuelle)||0,
+    duree: im.duree_ans||5, date_debut: im.date_acquisition||today(), methode: im.methode||'lineaire',
+    division_id: im.division_id||''
+  };
+}
+function _amortTousBiens(){
+  return (DATA.biens_amort||[]).map(function(b){ return Object.assign({_source:'biens_amort'}, b); })
+    .concat((DATA.immobilisations||[]).map(_amortAdapterImmo));
+}
 function calcAnnuite(bien, annee) {
   var val = bien.valeur_origine||0;
   var res = bien.valeur_residuelle||0;
@@ -63812,12 +63844,18 @@ function buildAmortBiens() {
   var filtMethode = (document.getElementById('filter-amort-methode')||{}).value||'';
   var filtStatut = (document.getElementById('filter-amort-statut')||{}).value||'';
 
-  // Populate tableau select
+  // Populate tableau select — élargi aux Immobilisations Société (véhicules,
+  // matériel) : jusqu'ici seul le foncier y apparaissait, rendant le
+  // Tableau d'amortissement inutilisable pour un véhicule Parc Auto.
   var tabSel = document.getElementById('filter-amort-bien');
   if (tabSel && tabSel.options.length <= 1) {
     biens.forEach(function(b){
       var o=document.createElement('option'); o.value=b.id;
-      o.textContent=(b.dossier?b.dossier+' — ':'')+b.designation.slice(0,30); tabSel.appendChild(o);
+      o.textContent='🏠 '+(b.dossier?b.dossier+' — ':'')+b.designation.slice(0,30); tabSel.appendChild(o);
+    });
+    (DATA.immobilisations||[]).forEach(function(im){
+      var o=document.createElement('option'); o.value=im.id;
+      o.textContent='🚗 '+(im.designation||'').slice(0,30); tabSel.appendChild(o);
     });
   }
 
@@ -63907,7 +63945,7 @@ function buildTableauAmort() {
   if (!box) return;
   if (!bienId) { box.innerHTML='<div style="color:var(--dim);font-size:13px;padding:16px;">Sélectionnez un bien.</div>'; return; }
 
-  var bien=DATA.biens_amort&&DATA.biens_amort.find(function(b){return b.id===bienId;});
+  var bien = _amortTousBiens().find(function(b){return b.id===bienId;});
   if (!bien) { box.innerHTML='<div style="color:var(--dim);">Bien introuvable.</div>'; return; }
 
   // Fiche résumé
@@ -63965,7 +64003,7 @@ function printTableauAmort() { _printFromElement('tableau-amort-box', 'Tableau d
 
 function exportTableauAmortCSV() {
   var bienId=(document.getElementById('filter-amort-bien')||{}).value||'';
-  var bien=DATA.biens_amort&&DATA.biens_amort.find(function(b){return b.id===bienId;});
+  var bien=_amortTousBiens().find(function(b){return b.id===bienId;});
   if(!bien){toast('Sélectionnez un bien.','error');return;}
   var anneeDebut=parseInt((bien.date_debut||'2024').slice(0,4));
   var rows=['Exercice,Valeur brute,Dotation 681,Amort. cumulé 281,VNC'];
@@ -63973,7 +64011,7 @@ function exportTableauAmortCSV() {
     rows.push([a,bien.valeur_origine,calcAnnuite(bien,a),calcAmortCumul(bien,a),calcVNC(bien,a)].join(','));
   }
   var blob=new Blob([rows.join('\n')],{type:'text/csv'});
-  var el=document.createElement('a'); el.href=URL.createObjectURL(blob); el.download='amort_'+bien.dossier+'.csv'; el.click();
+  var el=document.createElement('a'); el.href=URL.createObjectURL(blob); el.download='amort_'+(bien.dossier||bien.designation.replace(/[^a-z0-9]+/gi,'_').slice(0,20))+'.csv'; el.click();
   toast('Tableau exporté.','success');
 }
 
