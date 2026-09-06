@@ -4700,6 +4700,12 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <button class="btn btn-danger" id="bo-btn-suppr" style="display:none;" onclick="supprimerBilanOuverture()">🗑 Supprimer le bilan d'ouverture existant</button>
             </div>
           </div>
+
+          <div class="card">
+            <div class="form-section-title">📋 Bilans d'ouverture enregistrés</div>
+            <div style="font-size:11.5px;color:var(--blanc-dim);margin:4px 0 10px;">Toutes divisions et tous exercices confondus — cliquez ✏️ pour recharger une ligne dans le formulaire ci-dessus.</div>
+            <div id="bo-recap-box"></div>
+          </div>
         </div>
 
         <div class="tab-pane" id="tab-compta-periodique">
@@ -62789,7 +62795,15 @@ function renderBilanOuverture() {
       : '';
   }
 
-  var existantes = (DATA.ecritures||[]).filter(function(e){ return e.reference === 'BO-' + annee; });
+  /* [FIX] Aucune des écritures ci-dessous n'était rattachée à la division en
+     cours (ni sur l'id, ni sur le champ division) : deux entités du groupe
+     saisies pour le même exercice s'écrasaient silencieusement sur chaque
+     compte en commun (101, 401, 12…), puisque l'id ne dépendait que de
+     l'année et du compte — jamais de la division. Bloquant pour une saisie
+     multi-entités (holding + filiales) sous le même exercice. */
+  var divBO = _comptaDivisionFilter() || '_sansdivision';
+
+  var existantes = (DATA.ecritures||[]).filter(function(e){ return e.reference === 'BO-' + annee && (e.division||'_sansdivision') === divBO; });
   var btnSuppr = document.getElementById('bo-btn-suppr');
   if (btnSuppr) btnSuppr.style.display = existantes.length ? 'inline-flex' : 'none';
 
@@ -62808,6 +62822,7 @@ function renderBilanOuverture() {
     _boLignes = [{ compte:'', sens:'D', montant:'' }, { compte:'', sens:'C', montant:'' }];
   }
   boRenderLignes();
+  boRenderRecap();
 }
 
 async function saveBilanOuverture() {
@@ -62847,12 +62862,19 @@ async function saveBilanOuverture() {
     if (!confirm('⚠️ Le bilan saisi est déséquilibré (écart ' + fmtF(Math.abs(eq.totD-eq.totC)) + ' FCFA). Le compte de liaison 890 portera cet écart. Enregistrer quand même ?')) return;
   }
 
-  /* Supprimer un éventuel bilan d'ouverture précédent pour cet exercice (idempotent) */
-  var anciennes = (DATA.ecritures||[]).filter(function(e){ return e.reference === 'BO-' + annee; });
+  /* Même correctif que renderBilanOuverture() : purge et reconstruction
+     limitées à la division en cours — sinon enregistrer Menko Digitech
+     après Menko Holding supprimerait le bilan d'ouverture de Holding
+     dès qu'un compte est commun aux deux (référence identique 'BO-<année>'
+     partagée par toutes les divisions jusqu'ici). */
+  var divBOsave = _comptaDivisionFilter() || '_sansdivision';
+
+  /* Supprimer un éventuel bilan d'ouverture précédent pour cette division/exercice (idempotent) */
+  var anciennes = (DATA.ecritures||[]).filter(function(e){ return e.reference === 'BO-' + annee && (e.division||'_sansdivision') === divBOsave; });
   for (var k = 0; k < anciennes.length; k++) {
     await deleteRecord('ecritures', anciennes[k].id, { skipIntegrity: true, forceCloture: true });
   }
-  DATA.ecritures = DATA.ecritures.filter(function(e){ return e.reference !== 'BO-' + annee; });
+  DATA.ecritures = DATA.ecritures.filter(function(e){ return !(e.reference === 'BO-' + annee && (e.division||'_sansdivision') === divBOsave); });
 
   var ref = 'BO-' + annee;
   var nb = 0;
@@ -62861,7 +62883,7 @@ async function saveBilanOuverture() {
     if (Math.abs(solde) < 1) continue;
     var cInfo = APP.planComptable.find(function(c){ return c.code === cpt; });
     var ecr = {
-      id: 'ecr_bo_' + annee + '_' + cpt,
+      id: 'ecr_bo_' + annee + '_' + divBOsave + '_' + cpt,
       date: date,
       ref: ref,
       reference: ref,
@@ -62872,6 +62894,7 @@ async function saveBilanOuverture() {
       compte_credit: solde > 0 ? '890' : cpt,
       type: 'a_nouveau',
       journal: 'AN',
+      division: _comptaDivisionFilter() || '',
       notes: note,
       _auto: 'bilan_ouverture',
       created_at: today()
@@ -62883,7 +62906,18 @@ async function saveBilanOuverture() {
   }
 
   toast('✅ Bilan d\'ouverture ' + annee + ' enregistré — ' + nb + ' compte(s).', 'success');
-  renderBilanOuverture();
+  /* [Fix ergonomie] renderBilanOuverture() rechargeait aussitôt les lignes
+     qu'on venait d'enregistrer dans le formulaire — pratique pour corriger,
+     gênant pour enchaîner une autre entité : il fallait tout effacer à la
+     main avant de saisir la division suivante. Formulaire vidé directement
+     ici (date et exercice conservés — la saisie suivante est très souvent
+     la même date), et le tableau récapitulatif ci-dessous prend le relais
+     pour consulter/modifier/supprimer ce qui est déjà enregistré. */
+  _boLignes = [{ compte:'', sens:'D', montant:'' }, { compte:'', sens:'C', montant:'' }];
+  if (noteEl) noteEl.value = '';
+  boRenderLignes();
+  if (btnSuppr) btnSuppr.style.display = 'none';
+  boRenderRecap();
   if (typeof filterEcritures === 'function') filterEcritures();
   if (typeof buildBalance === 'function') buildBalance();
   if (typeof buildBilan === 'function') buildBilan();
@@ -62893,16 +62927,82 @@ async function saveBilanOuverture() {
 async function supprimerBilanOuverture() {
   var selAnnee = document.getElementById('bo-annee');
   var annee = parseInt((selAnnee||{}).value) || new Date().getFullYear();
-  if (!confirm('🗑 Supprimer le bilan d\'ouverture ' + annee + ' ?\n\nToutes les écritures d\'à-nouveaux saisies manuellement pour cet exercice seront supprimées.')) return;
+  var divBOdel = _comptaDivisionFilter() || '_sansdivision';
+  if (!confirm('🗑 Supprimer le bilan d\'ouverture ' + annee + ' de cette division ?\n\nToutes les écritures d\'à-nouveaux saisies manuellement pour cet exercice et cette division seront supprimées.')) return;
 
-  var toDelete = (DATA.ecritures||[]).filter(function(e){ return e.reference === 'BO-' + annee; });
+  var toDelete = (DATA.ecritures||[]).filter(function(e){ return e.reference === 'BO-' + annee && (e.division||'_sansdivision') === divBOdel; });
   for (var i = 0; i < toDelete.length; i++) {
     await deleteRecord('ecritures', toDelete[i].id, { skipIntegrity: true, forceCloture: true });
   }
-  DATA.ecritures = DATA.ecritures.filter(function(e){ return e.reference !== 'BO-' + annee; });
+  DATA.ecritures = DATA.ecritures.filter(function(e){ return !(e.reference === 'BO-' + annee && (e.division||'_sansdivision') === divBOdel); });
 
   toast('Bilan d\'ouverture ' + annee + ' supprimé (' + toDelete.length + ' écriture(s)).', 'info');
   renderBilanOuverture();
+  if (typeof filterEcritures === 'function') filterEcritures();
+  if (typeof buildBalance === 'function') buildBalance();
+  if (typeof buildBilan === 'function') buildBilan();
+}
+
+/* Récapitulatif — un bilan d'ouverture peut désormais exister pour chaque
+   division sous le même exercice (voir correctif ci-dessus) : sans cette
+   vue d'ensemble, rien à l'écran ne montre lesquelles sont déjà saisies une
+   fois le formulaire vidé après enregistrement. Une ligne par division +
+   exercice, avec accès direct pour consulter/modifier/supprimer. */
+function boRenderRecap(){
+  var box = document.getElementById('bo-recap-box');
+  if (!box) return;
+  var groupes = {};
+  (DATA.ecritures||[]).filter(function(e){ return e._auto === 'bilan_ouverture'; }).forEach(function(e){
+    var key = (e.division||'_sansdivision') + '|' + e.reference;
+    groupes[key] = groupes[key] || { division: e.division||'', reference: e.reference, date: e.date, notes: e.notes, lignes: [] };
+    groupes[key].lignes.push(e);
+  });
+  var lignesRecap = Object.keys(groupes).map(function(k){ return groupes[k]; });
+  if (!lignesRecap.length) { box.innerHTML = '<div style="color:var(--blanc-dim);font-size:12px;padding:12px;">Aucun bilan d\'ouverture enregistré pour l\'instant.</div>'; return; }
+  lignesRecap.sort(function(a,b){ return (a.division||'').localeCompare(b.division||'') || a.reference.localeCompare(b.reference); });
+  box.innerHTML = '<div class="table-wrap"><table style="width:100%;font-size:12.5px;">'
+    + '<thead><tr><th>Division</th><th>Exercice</th><th>Date</th><th style="text-align:right;">Total (débit)</th><th>Comptes</th><th>Note</th><th></th></tr></thead><tbody>'
+    + lignesRecap.map(function(g){
+      var divNom = (DATA.divisions||[]).find(function(d){ return d.id === g.division; });
+      var total = g.lignes.reduce(function(s,e){ return s + (e.compte_debit!=='890' ? (parseFloat(e.montant)||0) : 0); }, 0);
+      return '<tr>'
+        + '<td>' + (divNom ? escHtml(divNom.nom) : (g.division ? escHtml(g.division) : '<span style="color:var(--blanc-dim);">— Sans division —</span>')) + '</td>'
+        + '<td>' + escHtml(g.reference.replace('BO-','')) + '</td>'
+        + '<td>' + dateShort(g.date) + '</td>'
+        + '<td style="text-align:right;font-weight:700;">' + fmtF(total) + '</td>'
+        + '<td>' + g.lignes.length + '</td>'
+        + '<td style="font-size:11px;color:var(--blanc-dim);">' + escHtml(g.notes||'') + '</td>'
+        + '<td style="white-space:nowrap;">'
+        + '<button class="btn btn-secondary btn-sm btn-icon" title="Charger dans le formulaire" onclick="boChargerRecap(\'' + (g.division||'') + '\',\'' + g.reference + '\')">✏️</button> '
+        + '<button class="btn btn-danger btn-sm btn-icon" title="Supprimer" onclick="boSupprimerRecap(\'' + (g.division||'') + '\',\'' + g.reference + '\')">🗑</button>'
+        + '</td></tr>';
+    }).join('')
+    + '</tbody></table></div>';
+}
+/* Bascule la division/exercice actifs sur ceux de la ligne choisie, puis
+   recharge le formulaire — évite d'avoir à retrouver soi-même la bonne
+   combinaison division/année dans les sélecteurs du haut. */
+function boChargerRecap(divisionId, reference){
+  var divEl = document.getElementById('filter-compta-division');
+  if (divEl && !userScopeDivision()) { divEl.value = divisionId || ''; }
+  var annee = parseInt(reference.replace('BO-',''), 10);
+  var anEl = document.getElementById('bo-annee');
+  if (anEl) anEl.value = annee;
+  renderBilanOuverture();
+  var wrap = document.getElementById('bo-lignes-wrap');
+  if (wrap) wrap.scrollIntoView({ behavior:'smooth', block:'center' });
+}
+async function boSupprimerRecap(divisionId, reference){
+  var annee = parseInt(reference.replace('BO-',''), 10);
+  var divKey = divisionId || '_sansdivision';
+  if (!confirm('🗑 Supprimer le bilan d\'ouverture ' + annee + ' de cette division ?')) return;
+  var toDelete = (DATA.ecritures||[]).filter(function(e){ return e.reference === reference && (e.division||'_sansdivision') === divKey; });
+  for (var i = 0; i < toDelete.length; i++) {
+    await deleteRecord('ecritures', toDelete[i].id, { skipIntegrity: true, forceCloture: true });
+  }
+  DATA.ecritures = DATA.ecritures.filter(function(e){ return !(e.reference === reference && (e.division||'_sansdivision') === divKey); });
+  toast('Bilan d\'ouverture supprimé (' + toDelete.length + ' écriture(s)).', 'info');
+  boRenderRecap();
   if (typeof filterEcritures === 'function') filterEcritures();
   if (typeof buildBalance === 'function') buildBalance();
   if (typeof buildBilan === 'function') buildBilan();
