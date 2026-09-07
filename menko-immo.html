@@ -3518,6 +3518,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div id="lots-dashboard"></div>
         </div>
         <div class="tab-pane" id="tab-lots-grille">
+          <div id="lots-dashboard-grille" style="margin-bottom:16px;"></div>
           <div style="margin-bottom:14px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
             <input type="text" class="search-input" placeholder="🔍 Recherche générale (type, programme…)" id="search-lots" oninput="_debInput('filterLots')" style="flex:1;min-width:180px;">
             <input type="text" class="search-input" placeholder="🏘 Îlot (ex : A, B1…)" id="search-lots-ilot" oninput="_debInput('filterLots')" style="flex:0 0 170px;">
@@ -8858,9 +8859,15 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
              en arrière dans le flux. -->
         <div class="steps-nav" style="margin-bottom:18px;">
           <div class="etape">
+            <div class="etape-hd"><span class="etape-num">·</span>Vue d'ensemble</div>
+            <div class="etape-btns">
+              <button class="tab-btn active" onclick="switchTab('foncier','dashboard');renderFoncierDashboard()" title="Récapitulatif du portefeuille — répartition, valeur, alertes"><i>📊</i>Tableau de bord</button>
+            </div>
+          </div>
+          <div class="etape">
             <div class="etape-hd"><span class="etape-num">1</span>Acquisition</div>
             <div class="etape-btns">
-              <button class="tab-btn active" onclick="switchTab('foncier','parcelles')" title="Prospection, négociation et portefeuille des parcelles"><i>🗺️</i>Parcelles</button>
+              <button class="tab-btn" onclick="switchTab('foncier','parcelles')" title="Prospection, négociation et portefeuille des parcelles"><i>🗺️</i>Parcelles</button>
             </div>
           </div>
           <div class="etape">
@@ -16886,6 +16893,8 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <input type="number" class="form-control" id="c-surface" placeholder="0" oninput="clientCompareSurface()">
             <div id="c-surface-ecart" style="font-size:11px;margin-top:4px;display:none;"></div>
             <div id="c-surface-regul-action" style="margin-top:6px;"></div>
+            <div id="c-tma-action" style="margin-top:6px;"></div>
+            <div id="c-subrogation-action" style="margin-top:6px;"></div>
           </div>
           <div class="form-group">
             <label>Prix de vente total (FCFA)</label>
@@ -17178,6 +17187,120 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-regul-surface')">Annuler</button>
       <button class="btn btn-primary" onclick="confirmerRegularisationSurface()">📐 Enregistrer et générer l'avenant</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal TMA — liste des demandes de modification d'un souscripteur -->
+<div class="modal-overlay" id="modal-tma-liste">
+  <div class="modal" style="max-width:720px;">
+    <div class="modal-header"><h3>📝 Demandes de modification (TMA) — <span id="tma-liste-client"></span></h3><button class="btn btn-secondary btn-icon" onclick="closeModal('modal-tma-liste')">✕</button></div>
+    <div class="modal-body">
+      <input type="hidden" id="tma-liste-client-id">
+      <div class="alert alert-info" style="font-size:11.5px;">
+        Travaux modificatifs acquéreur — toute demande du souscripteur de modifier son logement en cours de
+        construction (cloisons, finitions, équipements...). La faisabilité dépend du stade d'avancement : au-delà du
+        gros œuvre, une modification structurelle est rarement possible sans reprise coûteuse.
+      </div>
+      <button type="button" class="btn btn-primary btn-sm" style="margin:10px 0;" onclick="ouvrirTmaFormulaire()">➕ Nouvelle demande</button>
+      <div id="tma-liste-box"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-tma-liste')">Fermer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal TMA — formulaire d'une demande -->
+<div class="modal-overlay" id="modal-tma-form">
+  <div class="modal">
+    <div class="modal-header"><h3>📝 Demande de modification</h3><button class="btn btn-secondary btn-icon" onclick="closeModal('modal-tma-form')">✕</button></div>
+    <div class="modal-body">
+      <input type="hidden" id="tma-id">
+      <div id="tma-faisabilite-alerte" style="margin-bottom:10px;"></div>
+      <div class="form-group"><label>Description de la modification demandée *</label><textarea class="form-control" id="tma-description" rows="3" placeholder="Ex. Déplacement de la cloison salon/cuisine, ajout d'une baie vitrée en façade nord."></textarea></div>
+      <div class="form-grid">
+        <div class="form-group"><label>Date de la demande</label><input type="date" class="form-control" id="tma-date"></div>
+        <div class="form-group"><label>Stade du chantier à la demande</label>
+          <select class="form-control" id="tma-stade">
+            <option value="gros_oeuvre">🧱 Gros œuvre</option>
+            <option value="second_oeuvre">🔧 Second œuvre</option>
+            <option value="cle_en_main">🔑 Clé en main / finitions</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="form-group"><label>Faisabilité technique</label>
+          <select class="form-control" id="tma-faisabilite" onchange="tmaMajAlerteFaisabilite()">
+            <option value="a_evaluer">À évaluer</option>
+            <option value="faisable">Faisable</option>
+            <option value="faisable_reserve">Faisable sous réserve (surcoût/délai important)</option>
+            <option value="non_faisable">Non faisable</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Statut</label>
+          <select class="form-control" id="tma-statut">
+            <option value="demande">Demande reçue</option>
+            <option value="devis">Devis en cours</option>
+            <option value="valide">Validée par le souscripteur</option>
+            <option value="en_cours">Travaux en cours</option>
+            <option value="realise">Réalisée</option>
+            <option value="refuse">Refusée</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="form-group"><label>Coût estimé (FCFA)</label><input type="number" class="form-control" id="tma-cout-estime"></div>
+        <div class="form-group"><label>Impact délai (jours)</label><input type="number" class="form-control" id="tma-impact-delai" value="0"></div>
+      </div>
+      <div class="form-group"><label><input type="checkbox" id="tma-facturer"> Facturer ce surcoût au souscripteur (ajoute au montant total du contrat + avenant)</label></div>
+      <div class="form-group"><label>Notes / observations</label><textarea class="form-control" id="tma-notes" rows="2"></textarea></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-tma-form');ouvrirTmaListe(document.getElementById('tma-liste-client-id').value)">Annuler</button>
+      <button class="btn btn-primary" onclick="confirmerTma()">💾 Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Subrogation de contrat -->
+<div class="modal-overlay" id="modal-subrogation">
+  <div class="modal">
+    <div class="modal-header"><h3>🔄 Subroger ce contrat</h3><button class="btn btn-secondary btn-icon" onclick="closeModal('modal-subrogation')">✕</button></div>
+    <div class="modal-body">
+      <input type="hidden" id="sub-client-id">
+      <div class="alert alert-info" style="font-size:11.5px;">
+        Transfère ce contrat (lot, montant total, échéancier, historique des versements déjà réglés) à un nouveau
+        souscripteur — sans résiliation ni remboursement. Le nouveau titulaire reprend le contrat en l'état.
+        L'ancien titulaire reste consultable dans l'historique de la fiche.
+      </div>
+      <div id="sub-recap" class="card" style="margin:10px 0;padding:10px 12px;font-size:12px;"></div>
+      <div id="sub-alerte-gele" style="display:none;"></div>
+      <div class="form-section-title" style="margin-top:8px;">Nouveau souscripteur</div>
+      <div class="form-grid">
+        <div class="form-group"><label>Nom *</label><input type="text" class="form-control" id="sub-nom"></div>
+        <div class="form-group"><label>Prénoms *</label><input type="text" class="form-control" id="sub-prenoms"></div>
+        <div class="form-group"><label>Téléphone *</label><input type="text" class="form-control" id="sub-tel"></div>
+        <div class="form-group"><label>Email</label><input type="text" class="form-control" id="sub-email"></div>
+        <div class="form-group"><label>Type de pièce</label>
+          <select class="form-control" id="sub-piece-type"><option value="CNI">CNI</option><option value="Passeport">Passeport</option><option value="Attestation">Attestation d'identité</option><option value="CS">Carte de séjour</option></select>
+        </div>
+        <div class="form-group"><label>N° de pièce *</label><input type="text" class="form-control" id="sub-piece-num"></div>
+        <div class="form-group"><label>Nationalité</label><input type="text" class="form-control" id="sub-nationalite" value="Ivoirienne"></div>
+        <div class="form-group"><label>Profession</label><input type="text" class="form-control" id="sub-profession"></div>
+      </div>
+      <div class="form-group"><label>Adresse</label><input type="text" class="form-control" id="sub-adresse"></div>
+      <div class="form-section-title" style="margin-top:8px;">Conditions de la subrogation</div>
+      <div class="form-grid">
+        <div class="form-group"><label>Date de la subrogation</label><input type="date" class="form-control" id="sub-date"></div>
+        <div class="form-group"><label>Frais de dossier/mutation (FCFA) — facultatif</label><input type="number" class="form-control" id="sub-frais" placeholder="0" value="0"></div>
+      </div>
+      <div class="form-group"><label>Motif / justification (obligatoire)</label><textarea class="form-control" id="sub-motif" rows="2" placeholder="Ex. Cession amiable des droits du souscripteur initial, accord signé le..."></textarea></div>
+      <div class="form-group"><label><input type="checkbox" id="sub-confirme"> Je confirme avoir vérifié l'identité du nouveau souscripteur et l'accord des deux parties.</label></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-subrogation')">Annuler</button>
+      <button class="btn btn-primary" onclick="confirmerSubrogation()">🔄 Confirmer la subrogation</button>
     </div>
   </div>
 </div>
@@ -18289,6 +18412,14 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <option value="second_oeuvre">🔧 Second œuvre</option>
             <option value="cle_en_main">🔑 Clé en main</option>
           </select>
+        </div>
+        <div class="form-group">
+          <label>N° Titre Foncier du lot <span style="font-weight:400;color:var(--blanc-dim);">— une fois morcelé/acquis</span></label>
+          <input type="text" class="form-control" id="l-numero-tf" placeholder="Ex. TF 21289/512">
+        </div>
+        <div class="form-group">
+          <label>Frais de notaire (FCFA)</label>
+          <input type="number" class="form-control" id="l-frais-notaire" placeholder="0">
         </div>
         <div class="form-group">
           <label>Nature du lot</label>
@@ -30448,11 +30579,25 @@ function openClientModal(id) {
     // Documents téléversés
     setTimeout(function(){ refreshDocumentsForEntity('client', id); }, 80);
     renderClientHistorique(id);
+    var tmaAction = document.getElementById('c-tma-action');
+    if (tmaAction) {
+      var nbTma = (c.demandes_modification||[]).filter(function(d){ return d.statut!=='realise' && d.statut!=='refuse'; }).length;
+      tmaAction.innerHTML = '<button type="button" class="btn btn-secondary btn-sm" onclick="ouvrirTmaListe(\''+id+'\')">📝 Demandes de modification (TMA)'
+        + (nbTma ? ' <span class="badge badge-or" style="margin-left:4px;">'+nbTma+'</span>' : '') + '</button>';
+    }
+    var subroAction = document.getElementById('c-subrogation-action');
+    if (subroAction) {
+      var nbSubro = (c.subrogations||[]).length;
+      subroAction.innerHTML = '<button type="button" class="btn btn-secondary btn-sm" onclick="ouvrirSubrogation(\''+id+'\')">🔄 Subroger ce contrat'
+        + (nbSubro ? ' <span class="badge badge-bleu" style="margin-left:4px;">'+nbSubro+' déjà</span>' : '') + '</button>';
+    }
   } else {
     document.getElementById('modal-client-title').textContent = 'Nouveau Souscripteur';
     document.getElementById('c-date-debut').value = today();
     document.getElementById('c-date-souscription').value = today();
     document.getElementById('client-historique-block').innerHTML = '';
+    var tmaActionNew = document.getElementById('c-tma-action'); if (tmaActionNew) tmaActionNew.innerHTML = '';
+    var subroActionNew = document.getElementById('c-subrogation-action'); if (subroActionNew) subroActionNew.innerHTML = '';
   }
   if (typeof updateLotsByProgramme === 'function') updateLotsByProgramme();
   openModal('modal-client');
@@ -31417,6 +31562,7 @@ async function resilierConfirmer(){
     lots_liberes:lotIds, valide_par:(APP.currentUser&&APP.currentUser.nom)||'—', cree_le:new Date().toISOString() };
   c._modifie = new Date().toISOString();
   await logAudit('clients', clientId, 'resiliation', null, c.resiliation);
+  await clientLierDossierJuridique(c, 'Résiliation de souscription — motif : '+(motif==='faute_promoteur'?'faute du promoteur':'désistement du souscripteur')+' ('+Math.round(taux*100)+'%). '+justification, rembourse, true);
   await dbPut('clients', c); if (typeof syncToSupabase==='function') syncToSupabase('pi_clients', c);
 
   closeModal('modal-resiliation');
@@ -34491,6 +34637,8 @@ function openLotModal(id) {
     setSelectValue('l-statut', l.statut);
     setSelectValue('l-nature', l.nature || 'villa');
     setSelectValue('l-mode-livraison', l.mode_livraison || 'gros_oeuvre');
+    document.getElementById('l-numero-tf').value = l.numero_tf || '';
+    document.getElementById('l-frais-notaire').value = l.frais_notaire || '';
     lotNatureUI(); lotRecalcPrixM2(); lotRecalcCoutM2();
   } else {
     document.getElementById('modal-lot-title').textContent = 'Nouveau Lot';
@@ -34500,7 +34648,7 @@ function openLotModal(id) {
 }
 
 function clearLotForm() {
-  ['l-numero','l-ilot','l-surface','l-surface-mesuree','l-pieces','l-prix','l-prix-m2','l-cout-revient','l-cout-m2','l-notes'].forEach(function(id) {
+  ['l-numero','l-ilot','l-surface','l-surface-mesuree','l-pieces','l-prix','l-prix-m2','l-cout-revient','l-cout-m2','l-notes','l-numero-tf','l-frais-notaire'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.value = '';
   });
@@ -34664,6 +34812,8 @@ async function saveLot() {
     cout_m2: _coutM2,
     standing: document.getElementById('l-standing').value,
     mode_livraison: document.getElementById('l-mode-livraison').value,
+    numero_tf: document.getElementById('l-numero-tf').value.trim(),
+    frais_notaire: parseFloat(document.getElementById('l-frais-notaire').value) || 0,
     nature: _lotNature,
     statut: document.getElementById('l-statut').value,
     notes: document.getElementById('l-notes').value,
@@ -34837,6 +34987,13 @@ function renderLotsDashboard() {
   html += tableauAgg('Par îlot', agg(function(l){ return l.ilot ? 'Îlot '+l.ilot : '—'; }), 20);
 
   box.innerHTML = html;
+  /* [Nouveau] Même récapitulatif affiché directement dans l'onglet Grille des
+     Lots — jusqu'ici seul l'onglet séparé "📊 Tableau de bord" l'affichait,
+     obligeant à changer d'onglet pour voir la synthèse pendant qu'on
+     parcourt/filtre la grille. Simple duplication d'affichage, un seul
+     calcul (aucune logique dupliquée). */
+  var boxGrille = document.getElementById('lots-dashboard-grille');
+  if (boxGrille) boxGrille.innerHTML = html;
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -45741,6 +45898,7 @@ async function confirmerRegularisationSurface(){
   c.surface = surfaceReelle;
   c._modifie = new Date().toISOString();
   await logAudit('clients', clientId, 'regularisation_surface', null, regul);
+  await clientLierDossierJuridique(c, 'Régularisation de surface — écart '+ecart.toFixed(2)+' m² × '+fcfa(prixM2)+'/m² = '+fcfa(montant)+'. '+motif, montant);
   await dbPut('clients', c);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_clients', c);
 
@@ -45780,6 +45938,314 @@ function imprimerRegularisationSurface(regul, c){
     +'sans emporter aucune autre modification des conditions convenues.<br><br>'
     +'Fait à '+escHtml((DATA.params&&DATA.params.ville)||'Abidjan')+', le '+new Date().toLocaleDateString('fr-FR')+'<br><br>'
     +'Pour '+escHtml(soc)+' : ___________________________<br><br>Le souscripteur (bon pour accord) : ___________________________</div>'
+    +'</body></html>');
+  w.document.close(); w.print();
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   TRAVAUX MODIFICATIFS ACQUÉREUR (TMA) — demande d'un souscripteur de
+   modifier son logement en cours de construction. Absent jusqu'ici :
+   seule trace possible était une note libre ou un échange par message,
+   sans faisabilité tracée selon le stade, sans impact financier lié au
+   contrat. Même principe que la régularisation de surface : le montant
+   total du contrat est la seule source de vérité de ce qui est dû, un
+   avenant signable est généré, les futurs versements/commissions
+   suivent automatiquement (aucun traitement rétroactif nécessaire). */
+function ouvrirTmaListe(clientId){
+  var c = (DATA.clients||[]).find(function(x){ return x.id===clientId; });
+  if (!c) return;
+  document.getElementById('tma-liste-client-id').value = clientId;
+  document.getElementById('tma-liste-client').textContent = ((c.nom||'')+' '+(c.prenoms||'')).trim();
+  tmaRenderListe();
+  openModal('modal-tma-liste');
+}
+function tmaRenderListe(){
+  var clientId = document.getElementById('tma-liste-client-id').value;
+  var c = (DATA.clients||[]).find(function(x){ return x.id===clientId; });
+  var box = document.getElementById('tma-liste-box'); if (!box || !c) return;
+  var demandes = (c.demandes_modification||[]).slice().sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); });
+  if (!demandes.length){ box.innerHTML = '<div style="color:var(--blanc-dim);font-size:12px;padding:14px;text-align:center;">Aucune demande enregistrée.</div>'; return; }
+  var statutLabel = { demande:'Demande reçue', devis:'Devis en cours', valide:'Validée', en_cours:'En cours', realise:'Réalisée', refuse:'Refusée' };
+  var statutBadge = { demande:'badge-gris', devis:'badge-or', valide:'badge-bleu', en_cours:'badge-or', realise:'badge-vert', refuse:'badge-rouge' };
+  var faisabiliteLabel = { a_evaluer:'À évaluer', faisable:'✅ Faisable', faisable_reserve:'⚠️ Sous réserve', non_faisable:'❌ Non faisable' };
+  box.innerHTML = '<div class="table-wrap"><table style="width:100%;font-size:12px;">'
+    + '<thead><tr><th>Date</th><th>Description</th><th>Stade</th><th>Faisabilité</th><th>Coût</th><th>Statut</th><th></th></tr></thead><tbody>'
+    + demandes.map(function(d){
+      return '<tr><td>'+dateShort(d.date)+'</td>'
+        + '<td style="max-width:220px;">'+escHtml((d.description||'').slice(0,60))+'</td>'
+        + '<td style="font-size:11px;">'+({gros_oeuvre:'🧱 Gros œuvre',second_oeuvre:'🔧 Second œuvre',cle_en_main:'🔑 Clé en main'}[d.stade]||d.stade)+'</td>'
+        + '<td style="font-size:11px;">'+(faisabiliteLabel[d.faisabilite]||d.faisabilite)+'</td>'
+        + '<td style="text-align:right;">'+(d.facture ? fmtF(d.cout_estime)+' F' : (d.cout_estime?fmtF(d.cout_estime)+' F (non facturé)':'—'))+'</td>'
+        + '<td><span class="badge '+(statutBadge[d.statut]||'badge-gris')+'">'+(statutLabel[d.statut]||d.statut)+'</span></td>'
+        + '<td style="white-space:nowrap;">'
+        + '<button class="btn btn-secondary btn-sm btn-icon" title="Modifier" onclick="ouvrirTmaFormulaire(\''+d.id+'\')">✏️</button> '
+        + (d.statut!=='realise' && !d.facture ? '<button class="btn btn-danger btn-sm btn-icon" title="Supprimer" onclick="supprimerTma(\''+d.id+'\')">🗑</button>' : '')
+        + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+}
+function ouvrirTmaFormulaire(tmaId){
+  var clientId = document.getElementById('tma-liste-client-id').value;
+  var c = (DATA.clients||[]).find(function(x){ return x.id===clientId; });
+  if (!c) return;
+  if (!exigerDroit('Souscripteurs', 'v', 'la gestion des demandes de modification')) return;
+  var d = tmaId ? (c.demandes_modification||[]).find(function(x){ return x.id===tmaId; }) : null;
+  document.getElementById('tma-id').value = d ? d.id : '';
+  document.getElementById('tma-description').value = d ? d.description : '';
+  document.getElementById('tma-date').value = d ? d.date : today();
+  var lot = (DATA.lots||[]).find(function(l){ return l.id===c.lot_id; });
+  document.getElementById('tma-stade').value = d ? d.stade : ((lot && lot.mode_livraison) || 'gros_oeuvre');
+  document.getElementById('tma-faisabilite').value = d ? d.faisabilite : 'a_evaluer';
+  document.getElementById('tma-statut').value = d ? d.statut : 'demande';
+  document.getElementById('tma-cout-estime').value = d ? d.cout_estime : '';
+  document.getElementById('tma-impact-delai').value = d ? (d.impact_delai||0) : 0;
+  document.getElementById('tma-facturer').checked = d ? !!d.facture : false;
+  document.getElementById('tma-facturer').disabled = !!(d && d.facture); // déjà facturé : ne plus pouvoir décocher (éviterait de fausser le montant sans repasser par une régularisation explicite)
+  document.getElementById('tma-notes').value = d ? (d.notes||'') : '';
+  tmaMajAlerteFaisabilite();
+  closeModal('modal-tma-liste');
+  openModal('modal-tma-form');
+}
+function tmaMajAlerteFaisabilite(){
+  var stade = document.getElementById('tma-stade').value;
+  var el = document.getElementById('tma-faisabilite-alerte');
+  var msgs = {
+    gros_oeuvre: { c:'alert-info', t:'🧱 Gros œuvre : les modifications structurelles (cloisons porteuses, ouvertures, réseaux enterrés) restent généralement possibles à ce stade.' },
+    second_oeuvre: { c:'alert-warn', t:'🔧 Second œuvre : une modification touchant la structure (cloisons porteuses, gros réseaux) implique une reprise coûteuse — limiter aux cloisons non porteuses, électricité, plomberie non encore posée.' },
+    cle_en_main: { c:'alert-danger', t:'🔑 Clé en main / finitions : seules les modifications esthétiques mineures (peinture, revêtements non posés, équipements) sont réalistes sans reprise majeure des travaux déjà achevés.' }
+  };
+  var m = msgs[stade] || msgs.gros_oeuvre;
+  el.className = 'alert ' + m.c;
+  el.innerHTML = m.t;
+}
+async function confirmerTma(){
+  var clientId = document.getElementById('tma-liste-client-id').value;
+  var c = (DATA.clients||[]).find(function(x){ return x.id===clientId; });
+  if (!c) { toast('Souscripteur introuvable.','error'); return; }
+  if (!exigerDroit('Souscripteurs', 'v', 'la gestion des demandes de modification')) return;
+  var description = document.getElementById('tma-description').value.trim();
+  if (!description) { toast('La description de la demande est obligatoire.','error'); return; }
+  var tmaId = document.getElementById('tma-id').value;
+  var coutEstime = parseFloat(document.getElementById('tma-cout-estime').value) || 0;
+  var facturer = document.getElementById('tma-facturer').checked;
+
+  c.demandes_modification = c.demandes_modification || [];
+  var d = tmaId ? c.demandes_modification.find(function(x){ return x.id===tmaId; }) : null;
+  var dejaFacture = !!(d && d.facture);
+  if (!d) { d = { id: uid() }; c.demandes_modification.push(d); }
+
+  d.description = description;
+  d.date = document.getElementById('tma-date').value || today();
+  d.stade = document.getElementById('tma-stade').value;
+  d.faisabilite = document.getElementById('tma-faisabilite').value;
+  d.statut = document.getElementById('tma-statut').value;
+  d.cout_estime = coutEstime;
+  d.impact_delai = parseFloat(document.getElementById('tma-impact-delai').value) || 0;
+  d.notes = document.getElementById('tma-notes').value.trim();
+  d.valide_par = (APP.currentUser&&APP.currentUser.nom)||'—';
+  d._modifie_le = new Date().toISOString();
+
+  /* Facturation : n'ajoute au montant total qu'UNE SEULE FOIS (idempotent) —
+     éviter qu'un simple changement de statut sur une demande déjà facturée
+     ne réaugmente le montant total à chaque enregistrement. */
+  if (facturer && !dejaFacture && coutEstime > 0) {
+    c.montant_total = (parseFloat(c.montant_total)||0) + coutEstime;
+    d.facture = true;
+    d.montant_facture = coutEstime;
+    await logAudit('clients', clientId, 'tma_facturation', null, { tma_id:d.id, montant:coutEstime, description:description });
+    await clientLierDossierJuridique(c, 'Travaux modificatifs acquéreur facturés — '+fcfa(coutEstime)+'. '+description, coutEstime);
+    imprimerAvenantTma(d, c);
+  } else if (!facturer) {
+    d.facture = false;
+  }
+
+  c._modifie = new Date().toISOString();
+  await dbPut('clients', c);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_clients', c);
+
+  closeModal('modal-tma-form');
+  var mtEl = document.getElementById('c-montant-total'); if (mtEl && APP.editingId===clientId) mtEl.value = c.montant_total;
+  var tmaAction = document.getElementById('c-tma-action');
+  if (tmaAction && APP.editingId===clientId) {
+    var nbTma = c.demandes_modification.filter(function(x){ return x.statut!=='realise' && x.statut!=='refuse'; }).length;
+    tmaAction.innerHTML = '<button type="button" class="btn btn-secondary btn-sm" onclick="ouvrirTmaListe(\''+clientId+'\')">📝 Demandes de modification (TMA)'
+      + (nbTma ? ' <span class="badge badge-or" style="margin-left:4px;">'+nbTma+'</span>' : '') + '</button>';
+  }
+  toast('✅ Demande enregistrée.'+(facturer && !dejaFacture && coutEstime>0 ? ' Montant total mis à jour (+'+fcfa(coutEstime)+'), avenant généré.' : ''), 'success');
+  ouvrirTmaListe(clientId);
+}
+async function supprimerTma(tmaId){
+  var clientId = document.getElementById('tma-liste-client-id').value;
+  var c = (DATA.clients||[]).find(function(x){ return x.id===clientId; });
+  if (!c) return;
+  if (!exigerDroit('Souscripteurs', 'v', 'la suppression de cette demande')) return;
+  var d = (c.demandes_modification||[]).find(function(x){ return x.id===tmaId; });
+  if (d && d.facture) { toast('Impossible : cette demande a déjà été facturée au contrat.','error'); return; }
+  if (!confirm('Supprimer cette demande de modification ?')) return;
+  c.demandes_modification = (c.demandes_modification||[]).filter(function(x){ return x.id!==tmaId; });
+  c._modifie = new Date().toISOString();
+  await dbPut('clients', c);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_clients', c);
+  tmaRenderListe();
+  toast('Demande supprimée.','info');
+}
+function imprimerAvenantTma(d, c){
+  var soc = (DATA.params&&(DATA.params.societe||DATA.params.nom))||'';
+  var w = window.open('','_blank');
+  if (!w) { toast('Autorisez les fenêtres surgissantes.','error'); return; }
+  var stadeLabel = {gros_oeuvre:'Gros œuvre',second_oeuvre:'Second œuvre',cle_en_main:'Clé en main / finitions'}[d.stade]||d.stade;
+  w.document.write('<html><head><title>Avenant — Travaux modificatifs</title>'
+    +'<style>body{font-family:Georgia,serif;padding:38px;color:#111;font-size:13px;line-height:1.55;}'
+    +'h1{font-size:17px;margin:0 0 4px;}table{width:100%;border-collapse:collapse;margin:10px 0;}'
+    +'td{padding:5px 8px;border:1px solid #ccc;}td.k{width:40%;background:#f5f5f5;}'
+    +'.pied{margin-top:26px;font-size:11px;color:#555;}</style></head><body>'
+    +sanixQrHtml('Avenant TMA', c.dossier||c.id)
+    +'<h1>'+escHtml(soc)+'</h1>'
+    +'<h1 style="margin-top:14px;">Avenant — Travaux modificatifs acquéreur</h1>'
+    +'<div style="color:#555;font-size:11.5px;">Réf. souscripteur : '+escHtml(c.dossier||c.id)+' — '+new Date().toLocaleDateString('fr-FR')+'</div>'
+    +'<h2>Souscripteur</h2><table><tbody>'
+    +'<tr><td class="k">Nom</td><td>'+escHtml(((c.nom||'')+' '+(c.prenoms||'')).trim())+'</td></tr>'
+    +'</tbody></table>'
+    +'<h2>Nature de la modification</h2><p>'+escHtml(d.description)+'</p>'
+    +'<table><tbody>'
+    +'<tr><td class="k">Stade du chantier</td><td>'+escHtml(stadeLabel)+'</td></tr>'
+    +'<tr><td class="k">Impact sur le délai de livraison</td><td>'+(d.impact_delai>0 ? '+'+d.impact_delai+' jour(s)' : 'Aucun')+'</td></tr>'
+    +'<tr><td class="k"><b>Coût complémentaire facturé</b></td><td><b>'+fcfa(d.montant_facture||d.cout_estime)+'</b></td></tr>'
+    +'<tr><td class="k">Nouveau montant total du contrat</td><td>'+fcfa(c.montant_total)+'</td></tr>'
+    +'</tbody></table>'
+    +'<div class="pied">Le présent avenant complète et modifie le contrat de souscription initial à hauteur du montant ci-dessus. '
+    +'La réalisation reste conditionnée à la faisabilité technique confirmée par le maître d\'œuvre.<br><br>'
+    +'Fait à '+escHtml((DATA.params&&DATA.params.ville)||'Abidjan')+', le '+new Date().toLocaleDateString('fr-FR')+'<br><br>'
+    +'Pour '+escHtml(soc)+' : ___________________________<br><br>Le souscripteur (bon pour accord) : ___________________________</div>'
+    +'</body></html>');
+  w.document.close(); w.print();
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SUBROGATION DE CONTRAT — transfert du contrat existant (lot, montant
+   total, échéancier, historique des versements déjà réglés) vers un
+   nouveau souscripteur, sans résiliation ni remboursement : le nouveau
+   titulaire reprend le contrat en l'état. Contrairement à la résiliation
+   (qui libère le lot et rembourse), l'id du client est CONSERVÉ — seuls
+   les champs d'identité changent — pour que versements, commissions et
+   lot restent automatiquement rattachés sans aucune réaffectation
+   manuelle. L'ancienne identité est archivée dans client.subrogations[]
+   avant d'être écrasée. Frais de dossier/mutation traités comme les
+   frais de souscription d'origine (non comptés dans montant_total —
+   voir _versementSurPrix) : documentés dans l'avenant, à percevoir via
+   un versement de type "frais_souscription" séparé, jamais mêlés au
+   prix du lot. Commissions déjà payées : jamais touchées automatiquement
+   (choix retenu) — à traiter au cas par cas si besoin. */
+function ouvrirSubrogation(clientId){
+  var c = (DATA.clients||[]).find(function(x){ return x.id===clientId; });
+  if (!c) return;
+  if (!exigerDroit('Souscripteurs', 'v', 'la subrogation de ce contrat')) return;
+  var alerteGele = document.getElementById('sub-alerte-gele');
+  if (c.gele) {
+    alerteGele.style.display = '';
+    alerteGele.innerHTML = '<div class="alert alert-danger">🔒 Ce souscripteur est GELÉ (sanction SFC) — la subrogation est bloquée. Traitez-le dans Conformité LBC/FT → Criblage SFC avant toute cession de droits.</div>';
+    openModal('modal-subrogation');
+    return;
+  }
+  alerteGele.style.display = 'none';
+  document.getElementById('sub-client-id').value = clientId;
+  ['sub-nom','sub-prenoms','sub-tel','sub-email','sub-piece-num','sub-profession','sub-adresse'].forEach(function(id){ document.getElementById(id).value=''; });
+  document.getElementById('sub-piece-type').value = 'CNI';
+  document.getElementById('sub-nationalite').value = 'Ivoirienne';
+  document.getElementById('sub-date').value = today();
+  document.getElementById('sub-frais').value = 0;
+  document.getElementById('sub-motif').value = '';
+  document.getElementById('sub-confirme').checked = false;
+
+  var lot = (DATA.lots||[]).find(function(l){ return l.id===c.lot_id; });
+  var verse = (typeof totalPayePrix==='function') ? totalPayePrix(clientId) : 0;
+  document.getElementById('sub-recap').innerHTML =
+    '<b>Titulaire actuel :</b> '+escHtml(((c.nom||'')+' '+(c.prenoms||'')).trim())
+    +'<br><b>Lot :</b> '+(lot?escHtml('Lot '+(lot.numero||lot.id)):'—')
+    +'<br><b>Montant total du contrat :</b> '+fcfa(c.montant_total||0)
+    +'<br><b>Déjà versé :</b> '+fcfa(verse)+' — <b>Reste dû :</b> '+fcfa(Math.max(0,(c.montant_total||0)-verse))
+    +(c.subrogations&&c.subrogations.length ? '<br><span style="color:var(--or,#B87333);">⚠️ Ce contrat a déjà été subrogé '+c.subrogations.length+' fois.</span>' : '');
+  openModal('modal-subrogation');
+}
+async function confirmerSubrogation(){
+  var clientId = document.getElementById('sub-client-id').value;
+  var c = (DATA.clients||[]).find(function(x){ return x.id===clientId; });
+  if (!c) { toast('Souscripteur introuvable.','error'); return; }
+  if (c.gele) { toast('Contrat gelé — subrogation impossible.','error'); return; }
+  var nom = document.getElementById('sub-nom').value.trim();
+  var prenoms = document.getElementById('sub-prenoms').value.trim();
+  var tel = document.getElementById('sub-tel').value.trim();
+  var pieceNum = document.getElementById('sub-piece-num').value.trim();
+  var motif = document.getElementById('sub-motif').value.trim();
+  if (!nom || !prenoms || !tel || !pieceNum) { toast('Nom, prénoms, téléphone et n° de pièce du nouveau souscripteur sont obligatoires.','error'); return; }
+  if (!motif) { toast('Le motif de la subrogation est obligatoire.','error'); return; }
+  if (!document.getElementById('sub-confirme').checked) { toast('Cochez la case de confirmation avant de valider.','error'); return; }
+
+  var frais = parseFloat(document.getElementById('sub-frais').value) || 0;
+  var dat = document.getElementById('sub-date').value || today();
+
+  c.subrogations = c.subrogations || [];
+  var archive = {
+    id: uid(), date: dat, motif: motif, frais_dossier: frais,
+    ancien_nom: c.nom, ancien_prenoms: c.prenoms, ancien_tel: c.tel, ancien_email: c.email,
+    ancien_piece_type: c.piece_type, ancien_piece_num: c.piece_num,
+    nouveau_nom: nom, nouveau_prenoms: prenoms, nouveau_tel: tel,
+    valide_par: (APP.currentUser&&APP.currentUser.nom)||'—', cree_le: new Date().toISOString()
+  };
+  c.subrogations.push(archive);
+
+  c.nom = nom; c.prenoms = prenoms; c.tel = tel;
+  c.email = document.getElementById('sub-email').value.trim();
+  c.piece_type = document.getElementById('sub-piece-type').value;
+  c.piece_num = pieceNum;
+  c.nationalite = document.getElementById('sub-nationalite').value.trim();
+  c.profession = document.getElementById('sub-profession').value.trim();
+  c.adresse = document.getElementById('sub-adresse').value.trim();
+  c._modifie = new Date().toISOString();
+
+  await logAudit('clients', clientId, 'subrogation', { nom:archive.ancien_nom, prenoms:archive.ancien_prenoms }, { nom:nom, prenoms:prenoms });
+  await clientLierDossierJuridique(c, 'Subrogation de contrat — cédant : '+((archive.ancien_nom||'')+' '+(archive.ancien_prenoms||'')).trim()+' → cessionnaire : '+nom+' '+prenoms+'. '+motif+(frais>0?' Frais de dossier : '+fcfa(frais)+'.':''), frais, false, nom+' '+prenoms);
+  await dbPut('clients', c);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_clients', c);
+
+  closeModal('modal-subrogation');
+  renderClients();
+  if (APP.editingId===clientId) fillClientForm(c);
+  toast('✅ Contrat subrogé à '+nom+' '+prenoms+'.'+(frais>0?' Frais de dossier ('+fcfa(frais)+') à percevoir séparément — voir l\'avenant.':'')+' ⚠️ Pensez à cribler le nouveau titulaire (Conformité LBC/FT → Criblage SFC).', 'success');
+  imprimerAvenantSubrogation(archive, c);
+}
+function imprimerAvenantSubrogation(archive, c){
+  var soc = (DATA.params&&(DATA.params.societe||DATA.params.nom))||'';
+  var w = window.open('','_blank');
+  if (!w) { toast('Autorisez les fenêtres surgissantes.','error'); return; }
+  var lot = (DATA.lots||[]).find(function(l){ return l.id===c.lot_id; });
+  w.document.write('<html><head><title>Avenant — Subrogation de contrat</title>'
+    +'<style>body{font-family:Georgia,serif;padding:38px;color:#111;font-size:13px;line-height:1.55;}'
+    +'h1{font-size:17px;margin:0 0 4px;}table{width:100%;border-collapse:collapse;margin:10px 0;}'
+    +'td{padding:5px 8px;border:1px solid #ccc;}td.k{width:40%;background:#f5f5f5;}'
+    +'.pied{margin-top:26px;font-size:11px;color:#555;}</style></head><body>'
+    +sanixQrHtml('Avenant subrogation', c.dossier||c.id)
+    +'<h1>'+escHtml(soc)+'</h1>'
+    +'<h1 style="margin-top:14px;">Avenant — Subrogation de contrat</h1>'
+    +'<div style="color:#555;font-size:11.5px;">Réf. dossier : '+escHtml(c.dossier||c.id)+' — '+new Date().toLocaleDateString('fr-FR')+'</div>'
+    +'<h2>Souscripteur cédant</h2><table><tbody>'
+    +'<tr><td class="k">Nom</td><td>'+escHtml(((archive.ancien_nom||'')+' '+(archive.ancien_prenoms||'')).trim())+'</td></tr>'
+    +'<tr><td class="k">Téléphone</td><td>'+escHtml(archive.ancien_tel||'')+'</td></tr>'
+    +'</tbody></table>'
+    +'<h2>Souscripteur cessionnaire (nouveau titulaire)</h2><table><tbody>'
+    +'<tr><td class="k">Nom</td><td>'+escHtml(((archive.nouveau_nom||'')+' '+(archive.nouveau_prenoms||'')).trim())+'</td></tr>'
+    +'<tr><td class="k">Téléphone</td><td>'+escHtml(archive.nouveau_tel||'')+'</td></tr>'
+    +'</tbody></table>'
+    +'<h2>Objet</h2><p>'+escHtml(archive.motif)+'</p>'
+    +'<p>Le cessionnaire reprend le contrat de souscription en l\'état, avec l\'ensemble des droits et obligations '
+    +'du cédant : lot '+(lot?escHtml(lot.numero||lot.id):'—')+', montant total '+fcfa(c.montant_total||0)
+    +', et le bénéfice des versements déjà effectués.</p>'
+    +(archive.frais_dossier>0 ? '<table><tbody><tr><td class="k">Frais de dossier/mutation</td><td>'+fcfa(archive.frais_dossier)+'</td></tr></tbody></table>' : '')
+    +'<div class="pied">Le présent avenant constate la subrogation et ne modifie ni le lot, ni le montant total, ni '
+    +'l\'échéancier du contrat initial.<br><br>'
+    +'Fait à '+escHtml((DATA.params&&DATA.params.ville)||'Abidjan')+', le '+new Date().toLocaleDateString('fr-FR')+'<br><br>'
+    +'Pour '+escHtml(soc)+' : ___________________________<br><br>'
+    +'Le cédant (bon pour accord) : ___________________________<br><br>'
+    +'Le cessionnaire (bon pour accord) : ___________________________</div>'
     +'</body></html>');
   w.document.close(); w.print();
 }
@@ -54062,6 +54528,7 @@ async function cesResilierConfirmer(){
     valide_par:(APP.currentUser&&APP.currentUser.nom)||'—', cree_le:new Date().toISOString() };
   c._modifie = new Date().toISOString();
   await logAudit('cessions_foncieres', cessionId, 'resiliation', null, c.resiliation);
+  await clientLierDossierJuridique(c, 'Résiliation de cession — motif : '+(motif==='faute_promoteur'?'faute du promoteur':'désistement de l\'acquéreur')+' ('+Math.round(taux*100)+'%). '+justification, rembourse, true);
   await dbPut('cessions_foncieres', c); if (typeof syncToSupabase==='function') syncToSupabase('pi_cessions_foncieres', c);
 
   closeModal('modal-cesresil');
@@ -65618,6 +66085,39 @@ async function locLierDossierJuridique(b, q, priorite){
   if(typeof syncToSupabase==='function') syncToSupabase('pi_dossiers_juridiques', d);
   if(typeof renderDossiersJuridiques==='function') renderDossiersJuridiques();
   toast('📂 Dossier juridique '+d.ref+' '+(b.dossier_juridique_id?'mis à jour':'ouvert')+'.', 'success');
+}
+
+/* ── Même liaison automatique, pour les avenants de contrat de vente
+   (résiliation, régularisation de surface, TMA, subrogation) — jusqu'ici
+   aucun des 4 modules construits ce soir n'était rattaché au Département
+   Juridique malgré la génération d'un avenant signable à chaque fois :
+   un juriste consultant les Dossiers Juridiques n'aurait jamais vu ces
+   événements. Un seul dossier "Contrat de vente" par client (comme un
+   dossier par bail côté locatif) : les événements suivants s'ajoutent en
+   notes plutôt que de multiplier les dossiers pour le même contrat. */
+async function clientLierDossierJuridique(c, note, montant, urgent, nomAffiche){
+  var nom = nomAffiche || ((c.nom||'')+' '+(c.prenoms||'')).trim() || c.acquereur || '—';
+  if (!DATA.dossiersJuridiques) DATA.dossiersJuridiques = [];
+  var d = c.dossier_juridique_id ? DATA.dossiersJuridiques.find(function(x){ return x.id===c.dossier_juridique_id; }) : null;
+  var ligne = new Date().toLocaleDateString('fr-FR') + ' — ' + note;
+  if (d) {
+    d.notes = (d.notes||'') + '\n' + ligne;
+    if (montant) d.montant = montant;
+    if (urgent) d.priorite = 'urgente';
+    if (d.statut==='clos_favorable' || d.statut==='clos_defavorable') d.statut = 'ouvert';
+  } else {
+    d = { id:uid(), ref:'JUR-CV-'+String(DATA.dossiersJuridiques.length+1).padStart(4,'0'),
+      type:'contrat_vente', objet:'Contrat de vente — '+nom,
+      interlocuteur:nom, avocat:'',
+      date_ouv:today(), date_ech:'', priorite:urgent?'urgente':'normale', statut:'ouvert', montant:montant||0,
+      notes:ligne, client_id:c.id, created_at:today() };
+    DATA.dossiersJuridiques.push(d);
+    c.dossier_juridique_id = d.id;
+  }
+  await dbPut('dossiersJuridiques', d);
+  if (typeof syncToSupabase==='function') syncToSupabase('pi_dossiers_juridiques', d);
+  if (typeof renderDossiersJuridiques==='function') renderDossiersJuridiques();
+  return d;
 }
 function locOuvrirDossierLie(bailId){
   var b=_locBaux().find(function(x){ return x.id===bailId; });
