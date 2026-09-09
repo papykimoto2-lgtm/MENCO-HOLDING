@@ -24980,7 +24980,7 @@ async function syncToSupabase(table, obj, opts) {
      Ne s'active que si obj._baseModifie est fourni (édition d'un enregistrement existant) —
      une création ne peut pas être en conflit. */
   var _STORES_CONFLIT = ['pi_ecritures','pi_factures_client','pi_financements_programme','pi_cessions_foncieres','pi_versements','pi_lots','pi_programmes','pi_clients','pi_employes'];
-  if (_STORES_CONFLIT.indexOf(table) !== -1 && obj && obj.id && obj._baseModifie && !_pulling && !obj._forceCloture) {
+  if (!(opts && opts.skipConflict) && _STORES_CONFLIT.indexOf(table) !== -1 && obj && obj.id && obj._baseModifie && !_pulling && !obj._forceCloture) {
     try {
       var remote = await sbFetch(table + '?id=eq.' + obj.id + '&select=id,m:data->>_modifie', 'GET');
       var remoteModifie = remote && remote.length ? remote[0].m : null;
@@ -25568,7 +25568,16 @@ async function syncPushStore(store){
   var motif = '';
   for (var i=0;i<rows.length;i++){
     window._lastSupaError = '';
-    var r = await syncToSupabase(table, rows[i]);
+    /* [FIX] Envoyait chaque ligne telle quelle, _baseModifie compris — un
+       champ qui n'a de sens QUE pendant une édition humaine active (« ai-je
+       la même version que celle que je viens d'ouvrir ? »). Ce bouton sert à
+       forcer l'alignement local→cloud, aucune édition n'est en cours : la
+       détection de conflit s'appliquait à tort, bloquant le renvoi de lignes
+       déjà bien présentes dans le cloud dès que leur _modifie stocké
+       localement datait un peu (souvent hérité d'un ancien enregistrement,
+       avant les correctifs de ce soir sur saveClient()). skipConflict fait
+       explicitement ce que ce bouton promet : envoyer, sans y réfléchir. */
+    var r = await syncToSupabase(table, rows[i], { skipConflict: true });
     if (r) ok++;
     else { err++; if (!motif && window._lastSupaError) motif = window._lastSupaError; }
   }
@@ -26386,6 +26395,18 @@ function demarrerSyncAuto() {
     if (_tickAutoSync % 60 === 0 && navigator.onLine) {
       try { autoReconcilierEcarts(); } catch(e){}
     }
+    /* [Réduction charge 09/09] SFC/LBC — voir exclusion correspondante dans
+       _pullBatchViaRPC(). 600 passes de 30 s = ~5 h, largement suffisant pour
+       des données de conformité qui ne changent pas d'une minute à l'autre. */
+    if (_tickAutoSync % 600 === 0 && navigator.onLine) {
+      var _tablesSfcLbc = [['pi_sfc_liste','sfc_liste'],['pi_sfc_criblages','sfc_criblages'],['pi_sfc_centif','sfc_centif'],
+                            ['pi_lbc_cappi','lbc_cappi'],['pi_lbc_conformx','lbc_conformx'],['pi_lbc_artci','lbc_artci']];
+      _tablesSfcLbc.forEach(function(tb){
+        (async function(t, s){
+          try { var res = await _pullTable(t); await _appliquerLignesPullTable(t, s, res.rows); } catch(e){}
+        })(tb[0], tb[1]);
+      });
+    }
     /* Vérifie si cette session a été invalidée à distance (Paramétrage →
        Sécurité → Déconnecter tous les autres postes). */
     try { if (typeof _verifierSessionEncoreValide === 'function') _verifierSessionEncoreValide(); } catch(e){}
@@ -26423,7 +26444,7 @@ async function autoReconcilierEcarts() {
       cloudIds.forEach(function(r){ cloudSet[r.id] = true; });
       for (var j = 0; j < rows.length; j++) {
         if (!cloudSet[rows[j].id]) {
-          try { var ok = await syncToSupabase(table, rows[j]); if (ok) total++; } catch(e){}
+          try { var ok = await syncToSupabase(table, rows[j], { skipConflict: true }); if (ok) total++; } catch(e){}
         }
       }
     } catch(e) { /* table en erreur : on continue avec les suivantes */ }
@@ -26468,7 +26489,10 @@ async function syncAllToSupabase() {
     if (!rows.length) continue;                 // table vide : on n'envoie rien (n'écrase jamais le Cloud)
     if (out) out.textContent = '⬆️ ' + store + ' (' + rows.length + ')…';
     for (var j = 0; j < rows.length; j++) {
-      var ok = await syncToSupabase(table, rows[j]);
+      /* [FIX] Même correctif que syncPushStore() — un envoi global délibéré
+         ne doit jamais être bloqué par la détection de conflit, conçue pour
+         protéger une édition humaine en cours, pas un renvoi en masse. */
+      var ok = await syncToSupabase(table, rows[j], { skipConflict: true });
       if (ok) total++; else erreurs++;
     }
   }
@@ -26794,6 +26818,14 @@ async function _pullBatchViaRPC() {
        miniatures vides sur un autre poste alors que l'upload avait
        réussi côté auteur. Synchronisée à part, comme pi_users. */
     if (table === 'pi_portail_medias') continue;
+    /* [Réduction charge 09/09] SFC (criblage sanctions) et LBC/FT (CAPPI,
+       ConformX, ARTCI) sont des données de conformité à faible fréquence de
+       changement réelle — la liste de sanctions RSNU ou un dossier ARTCI ne
+       bouge pas en quelques minutes. Les inclure dans le balayage général
+       toutes les ~6 min n'apportait aucune fraîcheur utile, seulement de la
+       charge. Basculées sur leur propre cycle, toutes les ~5 h (voir le tick
+       dédié dans demarrerSyncAuto). */
+    if (['pi_sfc_liste','pi_sfc_criblages','pi_sfc_centif','pi_lbc_cappi','pi_lbc_conformx','pi_lbc_artci'].indexOf(table) !== -1) continue;
     var complet = PULL_TOUJOURS_COMPLET.indexOf(table) !== -1 || PULL_INCR_INAPTES[table];
     curseurs[table] = complet ? '' : (_pullCurseurs()[table] || '');
     tablesConcernees.push([table, store]);
