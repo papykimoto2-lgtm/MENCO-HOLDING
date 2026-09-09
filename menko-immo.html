@@ -46089,6 +46089,12 @@ async function confirmerRegularisationSurface(){
   c.montant_total = (parseFloat(c.montant_total)||0) + montant;
   c.surface = surfaceReelle;
   c._modifie = new Date().toISOString();
+  /* [FIX faux conflit] Ce module se déclenche DEPUIS l'intérieur de la fiche
+     client déjà ouverte (bouton dans le formulaire), qui reste ouverte après
+     coup. Sans rafraîchir la référence ici, un "Enregistrer" ultérieur sur ce
+     même formulaire comparerait contre un horodatage devenu périmé par cette
+     action même — se déclarant à tort en conflit avec sa propre modification. */
+  if (APP.editingId === clientId) APP._clientBaseModifie = c._modifie;
   await logAudit('clients', clientId, 'regularisation_surface', null, regul);
   await clientLierDossierJuridique(c, 'Régularisation de surface — écart '+ecart.toFixed(2)+' m² × '+fcfa(prixM2)+'/m² = '+fcfa(montant)+'. '+motif, montant);
   await dbPut('clients', c);
@@ -46251,6 +46257,9 @@ async function confirmerTma(){
   }
 
   c._modifie = new Date().toISOString();
+  /* [FIX faux conflit] Même correctif que la régularisation de surface —
+     ce module se déclenche depuis la fiche client déjà ouverte. */
+  if (APP.editingId === clientId) APP._clientBaseModifie = c._modifie;
   await dbPut('clients', c);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_clients', c);
 
@@ -46275,6 +46284,7 @@ async function supprimerTma(tmaId){
   if (!confirm('Supprimer cette demande de modification ?')) return;
   c.demandes_modification = (c.demandes_modification||[]).filter(function(x){ return x.id!==tmaId; });
   c._modifie = new Date().toISOString();
+  if (APP.editingId === clientId) APP._clientBaseModifie = c._modifie;
   await dbPut('clients', c);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_clients', c);
   tmaRenderListe();
@@ -46393,6 +46403,7 @@ async function confirmerSubrogation(){
   c.profession = document.getElementById('sub-profession').value.trim();
   c.adresse = document.getElementById('sub-adresse').value.trim();
   c._modifie = new Date().toISOString();
+  if (APP.editingId === clientId) APP._clientBaseModifie = c._modifie;
 
   await logAudit('clients', clientId, 'subrogation', { nom:archive.ancien_nom, prenoms:archive.ancien_prenoms }, { nom:nom, prenoms:prenoms });
   await clientLierDossierJuridique(c, 'Subrogation de contrat — cédant : '+((archive.ancien_nom||'')+' '+(archive.ancien_prenoms||'')).trim()+' → cessionnaire : '+nom+' '+prenoms+'. '+motif+(frais>0?' Frais de dossier : '+fcfa(frais)+'.':''), frais, false, nom+' '+prenoms);
