@@ -6651,6 +6651,11 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <button class="btn btn-secondary btn-sm" onclick="renderSyncStatus()">🔍 Vérifier l'état (local ↔ cloud)</button>
               <div id="sync-status-panel" style="margin-top:12px;font-size:12px;overflow-x:auto;"></div>
             </div>
+            <div class="card" style="grid-column:1 / -1;">
+              <div class="form-section-title" style="color:var(--rouge);">⚠️ Conflits de synchronisation</div>
+              <div style="font-size:11px;color:var(--blanc-dim);margin-bottom:8px;">Enregistrements (souscripteurs, écritures, lots…) modifiés ailleurs (autre poste) avant votre propre enregistrement. Non écrasés automatiquement — à vérifier et résoudre manuellement, poste par poste : cette liste reste locale à chaque ordinateur et n'est jamais partagée via le cloud.</div>
+              <div id="conflits-sync-list"></div>
+            </div>
           </div>
         </div>
 
@@ -7477,12 +7482,6 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <div class="form-group"></div>
             </div>
             <div style="margin-top:14px;"><button class="btn btn-primary" onclick="saveComptesDefaut()">💾 Enregistrer les comptes par défaut</button></div>
-
-            <div style="margin-top:22px;padding-top:16px;border-top:1px solid var(--bord);">
-              <div class="form-section-title" style="color:var(--rouge);">⚠️ Conflits de synchronisation</div>
-              <div style="font-size:11px;color:var(--blanc-dim);margin-bottom:8px;">Écritures modifiées ailleurs (autre poste) avant votre enregistrement. Non écrasées automatiquement — à résoudre manuellement.</div>
-              <div id="conflits-sync-list"></div>
-            </div>
           </div>
         </div>
 
@@ -28538,7 +28537,7 @@ function switchTab(context, tab) {
   }
 
   // Hook : rafraîchir l'état de synchro à l'ouverture de l'onglet Cloud/Synchro
-  if (context==='params' && tab==='cloud') { setTimeout(function(){ try { if (typeof renderSyncStatus==='function') renderSyncStatus(); } catch(e){} }, 250); }
+  if (context==='params' && tab==='cloud') { setTimeout(function(){ try { if (typeof renderSyncStatus==='function') renderSyncStatus(); if (typeof renderConflitsSync==='function') renderConflitsSync(); } catch(e){} }, 250); }
 
   // ── Traitement dédié : Rapports Commerciaux ─────────────────────────────
   // Implémentation ciblée pour éviter toute interférence avec les autres
@@ -36332,16 +36331,44 @@ function loadComptesDefaut() {
   renderConflitsSync();
 }
 
+/* Libellé humain du type de store en conflit (affiché en badge) et fonction
+   de résumé de l'enregistrement — chaque store a des champs différents, un
+   fallback générique unique (ancienne version) retombait sur l'id technique
+   pour clients/employés/financements, illisible pour l'utilisateur. */
+var _CONFLIT_TYPE_LABEL = {
+  clients:                'Souscripteur',
+  ecritures:               'Écriture comptable',
+  factures_client:         'Facture client',
+  financements_programme:  'Financement programme',
+  cessions_foncieres:      'Cession foncière',
+  lots:                    'Lot',
+  programmes:              'Programme',
+  employes:                'Employé'
+};
+function _conflitResume(store, e) {
+  switch (store) {
+    case 'clients':  return ((e.nom || '') + ' ' + (e.prenoms || '')).trim() || 'Souscripteur sans nom';
+    case 'employes': return ((e.nom || '') + ' ' + (e.prenoms || '')).trim() || 'Employé sans nom';
+    case 'financements_programme': return (e.type || 'Financement') + (e.source ? ' — ' + e.source : '');
+    case 'cessions_foncieres': return 'Cession — ' + (e.designation || e.acquereur || '');
+    case 'lots': return 'Lot ' + (e.numero || '');
+    case 'programmes': return e.nom || '';
+    case 'ecritures': return e.libelle || '';
+    case 'factures_client': return 'Facture ' + (e.numero || '');
+    default: return e.libelle || e.designation || e.numero || '';
+  }
+}
 function renderConflitsSync() {
   var el = document.getElementById('conflits-sync-list'); if (!el) return;
   var list = (DATA.conflits_sync || []).filter(function(c){ return !c.resolu; });
   if (!list.length) { el.innerHTML = '<div style="font-size:12px;color:var(--vert);">✅ Aucun conflit en attente.</div>'; return; }
   el.innerHTML = list.map(function(c){
     var e = c.local_snapshot || {};
-    var label = e.libelle || e.designation || e.client || e.numero || c.record_id;
+    var typeLabel = _CONFLIT_TYPE_LABEL[c.store] || c.store;
+    var label = _conflitResume(c.store, e) || c.record_id;
     var montant = e.montant || e.ttc || e.montant_prevu || e.prix_cession || 0;
     return '<div style="padding:10px 12px;border-left:3px solid var(--rouge);background:var(--card2);border-radius:6px;margin-bottom:8px;font-size:12px;">'
-      + '<span class="badge badge-or" style="font-size:9px;">' + c.store + '</span> <strong>' + escHtml(label) + '</strong>' + (montant ? ' — ' + fmtF(montant) + ' F' : '')
+      + '<span class="badge badge-or" style="font-size:9px;">' + escHtml(typeLabel) + '</span> <strong>' + escHtml(label) + '</strong>' + (montant ? ' — ' + fmtF(montant) + ' F' : '')
       + '<br><span style="color:var(--dim);">Détecté le ' + new Date(c.detecte_le).toLocaleString('fr-FR') + '</span>'
       + '<div style="margin-top:6px;display:flex;gap:6px;">'
       + '<button class="btn btn-secondary btn-sm" onclick="_conflitRecharger(\'' + c.id + '\')" title="Recharge la version actuellement sur le cloud pour cet enregistrement, puis rouvre sa fiche — évite de resaisir sur une base locale périmée et de reproduire le même conflit">🔄 Recharger &amp; rouvrir</button>'
