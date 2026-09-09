@@ -17200,6 +17200,24 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
   </div>
 </div>
 
+<!-- Modal Sélection du contour (import DXF Bornage — plusieurs polygones détectés) -->
+<div class="modal-overlay" id="modal-dxf-choix-contour">
+  <div class="modal" style="max-width:640px;">
+    <div class="modal-header"><h3>📐 Plusieurs contours détectés — choisir la parcelle</h3><button class="btn btn-secondary btn-icon" onclick="closeModal('modal-dxf-choix-contour')">✕</button></div>
+    <div class="modal-body">
+      <div class="alert alert-info" style="font-size:11.5px;">
+        Ce fichier contient <span id="dxf-choix-total"></span> contours fermés exploitables (plan de masse à
+        plusieurs lots, pas une parcelle isolée) — sélectionnez celui qui correspond à la parcelle en cours.
+      </div>
+      <input type="text" class="search-input" id="dxf-choix-recherche" placeholder="🔍 Filtrer par label..." oninput="dxfChoixFiltrer()" style="margin-bottom:8px;">
+      <div id="dxf-choix-liste" style="max-height:400px;overflow-y:auto;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-dxf-choix-contour')">Annuler</button>
+    </div>
+  </div>
+</div>
+
 <!-- Modal TMA — liste des demandes de modification d'un souscripteur -->
 <div class="modal-overlay" id="modal-tma-liste">
   <div class="modal" style="max-width:720px;">
@@ -93408,6 +93426,40 @@ function _dxfParse(txt){
   return { polylines:polylines, points:points, labels:labels, lines:lines };
 }
 
+/* [Nouveau] Sur un DXF à une seule parcelle, une seule polyligne fermée
+   existe généralement — le choix automatique du plus grand contour restait
+   fiable. Sur un plan de masse réel (lotissement entier, des milliers de
+   polylignes), cette heuristique attrape n'importe quel contour selon les
+   surfaces en présence, presque jamais celui voulu. Cette fonction recense
+   TOUS les contours fermés exploitables, avec leur surface et le label le
+   plus proche, pour que l'utilisateur choisisse — au lieu qu'un seul soit
+   deviné silencieusement. */
+function _dxfCandidatsPolygones(parsed){
+  function area(vs){ if(vs.length<3) return 0; var s=0; for(var i=0;i<vs.length;i++){ var a=vs[i],b=vs[(i+1)%vs.length]; s+=a.x*b.y-b.x*a.y; } return Math.abs(s/2); }
+  function centroide(vs){ var sx=0,sy=0; vs.forEach(function(v){sx+=v.x;sy+=v.y;}); return {x:sx/vs.length, y:sy/vs.length}; }
+  var out = [];
+  (parsed.polylines||[]).forEach(function(p, idx){
+    var vs = (p.verts||[]).filter(function(v){ return isFinite(v.x)&&isFinite(v.y); });
+    if (vs.length < 3) return;
+    var a = area(vs);
+    if (a < 1) return;   // segment dégénéré, pas un vrai contour
+    var c = centroide(vs);
+    var label = null, bestD = 40;   // rayon de recherche élargi (plan de masse à grande échelle)
+    (parsed.labels||[]).forEach(function(l){ var d=Math.hypot(l.x-c.x, l.y-c.y); if(d<bestD){ bestD=d; label=l.t; } });
+    out.push({ idx:idx, verts:vs, aire:a, label:label, centre:c });
+  });
+  out.sort(function(a,b){ return b.aire - a.aire; });
+  return out;
+}
+
+function _dxfNommerSommets(pts, parsed){
+  // Nommage : label le plus proche (< 5 m), sinon B1..Bn
+  return pts.map(function(p,idx){
+    var nom='B'+(idx+1), best=6;
+    (parsed.labels||[]).forEach(function(l){ var d=Math.hypot(l.x-p.x, l.y-p.y); if(d<best){ best=d; nom=l.t; } });
+    return { nom:nom, x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+((p.z||0).toFixed(3)), angle:0, distance:0 };
+  });
+}
 function _dxfToBornes(parsed){
   // Choisit la polyligne à plus grande surface comme contour parcellaire.
   function area(vs){ if(vs.length<3) return 0; var s=0; for(var i=0;i<vs.length;i++){ var a=vs[i],b=vs[(i+1)%vs.length]; s+=a.x*b.y-b.x*a.y; } return Math.abs(s/2); }
@@ -93437,12 +93489,7 @@ function _dxfToBornes(parsed){
     pts = ordered;
   }
   if (!pts.length) return [];
-  // Nommage : label le plus proche (< 5 m), sinon B1..Bn
-  return pts.map(function(p,idx){
-    var nom='B'+(idx+1), best=6;
-    parsed.labels.forEach(function(l){ var d=Math.hypot(l.x-p.x, l.y-p.y); if(d<best){ best=d; nom=l.t; } });
-    return { nom:nom, x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+((p.z||0).toFixed(3)), angle:0, distance:0 };
-  });
+  return _dxfNommerSommets(pts, parsed);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -94098,7 +94145,7 @@ function brnImportDXF(input){
       if (binDwg){
         toast('DWG binaire détecté — lecture native en cours…','info');
         _dwgParseNatif(ev.target.result).then(function(res){
-          _dxfApplyBornes(_dxfToBornes(res), name);
+          _dxfTraiterEtAppliquer(res, name);
         }).catch(function(){
           toast('DWG illisible (hors ligne au premier usage, ou entités non couvertes). Exportez le plan en DXF depuis AutoCAD/Covadis (Fichier → Enregistrer sous → DXF), puis réimportez.','error');
         });
@@ -94124,12 +94171,56 @@ function brnImportDXF(input){
         }
         var txt;
         try { txt = new TextDecoder(encodageB).decode(arr); } catch(eDecB) { txt = new TextDecoder('utf-8').decode(arr); }
-        _dxfApplyBornes(_dxfToBornes(_dxfParse(txt)), name);
+        _dxfTraiterEtAppliquer(_dxfParse(txt), name);
       }
     } catch(e){ toast('Lecture impossible : '+(e.message||e),'error'); }
     input.value='';
   };
   rd.readAsArrayBuffer(fl);
+}
+
+/* [Nouveau] Aiguillage unique après parsing (DXF ou DWG natif) : applique
+   directement s'il n'y a aucune ambiguïté (une seule parcelle dans le
+   fichier — cas d'usage historique de ce module, comportement inchangé),
+   ouvre un sélecteur sinon. Avant ce correctif, un plan de masse réel à
+   plusieurs milliers de polylignes (lotissement entier plutôt qu'une
+   parcelle isolée) faisait deviner silencieusement « le plus grand contour »
+   au lieu du bon lot — constaté sur un vrai fichier qui échouait ainsi côté
+   Bornage tout en fonctionnant côté SIG (qui, lui, force un choix explicite
+   par calque). */
+function _dxfTraiterEtAppliquer(parsed, name){
+  var candidats = _dxfCandidatsPolygones(parsed);
+  if (candidats.length <= 1) { _dxfApplyBornes(_dxfToBornes(parsed), name); return; }
+  _dxfChoixParsed = parsed; _dxfChoixCandidats = candidats; _dxfChoixSrcLabel = name;
+  document.getElementById('dxf-choix-total').textContent = candidats.length;
+  document.getElementById('dxf-choix-recherche').value = '';
+  dxfChoixRender(candidats);
+  openModal('modal-dxf-choix-contour');
+}
+var _dxfChoixParsed = null, _dxfChoixCandidats = [], _dxfChoixSrcLabel = '';
+function dxfChoixRender(liste){
+  var box = document.getElementById('dxf-choix-liste'); if (!box) return;
+  var affiches = liste.slice(0, 200);
+  box.innerHTML = affiches.map(function(c){
+    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid var(--ligne,#333);cursor:pointer;" '
+      + 'onclick="dxfChoixSelectionner('+c.idx+')" onmouseover="this.style.background=\'rgba(255,255,255,.05)\'" onmouseout="this.style.background=\'\'">'
+      + '<span>' + (c.label ? '<b>'+escHtml(c.label)+'</b>' : '<span style="color:var(--blanc-dim);">Sans label</span>')
+      + ' <span style="color:var(--blanc-dim);font-size:11px;"> — ' + c.verts.length + ' sommets</span></span>'
+      + '<span style="font-size:11.5px;color:var(--or,#B87333);">' + (c.aire/10000).toFixed(4) + ' ha</span>'
+      + '</div>';
+  }).join('') + (liste.length>200 ? '<div style="padding:8px;text-align:center;color:var(--blanc-dim);font-size:11px;">… '+(liste.length-200)+' de plus — affinez la recherche pour les voir.</div>' : '');
+}
+function dxfChoixFiltrer(){
+  var q = (document.getElementById('dxf-choix-recherche').value||'').trim().toLowerCase();
+  if (!q) { dxfChoixRender(_dxfChoixCandidats); return; }
+  dxfChoixRender(_dxfChoixCandidats.filter(function(c){ return (c.label||'').toLowerCase().indexOf(q)!==-1; }));
+}
+function dxfChoixSelectionner(idx){
+  var cand = _dxfChoixCandidats.find(function(c){ return c.idx===idx; });
+  if (!cand) return;
+  closeModal('modal-dxf-choix-contour');
+  var bornes = _dxfNommerSommets(cand.verts, _dxfChoixParsed);
+  _dxfApplyBornes(bornes, _dxfChoixSrcLabel + (cand.label ? ' — '+cand.label : ''));
 }
 
 /* ══════════════════════════════════════════════
