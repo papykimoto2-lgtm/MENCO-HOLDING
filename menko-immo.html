@@ -36336,20 +36336,52 @@ function renderConflitsSync() {
   var el = document.getElementById('conflits-sync-list'); if (!el) return;
   var list = (DATA.conflits_sync || []).filter(function(c){ return !c.resolu; });
   if (!list.length) { el.innerHTML = '<div style="font-size:12px;color:var(--vert);">✅ Aucun conflit en attente.</div>'; return; }
-  var reopenFn = { ecritures:'openEcritureModal', factures_client:'imprimerFactureFNE', financements_programme:'bpEditFinancement', cessions_foncieres:'cesOpen', lots:'openLotModal', programmes:'openProgrammeModal', clients:'openClientModal', employes:'openEmployeModal' };
   el.innerHTML = list.map(function(c){
     var e = c.local_snapshot || {};
     var label = e.libelle || e.designation || e.client || e.numero || c.record_id;
     var montant = e.montant || e.ttc || e.montant_prevu || e.prix_cession || 0;
-    var fn = reopenFn[c.store] || null;
     return '<div style="padding:10px 12px;border-left:3px solid var(--rouge);background:var(--card2);border-radius:6px;margin-bottom:8px;font-size:12px;">'
       + '<span class="badge badge-or" style="font-size:9px;">' + c.store + '</span> <strong>' + escHtml(label) + '</strong>' + (montant ? ' — ' + fmtF(montant) + ' F' : '')
       + '<br><span style="color:var(--dim);">Détecté le ' + new Date(c.detecte_le).toLocaleString('fr-FR') + '</span>'
       + '<div style="margin-top:6px;display:flex;gap:6px;">'
-      + (fn ? '<button class="btn btn-secondary btn-sm" onclick="' + fn + '(\'' + c.record_id + '\')">✏️ Rouvrir</button>' : '')
-      + '<button class="btn btn-secondary btn-sm" onclick="_conflitMarquerResolu(\'' + c.id + '\')">✔ Marquer résolu</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="_conflitRecharger(\'' + c.id + '\')" title="Recharge la version actuellement sur le cloud pour cet enregistrement, puis rouvre sa fiche — évite de resaisir sur une base locale périmée et de reproduire le même conflit">🔄 Recharger &amp; rouvrir</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="_conflitMarquerResolu(\'' + c.id + '\')" title="Masque cette alerte SANS renvoyer vos modifications au cloud — à utiliser seulement après avoir vérifié/réenregistré la fiche via « Recharger & rouvrir »">✔ Marquer résolu</button>'
       + '</div></div>';
   }).join('');
+}
+
+/* Recharge la version CLOUD actuelle d'un enregistrement en conflit, avant
+   réouverture de sa fiche. Sans cette étape, « Rouvrir » seul rechargeait le
+   formulaire depuis le cache local — donc depuis la MÊME base périmée qui a
+   déclenché le conflit — et un ré-enregistrement immédiat reproduisait
+   exactement la même alerte en boucle. On aligne d'abord DATA[]/IndexedDB
+   sur le cloud pour que la prochaine sauvegarde compare une base à jour. */
+async function _conflitRecharger(conflitId) {
+  var c = (DATA.conflits_sync || []).find(function(x){ return x.id === conflitId; });
+  if (!c) return;
+  var entry = SUPA_STORE_MAP.find(function(x){ return x[1] === c.store; });
+  if (!entry) { if (typeof toast === 'function') toast('⚠️ Table cloud introuvable pour ce type d\'enregistrement.', 'error'); return; }
+  var table = entry[0];
+  var remoteRow;
+  try {
+    var rows = await sbFetch(table + '?id=eq.' + c.record_id + '&select=*', 'GET');
+    remoteRow = (rows && rows.length) ? _supaUnwrap(table, rows[0]) : null;
+  } catch (e) {
+    if (typeof toast === 'function') toast('⚠️ Impossible de joindre le cloud pour recharger cet enregistrement — réessayez une fois connecté.', 'error');
+    return;
+  }
+  if (!remoteRow) {
+    if (typeof toast === 'function') toast('⚠️ Introuvable côté cloud — probablement supprimé ailleurs entre-temps. Vérifiez avant de recréer.', 'error');
+    return;
+  }
+  var arr = DATA[c.store] = DATA[c.store] || [];
+  var idx = arr.findIndex(function(x){ return x.id === c.record_id; });
+  if (idx !== -1) arr[idx] = remoteRow; else arr.push(remoteRow);
+  try { await dbPut(c.store, remoteRow, { forceRole: true }); } catch (e) {}
+  var reopenFn = { ecritures:'openEcritureModal', factures_client:'imprimerFactureFNE', financements_programme:'bpEditFinancement', cessions_foncieres:'cesOpen', lots:'openLotModal', programmes:'openProgrammeModal', clients:'openClientModal', employes:'openEmployeModal' };
+  var fnName = reopenFn[c.store];
+  if (fnName && typeof window[fnName] === 'function') window[fnName](c.record_id);
+  if (typeof toast === 'function') toast('☁️ Version cloud rechargée — comparez avec vos données avant de ré-enregistrer.', 'success');
 }
 
 async function _conflitMarquerResolu(id) {
