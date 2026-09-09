@@ -3143,6 +3143,12 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <button class="btn btn-primary" onclick="openClientModal()">+ Nouveau</button>
         </div>
 
+        <div class="tab-nav" style="margin-bottom:14px;">
+          <button class="tab-btn active" onclick="switchTab('clients','liste')">📋 Liste</button>
+          <button class="tab-btn" onclick="switchTab('clients','doublons')" title="Détecte les souscripteurs potentiellement saisis en double (nom, téléphone, email, pièce d'identité, n° de dossier)">🧬 Analyse de doublons</button>
+        </div>
+
+        <div class="tab-pane active" id="tab-clients-liste">
         <div class="filters-bar">
           <input type="text" class="search-input" placeholder="🔍 Nom, email, téléphone..." id="search-clients" oninput="_debInput('filterClients')">
           <select class="filter-select" id="filter-programme" onchange="filterClients()">
@@ -3215,6 +3221,20 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             </table>
           </div>
         </div>
+        </div>
+        <!-- /tab-clients-liste -->
+
+        <div class="tab-pane" id="tab-clients-doublons">
+          <div class="card" style="margin-bottom:16px;padding:14px 16px;">
+            <div style="font-size:12px;color:var(--blanc-dim);line-height:1.6;">
+              🧬 Détection automatique des souscripteurs potentiellement en double dans le portefeuille — par téléphone, email, n° de pièce d'identité, n° de dossier ou nom identique/très proche.
+              Aucune fusion n'est effectuée automatiquement : chaque groupe doit être vérifié puis traité manuellement (fusion, correction ou suppression d'une fiche).
+            </div>
+          </div>
+          <div id="clients-doublons-kpi" class="kpi-grid" style="margin-bottom:16px;"></div>
+          <div id="clients-doublons-content"></div>
+        </div>
+        <!-- /tab-clients-doublons -->
       </div>
 
       <!-- ── PAIEMENTS ─────────────────────────────── -->
@@ -28619,6 +28639,7 @@ function switchTab(context, tab) {
   if (context === 'validations') {
     if ((tab === 'histo-caisse' || tab === 'histo-da') && typeof renderHistoriqueValidations === 'function') renderHistoriqueValidations();
   }
+  if (context === 'clients' && tab === 'doublons' && typeof renderClientsDoublons === 'function') renderClientsDoublons();
 
   /* Mettre à jour les boutons .tab-btn du même contexte */
   document.querySelectorAll('.tab-btn').forEach(function(b) {
@@ -31444,6 +31465,153 @@ function renderClients() {
       + '<button class="btn btn-danger btn-sm btn-icon" onclick="deleteClient(\'' + c.id + '\')" title="Supprimer">🗑</button>'
       + '</td></tr>';
   }).join('');
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   SOUSCRIPTEURS — Analyse de doublons
+   Détecte les fiches Souscripteur potentiellement en double, sur plusieurs
+   critères indépendants (téléphone, email, n° de pièce d'identité, n° de
+   dossier, nom complet identique ou très proche). Aucune fusion/suppression
+   automatique : la décision (fusionner, corriger, ignorer) reste manuelle,
+   car un homonyme ou un même souscripteur multi-programmes légitime peut
+   ressembler à un doublon sans en être un. Réutilise la normalisation/
+   similarité de noms du module de criblage LBC/FT (sfcNormalise/sfcSimilarite)
+   pour éviter de dupliquer cette logique. ═══════════════════════════════ */
+function _cdNormPhone(t) { return (t || '').toString().replace(/[^0-9]/g, '').replace(/^00225/, '').replace(/^225/, '').replace(/^0+/, ''); }
+function _cdNormEmail(e) { return (e || '').toString().trim().toLowerCase(); }
+function _cdNormPiece(p) { return (p || '').toString().toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+function _cdNormDossier(d) { return (d || '').toString().trim().toUpperCase(); }
+function _cdNomComplet(c) { return sfcNormalise((c.nom || '') + ' ' + (c.prenoms || '')); }
+
+function _cdGrouper(list, keyFn, minLen) {
+  var groups = {};
+  list.forEach(function (c) {
+    var k = keyFn(c);
+    if (!k || (minLen && k.length < minLen)) return;
+    (groups[k] = groups[k] || []).push(c);
+  });
+  var out = [];
+  Object.keys(groups).forEach(function (k) { if (groups[k].length > 1) out.push({ key: k, items: groups[k] }); });
+  return out;
+}
+
+function renderClientsDoublons() {
+  var box = document.getElementById('clients-doublons-content');
+  var kpiBox = document.getElementById('clients-doublons-kpi');
+  if (!box) return;
+  var clients = (DATA.clients || []).slice();
+  var idxProg = {}; (DATA.programmes || []).forEach(function (p) { idxProg[p.id] = p; });
+
+  var parTel = _cdGrouper(clients, function (c) { return _cdNormPhone(c.tel); }, 6);
+  var parEmail = _cdGrouper(clients, function (c) { return _cdNormEmail(c.email); }, 5);
+  var parPiece = _cdGrouper(clients, function (c) { return _cdNormPiece(c.piece_num); }, 4);
+  var parDossier = _cdGrouper(clients, function (c) { return _cdNormDossier(c.dossier); }, 1);
+  var parNomExact = _cdGrouper(clients, function (c) { return _cdNomComplet(c); }, 3);
+
+  /* Quasi-doublons de nom (orthographe proche, ex. "Kouassi Jean" / "Kouassy Jean") :
+     comparaison par paires, coûteuse en O(n²) — plafonnée pour rester fluide
+     sur un gros portefeuille. Les noms strictement identiques sont exclus
+     (déjà couverts par parNomExact) pour ne pas doublonner l'affichage. */
+  var parNomProche = [];
+  var FUZZY_LIMIT = 800;
+  var fuzzySkipped = clients.length > FUZZY_LIMIT;
+  if (!fuzzySkipped) {
+    var used = {};
+    for (var i = 0; i < clients.length; i++) {
+      var ci = clients[i], nomI = _cdNomComplet(ci);
+      if (!nomI || nomI.length < 3) continue;
+      var cluster = null;
+      for (var j = i + 1; j < clients.length; j++) {
+        var cj = clients[j], nomJ = _cdNomComplet(cj);
+        if (!nomJ || nomJ.length < 3 || nomI === nomJ) continue;
+        var sim = sfcSimilarite(nomI, nomJ);
+        if (sim >= 0.85) {
+          if (!cluster) { cluster = { key: nomI, items: [ci] }; }
+          if (cluster.items.indexOf(cj) === -1) cluster.items.push(cj);
+          used[ci.id] = true; used[cj.id] = true;
+        }
+      }
+      if (cluster && cluster.items.length > 1) parNomProche.push(cluster);
+    }
+  }
+
+  var flaggedIds = {};
+  [parTel, parEmail, parPiece, parDossier, parNomExact, parNomProche].forEach(function (grp) {
+    grp.forEach(function (g) { g.items.forEach(function (c) { flaggedIds[c.id] = true; }); });
+  });
+  var totalFlagged = Object.keys(flaggedIds).length;
+
+  kpiBox.innerHTML =
+      _cdKpi('👥', totalFlagged, 'Souscripteur(s) impliqué(s)', totalFlagged ? 'kpi-red' : 'kpi-green')
+    + _cdKpi('📞', parTel.length, 'Doublon(s) téléphone', parTel.length ? 'kpi-red' : 'kpi-green')
+    + _cdKpi('✉️', parEmail.length, 'Doublon(s) email', parEmail.length ? 'kpi-red' : 'kpi-green')
+    + _cdKpi('🪪', parPiece.length, 'Doublon(s) pièce d\'identité', parPiece.length ? 'kpi-red' : 'kpi-green')
+    + _cdKpi('📁', parDossier.length, 'Doublon(s) n° dossier', parDossier.length ? 'kpi-red' : 'kpi-green')
+    + _cdKpi('🔤', parNomExact.length + parNomProche.length, 'Nom identique / proche', (parNomExact.length + parNomProche.length) ? 'kpi-red' : 'kpi-green');
+
+  if (!totalFlagged) {
+    box.innerHTML = '<div class="card" style="padding:30px;text-align:center;color:#16A34A;font-weight:600;">✅ Aucun doublon détecté sur le portefeuille actuel.</div>';
+    return;
+  }
+
+  var sections = [
+    { titre: '🪪 Même n° de pièce d\'identité', gravite: 'critique', groupes: parPiece, note: 'Un même document d\'identité rattaché à plusieurs fiches — vérifier en priorité.' },
+    { titre: '📁 Même n° de dossier', gravite: 'critique', groupes: parDossier, note: 'Deux fiches partagent la même référence de dossier.' },
+    { titre: '📞 Même numéro de téléphone', gravite: 'majeur', groupes: parTel, note: 'Peut être légitime (même foyer) — à vérifier au cas par cas.' },
+    { titre: '✉️ Même adresse email', gravite: 'majeur', groupes: parEmail, note: '' },
+    { titre: '🔤 Nom et prénoms identiques', gravite: 'majeur', groupes: parNomExact, note: 'Peut être un homonyme réel — vérifier pièce d\'identité et téléphone avant fusion.' },
+    { titre: '🔎 Nom très proche (orthographe)', gravite: 'mineur', groupes: parNomProche, note: fuzzySkipped ? '' : 'Similarité ≥ 85% — fautes de saisie probables.' }
+  ];
+
+  var html = '';
+  if (fuzzySkipped) {
+    html += '<div class="card" style="padding:12px 14px;margin-bottom:14px;font-size:12px;color:#92400E;background:#FEF3C7;">⚠️ Portefeuille de ' + clients.length + ' souscripteurs — l\'analyse de similarité orthographique des noms (quasi-doublons) est désactivée au-delà de ' + FUZZY_LIMIT + ' fiches pour rester fluide. Les autres critères (téléphone, email, pièce, dossier, nom exact) restent actifs.</div>';
+  }
+
+  sections.forEach(function (sec) {
+    if (!sec.groupes.length) return;
+    html += '<div class="card" style="margin-bottom:16px;">'
+      + '<div style="padding:12px 16px;border-bottom:1px solid var(--bordure,#EEE);display:flex;align-items:center;gap:10px;">'
+      + '<strong style="font-size:14px;">' + sec.titre + '</strong>'
+      + '<span class="badge ' + (sec.gravite === 'critique' ? 'badge-rouge' : sec.gravite === 'majeur' ? 'badge-or' : 'badge-neutre') + '">' + sec.groupes.length + ' groupe(s)</span>'
+      + (sec.note ? '<span style="font-size:11px;color:var(--blanc-dim);margin-left:auto;">' + sec.note + '</span>' : '')
+      + '</div>';
+
+    sec.groupes.forEach(function (g, gi) {
+      html += '<div style="padding:10px 16px;' + (gi < sec.groupes.length - 1 ? 'border-bottom:1px dashed var(--bordure,#EEE);' : '') + '">'
+        + '<div class="table-wrap"><table style="width:100%;font-size:12px;"><thead><tr>'
+        + '<th>Souscripteur</th><th>Téléphone</th><th>Email</th><th>Pièce</th><th>N° dossier</th><th>Programme</th><th>Montant</th><th>Statut</th><th>Actions</th>'
+        + '</tr></thead><tbody>'
+        + g.items.map(function (c) {
+            var prog = idxProg[c.programme_id];
+            var statutLabel = c.statut === 'resilie' ? '<span class="badge badge-violet">Résilié</span>' : '<span class="badge badge-bleu">Actif</span>';
+            return '<tr>'
+              + '<td><strong>' + escHtml((c.nom || '') + ' ' + (c.prenoms || '')) + '</strong></td>'
+              + '<td>' + escHtml(c.tel || '—') + '</td>'
+              + '<td>' + escHtml(c.email || '—') + '</td>'
+              + '<td>' + escHtml((c.piece_type || '') + ' ' + (c.piece_num || '') || '—') + '</td>'
+              + '<td>' + escHtml(c.dossier || '—') + '</td>'
+              + '<td>' + (prog ? escHtml(prog.nom) : '—') + '</td>'
+              + '<td>' + fcfa(c.montant_total) + '</td>'
+              + '<td>' + statutLabel + '</td>'
+              + '<td style="white-space:nowrap;">'
+              + '<button class="btn btn-secondary btn-sm btn-icon" onclick="openClientModal(\'' + c.id + '\')" title="Ouvrir la fiche">✏️</button> '
+              + '<button class="btn btn-danger btn-sm btn-icon" onclick="deleteClient(\'' + c.id + '\')" title="Supprimer">🗑</button>'
+              + '</td></tr>';
+          }).join('')
+        + '</tbody></table></div></div>';
+    });
+    html += '</div>';
+  });
+
+  box.innerHTML = html;
+}
+
+function _cdKpi(icon, val, label, cls) {
+  return '<div class="kpi-card ' + (cls || '') + '" data-icon="' + icon + '">'
+    + '<div class="kpi-label">' + label + '</div>'
+    + '<div class="kpi-value">' + val + '</div>'
+    + '</div>';
 }
 
 function filterClients() { renderClients(); }
