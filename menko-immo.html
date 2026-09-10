@@ -66011,11 +66011,12 @@ async function saveBienAmort() {
 
 /* ─── Tableau biens amortissables ───────────────────── */
 function exportAmortCSV() {
-  var biens = DATA.biens_amort || [];
+  var biens = _amortTousBiens();
   var annee = new Date().getFullYear();
-  var rows = ['Dossier,Désignation,Méthode,Valeur origine,Amort. cumulé,VNC,Dotation ' + annee + ',Statut'];
+  var rows = ['Origine,Dossier,Désignation,Méthode,Valeur origine,Amort. cumulé,VNC,Dotation ' + annee + ',Statut'];
   biens.forEach(function(b) {
     rows.push([
+      b._source==='immobilisations' ? 'Parc auto / matériel' : 'Foncier',
       b.dossier || '', (b.designation || '').replace(/,/g,';'), b.methode || '',
       b.valeur_origine || 0, calcAmortCumul(b, annee), calcVNC(b, annee),
       calcAnnuite(b, annee), b.statut || ''
@@ -66030,7 +66031,14 @@ function exportAmortCSV() {
 }
 
 function buildAmortBiens() {
-  var biens = DATA.biens_amort||[];
+  /* [Unification] Élargi au registre Immobilisations Société (véhicules Parc
+     Auto, matériel) via _amortTousBiens() — jusqu'ici cette liste et ses KPI
+     ne comptaient que le foncier (DATA.biens_amort), alors que le sélecteur
+     du Tableau d'amortissement et l'onglet Dotations les incluaient déjà.
+     Les libellés KPI perdent leurs numéros de compte fixes (221/281/681) : un
+     véhicule est immobilisé en 245/2845, pas 221/281 — chaque ligne affiche
+     toujours son propre compte (b.compte_immo). */
+  var biens = _amortTousBiens();
   var search = ((document.getElementById('search-amort')||{}).value||'').toLowerCase();
   var filtMethode = (document.getElementById('filter-amort-methode')||{}).value||'';
   var filtStatut = (document.getElementById('filter-amort-statut')||{}).value||'';
@@ -66065,10 +66073,11 @@ function buildAmortBiens() {
   if (kpiEl) {
     kpiEl.innerHTML=[
       {label:'Biens immobilisés',val:biens.length+' biens',icon:'🏠',color:'var(--blanc)'},
-      {label:'Valeur d\'origine totale (221)',val:fmtF(totalVO)+' FCFA',icon:'💰',color:'var(--or)',cls:'kpi-green'},
-      {label:'Amort. cumulé (281)',val:fmtF(totalCumul)+' FCFA',icon:'📉',color:'var(--rouge)',cls:'kpi-red'},
+      {label:'Valeur d\'origine totale',val:fmtF(totalVO)+' FCFA',icon:'💰',color:'var(--or)',cls:'kpi-green'},
+      {label:'Amort. cumulé',val:fmtF(totalCumul)+' FCFA',icon:'📉',color:'var(--rouge)',cls:'kpi-red'},
       {label:'Valeur nette comptable',val:fmtF(totalVNC)+' FCFA',icon:'📊',color:'var(--vert)',cls:'kpi-green'},
       {label:'Dotation '+anneeN+' (681)',val:fmtF(totalAnnuite)+' FCFA',icon:'📅',color:'var(--or)',cls:'kpi-copper'},
+      {label:'Dont Parc auto / matériel',val:biens.filter(function(b){return b._source==='immobilisations';}).length+' biens',icon:'🚗',color:'var(--bleu,#4A94E0)'},
     ].map(function(k){
       return '<div class="kpi-card '+(k.cls||'')+'" data-icon="'+k.icon+'">'
         +'<div class="kpi-label">'+k.label+'</div>'
@@ -66084,7 +66093,7 @@ function buildAmortBiens() {
   if (!tbody) return;
   if (!biens.length) {
     tbody.innerHTML='<tr><td colspan="13" style="text-align:center;padding:24px;color:var(--dim);">'
-      +'Aucun bien enregistré. Cliquez sur <strong>+ Nouveau bien</strong> pour enregistrer un bien acquis par le promoteur.</td></tr>';
+      +'Aucun bien enregistré. Cliquez sur <strong>+ Nouveau bien</strong> (foncier) ou créez l\'immobilisation comptable depuis une fiche véhicule (Parc auto).</td></tr>';
     return;
   }
 
@@ -66105,7 +66114,7 @@ function buildAmortBiens() {
     var finAmort=parseInt((b.date_debut||'2024').slice(0,4))+parseInt(b.duree);
     var amorti=vnc<=(b.valeur_residuelle||0)+100;
     return '<tr>'
-      +'<td style="font-family:monospace;font-size:11px;color:var(--or);">'+(b.dossier||'—')+'</td>'
+      +'<td style="font-family:monospace;font-size:11px;color:var(--or);">'+(b._source==='immobilisations'?'🚗':'🏠')+' '+(b.dossier||'—')+'</td>'
       +'<td style="font-size:12px;">'+b.designation.slice(0,35)+'…</td>'
       +'<td style="font-family:monospace;color:var(--or);">'+b.compte_immo+'</td>'
       +'<td style="font-weight:700;">'+fmtF(b.valeur_origine)+' FCFA</td>'
