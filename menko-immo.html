@@ -42758,79 +42758,53 @@ function buildGrandLivre() {
   var _itv = (typeof _glItv === 'function') ? _glItv() : { active: false };
   if (_itv.active) { return buildGrandLivreIntervalle(box, _itv); }
   var compte = document.getElementById('filter-gl-compte') ? document.getElementById('filter-gl-compte').value : '';
-  var year = document.getElementById('filter-annee-compta').value || new Date().getFullYear();
   if (!compte) { box.innerHTML = '<div style="color:var(--blanc-dim);font-size:13px;">Sélectionnez un compte.</div>'; return; }
-  var d1 = document.getElementById('filter-gl-date-debut') ? document.getElementById('filter-gl-date-debut').value : '';
-  var d2 = document.getElementById('filter-gl-date-fin') ? document.getElementById('filter-gl-date-fin').value : '';
-  if (d1 && d2 && d1 > d2) { var tmp = d1; d1 = d2; d2 = tmp; }
-  var periodeActive = !!(d1 || d2);
 
+  /* [Unification] Réutilise le moteur de collecte partagé avec le PDF et la
+     vue intervalle (_glCtx/_glCollecteUn) au lieu d'une logique dupliquée :
+     évite toute divergence future écran/PDF, et échappe désormais le
+     libellé/référence/contrepartie — l'ancienne version les insérait bruts
+     dans le HTML (faille XSS via le libellé libre d'une écriture manuelle,
+     déjà corrigée côté PDF mais pas ici). */
+  var ctx = _glCtx();
   var planEntry = APP.planComptable.find(function(c){ return c.code === compte; });
   var inclSous = (document.getElementById('gl-inclure-sous')||{}).checked !== false;
-  var matchCpt = function(l){ return l.compte === compte || (inclSous && String(l.compte||'').indexOf(compte) === 0); };
+  var r = _glCollecteUn(compte, inclSous, ctx);
 
-  var divF = _comptaDivisionFilter();
-
-  /* Solde d'ouverture = tous les mouvements antérieurs à la date de début (report à-nouveau implicite) */
-  var soldeOuverture = 0;
-  if (periodeActive && d1) {
-    DATA.ecritures.filter(function(e){ return e.date && e.date < d1 && (!divF || e.division === divF); }).forEach(function(e){
-      ecrLignes(e).filter(matchCpt).forEach(function(l){
-        soldeOuverture += (l.sens === 'D' ? 1 : -1) * (parseFloat(l.montant)||0);
-      });
-    });
-  }
-
-  var mvts = [];
-  DATA.ecritures.filter(function(e){
-    if (divF && e.division !== divF) return false;
-    if (periodeActive) return (!d1 || (e.date && e.date >= d1)) && (!d2 || (e.date && e.date <= d2));
-    return !year || (e.date && e.date.startsWith(year));
-  }).forEach(function(e){
-    var lignes = ecrLignes(e);
-    var ligneCompte = lignes.filter(matchCpt);
-    if (!ligneCompte.length) return;
-    var contreparties = lignes.filter(function(l){ return !matchCpt(l); }).map(function(l){ return l.compte; }).join(', ');
-    ligneCompte.forEach(function(l){
-      var lib = (l.libelle||e.libelle) + (inclSous && l.compte !== compte ? ' <span style="font-size:9px;color:var(--or);">['+l.compte+']</span>' : '');
-      mvts.push({ date:e.date, ref:e.ref, libelle:lib, contrepartie:contreparties, sens:l.sens, montant:parseFloat(l.montant)||0, multi: lignes.length>2 });
-    });
-  });
-  mvts.sort(function(a,b){ return new Date(a.date) - new Date(b.date); });
-
-  var solde = soldeOuverture;
+  var solde = r.ouv;
   var totD = 0, totC = 0;
-  var ligneOuverture = periodeActive ? ('<tr style="font-style:italic;color:var(--blanc-dim);"><td colspan="6">Solde d\'ouverture au ' + dateShort(d1) + '</td><td style="text-align:right;font-weight:600;color:' + (solde>=0?'var(--blanc)':'var(--rouge)') + ';">' + fmtF(solde) + '</td></tr>') : '';
-  var rows = mvts.map(function(m) {
+  var ligneOuverture = ctx.periodeActive ? ('<tr style="font-style:italic;color:var(--blanc-dim);"><td colspan="6">Solde d\'ouverture au ' + dateShort(ctx.d1) + '</td><td style="text-align:right;font-weight:600;color:' + (solde>=0?'var(--blanc)':'var(--rouge)') + ';">' + fmtF(solde) + '</td></tr>') : '';
+  var rows = r.mvts.map(function(m) {
     var d = m.sens === 'D' ? m.montant : 0;
     var c = m.sens === 'D' ? 0 : m.montant;
     totD += d; totC += c;
     solde += d - c;
+    var lib = escHtml(m.libelle) + (inclSous && m.sous !== compte ? ' <span style="font-size:9px;color:var(--or);">['+escHtml(m.sous)+']</span>' : '');
     return '<tr>'
       + '<td>' + dateShort(m.date) + '</td>'
-      + '<td style="font-size:11px;font-family:monospace;color:var(--bleu);">' + (m.ref||'—') + '</td>'
-      + '<td>' + m.libelle + (m.multi ? ' <span style="font-size:9px;color:var(--or);">multi</span>' : '') + '</td>'
-      + '<td style="font-size:11px;color:var(--blanc-dim);">' + (m.contrepartie||'—') + '</td>'
+      + '<td style="font-size:11px;font-family:monospace;color:var(--bleu);">' + escHtml(m.ref||'—') + '</td>'
+      + '<td>' + lib + (m.multi ? ' <span style="font-size:9px;color:var(--or);">multi</span>' : '') + '</td>'
+      + '<td style="font-size:11px;color:var(--blanc-dim);">' + escHtml(m.contrepartie||'—') + '</td>'
       + '<td style="text-align:right;color:var(--rouge);font-weight:' + (d?'600':'400') + ';">' + (d ? fmtF(d) : '—') + '</td>'
       + '<td style="text-align:right;color:var(--vert);font-weight:' + (c?'600':'400') + ';">' + (c ? fmtF(c) : '—') + '</td>'
       + '<td style="text-align:right;font-weight:600;color:' + (solde >= 0 ? 'var(--blanc)' : 'var(--rouge)') + ';">' + fmtF(solde) + '</td>'
       + '</tr>';
   }).join('');
 
-  var periodeLabel = periodeActive ? ('Période du ' + (d1?dateShort(d1):'…') + ' au ' + (d2?dateShort(d2):'…')) : ('Exercice ' + year);
-  periodeLabel += divF ? (' — Division : ' + _nomDivision(divF)) : '';
+  var periodeLabel = ctx.periodeActive ? ('Période du ' + (ctx.d1?dateShort(ctx.d1):'…') + ' au ' + (ctx.d2?dateShort(ctx.d2):'…')) : ('Exercice ' + ctx.year);
+  periodeLabel += ctx.divF ? (' — Division : ' + _nomDivision(ctx.divF)) : '';
   box.innerHTML = '<div style="margin-bottom:14px;">'
-    + '<div style="font-size:16px;font-weight:700;color:var(--or);">Compte ' + compte + ' — ' + (planEntry ? planEntry.label : '') + (inclSous && compteEstParent(compte) ? ' <span style="font-size:11px;color:var(--blanc-dim);">(regroupement — sous-comptes inclus)</span>' : '') + '</div>'
-    + '<div style="font-size:12px;color:var(--blanc-dim);">Grand Livre — ' + periodeLabel + ' — ' + mvts.length + ' mouvement(s)</div>'
+    + '<div style="font-size:16px;font-weight:700;color:var(--or);">Compte ' + escHtml(compte) + ' — ' + escHtml(planEntry ? planEntry.label : '') + (inclSous && compteEstParent(compte) ? ' <span style="font-size:11px;color:var(--blanc-dim);">(regroupement — sous-comptes inclus)</span>' : '') + '</div>'
+    + '<div style="font-size:12px;color:var(--blanc-dim);">Grand Livre — ' + periodeLabel + ' — ' + r.mvts.length + ' mouvement(s)</div>'
     + '</div>'
     + '<div class="table-wrap"><table><thead><tr>'
     + '<th>Date</th><th>N° Pièce</th><th>Libellé</th><th>Contrepartie</th>'
     + '<th style="text-align:right;color:var(--rouge);">Débit</th><th style="text-align:right;color:var(--vert);">Crédit</th><th style="text-align:right;">Solde cumulé</th>'
     + '</tr></thead><tbody>'
     + ligneOuverture
-    + (rows || (periodeActive ? '' : '<tr><td colspan="7" style="text-align:center;color:var(--blanc-dim);padding:20px;">Aucun mouvement pour ce compte</td></tr>'))
+    + (rows || (ctx.periodeActive ? '' : '<tr><td colspan="7" style="text-align:center;color:var(--blanc-dim);padding:20px;">Aucun mouvement pour ce compte</td></tr>'))
     + '<tr style="font-weight:700;border-top:2px solid var(--gris-bord);">'
-    + '<td colspan="4">TOTAUX' + (periodeActive ? ' DE LA PÉRIODE' : '') + '</td>'
+    + '<td colspan="4">TOTAUX' + (ctx.periodeActive ? ' DE LA PÉRIODE' : '') + '</td>'
     + '<td style="text-align:right;color:var(--rouge);">' + fmtF(totD) + '</td>'
     + '<td style="text-align:right;color:var(--vert);">' + fmtF(totC) + '</td>'
     + '<td style="text-align:right;color:' + (solde >= 0 ? 'var(--blanc)' : 'var(--rouge)') + ';font-weight:700;">' + fmtF(solde) + '</td>'
