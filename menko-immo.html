@@ -119050,9 +119050,31 @@ async function caisseOuvrirModal(caisseId) {
   document.getElementById('co-caisse-id').value = caisseId;
   document.getElementById('co-caisse-nom').textContent = c.nom;
   document.getElementById('co-fond').value = fondSuggere;
-  document.getElementById('co-fond-note').textContent = derniere
-    ? 'Repris automatiquement du solde de clôture réel du ' + derniere.date + ' (' + fmtF(fondSuggere) + ' FCFA). Modifiable si besoin.'
-    : 'Première ouverture de cette caisse — aucun solde antérieur.';
+  /* [FIX incident 2026-09-10, Menko Agro] Une session ouverte le 20 août,
+     oubliée pendant 21 jours, clôturée tardivement ce matin sans compte
+     réel (théorique accepté tel quel), s'est retrouvée « plus récemment
+     clôturée » qu'une chaîne de sessions parfaitement réelle et continue
+     clôturée entre-temps — le solde proposé venait donc d'une session
+     fantôme, sans que personne ne puisse le deviner avant d'ouvrir la
+     caisse. Détection : si une AUTRE session de cette caisse a été
+     clôturée alors que la session retenue ici était OUVERTE DEPUIS PLUS
+     LONGTEMPS qu'elle (donc une chaîne parallèle a tourné et s'est
+     clôturée pendant que celle-ci dormait), avertir clairement au lieu de
+     suggérer silencieusement un solde potentiellement obsolète. */
+  var autresCloturees = (DATA.caisse_sessions||[]).filter(function(s){
+    return s.caisse_id === caisseId && s.statut === 'cloturee' && s.id !== (derniere && derniere.id)
+      && derniere && s.cloturee_le && derniere.ouverte_le && s.cloturee_le > derniere.ouverte_le && s.ouverte_le > derniere.ouverte_le;
+  });
+  var noteBox = document.getElementById('co-fond-note');
+  if (derniere && autresCloturees.length) {
+    var joursOuverte = Math.round((new Date(derniere.cloturee_le) - new Date(derniere.ouverte_le)) / 86400000);
+    noteBox.innerHTML = '<span style="color:var(--rouge);font-weight:600;">⚠️ Ce solde vient d\'une session restée ouverte ' + joursOuverte + ' jour(s) avant sa clôture'
+      + ' — pendant qu\'au moins une AUTRE session de cette caisse a été ouverte ET clôturée. Vérifiez qu\'il s\'agit bien du bon solde avant de continuer (comptez physiquement si besoin).</span>';
+  } else {
+    noteBox.textContent = derniere
+      ? 'Repris automatiquement du solde de clôture réel du ' + derniere.date + ' (' + fmtF(fondSuggere) + ' FCFA). Modifiable si besoin.'
+      : 'Première ouverture de cette caisse — aucun solde antérieur.';
+  }
   /* [DURCI] Le PIN est désormais OBLIGATOIRE pour toute ouverture de caisse,
      quel que soit le rôle (caissière, comptable, manager, admin) — ce n'est
      plus une option réservée aux seuls comptes « caissière ». Si le compte
