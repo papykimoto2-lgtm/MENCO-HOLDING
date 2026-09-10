@@ -7574,6 +7574,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <div class="form-group"><label>Parc auto — Immobilisation véhicules</label><input class="form-control" id="cd-parc-immobilisation" list="dl-plan-comptable" placeholder="2451"></div>
               <div class="form-group"><label>Résiliation — Dette de remboursement au souscripteur</label><input class="form-control" id="cd-resiliation-dette" list="dl-plan-comptable" placeholder="4197"></div>
               <div class="form-group"><label>Résiliation — Retenue conservée (produit)</label><input class="form-control" id="cd-resiliation-produit" list="dl-plan-comptable" placeholder="758"></div>
+              <div class="form-group"><label>Virement interne entre caisses (compte relais)</label><input class="form-control" id="cd-virement-interne" list="dl-plan-comptable" placeholder="585"></div>
 
               <div class="form-group"><label>Taux Impôt sur les Sociétés (%)</label><input type="number" step="0.1" class="form-control" id="cd-taux-is" placeholder="25"></div>
               <div class="form-group"></div>
@@ -36254,7 +36255,8 @@ var LIBELLES_COMPTES_DEFAUT = {
   ecart_caisse_excedent:'Écart de caisse — Excédent (produit)', ecart_caisse_manquant:'Écart de caisse — Manquant (charge)',
   parc_carburant:'Parc auto — Carburant (charge)', parc_entretien:'Parc auto — Entretien/réparations (charge)',
   parc_immobilisation:'Parc auto — Immobilisation (véhicules, compte 245X)',
-  resiliation_dette:'Résiliation — Dette de remboursement au souscripteur', resiliation_produit:'Résiliation — Retenue conservée (produit)'
+  resiliation_dette:'Résiliation — Dette de remboursement au souscripteur', resiliation_produit:'Résiliation — Retenue conservée (produit)',
+  virement_interne:'Virement interne entre caisses (585 — compte relais)'
 };
 
 /* Alimente la <datalist> partagée par tous les champs « cd-* » : saisie prédictive
@@ -36445,6 +36447,7 @@ function loadComptesDefaut() {
   var _pai=document.getElementById('cd-parc-immobilisation'); if(_pai)_pai.value=cd.parc_immobilisation|| '';
   var _rd=document.getElementById('cd-resiliation-dette'); if(_rd)_rd.value=cd.resiliation_dette|| '';
   var _rp=document.getElementById('cd-resiliation-produit'); if(_rp)_rp.value=cd.resiliation_produit|| '';
+  var _vi=document.getElementById('cd-virement-interne'); if(_vi)_vi.value=cd.virement_interne|| '';
   document.getElementById('cd-taux-is').value = (DATA.params && DATA.params.taux_is != null) ? DATA.params.taux_is : 25;
   renderConflitsSync();
 }
@@ -36615,7 +36618,8 @@ function saveComptesDefaut() {
     parc_entretien:       (document.getElementById('cd-parc-entretien')||{}).value ? document.getElementById('cd-parc-entretien').value.trim() : ((DATA.params&&DATA.params.comptes_defaut&&DATA.params.comptes_defaut.parc_entretien)|| ''),
     parc_immobilisation:  (document.getElementById('cd-parc-immobilisation')||{}).value ? document.getElementById('cd-parc-immobilisation').value.trim() : ((DATA.params&&DATA.params.comptes_defaut&&DATA.params.comptes_defaut.parc_immobilisation)|| ''),
     resiliation_dette:  (document.getElementById('cd-resiliation-dette')||{}).value ? document.getElementById('cd-resiliation-dette').value.trim() : ((DATA.params&&DATA.params.comptes_defaut&&DATA.params.comptes_defaut.resiliation_dette)|| ''),
-    resiliation_produit:  (document.getElementById('cd-resiliation-produit')||{}).value ? document.getElementById('cd-resiliation-produit').value.trim() : ((DATA.params&&DATA.params.comptes_defaut&&DATA.params.comptes_defaut.resiliation_produit)|| '')
+    resiliation_produit:  (document.getElementById('cd-resiliation-produit')||{}).value ? document.getElementById('cd-resiliation-produit').value.trim() : ((DATA.params&&DATA.params.comptes_defaut&&DATA.params.comptes_defaut.resiliation_produit)|| ''),
+    virement_interne:  (document.getElementById('cd-virement-interne')||{}).value ? document.getElementById('cd-virement-interne').value.trim() : ((DATA.params&&DATA.params.comptes_defaut&&DATA.params.comptes_defaut.virement_interne)|| '')
   };
   DATA.params.taux_is = parseFloat(document.getElementById('cd-taux-is').value) || 25;
 
@@ -90220,7 +90224,8 @@ var PAGE_MODULE_MAP = {
   'diaspo':             'Investisseurs Diaspora',
   'lbcft':              'Conformite LBC-FT',
   'parc-auto':          'Parc Auto',
-  'budget':             'Budget'
+  'budget':             'Budget',
+  'incidents':          null   /* accès libre à tout utilisateur connecté — déclarer un incident ne doit dépendre d'aucun module métier */
 };
 
 /* ── 2. hasRole() corrigé — inclut manager + custom roles ── */
@@ -90256,7 +90261,7 @@ var PAGE_MODULE_MAP = {
   var _lastGoTo = goTo;
   goTo = function(page) {
     /* Pages toujours accessibles */
-    var publicPages = ['dashboard','portail-souscripteur'];
+    var publicPages = ['dashboard','portail-souscripteur','incidents'];
     if (publicPages.indexOf(page) >= 0) { _lastGoTo(page); applyRoleToSidebar(); return; }
     /* Vérifier le module requis */
     var module = PAGE_MODULE_MAP[page];
@@ -118885,6 +118890,7 @@ function caisseRenderListe() {
     } else {
       actions += '<button class="btn btn-secondary btn-sm" onclick="caisseOuvrirBonModal(\'' + c.id + '\',\'entree\')">📥 Entrée</button>'
         + '<button class="btn btn-secondary btn-sm" onclick="caisseOuvrirBonModal(\'' + c.id + '\',\'sortie\')">📤 Sortie</button>'
+        + '<button class="btn btn-secondary btn-sm" onclick="caisseTransfertModal(\'' + c.id + '\')" title="Provisionner une autre caisse (virement interne, compte relais 585)">🔄 Transférer</button>'
         + '<button class="btn btn-secondary btn-sm" onclick="caisseAfficherBrouillard(\'' + c.id + '\')">📋 Brouillard</button>'
         + '<button class="btn btn-secondary btn-sm" onclick="caisseImportCSVModal(\'' + c.id + '\')">📥 Import CSV</button>'
         + ((DATA.params||{})['caisse_dernier_import_' + c.id] ? '<button class="btn btn-secondary btn-sm" onclick="caisseEtatDernierImport(\'' + c.id + '\')" title="Écritures non ventilées du dernier import CSV">🧾 État dernier import</button>' : '')
@@ -119507,6 +119513,133 @@ async function caisseSaveBon() {
   if (typeof caisseRenderValidations === 'function') caisseRenderValidations();
   if (CAISSE_UI.brouillardCaisseId === caisseId) caisseAfficherBrouillard(caisseId);
   if (nouveau.requiert_validation && typeof caisseNotifierValidation === 'function') caisseNotifierValidation(nouveau, 'demande');
+}
+
+/* ── TRANSFERT / PROVISIONNEMENT ENTRE CAISSES ────────────────────────────
+   Crée systématiquement DEUX mouvements (sortie côté source, entrée côté
+   destination), tous deux ventilés sur le compte relais 585 « Virement
+   interne » (Paramètres → Comptes par défaut) — jamais sur un compte de
+   classe 6/7, pour ne jamais faire apparaître ce transfert comme une charge
+   ou un produit. Les DEUX bons passent par le même circuit de validation
+   que tout mouvement de caisse (règle DG : aucune exception) — ce n'est
+   qu'une fois validés qu'ils sont ventilés, automatiquement, via une règle
+   de ventilation par mot-clé enregistrée une fois pour toutes ci-dessous
+   (réutilise le mécanisme existant plutôt que d'en inventer un nouveau). */
+var CAISSE_TRANSFERT_MOTCLE = 'virement interne caisse';
+
+function caisseTransfertModal(caisseSourceId) {
+  var source = (DATA.caisses || []).find(function (c) { return c.id === caisseSourceId; });
+  if (!source) return;
+  var sessionSource = caisseGetSessionOuverte(caisseSourceId);
+  if (!sessionSource) { toast('Cette caisse doit être ouverte pour émettre un transfert.', 'error'); return; }
+
+  document.getElementById('ct-source-id').value = caisseSourceId;
+  document.getElementById('ct-source-label').textContent = '📤 Depuis : ' + (source.nom || '');
+  document.getElementById('ct-montant').value = 0;
+  document.getElementById('ct-date').value = today();
+  document.getElementById('ct-motif').value = '';
+
+  var selDest = document.getElementById('ct-destination');
+  var candidates = (DATA.caisses || []).filter(function (c) {
+    return c.id !== caisseSourceId && c.actif !== false && caisseGetSessionOuverte(c.id);
+  });
+  if (!candidates.length) {
+    selDest.innerHTML = '<option value="">— Aucune autre caisse ouverte —</option>';
+    toast('⚠️ Aucune autre caisse n\'est actuellement ouverte pour recevoir ce transfert.', 'error', 6000);
+  } else {
+    selDest.innerHTML = candidates.map(function (c) { return '<option value="' + c.id + '">' + escHtml(c.nom || '') + '</option>'; }).join('');
+  }
+
+  var solde = caisseSoldeSession(sessionSource);
+  document.getElementById('ct-solde-actuel').textContent = 'Solde actuel de la caisse source : ' + fmtF(solde) + ' FCFA';
+
+  openModal('modal-caisse-transfert');
+}
+
+async function caisseTransfererFonds() {
+  if (!exigerDroit('Caisse', 'c', 'un transfert entre caisses')) return;
+  var sourceId = document.getElementById('ct-source-id').value;
+  var destId = document.getElementById('ct-destination').value;
+  var montant = parseFloat(document.getElementById('ct-montant').value) || 0;
+  var date = document.getElementById('ct-date').value || today();
+  var motifSaisi = document.getElementById('ct-motif').value.trim();
+
+  if (!destId) { toast('Sélectionnez une caisse de destination.', 'error'); return; }
+  if (sourceId === destId) { toast('La caisse de destination doit être différente de la caisse source.', 'error'); return; }
+  if (montant <= 0) { toast('Le montant doit être supérieur à zéro.', 'error'); return; }
+
+  var compte585 = (DATA.params && DATA.params.comptes_defaut && DATA.params.comptes_defaut.virement_interne) || '';
+  if (!compte585) {
+    toast('⚠️ Compte "Virement interne entre caisses" non paramétré — allez dans Paramètres → Comptes par défaut avant de transférer des fonds.', 'error', 7000);
+    return;
+  }
+  /* Enregistre (une seule fois) la règle de ventilation automatique liant
+     notre mot-clé fixe au compte 585 configuré — réutilise le mécanisme
+     existant de _caisseRuleMatch()/ventilation automatique. */
+  var map = (DATA.params && DATA.params.caisse_ventilation_map) || {};
+  if (map[CAISSE_TRANSFERT_MOTCLE] !== compte585) { await _caisseAjouterRegle(CAISSE_TRANSFERT_MOTCLE, compte585); }
+
+  var source = (DATA.caisses || []).find(function (c) { return c.id === sourceId; });
+  var dest = (DATA.caisses || []).find(function (c) { return c.id === destId; });
+  if (!source || !dest) { toast('Caisse introuvable.', 'error'); return; }
+
+  var sessionSource = caisseGetSessionOuverte(sourceId);
+  var sessionDest = caisseGetSessionOuverte(destId);
+  if (!sessionSource) { toast('La caisse source a été clôturée entre-temps.', 'error'); closeModal('modal-caisse-transfert'); return; }
+  if (!sessionDest) { toast('La caisse de destination a été clôturée entre-temps.', 'error'); closeModal('modal-caisse-transfert'); return; }
+  if (!caisseSessionEstOperable(sessionSource)) { toast('🔒 Caisse source désormais tenue par un(e) autre utilisateur(rice).', 'error'); return; }
+  if (!caisseSessionEstOperable(sessionDest)) { toast('🔒 Caisse de destination désormais tenue par un(e) autre utilisateur(rice).', 'error'); return; }
+
+  var soldeSource = caisseSoldeSession(sessionSource);
+  if (montant > soldeSource) {
+    if (!confirm('⚠️ Solde de la caisse source insuffisant (solde actuel : ' + fmtF(soldeSource) + ' FCFA pour un transfert de ' + fmtF(montant) + ' FCFA).\n\nConfirmer tout de même ?')) return;
+  }
+
+  var transfertId = uid();
+  var motifSortie = CAISSE_TRANSFERT_MOTCLE + ' : vers ' + (dest.nom || '') + (motifSaisi ? ' — ' + motifSaisi : '');
+  var motifEntree = CAISSE_TRANSFERT_MOTCLE + ' : reçu de ' + (source.nom || '') + (motifSaisi ? ' — ' + motifSaisi : '');
+  var plafondAuteur = (typeof userPlafond === 'function') ? userPlafond() : Infinity;
+  var auteurNom = (APP.currentUser && APP.currentUser.nom) || '—';
+  var auteurRole = (APP.currentUser && APP.currentUser.role) || '';
+
+  var numeroSortie = await caisseProchainNumero(sourceId, 'sortie', date, source.compte);
+  var mvtSortie = {
+    id: uid(), session_id: sessionSource.id, caisse_id: sourceId,
+    date: date + 'T' + new Date().toISOString().slice(11, 19), numero: numeroSortie,
+    type: 'sortie', montant: montant, motif: motifSortie, beneficiaire: dest.nom || '',
+    piece_ref: '', statut: 'a_ventiler', compte_ventile: null, ecriture_id: null,
+    ventile_par: null, ventile_le: null, transfert_id: transfertId, transfert_vers: destId,
+    requiert_validation: true, valide: false, rejete: false,
+    plafond_demandeur: plafondAuteur, demande_par: auteurNom, demande_role: auteurRole, demande_le: new Date().toISOString(),
+    created_by: auteurNom, created_at: new Date().toISOString()
+  };
+  var numeroEntree = await caisseProchainNumero(destId, 'entree', date, dest.compte);
+  var mvtEntree = {
+    id: uid(), session_id: sessionDest.id, caisse_id: destId,
+    date: date + 'T' + new Date().toISOString().slice(11, 19), numero: numeroEntree,
+    type: 'entree', montant: montant, motif: motifEntree, beneficiaire: source.nom || '',
+    piece_ref: '', statut: 'a_ventiler', compte_ventile: null, ecriture_id: null,
+    ventile_par: null, ventile_le: null, transfert_id: transfertId, transfert_depuis: sourceId,
+    requiert_validation: true, valide: false, rejete: false,
+    plafond_demandeur: plafondAuteur, demande_par: auteurNom, demande_role: auteurRole, demande_le: new Date().toISOString(),
+    created_by: auteurNom, created_at: new Date().toISOString()
+  };
+
+  DATA.caisse_mouvements.push(mvtSortie);
+  DATA.caisse_mouvements.push(mvtEntree);
+  mvtSortie._baseModifie = mvtSortie._modifie || null;
+  mvtEntree._baseModifie = mvtEntree._modifie || null;
+  await dbPut('caisse_mouvements', mvtSortie);
+  await dbPut('caisse_mouvements', mvtEntree);
+  await caisseSyncEtAlerter('pi_caisse_mouvements', mvtSortie);
+  await caisseSyncEtAlerter('pi_caisse_mouvements', mvtEntree);
+
+  closeModal('modal-caisse-transfert');
+  toast('🔄 Transfert de ' + fmtF(montant) + ' FCFA enregistré (bons ' + numeroSortie + ' / ' + numeroEntree + ') — en attente de validation avant impact sur les soldes. Ventilation automatique sur le compte ' + compte585 + ' dès approbation.', 'info', 8000);
+  caisseRenderListe();
+  if (typeof caisseRenderDashboard === 'function') caisseRenderDashboard();
+  if (typeof caisseRenderValidations === 'function') caisseRenderValidations();
+  if (typeof caisseNotifierValidation === 'function') { caisseNotifierValidation(mvtSortie, 'demande'); caisseNotifierValidation(mvtEntree, 'demande'); }
 }
 
 /* ── PIÈCES JUSTIFICATIVES DES MOUVEMENTS DE CAISSE ──────────────────
@@ -125750,6 +125883,37 @@ goTo = function(page) {
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-caisse-bon')">Annuler</button>
       <button class="btn btn-primary" onclick="caisseSaveBon()">💾 Enregistrer le bon</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Transfert / provisionnement entre caisses (virement interne, compte relais 585) -->
+<div class="modal-overlay" id="modal-caisse-transfert">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>🔄 Transférer vers une autre caisse</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-caisse-transfert')">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="ct-source-id">
+      <div style="font-size:12px;color:var(--blanc-dim);margin-bottom:10px;">
+        Crée automatiquement une <strong>sortie</strong> dans la caisse source et une <strong>entrée</strong> dans la caisse de destination, toutes deux ventilées sur le compte relais <strong>585 — Virement interne</strong> une fois validées. Aucun impact sur le compte de résultat, aucun lien avec un souscripteur.
+      </div>
+      <div id="ct-source-label" style="font-size:13px;font-weight:600;margin-bottom:10px;"></div>
+      <div class="form-grid">
+        <div class="form-group span-2">
+          <label>Caisse de destination *</label>
+          <select class="form-control" id="ct-destination"></select>
+        </div>
+        <div class="form-group"><label>Montant (FCFA) *</label><input type="number" class="form-control" id="ct-montant" value="0"></div>
+        <div class="form-group"><label>Date *</label><input type="date" class="form-control" id="ct-date"></div>
+        <div class="form-group span-2"><label>Motif / précision (optionnel)</label><input class="form-control" id="ct-motif" placeholder="Ex : besoin de fond pour paiement fournisseur"></div>
+      </div>
+      <div id="ct-solde-actuel" style="font-size:12px;color:var(--blanc-dim);margin-top:6px;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-caisse-transfert')">Annuler</button>
+      <button class="btn btn-primary" onclick="caisseTransfererFonds()">🔄 Effectuer le transfert</button>
     </div>
   </div>
 </div>
