@@ -7837,7 +7837,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <div class="form-grid" style="margin-top:10px;">
               <div class="form-group"><label>Alerte visite technique (jours avant)</label><input type="number" id="param-parcauto-alerte-visite-jours" class="form-control" value="30" min="1"></div>
               <div class="form-group"><label>Alerte échéance assurance (jours avant)</label><input type="number" id="param-parcauto-alerte-assurance-jours" class="form-control" value="30" min="1"></div>
-              <div class="form-group"><label>Seuil kilométrage entretien</label><input type="number" id="param-parcauto-seuil-entretien-km" class="form-control" value="10000" min="0" step="500"></div>
+              <div class="form-group"><label>Anticipation alerte vidange (km avant échéance)</label><input type="number" id="param-parcauto-seuil-entretien-km" class="form-control" value="500" min="0" step="100"></div>
               <div class="form-group"><label>Plafond carburant mensuel (FCFA / véhicule)</label><input type="number" id="param-parcauto-plafond-carburant" class="form-control" value="150000" min="0" step="10000"></div>
             </div>
           </div>
@@ -43846,7 +43846,7 @@ async function saveModulesAvancesParams() {
 
     parcauto_alerte_visite_jours:    gvn('param-parcauto-alerte-visite-jours')    || 30,
     parcauto_alerte_assurance_jours: gvn('param-parcauto-alerte-assurance-jours') || 30,
-    parcauto_seuil_entretien_km:     gvn('param-parcauto-seuil-entretien-km')     || 10000,
+    parcauto_seuil_entretien_km:     gvn('param-parcauto-seuil-entretien-km')     || 500,
     parcauto_plafond_carburant:      gvn('param-parcauto-plafond-carburant')      || 150000,
 
     crm_delai_relance_prospect: gvn('param-crm-delai-relance-prospect') || 3,
@@ -44249,7 +44249,7 @@ function loadParamFields() {
   sv('param-copro-fonds-reserve-pct',p.copro_fonds_reserve_pct||5);
   sv('param-parcauto-alerte-visite-jours',p.parcauto_alerte_visite_jours||30);
   sv('param-parcauto-alerte-assurance-jours',p.parcauto_alerte_assurance_jours||30);
-  sv('param-parcauto-seuil-entretien-km',p.parcauto_seuil_entretien_km||10000);
+  sv('param-parcauto-seuil-entretien-km',p.parcauto_seuil_entretien_km||500);
   sv('param-parcauto-plafond-carburant',p.parcauto_plafond_carburant||150000);
   sv('param-crm-delai-relance-prospect',p.crm_delai_relance_prospect||3);
   sv('param-crm-score-min-qualif',p.crm_score_min_qualif||50);
@@ -68125,30 +68125,36 @@ function paFillSelects(){
 function paCalculerAlertes(){
   var alertes = [];
   var t = today();
-  var dans30j = new Date(); dans30j.setDate(dans30j.getDate()+30);
-  var dans30jStr = dans30j.toISOString().slice(0,10);
+  var p = DATA.params||{};
+  var joursAssurance = parseInt(p.parcauto_alerte_assurance_jours,10) || 30;
+  var joursVisite     = parseInt(p.parcauto_alerte_visite_jours,10) || 30;
+  var seuilKm          = parseInt(p.parcauto_seuil_entretien_km,10) || 500;
+  var dansJours = function(n){ var d = new Date(); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
+  var seuilAssuranceStr = dansJours(joursAssurance);
+  var seuilVisiteStr    = dansJours(joursVisite);
+  var seuilVidangeStr   = dansJours(Math.max(joursAssurance, joursVisite));
 
   (DATA.vehicules||[]).filter(function(v){ return v.statut!=='vendu'; }).forEach(function(v){
     var label = v.immatriculation || 'Véhicule sans plaque';
     if (v.assurance_fin) {
       if (v.assurance_fin < t) alertes.push({ vehicule_id:v.id, niveau:'rouge', texte: label+' — assurance expirée depuis le '+dateShort(v.assurance_fin) });
-      else if (v.assurance_fin <= dans30jStr) alertes.push({ vehicule_id:v.id, niveau:'orange', texte: label+' — assurance expire le '+dateShort(v.assurance_fin) });
+      else if (v.assurance_fin <= seuilAssuranceStr) alertes.push({ vehicule_id:v.id, niveau:'orange', texte: label+' — assurance expire le '+dateShort(v.assurance_fin) });
     }
     if (v.visite_technique_expiration) {
       if (v.visite_technique_expiration < t) alertes.push({ vehicule_id:v.id, niveau:'rouge', texte: label+' — visite technique expirée depuis le '+dateShort(v.visite_technique_expiration) });
-      else if (v.visite_technique_expiration <= dans30jStr) alertes.push({ vehicule_id:v.id, niveau:'orange', texte: label+' — visite technique expire le '+dateShort(v.visite_technique_expiration) });
+      else if (v.visite_technique_expiration <= seuilVisiteStr) alertes.push({ vehicule_id:v.id, niveau:'orange', texte: label+' — visite technique expire le '+dateShort(v.visite_technique_expiration) });
     }
-    /* Vidange due par km : dernier entretien de type vidange + son seuil km */
+    /* Vidange due par km : dernier entretien de type vidange + son seuil km (anticipation paramétrable) */
     var derniereVidange = (DATA.vehicule_entretiens||[]).filter(function(e){ return e.vehicule_id===v.id && e.type==='vidange'; })
       .sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); })[0];
     if (derniereVidange && derniereVidange.prochaine_echeance_km && v.km_actuel) {
       var ecart = derniereVidange.prochaine_echeance_km - v.km_actuel;
       if (ecart <= 0) alertes.push({ vehicule_id:v.id, niveau:'rouge', texte: label+' — vidange dépassée de '+Math.abs(ecart)+' km' });
-      else if (ecart <= 500) alertes.push({ vehicule_id:v.id, niveau:'orange', texte: label+' — vidange due dans '+ecart+' km' });
+      else if (ecart <= seuilKm) alertes.push({ vehicule_id:v.id, niveau:'orange', texte: label+' — vidange due dans '+ecart+' km' });
     }
     if (derniereVidange && derniereVidange.prochaine_echeance_date) {
       if (derniereVidange.prochaine_echeance_date < t) alertes.push({ vehicule_id:v.id, niveau:'rouge', texte: label+' — vidange (date) dépassée depuis le '+dateShort(derniereVidange.prochaine_echeance_date) });
-      else if (derniereVidange.prochaine_echeance_date <= dans30jStr) alertes.push({ vehicule_id:v.id, niveau:'orange', texte: label+' — vidange (date) prévue le '+dateShort(derniereVidange.prochaine_echeance_date) });
+      else if (derniereVidange.prochaine_echeance_date <= seuilVidangeStr) alertes.push({ vehicule_id:v.id, niveau:'orange', texte: label+' — vidange (date) prévue le '+dateShort(derniereVidange.prochaine_echeance_date) });
     }
   });
   return alertes;
