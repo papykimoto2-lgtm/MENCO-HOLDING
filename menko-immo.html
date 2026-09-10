@@ -117788,8 +117788,20 @@ async function caisseDeverrouiller() {
   } else {
     var pwdSaisi = (document.getElementById('cv-pwd')||{}).value || '';
     if (!pwdSaisi) { if (eErr) eErr.textContent = 'Saisissez votre mot de passe.'; return; }
-    var pwdHash = await hashPassword(pwdSaisi, (u && u.salt) || '');
-    ok = !!(u && pwdHash === u.password_hash);
+    /* [FIX] Même défaut que caisseDefinirPinConfirmer() — ne vérifiait que
+       l'ancien hash SHA-256+sel, jamais PBKDF2 (migration transparente à la
+       connexion). Un compte déjà migré recevait toujours "Code incorrect"
+       malgré le bon mot de passe. Incident rapporté : Tatiana, écran de
+       verrouillage après 10 min d'inactivité, bloquée. */
+    var pwdOk = false;
+    if (u && u.pwd_algo === 'pbkdf2' && u.password_hash && u.salt) {
+      pwdOk = (await pbkdf2Client(pwdSaisi, u.salt, u.pwd_iter || 210000)) === u.password_hash;
+    } else if (u && u.password_hash && u.salt) {
+      pwdOk = (await hashPassword(pwdSaisi, u.salt)) === u.password_hash;
+    } else if (u && u.password) {
+      pwdOk = (pwdSaisi === u.password);
+    }
+    ok = pwdOk;
   }
   if (!ok) { if (eErr) eErr.textContent = '❌ Code incorrect.'; return; }
   CAISSE_UI.verrouille = false;
