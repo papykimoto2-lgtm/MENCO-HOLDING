@@ -39145,9 +39145,9 @@ function buildBalance() {
       var pl = APP.planComptable.find(function(c){ return c.code === code; });
       var lbl = pl ? pl.label : ((compteParentDe(code)||{}).label ? 'Regroupement — ' + compteParentDe(code).label : 'Regroupement');
       return '<tr style="font-weight:600;">'
-        + '<td style="color:var(--or);">' + code + '</td>'
-        + '<td style="font-size:12px;">' + lbl + '</td>'
-        + '<td style="font-size:10px;color:var(--blanc-dim);">Cl.' + code.charAt(0) + '</td>'
+        + '<td style="color:var(--or);">' + escHtml(code) + '</td>'
+        + '<td style="font-size:12px;">' + escHtml(lbl) + '</td>'
+        + '<td style="font-size:10px;color:var(--blanc-dim);">Cl.' + escHtml(code.charAt(0)) + '</td>'
         + '<td style="text-align:right;color:var(--rouge);">' + (m.debit?fmtF(m.debit):'—') + '</td>'
         + '<td style="text-align:right;color:var(--vert);">' + (m.credit?fmtF(m.credit):'—') + '</td>'
         + '<td style="text-align:right;color:var(--rouge);">' + (sD?fmtF(sD):'—') + '</td>'
@@ -39208,9 +39208,9 @@ function buildBalance() {
     var prof = compteParentDe(c.code) ? 1 : 0;
     if (estParent) {
       return '<tr style="font-weight:700;background:rgba(184,115,51,0.06);' + (hasMvt ? '' : 'opacity:0.5;') + '">'
-        + '<td style="color:var(--or);">' + c.code + '</td>'
-        + '<td style="font-size:12px;">' + c.label + ' <span style="font-size:9px;color:var(--blanc-dim);">TOTAL</span></td>'
-        + '<td style="font-size:10px;color:var(--blanc-dim);">Cl.' + c.classe + '</td>'
+        + '<td style="color:var(--or);">' + escHtml(c.code) + '</td>'
+        + '<td style="font-size:12px;">' + escHtml(c.label) + ' <span style="font-size:9px;color:var(--blanc-dim);">TOTAL</span></td>'
+        + '<td style="font-size:10px;color:var(--blanc-dim);">Cl.' + escHtml(c.classe) + '</td>'
         + '<td style="text-align:right;color:var(--rouge);">' + (mvt.debit ? fmtF(mvt.debit) : '—') + '</td>'
         + '<td style="text-align:right;color:var(--vert);">' + (mvt.credit ? fmtF(mvt.credit) : '—') + '</td>'
         + '<td style="text-align:right;color:var(--rouge);">' + (soldeD ? fmtF(soldeD) : '—') + '</td>'
@@ -39218,9 +39218,9 @@ function buildBalance() {
         + '</tr>';
     }
     return '<tr style="' + (hasMvt ? '' : 'opacity:0.5;') + '">'
-      + '<td style="font-weight:600;color:var(--or);' + (prof?'padding-left:18px;':'') + '">' + c.code + '</td>'
-      + '<td style="font-size:12px;' + (prof?'padding-left:10px;':'') + '">' + c.label + '</td>'
-      + '<td style="font-size:10px;color:var(--blanc-dim);">Cl.' + c.classe + '</td>'
+      + '<td style="font-weight:600;color:var(--or);' + (prof?'padding-left:18px;':'') + '">' + escHtml(c.code) + '</td>'
+      + '<td style="font-size:12px;' + (prof?'padding-left:10px;':'') + '">' + escHtml(c.label) + '</td>'
+      + '<td style="font-size:10px;color:var(--blanc-dim);">Cl.' + escHtml(c.classe) + '</td>'
       + '<td style="text-align:right;' + (mvt.debit?'color:var(--rouge);font-weight:600;':'color:var(--blanc-dim);') + '">' + (mvt.debit ? fmtF(mvt.debit) : '—') + '</td>'
       + '<td style="text-align:right;' + (mvt.credit?'color:var(--vert);font-weight:600;':'color:var(--blanc-dim);') + '">' + (mvt.credit ? fmtF(mvt.credit) : '—') + '</td>'
       + '<td style="text-align:right;' + (soldeD?'color:var(--rouge);':'color:var(--blanc-dim);') + '">' + (soldeD ? fmtF(soldeD) : '—') + '</td>'
@@ -84119,31 +84119,67 @@ function etatBalance() {
   var d1 = document.getElementById('filter-balance-date-debut') ? document.getElementById('filter-balance-date-debut').value : '';
   var d2 = document.getElementById('filter-balance-date-fin') ? document.getElementById('filter-balance-date-fin').value : '';
   if (d1 && d2 && d1 > d2) { var tmp = d1; d1 = d2; d2 = tmp; }
+  /* [FIX] Alignement sur buildBalance() (écran) et etatBilan() — trois défauts
+     déjà corrigés ailleurs dans ce module mais jamais portés ici :
+     1) schéma 2 lignes obsolète (compte_debit/compte_credit/montant) au lieu
+        de ecrLignes() → toute écriture à N lignes (dotations, paie, TVA…)
+        était purement absente du PDF imprimé ;
+     2) aucun filtre de division → « Imprimer Balance » pour une entité
+        précise imprimait en réalité le cumul de toutes les divisions,
+        même défaut déjà corrigé sur etatBilan() (voir plus bas) ;
+     3) totaux cumulés en itérant le plan comptable « courant » au lieu des
+        mouvements réels → tout compte mouvementé hors de cette liste
+        curatée contribuait pour zéro aux totaux imprimés — un document
+        officiel (banque, auditeur) pouvait donc être faux. */
+  var divF = (typeof _comptaDivisionFilter === 'function') ? _comptaDivisionFilter() : '';
   var comptesMvt = {};
   DATA.ecritures.filter(function(e){
+    if (divF && e.division !== divF) return false;
     if (d1 || d2) return (!d1 || (e.date && e.date >= d1)) && (!d2 || (e.date && e.date <= d2));
     return !year || (e.date && e.date.startsWith(year));
   }).forEach(function(e){
-    var cd = e.compte_debit || e.compte, cc = e.compte_credit;
-    if (!comptesMvt[cd]) comptesMvt[cd] = { debit:0, credit:0 };
-    comptesMvt[cd].debit += e.montant;
-    if (cc) { if (!comptesMvt[cc]) comptesMvt[cc] = { debit:0, credit:0 }; comptesMvt[cc].credit += e.montant; }
+    ecrLignes(e).forEach(function(l){
+      if (!l.compte) return;
+      if (!comptesMvt[l.compte]) comptesMvt[l.compte] = { debit:0, credit:0 };
+      if (l.sens === 'D') comptesMvt[l.compte].debit += (parseFloat(l.montant)||0);
+      else comptesMvt[l.compte].credit += (parseFloat(l.montant)||0);
+    });
   });
   var plan = APP.planComptable.filter(function(c){
     if (classeF && c.classe !== classeF) return false;
     if (mvtOnly && !comptesMvt[c.code]) return false;
     return true;
+  }).sort(function(a,b){ return String(a.code).localeCompare(String(b.code)); });
+
+  var tMD = 0, tMC = 0, tSD = 0, tSC = 0, _horsPlanCodes = [];
+  Object.keys(comptesMvt).forEach(function(code){
+    if (classeF && String(code).charAt(0) !== classeF) return;
+    var m = comptesMvt[code];
+    tMD += m.debit; tMC += m.credit;
+    tSD += Math.max(0, m.debit - m.credit);
+    tSC += Math.max(0, m.credit - m.debit);
+    if (!APP.planComptable.some(function(c){ return c.code === code; })) _horsPlanCodes.push(code);
   });
-  var tMD = 0, tMC = 0, tSD = 0, tSC = 0;
+
   var rows = plan.map(function(c){
     var m = comptesMvt[c.code] || { debit:0, credit:0 };
     var sd = Math.max(0, m.debit - m.credit), sc = Math.max(0, m.credit - m.debit);
-    tMD += m.debit; tMC += m.credit; tSD += sd; tSC += sc;
     return '<tr><td>' + escHtml(c.code) + '</td><td>' + escHtml(c.label || '') + '</td>'
-      + '<td style="text-align:center;">' + c.classe + '</td>'
+      + '<td style="text-align:center;">' + escHtml(c.classe) + '</td>'
       + '<td class="num">' + (m.debit ? fmtF(m.debit) : '—') + '</td><td class="num">' + (m.credit ? fmtF(m.credit) : '—') + '</td>'
       + '<td class="num">' + (sd ? fmtF(sd) : '—') + '</td><td class="num">' + (sc ? fmtF(sc) : '—') + '</td></tr>';
   }).join('');
+  /* Comptes mouvementés absents du plan comptable : comptés dans les
+     totaux ci-dessus, ils doivent donc rester visibles et identifiables. */
+  if (_horsPlanCodes.length) {
+    rows += _horsPlanCodes.sort().map(function(code){
+      var m = comptesMvt[code];
+      var sd = Math.max(0, m.debit - m.credit), sc = Math.max(0, m.credit - m.debit);
+      return '<tr><td>' + escHtml(code) + '</td><td>⚠ Compte hors plan comptable</td><td style="text-align:center;">' + escHtml(String(code).charAt(0)) + '</td>'
+        + '<td class="num">' + (m.debit ? fmtF(m.debit) : '—') + '</td><td class="num">' + (m.credit ? fmtF(m.credit) : '—') + '</td>'
+        + '<td class="num">' + (sd ? fmtF(sd) : '—') + '</td><td class="num">' + (sc ? fmtF(sc) : '—') + '</td></tr>';
+    }).join('');
+  }
   var equ = (Math.abs(tMD - tMC) < 1 && tMD > 0) ? '✔ Balance équilibrée — Débit = Crédit = ' + fmtF(tMD) + ' FCFA'
     : (tMD > 0 ? '⚠ Balance déséquilibrée — Écart : ' + fmtF(Math.abs(tMD - tMC)) + ' FCFA' : '');
   var contenu = '<table><thead><tr><th>Compte</th><th>Intitulé</th><th style="text-align:center;">Cl.</th>'
@@ -84155,6 +84191,7 @@ function etatBalance() {
   var sousTitre = (d1 || d2)
     ? ('Période du ' + (d1 ? dateShort(d1) : '…') + ' au ' + (d2 ? dateShort(d2) : '…') + ' — SYSCOHADA')
     : ('Exercice ' + year + ' — SYSCOHADA');
+  sousTitre += divF ? (' — Division : ' + _nomDivision(divF)) : '';
   genererEtatPDF({ titre:'Balance générale des comptes', sousTitre: sousTitre,
     orientation:'paysage', couleur:'#1D4ED8', contenu:contenu });
 }
