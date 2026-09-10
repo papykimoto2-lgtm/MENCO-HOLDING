@@ -6512,6 +6512,27 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
 
         </div>
 
+        <!-- ═══ MODAL DÉTAIL / RÉPONSE INCIDENT ════════════════════════════ -->
+        <div class="modal-overlay" id="modal-incident-detail">
+          <div class="modal" style="max-width:720px;">
+            <div class="modal-header">
+              <h3>🚨 Détail de l'incident</h3>
+              <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-incident-detail')">✕</button>
+            </div>
+            <div class="modal-body">
+              <input type="hidden" id="incd-id">
+              <div id="incd-corps"></div>
+              <div class="form-section-title" style="margin-top:14px;">💬 Réponse / Résolution</div>
+              <div id="incd-reponse-meta" style="font-size:11px;color:var(--blanc-dim);margin-bottom:6px;"></div>
+              <textarea class="form-control" id="incd-reponse" rows="5" placeholder="Cause identifiée, action corrective effectuée, correctif logiciel le cas échéant..."></textarea>
+            </div>
+            <div class="modal-footer">
+              <button class="btn btn-secondary" onclick="closeModal('modal-incident-detail')">Fermer</button>
+              <button class="btn btn-primary" onclick="incidentEnregistrerReponse()">💾 Enregistrer la réponse</button>
+            </div>
+          </div>
+        </div>
+
         <!-- ═══ MODAL CRÉATION/ÉDITION RÔLE ════════════════════════════════ -->
         <div class="modal-overlay" id="modal-role-editor">
           <div class="modal" style="max-width:700px;">
@@ -50414,9 +50435,52 @@ function renderIncidents() {
       + '<td>' + escHtml(i.module||'') + '</td>'
       + '<td><span class="badge ' + (gravBadge[i.gravite]||'badge-neutre') + '">' + (gravLabel[i.gravite]||i.gravite) + '</span></td>'
       + '<td>' + statutSelect + '</td>'
-      + '<td><button class="btn btn-secondary btn-sm" onclick="alert(' + "'" + (String(i.description||'').replace(/'/g,"\\'").replace(/\n/g,' ')) + "'" + ')" title="Voir la description complète">👁 Détail</button></td>'
+      + '<td><button class="btn btn-secondary btn-sm" onclick="incidentOuvrirDetail(\'' + i.id + '\')" title="Voir le détail et répondre">👁 Détail' + (i.reponse ? ' 💬' : '') + '</button></td>'
       + '</tr>';
   }).join('');
+}
+
+/* [Nouveau] Le bouton « Détail » se contentait d'un alert() affichant la
+   description brute — aucun moyen de tracer une réponse/résolution dans le
+   logiciel lui-même, obligeant à garder ça ailleurs (mémoire, messages).
+   Vrai modal de détail, avec un champ Réponse dédié et horodaté. */
+function incidentOuvrirDetail(id){
+  var i = (DATA.incidents||[]).find(function(x){ return x.id===id; });
+  if (!i) return;
+  var gravLabel = { critique:'🔴 Critique', majeure:'🟠 Majeure', mineure:'🟢 Mineure' };
+  document.getElementById('incd-id').value = id;
+  document.getElementById('incd-corps').innerHTML =
+    '<div class="form-grid" style="margin-bottom:10px;">'
+    + '<div><b>Ticket</b><br>' + escHtml(i.ticket||'') + '</div>'
+    + '<div><b>Gravité</b><br>' + (gravLabel[i.gravite]||i.gravite) + '</div>'
+    + '<div><b>Module</b><br>' + escHtml(i.module||'') + '</div>'
+    + '<div><b>Date</b><br>' + escHtml(i.date||'') + (i.heure?' '+escHtml(i.heure):'') + '</div>'
+    + '<div><b>Déclarant</b><br>' + escHtml(i.declarant_nom||'') + (i.declarant_division?' — '+escHtml(i.declarant_division):'') + '</div>'
+    + '<div><b>Reproductible</b><br>' + escHtml(i.reproductible||'—') + '</div>'
+    + '</div>'
+    + '<div style="margin-bottom:8px;"><b>Description</b><div style="white-space:pre-wrap;background:var(--bg-alt,#1a1a1a);padding:8px;border-radius:6px;margin-top:4px;">' + escHtml(i.description||'—') + '</div></div>'
+    + (i.etapes ? '<div style="margin-bottom:8px;"><b>Étapes</b><div style="white-space:pre-wrap;">' + escHtml(i.etapes) + '</div></div>' : '')
+    + (i.resultat_attendu ? '<div style="margin-bottom:8px;"><b>Résultat attendu</b><div style="white-space:pre-wrap;">' + escHtml(i.resultat_attendu) + '</div></div>' : '')
+    + (i.resultat_obtenu ? '<div style="margin-bottom:8px;"><b>Résultat obtenu</b><div style="white-space:pre-wrap;">' + escHtml(i.resultat_obtenu) + '</div></div>' : '');
+  document.getElementById('incd-reponse').value = i.reponse || '';
+  document.getElementById('incd-reponse-meta').textContent = (i.reponse_le || i.reponse_par)
+    ? 'Dernière réponse : ' + (i.reponse_par||'—') + (i.reponse_le ? ' le '+dateShort(i.reponse_le) : '')
+    : '';
+  openModal('modal-incident-detail');
+}
+async function incidentEnregistrerReponse(){
+  var id = document.getElementById('incd-id').value;
+  var i = (DATA.incidents||[]).find(function(x){ return x.id===id; });
+  if (!i) return;
+  i.reponse = document.getElementById('incd-reponse').value.trim();
+  i.reponse_par = (APP.currentUser&&APP.currentUser.nom)||'—';
+  i.reponse_le = new Date().toISOString();
+  i._modifie = new Date().toISOString();
+  await dbPut('incidents', i);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_incidents', i);
+  toast('💬 Réponse enregistrée sur ' + (i.ticket||'l\'incident') + '.', 'success');
+  closeModal('modal-incident-detail');
+  renderIncidents();
 }
 
 function updateRHKPIs() {
@@ -119118,8 +119182,22 @@ async function caisseDefinirPinConfirmer() {
   if (!/^[0-9]{4}$/.test(pin1)) { err.textContent = 'Le code PIN doit comporter exactement 4 chiffres.'; return; }
   if (pin1 !== pin2) { err.textContent = 'Les deux codes PIN ne correspondent pas.'; return; }
   var u = APP.currentUser;
-  var mdpHash = await hashPassword(mdp, u.salt || '');
-  if (mdpHash !== u.password_hash) { err.textContent = '❌ Mot de passe incorrect.'; return; }
+  /* [FIX] Ne vérifiait que l'ancien hash SHA-256+sel — un compte déjà migré
+     vers PBKDF2 (migration transparente à la connexion, voir staff-login)
+     avait alors un password_hash au format PBKDF2, jamais reconnu par
+     hashPassword() : "Mot de passe incorrect" systématique, même juste.
+     Même correctif que le vrai bug trouvé sur staff-login (Zahara) plus tôt
+     ce soir — même double-algorithme à respecter partout où un mot de passe
+     est vérifié côté client. */
+  var mdpValide = false;
+  if (u.pwd_algo === 'pbkdf2' && u.password_hash && u.salt) {
+    mdpValide = (await pbkdf2Client(mdp, u.salt, u.pwd_iter || 210000)) === u.password_hash;
+  } else if (u.password_hash && u.salt) {
+    mdpValide = (await hashPassword(mdp, u.salt)) === u.password_hash;
+  } else if (u.password) {
+    mdpValide = (mdp === u.password);
+  }
+  if (!mdpValide) { err.textContent = '❌ Mot de passe incorrect.'; return; }
   u.caisse_pin_salt = generateSalt();
   u.caisse_pin_hash = await hashPassword(pin1, u.caisse_pin_salt);
   u._modifie = new Date().toISOString();
