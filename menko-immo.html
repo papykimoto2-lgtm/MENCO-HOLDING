@@ -120475,9 +120475,13 @@ function caisseRenderBrouillardPeriode() {
   var sessionsCaisse = (DATA.caisse_sessions || []).filter(function(s){ return s.caisse_id === caisseId; })
     .sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
   var soldeOuverture = sessionsCaisse.length ? (parseFloat(sessionsCaisse[0].fond_ouverture) || 0) : 0;
+  /* [FIX incident 2026-09-10, Menko Agro] Même défaut que la vue Par session
+     — un mouvement en attente de validation (ou rejeté) était compté ici
+     aussi, y compris dans le solde d'ouverture reporté avant `debut`. */
   tousMvts.forEach(function(m){
     var d = (m.date||'').slice(0,10);
-    if (d && d < debut) soldeOuverture += (m.type==='entree' ? (parseFloat(m.montant)||0) : -(parseFloat(m.montant)||0));
+    var effectif = !m.requiert_validation || m.valide === true;
+    if (d && d < debut && effectif) soldeOuverture += (m.type==='entree' ? (parseFloat(m.montant)||0) : -(parseFloat(m.montant)||0));
   });
 
   var mvts = tousMvts.filter(function(m){
@@ -120491,27 +120495,30 @@ function caisseRenderBrouillardPeriode() {
   var solde = soldeOuverture;
   var rows = '<tr style="font-weight:700;background:rgba(255,255,255,0.04);"><td colspan="6">Solde d\'ouverture au ' + dateShort(debut) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td></tr>';
   mvts.forEach(function(m) {
-    solde += m.type === 'entree' ? (parseFloat(m.montant)||0) : -(parseFloat(m.montant)||0);
+    var effectif = !m.requiert_validation || m.valide === true;
+    if (effectif) solde += m.type === 'entree' ? (parseFloat(m.montant)||0) : -(parseFloat(m.montant)||0);
     var sess = sessById[m.session_id];
     var estImporte = /import CSV/i.test(m.created_by || '');
-    rows += '<tr>'
+    rows += '<tr' + (effectif ? '' : ' style="opacity:.55;"') + '>'
       + '<td>' + (m.date||'').slice(0,10) + '</td>'
       + '<td>' + (sess ? sess.date : '—') + (estImporte ? ' <span title="Donnée importée — date réelle peut différer de la session" style="color:var(--or);">📥</span>' : '') + '</td>'
       + '<td>' + escHtml(m.numero||'') + '</td>'
-      + '<td>' + escHtml(m.motif||'') + (m.beneficiaire ? ' — ' + escHtml(m.beneficiaire) : '') + '</td>'
+      + '<td>' + escHtml(m.motif||'') + (m.beneficiaire ? ' — ' + escHtml(m.beneficiaire) : '') + (m.requiert_validation && !m.valide && !m.rejete ? ' <span title="En attente de validation — n\'impacte pas encore le solde" style="color:var(--or);">🔐</span>' : '') + (m.rejete ? ' <span title="Rejeté — jamais compté" style="color:var(--rouge);">✖</span>' : '') + '</td>'
       + '<td style="text-align:right;color:var(--vert);">' + (m.type==='entree' ? fmtF(m.montant) : '') + '</td>'
       + '<td style="text-align:right;color:var(--rouge);">' + (m.type==='sortie' ? fmtF(m.montant) : '') + '</td>'
-      + '<td style="text-align:right;">' + fmtF(solde) + '</td>'
+      + '<td style="text-align:right;">' + (effectif ? fmtF(solde) : '<span style="color:var(--or);font-size:11px;">— en attente —</span>') + '</td>'
       + '</tr>';
   });
 
-  var totalEntrees = mvts.filter(function(m){ return m.type==='entree'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
-  var totalSorties = mvts.filter(function(m){ return m.type==='sortie'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+  var mvtsEffectifs2 = mvts.filter(function(m){ return !m.requiert_validation || m.valide === true; });
+  var totalEntrees = mvtsEffectifs2.filter(function(m){ return m.type==='entree'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+  var totalSorties = mvtsEffectifs2.filter(function(m){ return m.type==='sortie'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+  var nbEnAttente2 = mvts.length - mvtsEffectifs2.length - mvts.filter(function(m){return m.rejete;}).length;
 
   tbl.innerHTML = '<div style="overflow-x:auto;">'
     + '<table class="data-table"><thead><tr><th>Date</th><th>Session</th><th>N° bon</th><th>Motif</th><th style="text-align:right;">Entrée</th><th style="text-align:right;">Sortie</th><th style="text-align:right;">Solde</th></tr></thead>'
     + '<tbody>' + rows + '</tbody>'
-    + '<tfoot><tr style="font-weight:800;border-top:2px solid var(--bord);"><td colspan="4">Totaux ' + dateShort(debut) + ' → ' + dateShort(fin) + '</td><td style="text-align:right;color:var(--vert);">' + fmtF(totalEntrees) + '</td><td style="text-align:right;color:var(--rouge);">' + fmtF(totalSorties) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td></tr></tfoot>'
+    + '<tfoot><tr style="font-weight:800;border-top:2px solid var(--bord);"><td colspan="4">Totaux ' + dateShort(debut) + ' → ' + dateShort(fin) + (nbEnAttente2>0 ? ' <span style="font-weight:400;font-size:11px;color:var(--or);">(' + nbEnAttente2 + ' en attente, non comptée' + (nbEnAttente2>1?'s':'') + ')</span>' : '') + '</td><td style="text-align:right;color:var(--vert);">' + fmtF(totalEntrees) + '</td><td style="text-align:right;color:var(--rouge);">' + fmtF(totalSorties) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td></tr></tfoot>'
     + '</table></div>'
     + '<div style="margin-top:10px;font-size:11px;color:var(--blanc-dim);">' + mvts.length + ' mouvement(s) · 📥 = donnée importée (rattachée techniquement à la session ouverte au moment de l\'import, pas forcément celle de sa date réelle)</div>';
 }
@@ -120529,35 +120536,48 @@ function caisseRenderBrouillardSession(sessionId) {
   var solde = parseFloat(session.fond_ouverture) || 0;
   var rows = '<tr style="font-weight:700;background:rgba(255,255,255,0.04);"><td colspan="5">Fond d\'ouverture</td><td style="text-align:right;">' + fmtF(solde) + '</td></tr>';
   mvts.forEach(function(m) {
-    solde += m.type === 'entree' ? (parseFloat(m.montant)||0) : -(parseFloat(m.montant)||0);
-    rows += '<tr>'
+    /* [FIX incident 2026-09-10, Menko Agro] Un mouvement en attente de
+       validation (ou rejeté) était quand même additionné/soustrait au solde
+       courant affiché ici, et compté dans les totaux du pied de tableau —
+       alors que caisseSoldeSession() (le calcul officiel, utilisé à la
+       clôture réelle) les exclut correctement tant qu'ils ne sont pas
+       validés. Le brouillard divergeait donc de la vraie clôture, pouvant
+       laisser croire à un solde de fin de journée faux. L'icône 🔐 restait
+       affichée (le mouvement est bien visible), mais son montant ne doit
+       impacter le solde qu'une fois validé — jamais avant, jamais s'il est
+       rejeté. */
+    var effectif = !m.requiert_validation || m.valide === true;
+    if (effectif) solde += m.type === 'entree' ? (parseFloat(m.montant)||0) : -(parseFloat(m.montant)||0);
+    rows += '<tr' + (effectif ? '' : ' style="opacity:.55;"') + '>'
       + '<td>' + (m.date||'').slice(11,16) + '</td>'
       + '<td>' + escHtml(m.numero||'') + '</td>'
       + '<td>' + escHtml(m.motif||'') + (m.beneficiaire ? ' — ' + escHtml(m.beneficiaire) : '') + '</td>'
       + '<td style="text-align:right;color:var(--vert);">' + (m.type==='entree' ? fmtF(m.montant) : '') + '</td>'
       + '<td style="text-align:right;color:var(--rouge);">' + (m.type==='sortie' ? fmtF(m.montant) : '') + '</td>'
-      + '<td style="text-align:right;">' + fmtF(solde) + '</td>'
+      + '<td style="text-align:right;">' + (effectif ? fmtF(solde) : '<span style="color:var(--or);font-size:11px;">— en attente —</span>') + '</td>'
       + '<td>'
       + (caisseCanEditBon(m) ? '<button class="btn btn-secondary btn-sm btn-icon" title="Modifier le bon" onclick="caisseEditBonModal(\'' + m.id + '\')">✏️</button> ' : '')
       + '<button class="btn btn-secondary btn-sm btn-icon" title="Imprimer le bon" onclick="caisseImprimerBon(\'' + m.id + '\')">🖨️</button>'
       + (caisseDocCount(m.id) ? ' <button class="btn btn-primary btn-sm" title="Pièces justificatives" onclick="caisseViewDocs(\'' + m.id + '\')">📎 ' + caisseDocCount(m.id) + '</button>' : '')
       + (caisseRoleAdminLike() ? ' <button class="btn btn-danger btn-sm btn-icon" title="Supprimer le mouvement" onclick="caisseSupprimerMouvement(\'' + m.id + '\')">🗑️</button>' : '')
       + (m.statut === 'ventile' ? '<span title="Ventilé" style="margin-left:4px;color:var(--vert);">✓</span>' : '<span title="En attente de ventilation" style="margin-left:4px;color:var(--dim);">⏳</span>')
-      + (m.requiert_validation && !m.valide && !m.rejete ? '<span title="En attente de validation" style="margin-left:4px;color:var(--or);">🔐</span>' : '')
-      + (m.rejete ? '<span title="Mouvement rejeté" style="margin-left:4px;color:var(--rouge);">✖</span>' : '')
+      + (m.requiert_validation && !m.valide && !m.rejete ? '<span title="En attente de validation — n\'impacte pas encore le solde" style="margin-left:4px;color:var(--or);">🔐</span>' : '')
+      + (m.rejete ? '<span title="Mouvement rejeté — jamais compté dans le solde" style="margin-left:4px;color:var(--rouge);">✖</span>' : '')
       + (_caissePending(m.id) ? '<span title="Non synchronisé au cloud — écriture locale seulement" style="margin-left:4px;color:var(--rouge,#dc2626);font-weight:700;">☁✗</span>' : '')
       + (m.modifie_le ? '<span title="Modifié le ' + (m.modifie_le||'').slice(0,16).replace('T',' ') + ' par ' + escHtml(m.modifie_par||'') + '" style="margin-left:4px;color:var(--or,#B87333);">✎</span>' : '')
       + '</td>'
       + '</tr>';
   });
 
-  var totalEntrees = mvts.filter(function(m){ return m.type==='entree'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
-  var totalSorties = mvts.filter(function(m){ return m.type==='sortie'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+  var mvtsEffectifs = mvts.filter(function(m){ return !m.requiert_validation || m.valide === true; });
+  var totalEntrees = mvtsEffectifs.filter(function(m){ return m.type==='entree'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+  var totalSorties = mvtsEffectifs.filter(function(m){ return m.type==='sortie'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+  var nbEnAttente = mvts.length - mvtsEffectifs.length - mvts.filter(function(m){return m.rejete;}).length;
 
   tbl.innerHTML = '<div style="overflow-x:auto;">'
     + '<table class="data-table"><thead><tr><th>Heure</th><th>N° bon</th><th>Motif</th><th style="text-align:right;">Entrée</th><th style="text-align:right;">Sortie</th><th style="text-align:right;">Solde</th><th></th></tr></thead>'
     + '<tbody>' + rows + '</tbody>'
-    + '<tfoot><tr style="font-weight:800;border-top:2px solid var(--bord);"><td colspan="3">Totaux</td><td style="text-align:right;color:var(--vert);">' + fmtF(totalEntrees) + '</td><td style="text-align:right;color:var(--rouge);">' + fmtF(totalSorties) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td><td></td></tr></tfoot>'
+    + '<tfoot><tr style="font-weight:800;border-top:2px solid var(--bord);"><td colspan="3">Totaux' + (nbEnAttente>0 ? ' <span style="font-weight:400;font-size:11px;color:var(--or);">(' + nbEnAttente + ' en attente, non comptée' + (nbEnAttente>1?'s':'') + ')</span>' : '') + '</td><td style="text-align:right;color:var(--vert);">' + fmtF(totalEntrees) + '</td><td style="text-align:right;color:var(--rouge);">' + fmtF(totalSorties) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td><td></td></tr></tfoot>'
     + '</table></div>'
     + (session.statut === 'cloturee'
         ? '<div style="margin-top:10px;font-size:12px;color:var(--blanc-dim);">Clôturée le ' + (session.cloturee_le||'').slice(0,16).replace('T',' ') + ' par ' + escHtml(session.cloturee_par||'—') + ' · fond réel compté : ' + fmtF(session.fond_cloture_reel) + ' FCFA · écart : <strong style="color:' + (session.ecart ? 'var(--rouge)' : 'var(--vert)') + ';">' + fmtF(session.ecart||0) + ' FCFA</strong>' + (session.envoye_journalier ? ' · ✉️ état transmis' : ' · état non encore transmis') + '</div>'
