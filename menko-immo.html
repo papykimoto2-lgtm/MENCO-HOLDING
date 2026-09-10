@@ -5638,6 +5638,30 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         </div>
       </div>
 
+      <!-- ═══ MODAL DÉTAIL / RÉPONSE INCIDENT ════════════════════════════ -->
+      <!-- [FIX] Déplacé hors de page-parametres : imbriqué là-bas, ce modal
+           restait invisible (display:none hérité de .page) quand on cliquait
+           sur "Détail" depuis la page Incidents. -->
+      <div class="modal-overlay" id="modal-incident-detail">
+        <div class="modal" style="max-width:720px;">
+          <div class="modal-header">
+            <h3>🚨 Détail de l'incident</h3>
+            <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-incident-detail')">✕</button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="incd-id">
+            <div id="incd-corps"></div>
+            <div class="form-section-title" style="margin-top:14px;">💬 Réponse / Résolution</div>
+            <div id="incd-reponse-meta" style="font-size:11px;color:var(--blanc-dim);margin-bottom:6px;"></div>
+            <textarea class="form-control" id="incd-reponse" rows="5" placeholder="Cause identifiée, action corrective effectuée, correctif logiciel le cas échéant..."></textarea>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal('modal-incident-detail')">Fermer</button>
+            <button class="btn btn-primary" onclick="incidentEnregistrerReponse()">💾 Enregistrer la réponse</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Modal : Déclarer un incident -->
       <div class="modal-overlay" id="modal-incident">
         <div class="modal" style="max-width:720px;">
@@ -6510,27 +6534,6 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             </div>
           </div>
 
-        </div>
-
-        <!-- ═══ MODAL DÉTAIL / RÉPONSE INCIDENT ════════════════════════════ -->
-        <div class="modal-overlay" id="modal-incident-detail">
-          <div class="modal" style="max-width:720px;">
-            <div class="modal-header">
-              <h3>🚨 Détail de l'incident</h3>
-              <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-incident-detail')">✕</button>
-            </div>
-            <div class="modal-body">
-              <input type="hidden" id="incd-id">
-              <div id="incd-corps"></div>
-              <div class="form-section-title" style="margin-top:14px;">💬 Réponse / Résolution</div>
-              <div id="incd-reponse-meta" style="font-size:11px;color:var(--blanc-dim);margin-bottom:6px;"></div>
-              <textarea class="form-control" id="incd-reponse" rows="5" placeholder="Cause identifiée, action corrective effectuée, correctif logiciel le cas échéant..."></textarea>
-            </div>
-            <div class="modal-footer">
-              <button class="btn btn-secondary" onclick="closeModal('modal-incident-detail')">Fermer</button>
-              <button class="btn btn-primary" onclick="incidentEnregistrerReponse()">💾 Enregistrer la réponse</button>
-            </div>
-          </div>
         </div>
 
         <!-- ═══ MODAL CRÉATION/ÉDITION RÔLE ════════════════════════════════ -->
@@ -15576,12 +15579,14 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <div class="form-group"><label>Heure départ</label><input type="time" id="pco-heure-depart" class="form-control"></div>
               <div class="form-group"><label>Heure retour</label><input type="time" id="pco-heure-retour" class="form-control"></div>
               <div class="form-group"><label>Km départ *</label><input type="number" id="pco-km-depart" class="form-control" min="0"></div>
-              <div class="form-group"><label>Km retour *</label><input type="number" id="pco-km-retour" class="form-control" min="0" oninput="pcoCalcDistance()"></div>
+              <div class="form-group"><label>Km retour</label><input type="number" id="pco-km-retour" class="form-control" min="0" oninput="pcoCalcDistance()"></div>
               <div class="form-group"><label>Distance parcourue (km)</label><input type="number" id="pco-distance" class="form-control" readonly style="background:var(--card2);"></div>
               <div class="form-group span-2"><label>Destination / Motif *</label><input type="text" id="pco-motif" class="form-control" placeholder="Ex : Dépôt courrier notaire, achat fournitures bureau…"></div>
               <div class="form-group span-2"><label>Passager(s)</label><input type="text" id="pco-passagers" class="form-control" placeholder="Ex : Direction, Comptabilité…"></div>
             </div>
-            <button class="btn btn-primary" style="margin-top:10px;" onclick="pcoSaveCourse()">💾 Enregistrer la course</button>
+            <input type="hidden" id="pco-edit-id" value="">
+            <button class="btn btn-primary" id="pco-save-btn" style="margin-top:10px;" onclick="pcoSaveCourse()">💾 Enregistrer la course</button>
+            <button class="btn btn-secondary" id="pco-cancel-btn" style="margin-top:10px;display:none;" onclick="pcoResetForm()">Annuler</button>
           </div>
           <div class="filters-bar" style="flex-wrap:wrap;">
             <select class="form-control" id="pco-filter-vehicule" onchange="paRenderCourses()" style="max-width:220px;"><option value="">— Tous véhicules —</option></select>
@@ -68047,36 +68052,56 @@ function pcoPrefillKm(){
   if (km) elKd.value = km;
 }
 async function pcoSaveCourse(){
-  if (!exigerDroit('Parc Auto', 'c', 'une course')) return;
+  var editId = (document.getElementById('pco-edit-id')||{}).value||'';
+  if (!exigerDroit('Parc Auto', editId?'m':'c', 'une course')) return;
   var vehiculeId = (document.getElementById('pco-vehicule')||{}).value||'';
   var date = (document.getElementById('pco-date')||{}).value||'';
   var kmDepart = parseFloat((document.getElementById('pco-km-depart')||{}).value)||0;
-  var kmRetour = parseFloat((document.getElementById('pco-km-retour')||{}).value)||0;
+  var kmRetourRaw = (document.getElementById('pco-km-retour')||{}).value;
+  var kmRetour = kmRetourRaw!=='' ? (parseFloat(kmRetourRaw)||0) : null;
   var motif = (document.getElementById('pco-motif')||{}).value.trim()||'';
   if (!vehiculeId || !date || !motif) { toast('Véhicule, date et destination/motif sont obligatoires.', 'error'); return; }
-  if (!kmDepart || !kmRetour) { toast('Km départ et km retour sont obligatoires.', 'error'); return; }
-  if (kmRetour < kmDepart) { toast('Le km retour ne peut pas être inférieur au km départ.', 'error'); return; }
+  if (!kmDepart) { toast('Km départ est obligatoire.', 'error'); return; }
+  if (kmRetour!==null && kmRetour < kmDepart) { toast('Le km retour ne peut pas être inférieur au km départ.', 'error'); return; }
 
-  var c = {
-    id: uid(), vehicule_id: vehiculeId, date: date,
-    chauffeur_id: (document.getElementById('pco-chauffeur')||{}).value||'',
-    heure_depart: (document.getElementById('pco-heure-depart')||{}).value||'',
-    heure_retour: (document.getElementById('pco-heure-retour')||{}).value||'',
-    km_depart: kmDepart, km_retour: kmRetour, distance: kmRetour-kmDepart,
-    motif: motif, passagers: (document.getElementById('pco-passagers')||{}).value.trim()||'',
-    created_at: new Date().toISOString()
-  };
-  DATA.vehicule_courses.push(c);
+  var existant = editId ? (DATA.vehicule_courses||[]).find(function(x){ return x.id===editId; }) : null;
+  var c = existant || { id: uid(), created_at: new Date().toISOString() };
+  c.vehicule_id = vehiculeId; c.date = date;
+  c.chauffeur_id = (document.getElementById('pco-chauffeur')||{}).value||'';
+  c.heure_depart = (document.getElementById('pco-heure-depart')||{}).value||'';
+  c.heure_retour = (document.getElementById('pco-heure-retour')||{}).value||'';
+  c.km_depart = kmDepart; c.km_retour = kmRetour; c.distance = (kmRetour!==null) ? (kmRetour-kmDepart) : '';
+  c.motif = motif; c.passagers = (document.getElementById('pco-passagers')||{}).value.trim()||'';
+  if (existant) c._modifie = new Date().toISOString();
+  else DATA.vehicule_courses.push(c);
   await dbPut('vehicule_courses', c);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_vehicule_courses', c);
 
   /* Même logique que le carburant : le km course fait référence si plus récent. */
   var v = paVehicule(vehiculeId);
-  if (v && kmRetour > (v.km_actuel||0)) { v.km_actuel = kmRetour; v._modifie = new Date().toISOString(); await dbPut('vehicules', v); if (typeof syncToSupabase==='function') syncToSupabase('pi_vehicules', v); }
+  if (v && kmRetour!==null && kmRetour > (v.km_actuel||0)) { v.km_actuel = kmRetour; v._modifie = new Date().toISOString(); await dbPut('vehicules', v); if (typeof syncToSupabase==='function') syncToSupabase('pi_vehicules', v); }
 
-  ['pco-heure-depart','pco-heure-retour','pco-km-depart','pco-km-retour','pco-distance','pco-motif','pco-passagers'].forEach(function(id){ var el=document.getElementById(id); if(el) el.value=''; });
-  toast('✅ Course enregistrée.', 'success');
+  toast(existant ? '✅ Course modifiée.' : '✅ Course enregistrée.', 'success');
+  pcoResetForm();
   paRenderCourses(); paRenderVehicules(); paRenderKPIs();
+}
+function pcoResetForm(){
+  ['pco-heure-depart','pco-heure-retour','pco-km-depart','pco-km-retour','pco-distance','pco-motif','pco-passagers','pco-edit-id'].forEach(function(id){ var el=document.getElementById(id); if(el) el.value=''; });
+  var btn = document.getElementById('pco-save-btn'); if (btn) btn.innerHTML = '💾 Enregistrer la course';
+  var cancel = document.getElementById('pco-cancel-btn'); if (cancel) cancel.style.display = 'none';
+}
+function pcoEditCourse(id){
+  var c = (DATA.vehicule_courses||[]).find(function(x){ return x.id===id; });
+  if (!c) return;
+  var set = function(elId,val){ var el=document.getElementById(elId); if(el) el.value = (val==null?'':val); };
+  set('pco-vehicule', c.vehicule_id); set('pco-chauffeur', c.chauffeur_id);
+  set('pco-date', c.date); set('pco-heure-depart', c.heure_depart); set('pco-heure-retour', c.heure_retour);
+  set('pco-km-depart', c.km_depart); set('pco-km-retour', c.km_retour);
+  set('pco-distance', c.distance); set('pco-motif', c.motif); set('pco-passagers', c.passagers);
+  set('pco-edit-id', c.id);
+  var btn = document.getElementById('pco-save-btn'); if (btn) btn.innerHTML = '💾 Modifier la course';
+  var cancel = document.getElementById('pco-cancel-btn'); if (cancel) cancel.style.display = 'inline-block';
+  var card = document.getElementById('tab-parc-auto-courses'); if (card) card.scrollIntoView({behavior:'smooth', block:'start'});
 }
 
 function paRenderCourses(){
@@ -68105,9 +68130,10 @@ function paRenderCourses(){
         return '<tr><td>'+dateShort(c.date)+'</td><td>'+escHtml(v?v.immatriculation:'—')+'</td>'
           + '<td>'+(c.chauffeur_id?escHtml(paNomEmploye(c.chauffeur_id)):'—')+'</td>'
           + '<td style="font-size:11px;">'+horaires+'</td>'
-          + '<td style="text-align:right;">'+fmtF(c.distance)+' km</td>'
+          + '<td style="text-align:right;">'+(c.distance!==''&&c.distance!=null?fmtF(c.distance)+' km':'—')+'</td>'
           + '<td>'+escHtml(c.motif||'—')+'</td><td style="font-size:11px;">'+escHtml(c.passagers||'—')+'</td>'
-          + '<td><button class="btn btn-danger btn-sm btn-icon" onclick="pcoDeleteCourse(\''+c.id+'\')" title="Supprimer">🗑</button></td></tr>';
+          + '<td><button class="btn btn-secondary btn-sm btn-icon" onclick="pcoEditCourse(\''+c.id+'\')" title="Modifier">✏️</button> '
+          + '<button class="btn btn-danger btn-sm btn-icon" onclick="pcoDeleteCourse(\''+c.id+'\')" title="Supprimer">🗑</button></td></tr>';
       }).join('')
     + '</tbody></table>';
 }
