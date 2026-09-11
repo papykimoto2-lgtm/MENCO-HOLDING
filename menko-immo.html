@@ -38648,6 +38648,144 @@ function _visaMontant(e) {
     .reduce(function(s,l){ return s + (parseFloat(l.montant) || 0); }, 0);
 }
 
+/* ── État de l'onglet Anomalies — reconstitué à chaque ouverture, affiné
+   ensuite par les puces de filtre/recherche sans re-scanner tout le
+   périmètre (ko déjà calculé une fois). ── */
+var _visaKo = [];
+var _visaAnomType = '';
+var _visaAnomTerme = '';
+var _visaAnomTriEcartDesc = true;
+
+/* Classe chaque pièce bloquante par type d'anomalie (une pièce peut en
+   cumuler plusieurs) et extrait l'écart en FCFA quand il s'agit d'un
+   déséquilibre — pour pouvoir filtrer et trier par type/montant au lieu de
+   ne lire qu'un texte concaténé. */
+function _visaClasserAnomalie(k) {
+  var types = [];
+  var ecart = 0;
+  k.pb.forEach(function(p) {
+    if (/^déséquilibre/.test(p)) { types.push('desequilibre'); var m = /déséquilibre de ([\d\s]+)/.exec(p); if (m) ecart = parseFloat(m[1].replace(/\s/g,'')) || 0; }
+    else if (/^compte de regroupement/.test(p)) types.push('regroupement');
+    else if (p === 'ligne sans compte') types.push('sans_compte');
+    else if (p === 'aucune ligne') types.push('aucune_ligne');
+    else types.push('autre');
+  });
+  return { types: types, ecart: ecart };
+}
+
+var VISA_ANOM_TYPES = {
+  desequilibre:  { label: 'Déséquilibre',           icone: '⚖️' },
+  regroupement:  { label: 'Compte de regroupement', icone: '🔗' },
+  sans_compte:   { label: 'Ligne sans compte',       icone: '❓' },
+  aucune_ligne:  { label: 'Aucune ligne',            icone: '📭' },
+  autre:         { label: 'Autre',                   icone: '⚠️' }
+};
+
+function _visaAnomFiltrer() {
+  var t = sfcNormalise(_visaAnomTerme || '');
+  return _visaKo.filter(function(k) {
+    if (_visaAnomType && k._types.indexOf(_visaAnomType) === -1) return false;
+    if (!t) return true;
+    var hay = sfcNormalise([k.e.piece, k.e.ref, k.e.libelle, k.e.journal].filter(Boolean).join(' '));
+    return hay.indexOf(t) !== -1;
+  });
+}
+
+function _visaAnomSetFiltre(type) { _visaAnomType = type; _visaRenderAnomalies(); }
+function _visaAnomSetTerme() {
+  _visaAnomTerme = (document.getElementById('visa-anom-recherche') || {}).value || '';
+  _visaRenderAnomalies();
+}
+function _visaAnomToggleTri() { _visaAnomTriEcartDesc = !_visaAnomTriEcartDesc; _visaRenderAnomalies(); }
+
+function _visaAnomExportCSV() {
+  var liste = _visaAnomFiltrer();
+  var rows = ['Date,Piece,Libelle,Types,Ecart FCFA'];
+  liste.forEach(function(k) {
+    rows.push([k.e.date||'', (k.e.piece||k.e.ref||''), (k.e.libelle||'').replace(/,/g,';'), k._types.map(function(t){return VISA_ANOM_TYPES[t].label;}).join(' + '), k._ecart||0].join(','));
+  });
+  var blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = 'anomalies_visa_' + today() + '.csv'; a.click();
+  toast('Export CSV — ' + liste.length + ' anomalie(s).', 'success');
+}
+
+/* Redessine UNIQUEMENT le contenu de l'onglet Anomalies (puces de filtre,
+   recherche, diagnostic, tableau) — jamais tout le modal, pour garder le
+   focus de la recherche et éviter de recalculer ko à chaque frappe. */
+function _visaRenderAnomalies() {
+  var box = document.getElementById('tab-visa-anomalies');
+  if (!box) return;
+  if (!_visaKo.length) { box.innerHTML = '<div class="alert alert-info" style="margin-top:8px;">✅ Aucune anomalie bloquante sur ce périmètre.</div>'; return; }
+
+  /* Compteurs par type sur l'ensemble ko (indépendants du filtre courant,
+     pour que les puces restent toujours cliquables même une fois filtrées). */
+  var comptesType = {};
+  _visaKo.forEach(function(k) { k._types.forEach(function(t) { comptesType[t] = (comptesType[t]||0) + 1; }); });
+
+  var puces = '<button class="btn btn-sm ' + (!_visaAnomType ? 'btn-primary' : 'btn-secondary') + '" style="margin:0 6px 8px 0;" onclick="_visaAnomSetFiltre(\'\')">Toutes (' + _visaKo.length + ')</button>'
+    + Object.keys(VISA_ANOM_TYPES).filter(function(t){ return comptesType[t]; }).map(function(t) {
+        var info = VISA_ANOM_TYPES[t];
+        return '<button class="btn btn-sm ' + (_visaAnomType===t ? 'btn-primary' : 'btn-secondary') + '" style="margin:0 6px 8px 0;" onclick="_visaAnomSetFiltre(\'' + t + '\')">' + info.icone + ' ' + info.label + ' (' + comptesType[t] + ')</button>';
+      }).join('');
+
+  var liste = _visaAnomFiltrer();
+  liste.sort(function(a,b) { return _visaAnomTriEcartDesc ? (b._ecart - a._ecart) : (a._ecart - b._ecart); });
+
+  var html = '<div style="margin-bottom:8px;">' + puces + '</div>'
+    + '<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">'
+    + '<input type="text" class="search-input" id="visa-anom-recherche" placeholder="🔍 Pièce, libellé, journal..." value="' + escHtml(_visaAnomTerme) + '" oninput="_debInput(\'_visaAnomSetTerme\')" style="flex:1;min-width:160px;">'
+    + '<button class="btn btn-secondary btn-sm" onclick="_visaAnomExportCSV()">⬇ Export CSV</button>'
+    + '</div>';
+
+  /* [Diagnostic] Quand un même compte « de regroupement » bloque des
+     dizaines/centaines de pièces d'un coup (cas typique : le compte de
+     trésorerie caisse par défaut est devenu un préfixe d'un autre compte
+     du plan), l'utilisateur a besoin de savoir LEQUEL et POURQUOI en un
+     coup d'œil, avec un accès direct au filtre correspondant. */
+  if (comptesType.regroupement) {
+    var comptesRegroupement = {};
+    _visaKo.forEach(function(k) {
+      k.pb.forEach(function(p) {
+        var m = /^compte de regroupement (.+)$/.exec(p);
+        if (m) { comptesRegroupement[m[1]] = (comptesRegroupement[m[1]] || 0) + 1; }
+      });
+    });
+    var codesRegroupement = Object.keys(comptesRegroupement).sort(function(a,b){ return comptesRegroupement[b]-comptesRegroupement[a]; });
+    html += '<div style="margin-bottom:12px;padding:10px 12px;background:rgba(225,29,72,0.08);border-left:3px solid var(--rouge);border-radius:4px;font-size:12px;line-height:1.7;">'
+      + '<strong style="color:var(--rouge);">🔎 Diagnostic — compte(s) à l\'origine du blocage</strong><br>'
+      + codesRegroupement.map(function(code){
+          var enfants = compteEnfantsDe(code);
+          return '<div style="margin-top:6px;">Le compte <strong>' + escHtml(code) + '</strong> est utilisé directement sur <strong>' + comptesRegroupement[code] + ' pièce(s)</strong>, mais votre plan comptable contient ' + enfants.length + ' sous-compte(s) qui en font un compte de regroupement :<br>'
+            + enfants.slice(0,10).map(function(c){ return '&nbsp;&nbsp;— <span style="font-family:monospace;">' + escHtml(c.code) + '</span> ' + escHtml(c.label||''); }).join('<br>')
+            + (enfants.length>10 ? '<br>&nbsp;&nbsp;… et ' + (enfants.length-10) + ' autre(s)' : '')
+            + '<br>→ Paramètres → Plan comptable : si un de ces sous-comptes est une erreur/doublon, supprimez-le — <strong>' + escHtml(code) + '</strong> redevient un compte normal et toutes les pièces bloquées à cause de lui se libèrent. Sinon, il faut faire pointer les comptes par défaut (Trésorerie…) vers un compte réellement terminal.</div>';
+        }).join('')
+      + '</div>';
+  }
+
+  if (!liste.length) {
+    html += '<div class="alert alert-info">Aucune anomalie ne correspond à ce filtre' + (_visaAnomTerme ? ' / cette recherche' : '') + '.</div>';
+    box.innerHTML = html;
+    return;
+  }
+
+  html += '<div style="font-size:11px;color:var(--blanc-dim);margin-bottom:4px;">' + liste.length + ' pièce(s) affichée(s) sur ' + _visaKo.length + ' anomalie(s) au total.</div>'
+    + '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Pièce</th><th>Libellé</th><th>Type(s)</th>'
+    + '<th style="text-align:right;cursor:pointer;" onclick="_visaAnomToggleTri()" title="Trier par écart">Écart ' + (_visaAnomTriEcartDesc ? '▼' : '▲') + '</th><th></th></tr></thead><tbody>'
+    + liste.slice(0, 200).map(function(k) {
+        return '<tr><td style="font-size:11px;">' + dateShort(k.e.date) + '</td>'
+          + '<td style="font-family:monospace;font-size:10.5px;">' + escHtml(k.e.piece || k.e.ref || '—') + '</td>'
+          + '<td style="font-size:11.5px;">' + escHtml((k.e.libelle || '').slice(0, 50)) + '</td>'
+          + '<td style="font-size:11px;color:var(--rouge);">' + k._types.map(function(t){ return VISA_ANOM_TYPES[t].icone + ' ' + VISA_ANOM_TYPES[t].label; }).join(' · ') + '</td>'
+          + '<td style="text-align:right;font-size:11.5px;">' + (k._ecart ? fmtF(k._ecart) + ' F' : '—') + '</td>'
+          + '<td><button class="btn btn-secondary btn-sm btn-icon" onclick="_visaFermer();openEcritureModal(\'' + k.e.id + '\')">✏️</button></td></tr>';
+      }).join('') + '</tbody></table></div>'
+    + (liste.length > 200 ? '<div style="font-size:11px;color:var(--blanc-dim);margin-top:6px;">… et ' + (liste.length - 200) + ' autre(s), non affichée(s) — affinez la recherche ou exportez en CSV.</div>' : '');
+
+  box.innerHTML = html;
+}
+
 function ouvrirVisaEcritures() {
   var list = _visaPerimetre();
   var brouillon = list.filter(function(e){ return !ecrEstValidee(e); });
@@ -38684,47 +38822,13 @@ function ouvrirVisaEcritures() {
         }).join('') + '</tbody></table></div>'
       + (okIds.length > 200 ? '<div style="font-size:11px;color:var(--blanc-dim);margin-top:6px;">… et ' + (okIds.length - 200) + ' autre(s), non affichée(s) (toutes seront visées).</div>' : '');
 
-  /* ── Onglet Anomalies ── */
-  var ongletAnomalies;
-  if (!ko.length) {
-    ongletAnomalies = '<div class="alert alert-info" style="margin-top:8px;">✅ Aucune anomalie bloquante sur ce périmètre.</div>';
-  } else {
-    ongletAnomalies = '';
-    /* [Diagnostic] Quand un même compte « de regroupement » bloque des
-       dizaines/centaines de pièces d'un coup (cas typique : le compte de
-       trésorerie caisse par défaut est devenu un préfixe d'un autre compte
-       du plan), l'utilisateur a besoin de savoir LEQUEL et POURQUOI en un
-       coup d'œil plutôt que d'ouvrir les pièces une à une. */
-    var comptesRegroupement = {};
-    ko.forEach(function(k){
-      k.pb.forEach(function(p){
-        var m = /^compte de regroupement (.+)$/.exec(p);
-        if (m) { comptesRegroupement[m[1]] = (comptesRegroupement[m[1]] || 0) + 1; }
-      });
-    });
-    var codesRegroupement = Object.keys(comptesRegroupement).sort(function(a,b){ return comptesRegroupement[b]-comptesRegroupement[a]; });
-    if (codesRegroupement.length) {
-      ongletAnomalies += '<div style="margin-bottom:12px;padding:10px 12px;background:rgba(225,29,72,0.08);border-left:3px solid var(--rouge);border-radius:4px;font-size:12px;line-height:1.7;">'
-        + '<strong style="color:var(--rouge);">🔎 Diagnostic — compte(s) à l\'origine du blocage</strong><br>'
-        + codesRegroupement.map(function(code){
-            var enfants = compteEnfantsDe(code);
-            return '<div style="margin-top:6px;">Le compte <strong>' + escHtml(code) + '</strong> est utilisé directement sur <strong>' + comptesRegroupement[code] + ' pièce(s)</strong>, mais votre plan comptable contient ' + enfants.length + ' sous-compte(s) qui en font un compte de regroupement :<br>'
-              + enfants.slice(0,10).map(function(c){ return '&nbsp;&nbsp;— <span style="font-family:monospace;">' + escHtml(c.code) + '</span> ' + escHtml(c.label||''); }).join('<br>')
-              + (enfants.length>10 ? '<br>&nbsp;&nbsp;… et ' + (enfants.length-10) + ' autre(s)' : '')
-              + '<br>→ Paramètres → Plan comptable : si un de ces sous-comptes est une erreur/doublon, supprimez-le — <strong>' + escHtml(code) + '</strong> redevient un compte normal et toutes les pièces bloquées à cause de lui se libèrent. Sinon, il faut faire pointer les comptes par défaut (Trésorerie…) vers un compte réellement terminal.</div>';
-          }).join('')
-        + '</div>';
-    }
-    ongletAnomalies += '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Pièce</th><th>Libellé</th><th>Anomalie</th><th></th></tr></thead><tbody>'
-      + ko.slice(0, 30).map(function(k){
-          return '<tr><td style="font-size:11px;">' + dateShort(k.e.date) + '</td>'
-            + '<td style="font-family:monospace;font-size:10.5px;">' + escHtml(k.e.piece || k.e.ref || '—') + '</td>'
-            + '<td style="font-size:11.5px;">' + escHtml((k.e.libelle || '').slice(0, 50)) + '</td>'
-            + '<td style="font-size:11px;color:var(--rouge);">' + escHtml(k.pb.join(' · ')) + '</td>'
-            + '<td><button class="btn btn-secondary btn-sm btn-icon" onclick="_visaFermer();openEcritureModal(\'' + k.e.id + '\')">✏️</button></td></tr>';
-        }).join('') + '</tbody></table></div>'
-      + (ko.length > 30 ? '<div style="font-size:11px;color:var(--blanc-dim);margin-top:6px;">… et ' + (ko.length - 30) + ' autre(s) anomalie(s), non affichée(s).</div>' : '');
-  }
+  /* ── Onglet Anomalies — état réinitialisé, contenu peint après insertion
+     dans le DOM par _visaRenderAnomalies() (filtres/recherche/tri). ── */
+  _visaAnomType = ''; _visaAnomTerme = ''; _visaAnomTriEcartDesc = true;
+  _visaKo = ko.map(function(k) {
+    var c = _visaClasserAnomalie(k);
+    return { e: k.e, pb: k.pb, _types: c.types, _ecart: c.ecart };
+  });
 
   var corps = '<div class="tab-nav" style="margin-bottom:14px;">'
     + '<button class="tab-btn active" onclick="switchTab(\'visa\',\'resume\')">📊 Résumé</button>'
@@ -38733,7 +38837,7 @@ function ouvrirVisaEcritures() {
     + '</div>'
     + '<div class="tab-pane active" id="tab-visa-resume">' + ongletResume + '</div>'
     + '<div class="tab-pane" id="tab-visa-aviser">' + ongletAViser + '</div>'
-    + '<div class="tab-pane" id="tab-visa-anomalies">' + ongletAnomalies + '</div>';
+    + '<div class="tab-pane" id="tab-visa-anomalies"></div>';
 
   var el = document.getElementById('modal-visa');
   if (!el) { el = document.createElement('div'); el.className = 'modal-overlay'; el.id = 'modal-visa'; document.body.appendChild(el); }
@@ -38746,6 +38850,7 @@ function ouvrirVisaEcritures() {
     + (okIds.length ? '<button class="btn btn-primary" onclick="validerEcritures()">✔ Viser ' + okIds.length + ' écriture(s)</button>' : '')
     + '</div></div>';
   el.classList.add('open');
+  _visaRenderAnomalies();
 }
 function _visaFermer() { var el = document.getElementById('modal-visa'); if (el) el.classList.remove('open'); }
 
