@@ -35895,7 +35895,23 @@ function renderLotsDashboard() {
 
   var progNom = function(id){ var p=(DATA.programmes||[]).find(function(x){return x.id===id;}); return p?p.nom:'—'; };
 
-  var html = kpiHTML + barre;
+  /* [Alerte] Souscripteurs dont AUCUN lot n'est rattaché (ni lot_id, ni
+     lot_ids) : majStatutLotClient() ne peut jamais les faire passer
+     "vendu" quel que soit le montant payé — le lot reste "disponible" et
+     l'écriture comptable de vente n'est jamais générée. Compteur global
+     (indépendant du filtre programme ci-dessus, pour rester visible même
+     quand on regarde un seul programme). */
+  var _rappCount = _rappSansLotListe().length;
+  var bannierRapp = _rappCount ? (
+    '<div class="card" style="margin-bottom:16px;border-left:3px solid var(--rouge);">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">'
+    + '<div><strong style="color:var(--rouge);">⚠️ '+_rappCount+' souscripteur(s) sans lot rattaché</strong>'
+    + '<div style="font-size:12px;color:var(--blanc-dim);margin-top:2px;">Leurs paiements ne déclenchent ni le passage "vendu" du lot, ni l\'écriture comptable de vente.</div></div>'
+    + '<button class="btn btn-primary btn-sm" onclick="rapprochementOuvrir()">🔗 Rapprocher les lots</button>'
+    + '</div></div>'
+  ) : '';
+
+  var html = bannierRapp + kpiHTML + barre;
   if (!fProg) html += tableauAgg('Par programme', agg(function(l){ return progNom(l.programme_id); }));
   html += tableauAgg('Par type de logement', agg(function(l){ return l.type; }), 15);
   html += tableauAgg('Par îlot', agg(function(l){ return l.ilot ? 'Îlot '+l.ilot : '—'; }), 20);
@@ -35908,6 +35924,134 @@ function renderLotsDashboard() {
      calcul (aucune logique dupliquée). */
   var boxGrille = document.getElementById('lots-dashboard-grille');
   if (boxGrille) boxGrille.innerHTML = html;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   RAPPROCHEMENT SOUSCRIPTEURS ↔ LOTS
+   Outil de correction manuelle : liste tout souscripteur sans lot_id/
+   lot_ids, propose des lots candidats du même programme (triés par
+   surface la plus proche), et laisse un humain choisir — AUCUNE
+   assignation automatique. Réutilise le circuit normal de saveClient()
+   (verrou anti-double-réservation, majStatutLotClient) pour que le
+   rattachement se comporte exactement comme une saisie manuelle.
+   ══════════════════════════════════════════════════════════════════ */
+function _rappSansLotListe() {
+  var seuil = parseFloat((DATA.params||{}).seuil_immobilisation_pct) || 70;
+  return (DATA.clients||[]).filter(function(c){
+    return c.statut !== 'resilie' && !_lotIdsDeClient(c).length;
+  }).map(function(c){
+    var paye = totalPayePrix(c.id);
+    var total = parseFloat(c.montant_total) || 0;
+    var pct = total > 0 ? Math.round(paye/total*100) : 0;
+    return { client:c, paye:paye, pct:pct, auSeuil: pct >= seuil };
+  }).sort(function(a,b){ return (b.auSeuil - a.auSeuil) || (b.paye - a.paye); });
+}
+function _rappProgNom(id){ var p=(DATA.programmes||[]).find(function(x){return x.id===id;}); return p?p.nom:'—'; }
+
+function rapprochementOuvrir() {
+  var sel = document.getElementById('rapp-filter-programme');
+  if (sel && !sel.options.length) {
+    sel.innerHTML = '<option value="">— Tous les programmes —</option>'
+      + (DATA.programmes||[]).map(function(p){ return '<option value="'+p.id+'">'+escHtml(p.nom)+'</option>'; }).join('');
+  }
+  openModal('modal-rapprochement-lots');
+  rapprochementRender();
+}
+
+function rapprochementRender() {
+  var box = document.getElementById('rapp-liste');
+  if (!box) return;
+  var fProg = (document.getElementById('rapp-filter-programme')||{}).value || '';
+  var search = ((document.getElementById('rapp-search')||{}).value||'').toLowerCase();
+  var onlySeuil = !!(document.getElementById('rapp-only-seuil')||{}).checked;
+
+  var rows = _rappSansLotListe().filter(function(r){
+    if (fProg && r.client.programme_id !== fProg) return false;
+    if (onlySeuil && !r.auSeuil) return false;
+    if (search) {
+      var hay = ((r.client.nom||'')+' '+(r.client.prenoms||'')+' '+(r.client.dossier||'')).toLowerCase();
+      if (hay.indexOf(search) === -1) return false;
+    }
+    return true;
+  });
+
+  var resume = document.getElementById('rapp-resume');
+  if (resume) {
+    var totPaye = rows.reduce(function(s,r){ return s+r.paye; }, 0);
+    var nbSeuil = rows.filter(function(r){ return r.auSeuil; }).length;
+    resume.innerHTML = rows.length+' souscripteur(s) affiché(s) · '+fcfa(totPaye)+' encaissé · '
+      + '<strong style="color:var(--rouge);">'+nbSeuil+' déjà au seuil de vente</strong>';
+  }
+
+  if (!rows.length) { box.innerHTML = '<div class="alert alert-success">✅ Aucun souscripteur sans lot pour ce filtre.</div>'; return; }
+
+  box.innerHTML = '<div class="table-wrap"><table><thead><tr>'
+    + '<th>Dossier</th><th>Souscripteur</th><th>Programme</th>'
+    + '<th style="text-align:right;">Payé / Total</th><th>Déclaré (texte)</th>'
+    + '<th>Lot à rattacher</th><th></th>'
+    + '</tr></thead><tbody>'
+    + rows.map(function(r){
+        var c = r.client;
+        var candidats = (DATA.lots||[]).filter(function(l){ return l.programme_id === c.programme_id && l.statut === 'disponible'; });
+        if (c.surface) {
+          candidats = candidats.slice().sort(function(a,b){
+            return Math.abs((parseFloat(a.surface)||0) - c.surface) - Math.abs((parseFloat(b.surface)||0) - c.surface);
+          });
+        }
+        var opts = '<option value="">— Choisir —</option>' + candidats.slice(0, 300).map(function(l){
+          return '<option value="'+l.id+'">Lot '+escHtml(l.numero||l.id)+' — '+(l.surface||'?')+' m² — '+fcfa(l.prix)+'</option>';
+        }).join('');
+        return '<tr'+(r.auSeuil ? ' style="background:rgba(220,38,38,0.08);"' : '')+'>'
+          + '<td style="font-family:monospace;font-size:11px;">'+escHtml(c.dossier||'')+'</td>'
+          + '<td>'+escHtml(((c.prenoms||'')+' '+(c.nom||'')).trim())+'</td>'
+          + '<td style="font-size:12px;">'+escHtml(_rappProgNom(c.programme_id))+'</td>'
+          + '<td style="text-align:right;font-size:12px;">'+fcfa(r.paye)+' / '+fcfa(c.montant_total)+' <strong style="color:'+(r.auSeuil?'var(--rouge)':'var(--blanc-dim)')+';">('+r.pct+'%)</strong></td>'
+          + '<td style="font-size:11px;color:var(--blanc-dim);max-width:160px;">'+escHtml(c.type_logement||'—')+(c.surface?' · '+c.surface+' m²':'')+'</td>'
+          + '<td><select id="rapp-sel-'+c.id+'" class="form-control" style="min-width:220px;">'+opts+'</select>'
+            + (candidats.length ? '' : '<div style="font-size:10px;color:var(--rouge);margin-top:2px;">Aucun lot disponible sur ce programme</div>')
+          + '</td>'
+          + '<td><button class="btn btn-primary btn-sm" onclick="rapprochementRattacher(\''+c.id+'\')">🔗 Rattacher</button></td>'
+          + '</tr>';
+      }).join('')
+    + '</tbody></table></div>';
+}
+
+async function rapprochementRattacher(clientId) {
+  if (!exigerDroit('Souscripteurs', 'm', 'le rattachement d\'un lot')) return;
+  var sel = document.getElementById('rapp-sel-'+clientId);
+  var lotId = sel ? sel.value : '';
+  if (!lotId) { toast('Choisissez un lot avant de rattacher.', 'error'); return; }
+  var client = DATA.clients.find(function(c){ return c.id === clientId; });
+  var lot = DATA.lots.find(function(l){ return l.id === lotId; });
+  if (!client || !lot) { toast('Client ou lot introuvable.', 'error'); return; }
+  /* Même garde qu'à la saisie normale (saveClient) : le lot a pu être pris
+     entre l'ouverture de la liste et le clic. */
+  if (lot.client_id && lot.client_id !== clientId) {
+    toast('⚠️ Ce lot vient d\'être rattaché à un autre souscripteur — liste actualisée.', 'error');
+    rapprochementRender();
+    return;
+  }
+  if (!confirm('Rattacher le lot '+(lot.numero||lot.id)+' à '+((client.prenoms||'')+' '+(client.nom||'')).trim()+' ?\n\nLe statut du lot (réservé/vendu) sera recalculé automatiquement selon le montant déjà payé.')) return;
+
+  var ancienneValeur = { lot_id: client.lot_id||'', lot_ids: (client.lot_ids||[]).slice() };
+  client.lot_id = client.lot_id || lotId;
+  client.lot_ids = (client.lot_ids||[]).indexOf(lotId) === -1 ? (client.lot_ids||[]).concat([lotId]) : client.lot_ids;
+  lot.client_id = clientId;
+
+  await dbPut('clients', client);
+  await dbPut('lots', lot);
+  if (typeof syncToSupabase === 'function') { syncToSupabase('pi_clients', client); syncToSupabase('pi_lots', lot); }
+  /* Recalcule réservé/vendu depuis le montant déjà payé, génère l'écriture
+     comptable de vente si le seuil est atteint, historise le changement de
+     statut du lot — exactement le circuit normal de saveClient(). */
+  await majStatutLotClient(clientId);
+  await ajouterHistorique('clients', clientId, 'rattachement_lot',
+    'Rapprochement manuel : lot '+(lot.numero||lot.id)+' rattaché (dossier '+(client.dossier||'')+')',
+    ancienneValeur, { lot_id: client.lot_id, lot_ids: client.lot_ids });
+
+  toast('✅ Lot '+(lot.numero||lot.id)+' rattaché à '+(client.dossier||clientId)+'.', 'success');
+  rapprochementRender();
+  if (typeof renderLotsDashboard === 'function') renderLotsDashboard();
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -127048,6 +127192,28 @@ goTo = function(page) {
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-caisse-definir-pin')">Annuler</button>
       <button class="btn btn-primary" onclick="caisseDefinirPinConfirmer()">✅ Enregistrer mon PIN</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Rapprochement souscripteurs sans lot rattaché -->
+<div class="modal-overlay" id="modal-rapprochement-lots">
+  <div class="modal modal-xl">
+    <div class="modal-header">
+      <h3>🔗 Rapprochement souscripteurs ↔ lots</h3>
+      <button class="btn btn-secondary btn-icon" onclick="closeModal('modal-rapprochement-lots')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="alert alert-info" style="font-size:12px;margin-bottom:12px;">Aucune assignation automatique. Choisissez le lot pour chaque souscripteur puis validez ligne par ligne — le statut du lot (réservé/vendu) et l'écriture comptable de vente se recalculent automatiquement selon le montant déjà payé.</div>
+      <div class="form-grid" style="margin-bottom:10px;">
+        <div class="form-group"><label>Programme</label><select class="form-control" id="rapp-filter-programme" onchange="rapprochementRender()"></select></div>
+        <div class="form-group"><label>Recherche (nom, dossier)</label><input class="form-control" id="rapp-search" oninput="rapprochementRender()" placeholder="Rechercher..."></div>
+        <div class="form-group" style="display:flex;align-items:flex-end;gap:6px;">
+          <label style="display:flex;align-items:center;gap:6px;font-weight:400;"><input type="checkbox" id="rapp-only-seuil" onchange="rapprochementRender()"> Déjà au seuil de vente uniquement</label>
+        </div>
+      </div>
+      <div id="rapp-resume" style="font-size:12px;color:var(--blanc-dim);margin-bottom:10px;"></div>
+      <div id="rapp-liste"></div>
     </div>
   </div>
 </div>
