@@ -28597,6 +28597,13 @@ function logout(forced) {
   localStorage.removeItem('pici_auth_token');
   if (typeof staffLogout === 'function') staffLogout();
   APP.currentUser = null;
+  /* Sans ça, l'horodatage d'activité caisse du compte précédent restait en
+     sessionStorage : le prochain utilisateur à se connecter sur ce même
+     onglet et à ouvrir Caisse tombait immédiatement sur l'écran de verrou
+     (caisseEnter() le compare à "maintenant"), pour un délai qui ne le
+     concernait pas. */
+  try { sessionStorage.removeItem('caisse_derniere_activite'); } catch(e){}
+  CAISSE_UI.verrouille = false; CAISSE_UI.derniereActivite = null;
   showLogin();
 }
 
@@ -77374,7 +77381,15 @@ async function startApp() {
   checkOnline();
 
   // Fermer modals au clic extérieur
+  /* [FIX sécurité] modal-caisse-verrou est explicitement documenté comme
+     "pas une modale annulable" (voir son commentaire HTML), mais ce
+     gestionnaire générique s'appliquait quand même à tous les
+     .modal-overlay sans exception : un simple clic sur le fond assombri
+     (hors du cadre 380px, largement visible sur tout écran plus large)
+     fermait l'écran de verrouillage sans qu'aucun code n'ait été saisi —
+     le verrou entier était contournable en un clic. */
   document.querySelectorAll('.modal-overlay').forEach(function(overlay) {
+    if (overlay.id === 'modal-caisse-verrou') return;
     overlay.addEventListener('click', function(e) {
       if (e.target === overlay) overlay.classList.remove('open');
     });
@@ -118736,6 +118751,7 @@ function imprimerFactureFNE(facId) {
 
 var CAISSE_UI = { brouillardCaisseId: null, brouillardSessionId: null, brouillardMode: 'session', brouillardDebut: null, brouillardFin: null,
   verrouille: false, derniereActivite: null };
+var CAISSE_VERROU_MS = 10 * 60 * 1000;
 
 /* [Verrouillage par inactivité 08/09] La caisse reste OUVERTE (session
    comptable intacte, aucune clôture) mais se verrouille après 10 min sans
@@ -118777,13 +118793,20 @@ async function caisseSyncEtAlerter(table, obj) {
 
 function caisseNoterActivite() {
   CAISSE_UI.derniereActivite = Date.now();
+  /* [FIX sécurité] Persisté en sessionStorage (survit à un F5) — voir le
+     contrôle fait par caisseEnter() ci-dessous : sans cette trace, un
+     rechargement de page effaçait CAISSE_UI en mémoire pendant qu'une
+     session applicative persistante (checkSession()) restait connectée,
+     rouvrant la caisse sans code, exactement ce que ce verrou doit
+     empêcher. */
+  try { sessionStorage.setItem('caisse_derniere_activite', String(CAISSE_UI.derniereActivite)); } catch(e){}
 }
 
 function caisseVerifierInactivite() {
   if (APP.currentPage !== 'caisse') return;      // ne verrouille que si l'écran Caisse est affiché
   if (CAISSE_UI.verrouille) return;
   if (!CAISSE_UI.derniereActivite) return;
-  if (Date.now() - CAISSE_UI.derniereActivite >= 10 * 60 * 1000) caisseVerrouiller();
+  if (Date.now() - CAISSE_UI.derniereActivite >= CAISSE_VERROU_MS) caisseVerrouiller();
 }
 document.addEventListener('click', function(){ if (APP.currentPage === 'caisse' && !CAISSE_UI.verrouille) caisseNoterActivite(); }, true);
 document.addEventListener('keydown', function(){ if (APP.currentPage === 'caisse' && !CAISSE_UI.verrouille) caisseNoterActivite(); }, true);
@@ -118833,6 +118856,13 @@ async function caisseDeverrouiller() {
   CAISSE_UI.verrouille = false;
   caisseNoterActivite();
   closeModal('modal-caisse-verrou');
+  /* Si le verrou a été déclenché par caisseEnter() (F5 ou retour sur Caisse
+     après le délai — voir ses commentaires), le contenu de la page n'a
+     jamais été rendu. Une fois le code validé, on relance normalement
+     l'entrée sur la page : caisseNoterActivite() ci-dessus vient de remettre
+     le chrono à zéro, donc caisseEnter() passera cette fois le contrôle
+     d'inactivité et affichera le tableau de bord. */
+  if (APP.currentPage === 'caisse' && typeof caisseEnter === 'function') caisseEnter();
 }
 
 /* ── Utilitaires ─────────────────────────────────────────────────────── */
@@ -119842,6 +119872,32 @@ function caisseRenderBalanceAgee() {
 window.caisseRenderBalanceAgee = caisseRenderBalanceAgee;
 
 async function caisseEnter() {
+  /* [FIX sécurité] Deux trous distincts dans le verrouillage par inactivité
+     permettaient de rouvrir la caisse sans code :
+     1) caisseVerifierInactivite() ne tourne QUE pendant que l'écran Caisse
+        est affiché (par design, cf. son commentaire) — mais caisseEnter()
+        réinitialisait ensuite systématiquement l'horloge à "maintenant" en
+        (ré)entrant sur la page. Sortir vers un autre module 20 minutes puis
+        revenir sur Caisse rouvrait donc l'écran en clair, sans jamais
+        déclencher le verrou, alors que l'absence était tout aussi longue
+        que si l'utilisateur était resté sur l'écran Caisse.
+     2) Un simple rechargement de page (F5) réinitialisait CAISSE_UI en
+        mémoire (verrouille=false) pendant que la session applicative reste
+        active (reprise via checkSession()) — la caisse redevenait
+        accessible sans code après un F5, y compris pour un tiers qui
+        profiterait d'un poste laissé ouvert et connecté.
+     On revérifie donc ici le délai écoulé depuis la dernière activité
+     connue — en mémoire OU persistée en sessionStorage (survit au F5) —
+     et on verrouille immédiatement si le seuil est dépassé, au lieu de
+     réarmer silencieusement le chrono. */
+  var _dernierePersistee = 0;
+  try { _dernierePersistee = parseInt(sessionStorage.getItem('caisse_derniere_activite'), 10) || 0; } catch(e){}
+  var _reference = Math.max(CAISSE_UI.derniereActivite || 0, _dernierePersistee);
+  if (_reference && (Date.now() - _reference >= CAISSE_VERROU_MS)) {
+    CAISSE_UI.derniereActivite = _reference;
+    caisseVerrouiller();
+    return;
+  }
   caisseNoterActivite();
   /* En premier, protégé — indépendant du reste. Sans ça, une erreur dans
      caisseRenderDashboard/Liste/Ecarts/Validations (fréquent quand Supabase
