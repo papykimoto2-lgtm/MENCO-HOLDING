@@ -119044,7 +119044,7 @@ function imprimerFactureFNE(facId) {
 ══════════════════════════════════════════════════════════════════════════ */
 
 var CAISSE_UI = { brouillardCaisseId: null, brouillardSessionId: null, brouillardMode: 'session', brouillardDebut: null, brouillardFin: null,
-  verrouille: false, derniereActivite: null };
+  brouillardRecherche: '', verrouille: false, derniereActivite: null };
 var CAISSE_VERROU_MS = 10 * 60 * 1000;
 
 /* [Verrouillage par inactivité 08/09] La caisse reste OUVERTE (session
@@ -121822,6 +121822,7 @@ function caisseAfficherBrouillard(caisseId) {
     + '<button class="btn btn-secondary btn-sm" onclick="caisseImprimerBrouillard()">🖨️ Imprimer</button>'
     + '<button class="btn btn-secondary btn-sm" onclick="caisseEnvoyerEtatManuel()">✉️ Envoyer l\'état</button>'
     + '</div></div>'
+    + '<input type="text" class="search-input" id="cb-recherche" style="margin-bottom:10px;" placeholder="🔍 Rechercher — nom, motif, n° bon, n° pièce, montant..." value="' + escHtml(CAISSE_UI.brouillardRecherche||'') + '" oninput="_debInput(\'caisseBrouillardRecherche\')">'
     + '<div id="caisse-brouillard-table"></div>'
     + '</div>';
   if (CAISSE_UI.brouillardMode === 'periode') caisseRenderBrouillardPeriode();
@@ -121831,6 +121832,33 @@ function caisseAfficherBrouillard(caisseId) {
 function caisseBrouillardModeToggle(mode) {
   CAISSE_UI.brouillardMode = mode;
   caisseAfficherBrouillard(CAISSE_UI.brouillardCaisseId);
+}
+
+/* [Recherche brouillard] Filtre le mode actif (session ou période) sans
+   reconstruire tout l'en-tête — seul le tableau est redessiné, la saisie
+   garde le focus. Redirige vers le bon rendu plutôt que de dupliquer le
+   filtre dans les deux fonctions. */
+function caisseBrouillardRecherche() {
+  CAISSE_UI.brouillardRecherche = (document.getElementById('cb-recherche')||{}).value || '';
+  if (CAISSE_UI.brouillardMode === 'periode') caisseRenderBrouillardPeriode();
+  else caisseRenderBrouillardSession(CAISSE_UI.brouillardSessionId);
+}
+/* Un mouvement correspond si le terme (normalisé, insensible aux accents/
+   à la casse) apparaît dans le n° de bon, le n° de pièce justificative, le
+   motif, le bénéficiaire, l'auteur de la saisie, OU si le terme est un
+   nombre qui correspond au montant (recherche "50000" retrouve "50 000
+   FCFA" formaté). */
+function _caisseMvtCorrespond(m, terme) {
+  if (!terme) return true;
+  var t = sfcNormalise(terme);
+  if (!t) return true;
+  var champs = [m.numero, m.piece_ref, m.motif, m.beneficiaire, m.created_by];
+  for (var i = 0; i < champs.length; i++) {
+    if (champs[i] && sfcNormalise(champs[i]).indexOf(t) !== -1) return true;
+  }
+  var termeNum = parseFloat(terme.replace(/[^0-9.]/g, ''));
+  if (!isNaN(termeNum) && termeNum > 0 && String(Math.round(parseFloat(m.montant)||0)).indexOf(String(Math.round(termeNum))) !== -1) return true;
+  return false;
 }
 
 /* ── Brouillard par PÉRIODE (date début → date fin), indépendant des
@@ -121880,11 +121908,17 @@ function caisseRenderBrouillardPeriode() {
   var sessById = {};
   sessionsCaisse.forEach(function(s){ sessById[s.id] = s; });
 
+  var terme = CAISSE_UI.brouillardRecherche;
+  var mvtsAffiches = [];
   var solde = soldeOuverture;
   var rows = '<tr style="font-weight:700;background:rgba(255,255,255,0.04);"><td colspan="6">Solde d\'ouverture au ' + dateShort(debut) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td></tr>';
   mvts.forEach(function(m) {
     var effectif = !m.requiert_validation || m.valide === true;
     if (effectif) solde += m.type === 'entree' ? (parseFloat(m.montant)||0) : -(parseFloat(m.montant)||0);
+    /* [Recherche] Solde toujours calculé sur TOUS les mouvements de la
+       période — seul l'affichage de la ligne est filtré. */
+    if (!_caisseMvtCorrespond(m, terme)) return;
+    mvtsAffiches.push(m);
     var sess = sessById[m.session_id];
     var estImporte = /import CSV/i.test(m.created_by || '');
     rows += '<tr' + (effectif ? '' : ' style="opacity:.55;"') + '>'
@@ -121898,17 +121932,23 @@ function caisseRenderBrouillardPeriode() {
       + '</tr>';
   });
 
-  var mvtsEffectifs2 = mvts.filter(function(m){ return !m.requiert_validation || m.valide === true; });
+  var mvtsEffectifs2 = mvtsAffiches.filter(function(m){ return !m.requiert_validation || m.valide === true; });
   var totalEntrees = mvtsEffectifs2.filter(function(m){ return m.type==='entree'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
   var totalSorties = mvtsEffectifs2.filter(function(m){ return m.type==='sortie'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
-  var nbEnAttente2 = mvts.length - mvtsEffectifs2.length - mvts.filter(function(m){return m.rejete;}).length;
+  var nbEnAttente2 = mvtsAffiches.length - mvtsEffectifs2.length - mvtsAffiches.filter(function(m){return m.rejete;}).length;
+  var libellePeriode = terme ? (mvtsAffiches.length + ' résultat(s) pour « ' + escHtml(terme) + ' » — ' + dateShort(debut) + ' → ' + dateShort(fin)) : ('Totaux ' + dateShort(debut) + ' → ' + dateShort(fin));
+
+  if (terme && !mvtsAffiches.length) {
+    tbl.innerHTML = '<div class="alert alert-info" style="margin-top:8px;">Aucun mouvement ne correspond à « ' + escHtml(terme) + ' » sur cette période. <button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'cb-recherche\').value=\'\';caisseBrouillardRecherche();">✕ Effacer la recherche</button></div>';
+    return;
+  }
 
   tbl.innerHTML = '<div style="overflow-x:auto;">'
     + '<table class="data-table"><thead><tr><th>Date</th><th>Session</th><th>N° bon</th><th>Motif</th><th style="text-align:right;">Entrée</th><th style="text-align:right;">Sortie</th><th style="text-align:right;">Solde</th></tr></thead>'
     + '<tbody>' + rows + '</tbody>'
-    + '<tfoot><tr style="font-weight:800;border-top:2px solid var(--bord);"><td colspan="4">Totaux ' + dateShort(debut) + ' → ' + dateShort(fin) + (nbEnAttente2>0 ? ' <span style="font-weight:400;font-size:11px;color:var(--or);">(' + nbEnAttente2 + ' en attente, non comptée' + (nbEnAttente2>1?'s':'') + ')</span>' : '') + '</td><td style="text-align:right;color:var(--vert);">' + fmtF(totalEntrees) + '</td><td style="text-align:right;color:var(--rouge);">' + fmtF(totalSorties) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td></tr></tfoot>'
+    + '<tfoot><tr style="font-weight:800;border-top:2px solid var(--bord);"><td colspan="4">' + libellePeriode + (nbEnAttente2>0 ? ' <span style="font-weight:400;font-size:11px;color:var(--or);">(' + nbEnAttente2 + ' en attente, non comptée' + (nbEnAttente2>1?'s':'') + ')</span>' : '') + '</td><td style="text-align:right;color:var(--vert);">' + fmtF(totalEntrees) + '</td><td style="text-align:right;color:var(--rouge);">' + fmtF(totalSorties) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td></tr></tfoot>'
     + '</table></div>'
-    + '<div style="margin-top:10px;font-size:11px;color:var(--blanc-dim);">' + mvts.length + ' mouvement(s) · 📥 = donnée importée (rattachée techniquement à la session ouverte au moment de l\'import, pas forcément celle de sa date réelle)</div>';
+    + '<div style="margin-top:10px;font-size:11px;color:var(--blanc-dim);">' + mvtsAffiches.length + ' mouvement(s) affiché(s)' + (terme ? ' sur ' + mvts.length + ' au total' : '') + ' · 📥 = donnée importée (rattachée techniquement à la session ouverte au moment de l\'import, pas forcément celle de sa date réelle)</div>';
 }
 
 function caisseRenderBrouillardSession(sessionId) {
@@ -121921,6 +121961,8 @@ function caisseRenderBrouillardSession(sessionId) {
   var mvts = (DATA.caisse_mouvements || []).filter(function(m){ return m.session_id === session.id; })
     .sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
 
+  var terme = CAISSE_UI.brouillardRecherche;
+  var mvtsAffiches = [];
   var solde = parseFloat(session.fond_ouverture) || 0;
   var rows = '<tr style="font-weight:700;background:rgba(255,255,255,0.04);"><td colspan="5">Fond d\'ouverture</td><td style="text-align:right;">' + fmtF(solde) + '</td></tr>';
   mvts.forEach(function(m) {
@@ -121936,6 +121978,11 @@ function caisseRenderBrouillardSession(sessionId) {
        rejeté. */
     var effectif = !m.requiert_validation || m.valide === true;
     if (effectif) solde += m.type === 'entree' ? (parseFloat(m.montant)||0) : -(parseFloat(m.montant)||0);
+    /* [Recherche] Le solde ci-dessus reste calculé sur TOUS les mouvements
+       (progression réelle) — seule l'affichage de la ligne est filtré, pour
+       ne jamais fausser le solde courant affiché sur les lignes visibles. */
+    if (!_caisseMvtCorrespond(m, terme)) return;
+    mvtsAffiches.push(m);
     rows += '<tr' + (effectif ? '' : ' style="opacity:.55;"') + '>'
       + '<td>' + (m.date||'').slice(11,16) + '</td>'
       + '<td>' + escHtml(m.numero||'') + '</td>'
@@ -121957,15 +122004,21 @@ function caisseRenderBrouillardSession(sessionId) {
       + '</tr>';
   });
 
-  var mvtsEffectifs = mvts.filter(function(m){ return !m.requiert_validation || m.valide === true; });
+  var mvtsEffectifs = mvtsAffiches.filter(function(m){ return !m.requiert_validation || m.valide === true; });
   var totalEntrees = mvtsEffectifs.filter(function(m){ return m.type==='entree'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
   var totalSorties = mvtsEffectifs.filter(function(m){ return m.type==='sortie'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
-  var nbEnAttente = mvts.length - mvtsEffectifs.length - mvts.filter(function(m){return m.rejete;}).length;
+  var nbEnAttente = mvtsAffiches.length - mvtsEffectifs.length - mvtsAffiches.filter(function(m){return m.rejete;}).length;
+  var libelleTotaux = terme ? (mvtsAffiches.length + ' résultat(s) pour « ' + escHtml(terme) + ' »') : 'Totaux';
+
+  if (terme && !mvtsAffiches.length) {
+    tbl.innerHTML = '<div class="alert alert-info" style="margin-top:8px;">Aucun mouvement ne correspond à « ' + escHtml(terme) + ' » dans cette session. <button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'cb-recherche\').value=\'\';caisseBrouillardRecherche();">✕ Effacer la recherche</button></div>';
+    return;
+  }
 
   tbl.innerHTML = '<div style="overflow-x:auto;">'
     + '<table class="data-table"><thead><tr><th>Heure</th><th>N° bon</th><th>Motif</th><th style="text-align:right;">Entrée</th><th style="text-align:right;">Sortie</th><th style="text-align:right;">Solde</th><th></th></tr></thead>'
     + '<tbody>' + rows + '</tbody>'
-    + '<tfoot><tr style="font-weight:800;border-top:2px solid var(--bord);"><td colspan="3">Totaux' + (nbEnAttente>0 ? ' <span style="font-weight:400;font-size:11px;color:var(--or);">(' + nbEnAttente + ' en attente, non comptée' + (nbEnAttente>1?'s':'') + ')</span>' : '') + '</td><td style="text-align:right;color:var(--vert);">' + fmtF(totalEntrees) + '</td><td style="text-align:right;color:var(--rouge);">' + fmtF(totalSorties) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td><td></td></tr></tfoot>'
+    + '<tfoot><tr style="font-weight:800;border-top:2px solid var(--bord);"><td colspan="3">' + libelleTotaux + (nbEnAttente>0 ? ' <span style="font-weight:400;font-size:11px;color:var(--or);">(' + nbEnAttente + ' en attente, non comptée' + (nbEnAttente>1?'s':'') + ')</span>' : '') + '</td><td style="text-align:right;color:var(--vert);">' + fmtF(totalEntrees) + '</td><td style="text-align:right;color:var(--rouge);">' + fmtF(totalSorties) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td><td></td></tr></tfoot>'
     + '</table></div>'
     + (session.statut === 'cloturee'
         ? '<div style="margin-top:10px;font-size:12px;color:var(--blanc-dim);">Clôturée le ' + (session.cloturee_le||'').slice(0,16).replace('T',' ') + ' par ' + escHtml(session.cloturee_par||'—') + ' · fond réel compté : ' + fmtF(session.fond_cloture_reel) + ' FCFA · écart : <strong style="color:' + (session.ecart ? 'var(--rouge)' : 'var(--vert)') + ';">' + fmtF(session.ecart||0) + ' FCFA</strong>' + (session.envoye_journalier ? ' · ✉️ état transmis' : ' · état non encore transmis') + '</div>'
