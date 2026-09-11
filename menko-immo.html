@@ -72914,7 +72914,18 @@ async function copSupprimerLot(id){
 async function copSupprimerImmeuble(id){
   if (!exigerDroit('Copropriete', 's', 'un immeuble en copropriété')) return;
   var lots=(DATA.lots_copro||[]).filter(function(l){ return l.copropriete_id===id; });
-  if(!confirm(lots.length?('Cet immeuble a '+lots.length+' lot(s). Supprimer quand même ?'):'Supprimer cet immeuble ?')) return;
+  if(!confirm(lots.length?('Cet immeuble a '+lots.length+' lot(s). Supprimer l’immeuble, ses lots, budgets, appels de charges, AG et fonds travaux ?'):'Supprimer cet immeuble ?')) return;
+  /* [FIX] Cascade absente : budgets, appels de charges, AG, fonds travaux et
+     rapports du commissaire aux comptes référencent tous copropriete_id
+     sans jamais être nettoyés — ils restaient orphelins après suppression
+     de l'immeuble (invisibles mais présents en base, faussant tout futur
+     comptage global). */
+  var _copStores = ['lots_copro','budgets_copro','appels_charges_copro','ag_copro','fonds_travaux_copro','rapports_commissaire_copro'];
+  for (var si=0; si<_copStores.length; si++) {
+    var store = _copStores[si];
+    var lies = (DATA[store]||[]).filter(function(x){ return x.copropriete_id===id; });
+    for (var i=0;i<lies.length;i++) { await deleteRecord(store, lies[i].id, { skipIntegrity:true }); }
+  }
   DATA.coproprietes=(DATA.coproprietes||[]).filter(function(c){ return c.id!==id; });
   if(typeof deleteRecord==='function') await deleteRecord('coproprietes', id);
   else { await dbDelete('coproprietes', id); if(typeof deleteFromSupabase==='function') deleteFromSupabase('pi_coproprietes', id); }
