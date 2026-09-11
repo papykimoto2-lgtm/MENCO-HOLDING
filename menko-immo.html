@@ -34432,12 +34432,23 @@ async function deleteProgramme(id) {
     alert('Suppression impossible — ce programme est référencé par ' + parts.join(' et ') + '.\nSupprimez ou détachez ces éléments d\u2019abord.');
     return;
   }
-  if (!confirm('Supprimer ce programme ? Les lots, modèles, plan de morcellement, projets de conception, agrément, coûts de chantier, permis et plans architecturaux associés seront aussi supprimés.')) return;
+  if (!confirm('Supprimer ce programme ? Les lots, modèles, plan de morcellement, projets de conception, agrément, coûts de chantier, permis, plans architecturaux et parcelle SIG (périmètre importé DXF/DWG) associés seront aussi supprimés.')) return;
   /* Cascade complète RAM + IndexedDB + Supabase (et non un simple filtrage RAM,
      qui laissait ces enregistrements réapparaître après rechargement ou rester
      visibles aux autres utilisateurs connectés). */
   var lotsLies = DATA.lots.filter(function(l) { return l.programme_id === id; });
   for (var i = 0; i < lotsLies.length; i++) { await deleteRecord('lots', lotsLies[i].id, { skipIntegrity: true }); }
+  /* [FIX] La parcelle SIG (périmètre importé via plan de masse DXF/DWG,
+     module masseAppliquer) et les couches SIG qui lui sont associées
+     (voirie, courbes de niveau) n'étaient jamais nettoyées : un programme
+     créé depuis un import DXF/DWG laissait son périmètre et ses tracés
+     orphelins en base après suppression. Les couches SIG créées avant ce
+     correctif n'ont pas de programme_id et restent à supprimer
+     manuellement depuis le SIG (bouton 🗑️ par couche). */
+  var parcellesLiees = (DATA.parcelles || []).filter(function(p) { return p.programme_id === id; });
+  for (var i = 0; i < parcellesLiees.length; i++) { await deleteRecord('parcelles', parcellesLiees[i].id, { skipIntegrity: true }); }
+  var couchesSigLiees = (DATA.sig_couches || []).filter(function(s) { return s.programme_id === id; });
+  for (var i = 0; i < couchesSigLiees.length; i++) { await deleteRecord('sig_couches', couchesSigLiees[i].id, { skipIntegrity: true }); }
   var modelesLies = (DATA.modeles_logement || []).filter(function(m) { return m.programme_id === id; });
   for (var i = 0; i < modelesLies.length; i++) { await deleteRecord('modeles_logement', modelesLies[i].id, { skipIntegrity: true }); }
   var plansLies = (DATA.plans_morcellement || []).filter(function(p) { return p.programme_id === id; });
@@ -130421,18 +130432,24 @@ async function masseCommit(){
     }
   }
 
-  /* Voirie + courbes → sig_couches */
+  /* Voirie + courbes → sig_couches
+     [FIX] programme_id ajouté : sans lui, ces couches ne pouvaient être
+     rattachées à aucun programme (seul un libellé de fichier 'source' les
+     décrivait) et la suppression du programme (deleteProgramme) ne pouvait
+     donc jamais les retrouver pour les effacer — orphelines en base pour
+     toujours. Les couches créées avant ce correctif restent à supprimer
+     manuellement, une par une, depuis le SIG (bouton 🗑️ sur chaque couche). */
   if(doVoirie){
     for(var v=0;v<R.voirie.length;v++){
       var f={ id:uid(), type:'voirie', geom_type:'line', coords:R.voirie[v], color:'#64748b',
-        label:'Voirie '+(v+1), source:R.source, created_at:today() };
+        label:'Voirie '+(v+1), source:R.source, programme_id:prog.id, created_at:today() };
       DATA.sig_couches.push(f); await dbPut('sig_couches',f); if(typeof syncToSupabase==='function') syncToSupabase('pi_sig_couches',f); nSig++;
     }
   }
   if(doCourbes){
     for(var c=0;c<R.courbes.length;c++){
       var cf={ id:uid(), type:'courbe_niveau', geom_type:'line', coords:R.courbes[c].pts, color:'#8a5a2b',
-        label:'Courbe '+R.courbes[c].interval+'m', interval:R.courbes[c].interval, source:R.source, created_at:today() };
+        label:'Courbe '+R.courbes[c].interval+'m', interval:R.courbes[c].interval, source:R.source, programme_id:prog.id, created_at:today() };
       DATA.sig_couches.push(cf); await dbPut('sig_couches',cf); if(typeof syncToSupabase==='function') syncToSupabase('pi_sig_couches',cf); nSig++;
     }
   }
