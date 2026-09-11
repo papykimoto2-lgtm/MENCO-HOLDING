@@ -4738,11 +4738,13 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         <!-- Relations intragroupe : flux détaillés, conventions réglementées, export CAC -->
         <div class="tab-pane" id="tab-compta-intragroupe">
           <div class="tab-nav" style="margin-bottom:10px;">
-            <button class="tab-btn active" onclick="switchTab('intragroupe','flux')">🔗 Registre des flux</button>
+            <button class="tab-btn active" onclick="switchTab('intragroupe','caisse')">🔍 Aperçu caisse</button>
+            <button class="tab-btn" onclick="switchTab('intragroupe','flux')">🔗 Registre des flux</button>
             <button class="tab-btn" onclick="switchTab('intragroupe','conventions')">📜 Conventions réglementées</button>
             <button class="tab-btn" onclick="switchTab('intragroupe','export')">📤 Export CAC</button>
           </div>
-          <div class="tab-pane active" id="tab-intragroupe-flux"></div>
+          <div class="tab-pane active" id="tab-intragroupe-caisse"></div>
+          <div class="tab-pane" id="tab-intragroupe-flux"></div>
           <div class="tab-pane" id="tab-intragroupe-conventions"></div>
           <div class="tab-pane" id="tab-intragroupe-export"></div>
         </div>
@@ -40707,6 +40709,18 @@ var _intragCompte = '';
 var _intragTerme = '';
 var _intragConvTerme = '';
 var _intragConvStatut = '';
+var _intragCaisseTermes = "appro,retour,réserv,associé,cc associ";
+var _intragCaisseDiv = '';
+var _intragCaisseStatut = '';
+var _intragCaisseAnnee = '';
+
+var INTRAG_CAISSE_CATEGORIES = {
+  retour:  { label: "Retour d'appro",           icone: '📤' },
+  appro:   { label: 'Appro caisse',              icone: '📥' },
+  reserve: { label: 'Réservation / réserve',     icone: '🔒' },
+  associe: { label: 'Compte courant associé',    icone: '🤝' },
+  autre:   { label: 'Autre (mot-clé détecté)',   icone: '❓' }
+};
 
 var CONV_REG_TYPES = {
   convention_tresorerie: 'Convention de trésorerie',
@@ -40779,8 +40793,124 @@ function _intragMatrice(annee) {
   return { divs: divs, lignes: lignes };
 }
 
+/* ── Aperçu caisse avant ventilation ──────────────────────────────────
+   Le "Registre des flux" ci-dessous ne voit que ce qui est déjà passé en
+   écriture sur un compte de liaison — or les flux inter-divisions réels
+   transitent d'abord par la caisse (appro, retour d'appro, compte
+   courant associé...) et restent invisibles tant qu'ils ne sont pas
+   ventilés, ou ventilés sur un compte qui n'est pas un compte de liaison.
+   Repérage par mot-clé sur l'intitulé (motif) du bon de caisse — simple
+   aide au tri manuel, aucune écriture n'est créée ni modifiée ici. */
+function _intragCaisseTermesListe() {
+  return (_intragCaisseTermes || '').split(',')
+    .map(function(t){ return sfcNormalise(t.trim()); }).filter(Boolean);
+}
+function _intragCaisseClasser(motifNorm) {
+  if (motifNorm.indexOf('retour') !== -1) return 'retour';
+  if (motifNorm.indexOf('appro') !== -1) return 'appro';
+  if (motifNorm.indexOf('reserv') !== -1) return 'reserve';
+  if (motifNorm.indexOf('associ') !== -1) return 'associe';
+  return 'autre';
+}
+function _intragCaisseCandidats() {
+  var termes = _intragCaisseTermesListe();
+  if (!termes.length) return [];
+  var out = [];
+  (DATA.caisse_mouvements || []).forEach(function(m){
+    var hay = sfcNormalise([m.motif, m.beneficiaire].filter(Boolean).join(' '));
+    if (!termes.some(function(t){ return hay.indexOf(t) !== -1; })) return;
+    var caisse = (DATA.caisses || []).find(function(c){ return c.id === m.caisse_id; });
+    out.push({
+      id: m.id, date: (m.date || '').slice(0,10), division: caisse ? (caisse.division_id || '') : '',
+      caisse: caisse ? (caisse.nom || '') : '—', type: m.type, montant: parseFloat(m.montant) || 0,
+      motif: m.motif || '', beneficiaire: m.beneficiaire || '',
+      statut: m.statut || (m.compte_ventile ? 'ventile' : 'a_ventiler'), compte_ventile: m.compte_ventile || '',
+      categorie: _intragCaisseClasser(hay)
+    });
+  });
+  return out.sort(function(a,b){ return (b.date || '').localeCompare(a.date || ''); });
+}
+function _intragCaisseFiltres() {
+  var list = _intragCaisseCandidats();
+  if (_intragCaisseAnnee) list = list.filter(function(x){ return x.date.slice(0,4) === _intragCaisseAnnee; });
+  if (_intragCaisseDiv) list = list.filter(function(x){ return x.division === _intragCaisseDiv; });
+  if (_intragCaisseStatut) list = list.filter(function(x){ return x.statut === _intragCaisseStatut; });
+  return list;
+}
+function _intragCaisseSetTermes() { _intragCaisseTermes = (document.getElementById('intrag-caisse-termes')||{}).value || ''; _intragRenderCaisseApercu(); }
+function _intragCaisseSetDiv()    { _intragCaisseDiv = (document.getElementById('intrag-caisse-div')||{}).value || ''; _intragRenderCaisseApercu(); }
+function _intragCaisseSetStatut() { _intragCaisseStatut = (document.getElementById('intrag-caisse-statut')||{}).value || ''; _intragRenderCaisseApercu(); }
+function _intragCaisseSetAnnee()  { _intragCaisseAnnee = (document.getElementById('intrag-caisse-annee')||{}).value || ''; _intragRenderCaisseApercu(); }
+
+function _intragRenderCaisseApercu() {
+  var el = document.getElementById('tab-intragroupe-caisse');
+  if (!el) return;
+  var divs = _consoDivisions();
+  var toutes = _intragCaisseCandidats();
+  var annees = Array.from(new Set(toutes.map(function(x){ return x.date.slice(0,4); }).filter(Boolean))).sort().reverse();
+  if (!annees.length) annees = [String(new Date().getFullYear())];
+  var list = _intragCaisseFiltres();
+
+  var filtres = '<div class="card" style="margin-bottom:10px;">'
+    + '<div style="font-size:11.5px;color:var(--blanc-dim);margin-bottom:8px;">🔍 Repérage par mot-clé sur l\'intitulé des mouvements de caisse, <strong>avant toute ventilation</strong> — aide au tri manuel pour identifier les flux susceptibles d\'être intragroupe (appro caisse d\'une division, retour d\'appro, compte courant associé, réserves...). Aucune écriture n\'est créée ou modifiée depuis cet écran.</div>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'
+    + '<input type="text" class="form-control" id="intrag-caisse-termes" value="' + escHtml(_intragCaisseTermes) + '" oninput="_debInput(\'_intragCaisseSetTermes\')" placeholder="Mots-clés séparés par une virgule" style="min-width:260px;">'
+    + '<select class="filter-select" id="intrag-caisse-annee" onchange="_intragCaisseSetAnnee()"><option value="">Toutes années</option>'
+    + annees.map(function(a){ return '<option value="' + a + '"' + (a === _intragCaisseAnnee ? ' selected' : '') + '>' + a + '</option>'; }).join('')
+    + '</select>'
+    + '<select class="filter-select" id="intrag-caisse-div" onchange="_intragCaisseSetDiv()"><option value="">Toutes divisions</option>'
+    + divs.map(function(d){ return '<option value="' + d.id + '"' + (d.id === _intragCaisseDiv ? ' selected' : '') + '>' + escHtml(d.nom) + '</option>'; }).join('')
+    + '</select>'
+    + '<select class="filter-select" id="intrag-caisse-statut" onchange="_intragCaisseSetStatut()"><option value="">Tous statuts</option>'
+    + '<option value="a_ventiler"' + (_intragCaisseStatut === 'a_ventiler' ? ' selected' : '') + '>⏳ À ventiler</option>'
+    + '<option value="ventile"' + (_intragCaisseStatut === 'ventile' ? ' selected' : '') + '>✓ Ventilé</option></select>'
+    + '<button class="btn btn-secondary btn-sm" onclick="_intragCaisseExportCSV()">⬇ CSV</button>'
+    + '</div></div>';
+
+  var parCat = {};
+  list.forEach(function(x){ if (!parCat[x.categorie]) parCat[x.categorie] = { nb:0, montant:0 }; parCat[x.categorie].nb++; parCat[x.categorie].montant += x.montant; });
+  var cartes = Object.keys(INTRAG_CAISSE_CATEGORIES).filter(function(k){ return parCat[k]; }).map(function(k){
+    var c = INTRAG_CAISSE_CATEGORIES[k], d = parCat[k];
+    return '<div class="kpi-card" data-icon="' + c.icone + '"><div class="kpi-label">' + c.label + '</div>'
+      + '<div class="kpi-value">' + d.nb + '</div><div class="kpi-delta">' + fmtF(d.montant) + ' F</div></div>';
+  }).join('');
+  var resume = cartes ? '<div class="kpi-grid" style="margin-bottom:14px;">' + cartes + '</div>' : '';
+
+  var rows = list.slice(0, 300).map(function(x){
+    var cat = INTRAG_CAISSE_CATEGORIES[x.categorie];
+    var statutHtml = x.statut === 'ventile' ? ('✓ ventilé' + (x.compte_ventile ? ' (' + escHtml(x.compte_ventile) + ')' : '')) : '⏳ à ventiler';
+    return '<tr><td>' + dateShort(x.date) + '</td><td>' + escHtml(_nomDivision(x.division)) + '</td><td>' + escHtml(x.caisse) + '</td>'
+      + '<td style="text-align:center;">' + (x.type === 'entree' ? '📥' : '📤') + '</td>'
+      + '<td class="num">' + fmtF(x.montant) + '</td>'
+      + '<td>' + escHtml(x.motif) + '</td>'
+      + '<td>' + cat.icone + ' ' + cat.label + '</td>'
+      + '<td>' + statutHtml + '</td></tr>';
+  }).join('');
+
+  var tbl = '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Division</th><th>Caisse</th><th>Sens</th><th class="num">Montant</th><th>Intitulé (motif)</th><th>Catégorie</th><th>Statut</th></tr></thead><tbody>'
+    + (rows || '<tr><td colspan="8" style="text-align:center;color:var(--blanc-dim);">Aucun mouvement de caisse ne correspond à ces mots-clés.</td></tr>')
+    + '</tbody></table></div>'
+    + (list.length > 300 ? '<div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">Affichage limité aux 300 premières lignes sur ' + list.length + ' — affinez les filtres ou exportez en CSV.</div>' : '');
+
+  el.innerHTML = filtres + resume + tbl;
+}
+
+function _intragCaisseExportCSV() {
+  var list = _intragCaisseFiltres();
+  var rows = ['Date,Division,Caisse,Type,Montant,Motif,Categorie,Statut,CompteVentile'];
+  list.forEach(function(x){
+    rows.push([x.date, _nomDivision(x.division), x.caisse, x.type, x.montant, (x.motif||'').replace(/,/g,';'), INTRAG_CAISSE_CATEGORIES[x.categorie].label, x.statut, x.compte_ventile].join(','));
+  });
+  var blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = 'apercu_caisse_intragroupe_' + (new Date().toISOString().slice(0,10)) + '.csv';
+  a.click();
+  toast('Export CSV téléchargé.', 'success');
+}
+
 function _intragRender() {
   if (!_intragAnnee) _intragAnnee = _intragAnnees()[0];
+  _intragRenderCaisseApercu();
   _intragRenderFlux();
   _intragRenderConventions();
   _intragRenderExport();
