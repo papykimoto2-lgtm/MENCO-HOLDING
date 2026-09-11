@@ -23617,6 +23617,7 @@ var DATA = {
   clients: [],
   portail_medias: [],
   portail_messages: [],
+  demandes_paiement: [],
   declarations_versement_foncier: [],
   coproprietes: [],
   lots_copro: [],
@@ -23747,7 +23748,13 @@ var DATA = {
    INDEXEDDB
 ────────────────────────────────────────────────────── */
 var DB_NAME = 'ImmoSuiteDB';
-var DB_VERSION = 151; /* v151: DEUX bugs corrigés, même famille que les précédents.
+var DB_VERSION = 152; /* v152: store 'demandes_paiement' (portail souscripteur, bouton "Faire un
+                          versement") n'existait ni dans ALL_STORES ni dans SUPA_STORE_MAP — la
+                          fonction qui les crée ne faisait qu'un push en mémoire, sans dbPut ni
+                          syncToSupabase : la demande affichée comme "enregistrée" au souscripteur
+                          disparaissait au premier rechargement de page, invisible de tout poste.
+                          Migration additive, aucune perte.
+                          v151: DEUX bugs corrigés, même famille que les précédents.
                           (1) allKeys (loadAllData, relecture au démarrage) n'incluait pas
                           'sfc_liste','sfc_criblages','sfc_centif','lbc_cappi','lbc_conformx',
                           'lbc_artci' — écrits en base mais jamais rechargés à l'ouverture :
@@ -23890,7 +23897,13 @@ var ALL_STORES = [
   /* v146 — Suivi budgétaire caisse */
   'caisse_budgets',
   /* v147 — Circuit budgétaire : DA + transferts */
-  'fiches_engagement_depense', 'transferts_budgetaires'
+  'fiches_engagement_depense', 'transferts_budgetaires',
+  /* [FIX] Demandes de versement du portail souscripteur — n'était même pas
+     déclaré comme store : la fonction qui les crée ne persistait qu'en
+     mémoire (aucun dbPut), donc jamais rechargé ni synchronisé. Le
+     souscripteur voyait "Demande enregistrée" pour une donnée qui
+     disparaissait au premier rechargement de page. */
+  'demandes_paiement'
 ];
 
 function initDB() {
@@ -25805,6 +25818,9 @@ var SUPA_STORE_MAP = [
      jamais tirée du cloud faute d'entrée ici — invisible sur tout autre
      poste que celui qui a créé la déclaration. */
   ['pi_declarations_versement_financier', 'declarations_versement_financier'],
+  /* [FIX] Demandes de versement du portail souscripteur — store absent,
+     donnée jamais persistée ni synchronisée (voir ALL_STORES). */
+  ['pi_demandes_paiement', 'demandes_paiement'],
   ['pi_vehicules',              'vehicules'],
   ['pi_vehicule_carburant',     'vehicule_carburant'],
   ['pi_vehicule_entretiens',    'vehicule_entretiens'],
@@ -75293,7 +75309,7 @@ function telechargerRecu(versementId) {
 }
 
 /* ─── Simulation paiement ────────────────────────────── */
-function simulerPaiementSouscripteur() {
+async function simulerPaiementSouscripteur() {
   if (!SESSION_SOUSCRIPTEUR) return;
   var montant = parseFloat(document.getElementById('portal-montant').value);
   if (isNaN(montant) || montant <= 0) { toast('Montant invalide.','error'); return; }
@@ -75302,11 +75318,14 @@ function simulerPaiementSouscripteur() {
   var ref     = 'DEM-' + Date.now().toString(36).toUpperCase();
 
   if (!DATA.demandes_paiement) DATA.demandes_paiement = [];
-  DATA.demandes_paiement.push({
+  var demande = {
     id: ref, client_id: SESSION_SOUSCRIPTEUR.id,
     montant: montant, mode: mode, message: message,
     date: today(), statut: 'en_attente'
-  });
+  };
+  DATA.demandes_paiement.push(demande);
+  await dbPut('demandes_paiement', demande);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_demandes_paiement', demande);
 
   var modeLabel = {virement:'Virement bancaire',wave:'Wave 📱',orange_money:'Orange Money 🔶',mtn:'MTN MoMo 🟡',especes:'Espèces (agence)'}[mode]||mode;
   var modeInstr = {
