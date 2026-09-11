@@ -3165,7 +3165,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         <div class="tab-nav" style="margin-bottom:14px;">
           <button class="tab-btn active" onclick="switchTab('clients','liste')">📋 Liste</button>
           <button class="tab-btn" onclick="switchTab('clients','dashboard')">📊 Tableau de bord</button>
-          <button class="tab-btn" onclick="switchTab('clients','doublons')" title="Détecte les souscripteurs potentiellement saisis en double (nom, téléphone, email, pièce d'identité, n° de dossier)">🧬 Analyse de doublons</button>
+          <button class="tab-btn" onclick="switchTab('clients','doublons')" title="Détecte les souscripteurs potentiellement saisis en double (nom, téléphone, email, pièce d'identité, n° de dossier) et les numéros de téléphone invalides">🧬 Doublons &amp; fiches invalides</button>
         </div>
 
         <div class="tab-pane active" id="tab-clients-liste">
@@ -3219,6 +3219,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           </div>
         </div>
 
+        <div id="clients-alertes"></div>
         <div id="clients-periode-info"></div>
 
         <div class="clients-grid" id="clients-grid"></div>
@@ -31941,6 +31942,19 @@ function renderClients() {
     if (comparateurs[tri]) list.sort(comparateurs[tri]);
   }
 
+  var alertesBox = document.getElementById('clients-alertes');
+  if (alertesBox) {
+    var _telInvCount = _clientsTelInvalidesListe().length;
+    alertesBox.innerHTML = _telInvCount ? (
+      '<div class="card" style="margin-bottom:16px;border-left:3px solid var(--rouge);">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">'
+      + '<div><strong style="color:var(--rouge);">⚠️ ' + _telInvCount + ' souscripteur(s) avec numéro de téléphone invalide</strong>'
+      + '<div style="font-size:12px;color:var(--blanc-dim);margin-top:2px;">Longueur incorrecte ou chiffre répété (ex. "0700", "0000") — code d\'accès portail et SMS de relance injoignables.</div></div>'
+      + '<button class="btn btn-primary btn-sm" onclick="switchTab(\'clients\',\'doublons\')">🔎 Voir le détail</button>'
+      + '</div></div>'
+    ) : '';
+  }
+
   var periodeInfoBox = document.getElementById('clients-periode-info');
   if (periodeInfoBox) {
     if (dDeb || dFin) {
@@ -32061,6 +32075,26 @@ function setVueClients(v) {
    similarité de noms du module de criblage LBC/FT (sfcNormalise/sfcSimilarite)
    pour éviter de dupliquer cette logique. ═══════════════════════════════ */
 function _cdNormPhone(t) { return (t || '').toString().replace(/[^0-9]/g, '').replace(/^00225/, '').replace(/^225/, '').replace(/^0+/, ''); }
+/* [Détection] Numéro structurellement impossible — distinct d'un doublon
+   (deux fiches qui PARTAGENT un numéro). Ici une seule fiche suffit : le
+   champ téléphone étant obligatoire au formulaire, une saisie bloquée y
+   entre n'importe quoi pour passer outre — le placeholder de l'input lui-
+   même ("0700...") recopié tel quel, ou un chiffre répété ("0000"). Un
+   numéro ivoirien valide compte 10 chiffres (0 + 9), jamais un seul
+   chiffre répété. _cdNormPhone() (doublons) retire les zéros de tête et
+   exclut les clés < 6 caractères, donc "0700"/"0000" y sont déjà invisibles
+   — ni détectés comme doublons, ni comme invalides ailleurs : angle mort
+   total avant ce correctif. */
+function _telChiffres(t) { return (t || '').toString().replace(/[^0-9]/g, ''); }
+function _telInvalide(t) {
+  var n = _telChiffres(t);
+  if (n.length !== 10) return true;
+  if (/^(\d)\1{9}$/.test(n)) return true;
+  return false;
+}
+function _clientsTelInvalidesListe() {
+  return (DATA.clients || []).filter(function(c){ return c.statut !== 'resilie' && _telInvalide(c.tel); });
+}
 function _cdNormEmail(e) { return (e || '').toString().trim().toLowerCase(); }
 function _cdNormPiece(p) { return (p || '').toString().toUpperCase().replace(/[^A-Z0-9]/g, ''); }
 function _cdNormDossier(d) { return (d || '').toString().trim().toUpperCase(); }
@@ -32091,6 +32125,13 @@ function renderClientsDoublons() {
   var parDossier = _cdGrouper(clients, function (c) { return _cdNormDossier(c.dossier); }, 1);
   var parNomExact = _cdGrouper(clients, function (c) { return _cdNomComplet(c); }, 3);
 
+  /* Numéros structurellement invalides (pas des doublons — une seule fiche
+     suffit). Rendus via le même mécanisme "groupe" pour réutiliser
+     l'affichage en tableau ci-dessous, avec un seul groupe contenant
+     toutes les fiches concernées. */
+  var telInvalides = _clientsTelInvalidesListe();
+  var parTelInvalide = telInvalides.length ? [{ key:'invalides', items: telInvalides }] : [];
+
   /* Quasi-doublons de nom (orthographe proche, ex. "Kouassi Jean" / "Kouassy Jean") :
      comparaison par paires, coûteuse en O(n²) — plafonnée pour rester fluide
      sur un gros portefeuille. Les noms strictement identiques sont exclus
@@ -32119,13 +32160,14 @@ function renderClientsDoublons() {
   }
 
   var flaggedIds = {};
-  [parTel, parEmail, parPiece, parDossier, parNomExact, parNomProche].forEach(function (grp) {
+  [parTel, parEmail, parPiece, parDossier, parNomExact, parNomProche, parTelInvalide].forEach(function (grp) {
     grp.forEach(function (g) { g.items.forEach(function (c) { flaggedIds[c.id] = true; }); });
   });
   var totalFlagged = Object.keys(flaggedIds).length;
 
   kpiBox.innerHTML =
       _cdKpi('👥', totalFlagged, 'Souscripteur(s) impliqué(s)', totalFlagged ? 'kpi-red' : 'kpi-green')
+    + _cdKpi('📵', telInvalides.length, 'Téléphone invalide', telInvalides.length ? 'kpi-red' : 'kpi-green')
     + _cdKpi('📞', parTel.length, 'Doublon(s) téléphone', parTel.length ? 'kpi-red' : 'kpi-green')
     + _cdKpi('✉️', parEmail.length, 'Doublon(s) email', parEmail.length ? 'kpi-red' : 'kpi-green')
     + _cdKpi('🪪', parPiece.length, 'Doublon(s) pièce d\'identité', parPiece.length ? 'kpi-red' : 'kpi-green')
@@ -32133,11 +32175,12 @@ function renderClientsDoublons() {
     + _cdKpi('🔤', parNomExact.length + parNomProche.length, 'Nom identique / proche', (parNomExact.length + parNomProche.length) ? 'kpi-red' : 'kpi-green');
 
   if (!totalFlagged) {
-    box.innerHTML = '<div class="card" style="padding:30px;text-align:center;color:#16A34A;font-weight:600;">✅ Aucun doublon détecté sur le portefeuille actuel.</div>';
+    box.innerHTML = '<div class="card" style="padding:30px;text-align:center;color:#16A34A;font-weight:600;">✅ Aucun doublon ni fiche invalide détecté sur le portefeuille actuel.</div>';
     return;
   }
 
   var sections = [
+    { titre: '📵 Numéro de téléphone invalide', gravite: 'critique', groupes: parTelInvalide, compteLabel: telInvalides.length + ' fiche(s)', note: 'Longueur incorrecte ou chiffre répété (ex. "0700", "0000") — souvent une saisie forcée pour passer outre le champ obligatoire.' },
     { titre: '🪪 Même n° de pièce d\'identité', gravite: 'critique', groupes: parPiece, note: 'Un même document d\'identité rattaché à plusieurs fiches — vérifier en priorité.' },
     { titre: '📁 Même n° de dossier', gravite: 'critique', groupes: parDossier, note: 'Deux fiches partagent la même référence de dossier.' },
     { titre: '📞 Même numéro de téléphone', gravite: 'majeur', groupes: parTel, note: 'Peut être légitime (même foyer) — à vérifier au cas par cas.' },
@@ -32156,7 +32199,7 @@ function renderClientsDoublons() {
     html += '<div class="card" style="margin-bottom:16px;">'
       + '<div style="padding:12px 16px;border-bottom:1px solid var(--bordure,#EEE);display:flex;align-items:center;gap:10px;">'
       + '<strong style="font-size:14px;">' + sec.titre + '</strong>'
-      + '<span class="badge ' + (sec.gravite === 'critique' ? 'badge-rouge' : sec.gravite === 'majeur' ? 'badge-or' : 'badge-neutre') + '">' + sec.groupes.length + ' groupe(s)</span>'
+      + '<span class="badge ' + (sec.gravite === 'critique' ? 'badge-rouge' : sec.gravite === 'majeur' ? 'badge-or' : 'badge-neutre') + '">' + (sec.compteLabel || (sec.groupes.length + ' groupe(s)')) + '</span>'
       + (sec.note ? '<span style="font-size:11px;color:var(--blanc-dim);margin-left:auto;">' + sec.note + '</span>' : '')
       + '</div>';
 
