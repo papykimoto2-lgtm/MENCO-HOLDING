@@ -103064,9 +103064,29 @@ function renderFournisseursPageListe() {
       + '<td style="font-size:12px;">' + escHtml(fr.contact || '—') + '</td>'
       + '<td style="font-size:12px;">' + escHtml(fr.compte || '—') + '</td>'
       + '<td>' + (fr.airsi ? '<span class="badge badge-or" style="font-size:9px;">AIRSI</span>' : '—') + '</td>'
-      + '<td><button class="btn btn-danger btn-sm btn-icon" onclick="deleteFournisseur(\'' + fr.id + '\')">🗑</button></td>'
+      + '<td><button class="btn btn-secondary btn-sm btn-icon" onclick="openFournisseurPageEdit(\'' + fr.id + '\')" title="Modifier">✏️</button> <button class="btn btn-danger btn-sm btn-icon" onclick="deleteFournisseur(\'' + fr.id + '\')">🗑</button></td>'
       + '</tr>';
   }).join('');
+}
+
+/* [FIX] Aucune modification possible après création — seule la suppression
+   existait, obligeant à effacer/recréer pour corriger une simple faute de
+   frappe (RCCM, contact...), avec perte de l'historique des mouvements déjà
+   liés à l'ancien id. Édition en place ajoutée, sur le même formulaire. */
+function openFournisseurPageEdit(id) {
+  var fr = (DATA.fournisseurs || []).find(function(x){ return x.id === id; });
+  if (!fr) return;
+  APP._editingFournisseurPageId = id;
+  document.getElementById('fpg-typetiers').value = fr.type_tiers || 'entreprise';
+  fournisseurTypeToggle();
+  document.getElementById('fpg-nom').value = fr.nom || '';
+  document.getElementById('fpg-rccm').value = fr.rccm || '';
+  document.getElementById('fpg-ncc').value = fr.ncc || '';
+  document.getElementById('fpg-cni').value = fr.cni || '';
+  document.getElementById('fpg-contact').value = fr.contact || '';
+  document.getElementById('fpg-compte').value = fr.compte || '';
+  var _fa = document.getElementById('fpg-airsi'); if (_fa) _fa.checked = !!fr.airsi;
+  document.getElementById('fpg-nom').focus();
 }
 
 async function saveFournisseurPage() {
@@ -103074,19 +103094,25 @@ async function saveFournisseurPage() {
   var phys = (typeTiers === 'physique');
   var nom = document.getElementById('fpg-nom').value.trim();
   if (!nom) { toast(phys ? 'Nom et prénoms requis.' : 'Raison sociale requise.', 'error'); return; }
+  var editId = APP._editingFournisseurPageId || null;
+  var existant = editId ? (DATA.fournisseurs || []).find(function(x){ return x.id === editId; }) : null;
   var fr = {
-    id: uid(), type_tiers: typeTiers, nom: nom,
+    id: existant ? existant.id : uid(), type_tiers: typeTiers, nom: nom,
     rccm: phys ? '' : document.getElementById('fpg-rccm').value.trim(),
     ncc: phys ? '' : document.getElementById('fpg-ncc').value.trim(),
     cni: phys ? document.getElementById('fpg-cni').value.trim() : '',
     contact: document.getElementById('fpg-contact').value.trim(),
     compte: (document.getElementById('fpg-compte').value.trim() || requireCompteDefaut('fournisseur')),
-    airsi: (document.getElementById('fpg-airsi') || {}).checked || false, created_at: today()
+    airsi: (document.getElementById('fpg-airsi') || {}).checked || false,
+    created_at: existant ? existant.created_at : today()
   };
+  if (existant) { fr.gele = existant.gele; fr.gele_le = existant.gele_le; fr.gele_motif = existant.gele_motif; }
   if (!DATA.fournisseurs) DATA.fournisseurs = [];
-  DATA.fournisseurs.push(fr);
+  if (existant) { var idx = DATA.fournisseurs.findIndex(function(x){ return x.id === fr.id; }); if (idx >= 0) DATA.fournisseurs[idx] = fr; }
+  else DATA.fournisseurs.push(fr);
   await dbPut('fournisseurs', fr);
   if (typeof syncToSupabase === 'function') syncToSupabase('pi_fournisseurs', fr);
+  APP._editingFournisseurPageId = null;
   ['fpg-nom', 'fpg-rccm', 'fpg-ncc', 'fpg-cni', 'fpg-contact', 'fpg-compte'].forEach(function(id) { document.getElementById(id).value = ''; });
   var _fa = document.getElementById('fpg-airsi'); if (_fa) _fa.checked = false;
   document.getElementById('fpg-typetiers').value = 'entreprise';
@@ -103094,7 +103120,7 @@ async function saveFournisseurPage() {
   renderFournisseursPageListe();
   renderDlFournisseurs();
   var selF = document.getElementById('se-fournisseur'); if (selF) selF.innerHTML = fournisseurOptions(fr.id);
-  toast('Fournisseur enregistré.', 'success');
+  toast(existant ? 'Fournisseur modifié.' : 'Fournisseur enregistré.', 'success');
 }
 
 function openFournisseurs(){
