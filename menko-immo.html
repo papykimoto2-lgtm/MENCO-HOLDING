@@ -3729,6 +3729,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <button class="tab-btn" onclick="switchTab('compta','grandlivre')" title="Détail des mouvements par compte"><i>📚</i>Grand livre</button>
               <button class="tab-btn" onclick="switchTab('compta','balance')" title="Équilibre général et diagnostic des écarts"><i>⚖️</i>Balance</button>
               <button class="tab-btn" onclick="switchTab('compta','rapprochement')" title="Pointage des comptes de banque"><i>🏦</i>Rapprochement</button>
+              <button class="tab-btn" onclick="switchTab('compta','brouillards');comptaBrouillardsRender()" title="Brouillards de caisse consolidés, en lecture seule, filtrables par période et par division"><i>📋</i>Brouillards caisse</button>
             </div>
           </div>
           <div class="etape">
@@ -4707,6 +4708,31 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           </div>
 
         </div><!-- fin tab-compta-rapprochement -->
+
+        <!-- Brouillards de caisse — vue consolidée lecture seule -->
+        <div class="tab-pane" id="tab-compta-brouillards">
+          <div class="card" style="margin-bottom:16px;padding:14px 16px;">
+            <div style="font-size:12px;color:var(--blanc-dim);line-height:1.6;">
+              📋 Consultation des brouillards de toutes les caisses, groupés par division, sur une période libre — vue de contrôle en lecture seule (aucune modification/suppression de bon depuis cet écran ; utilisez le module Caisse pour ça).
+            </div>
+          </div>
+          <div class="filters-bar" style="margin-bottom:0;">
+            <select class="filter-select" id="compta-brl-division" onchange="comptaBrouillardsRender()">
+              <option value="">🏢 Toutes divisions</option>
+            </select>
+            <select class="filter-select" id="compta-brl-caisse" onchange="comptaBrouillardsRender()">
+              <option value="">💰 Toutes les caisses</option>
+            </select>
+            <input type="date" class="filter-select" id="compta-brl-debut" onchange="comptaBrouillardsRender()">
+            <span style="font-size:12px;color:var(--blanc-dim);align-self:center;">→</span>
+            <input type="date" class="filter-select" id="compta-brl-fin" onchange="comptaBrouillardsRender()">
+            <button class="btn btn-secondary btn-sm" onclick="comptaImprimerBrouillards()">🖨️ Imprimer</button>
+          </div>
+          <input type="text" class="search-input" id="compta-brl-recherche" style="margin:10px 0;" placeholder="🔍 Rechercher — nom, motif, n° bon, n° pièce, montant..." oninput="_debInput('comptaBrouillardsRender')">
+          <div id="compta-brl-resume" class="kpi-grid" style="margin-bottom:16px;"></div>
+          <div id="compta-brl-content"></div>
+        </div>
+        <!-- fin tab-compta-brouillards -->
 
         <!-- Clôture & FEC -->
         <div class="tab-pane" id="tab-compta-cloture">
@@ -121871,16 +121897,14 @@ function _caisseMvtCorrespond(m, terme) {
    par date réelle du mouvement (m.date), ce qui inclut correctement les
    données importées quelle que soit la session à laquelle elles ont été
    techniquement rattachées. */
-function caisseRenderBrouillardPeriode() {
-  var caisseId = CAISSE_UI.brouillardCaisseId;
-  var debut = (document.getElementById('cb-periode-debut')||{}).value || today().slice(0,8)+'01';
-  var fin   = (document.getElementById('cb-periode-fin')||{}).value || today();
-  CAISSE_UI.brouillardDebut = debut;
-  CAISSE_UI.brouillardFin = fin;
-  var tbl = document.getElementById('caisse-brouillard-table');
-  if (!tbl) return;
-  if (debut > fin) { tbl.innerHTML = '<div style="color:var(--rouge);">Date de début postérieure à la date de fin.</div>'; return; }
-
+/* [Extrait — réutilisé par le Journal comptable, vue consolidée par
+   division/période] Calcul pur du brouillard d'une caisse sur une période
+   donnée : solde d'ouverture réel, progression ligne à ligne, totaux. Ne
+   dépend d'aucun élément du DOM — la vue Caisse (mono-caisse, éditable,
+   filtrable par recherche) et la vue Comptabilité (multi-caisses en
+   lecture seule, groupées par division) partagent ainsi le MÊME calcul et
+   ne peuvent plus diverger. */
+function _brouillardCalculerPeriode(caisseId, debut, fin) {
   var tousMvts = (DATA.caisse_mouvements || []).filter(function(m){ return m.caisse_id === caisseId; });
 
   /* Solde d'ouverture réel à la date de début : fond d'ouverture de la toute
@@ -121891,9 +121915,9 @@ function caisseRenderBrouillardPeriode() {
   var sessionsCaisse = (DATA.caisse_sessions || []).filter(function(s){ return s.caisse_id === caisseId; })
     .sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
   var soldeOuverture = sessionsCaisse.length ? (parseFloat(sessionsCaisse[0].fond_ouverture) || 0) : 0;
-  /* [FIX incident 2026-09-10, Menko Agro] Même défaut que la vue Par session
-     — un mouvement en attente de validation (ou rejeté) était compté ici
-     aussi, y compris dans le solde d'ouverture reporté avant `debut`. */
+  /* [FIX incident 2026-09-10, Menko Agro] Un mouvement en attente de
+     validation (ou rejeté) était compté ici aussi, y compris dans le solde
+     d'ouverture reporté avant `debut`. */
   tousMvts.forEach(function(m){
     var d = (m.date||'').slice(0,10);
     var effectif = !m.requiert_validation || m.valide === true;
@@ -121908,30 +121932,59 @@ function caisseRenderBrouillardPeriode() {
   var sessById = {};
   sessionsCaisse.forEach(function(s){ sessById[s.id] = s; });
 
-  var terme = CAISSE_UI.brouillardRecherche;
-  var mvtsAffiches = [];
   var solde = soldeOuverture;
-  var rows = '<tr style="font-weight:700;background:rgba(255,255,255,0.04);"><td colspan="6">Solde d\'ouverture au ' + dateShort(debut) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td></tr>';
-  mvts.forEach(function(m) {
+  var lignes = mvts.map(function(m){
     var effectif = !m.requiert_validation || m.valide === true;
     if (effectif) solde += m.type === 'entree' ? (parseFloat(m.montant)||0) : -(parseFloat(m.montant)||0);
-    /* [Recherche] Solde toujours calculé sur TOUS les mouvements de la
-       période — seul l'affichage de la ligne est filtré. */
+    return { m: m, effectif: effectif, solde: solde, session: sessById[m.session_id] };
+  });
+
+  var mvtsEffectifs = mvts.filter(function(m){ return !m.requiert_validation || m.valide === true; });
+  var totalEntrees = mvtsEffectifs.filter(function(m){ return m.type==='entree'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+  var totalSorties = mvtsEffectifs.filter(function(m){ return m.type==='sortie'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
+  var nbEnAttente = mvts.length - mvtsEffectifs.length - mvts.filter(function(m){return m.rejete;}).length;
+
+  return { soldeOuverture: soldeOuverture, lignes: lignes, soldeFin: solde,
+    totalEntrees: totalEntrees, totalSorties: totalSorties, nbEnAttente: nbEnAttente, nbTotal: mvts.length };
+}
+
+function caisseRenderBrouillardPeriode() {
+  var caisseId = CAISSE_UI.brouillardCaisseId;
+  var debut = (document.getElementById('cb-periode-debut')||{}).value || today().slice(0,8)+'01';
+  var fin   = (document.getElementById('cb-periode-fin')||{}).value || today();
+  CAISSE_UI.brouillardDebut = debut;
+  CAISSE_UI.brouillardFin = fin;
+  var tbl = document.getElementById('caisse-brouillard-table');
+  if (!tbl) return;
+  if (debut > fin) { tbl.innerHTML = '<div style="color:var(--rouge);">Date de début postérieure à la date de fin.</div>'; return; }
+
+  var res = _brouillardCalculerPeriode(caisseId, debut, fin);
+
+  var terme = CAISSE_UI.brouillardRecherche;
+  var lignesAffichees = [];
+  var solde = res.soldeOuverture;
+  var rows = '<tr style="font-weight:700;background:rgba(255,255,255,0.04);"><td colspan="6">Solde d\'ouverture au ' + dateShort(debut) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td></tr>';
+  res.lignes.forEach(function(l) {
+    var m = l.m, effectif = l.effectif;
+    solde = l.solde;
+    /* [Recherche] Le solde ligne à ligne vient de _brouillardCalculerPeriode()
+       (toujours sur TOUS les mouvements de la période) — seul l'affichage
+       de la ligne est filtré ici. */
     if (!_caisseMvtCorrespond(m, terme)) return;
-    mvtsAffiches.push(m);
-    var sess = sessById[m.session_id];
+    lignesAffichees.push(l);
     var estImporte = /import CSV/i.test(m.created_by || '');
     rows += '<tr' + (effectif ? '' : ' style="opacity:.55;"') + '>'
       + '<td>' + (m.date||'').slice(0,10) + '</td>'
-      + '<td>' + (sess ? sess.date : '—') + (estImporte ? ' <span title="Donnée importée — date réelle peut différer de la session" style="color:var(--or);">📥</span>' : '') + '</td>'
+      + '<td>' + (l.session ? l.session.date : '—') + (estImporte ? ' <span title="Donnée importée — date réelle peut différer de la session" style="color:var(--or);">📥</span>' : '') + '</td>'
       + '<td>' + escHtml(m.numero||'') + '</td>'
       + '<td>' + escHtml(m.motif||'') + (m.beneficiaire ? ' — ' + escHtml(m.beneficiaire) : '') + (m.requiert_validation && !m.valide && !m.rejete ? ' <span title="En attente de validation — n\'impacte pas encore le solde" style="color:var(--or);">🔐</span>' : '') + (m.rejete ? ' <span title="Rejeté — jamais compté" style="color:var(--rouge);">✖</span>' : '') + '</td>'
       + '<td style="text-align:right;color:var(--vert);">' + (m.type==='entree' ? fmtF(m.montant) : '') + '</td>'
       + '<td style="text-align:right;color:var(--rouge);">' + (m.type==='sortie' ? fmtF(m.montant) : '') + '</td>'
-      + '<td style="text-align:right;">' + (effectif ? fmtF(solde) : '<span style="color:var(--or);font-size:11px;">— en attente —</span>') + '</td>'
+      + '<td style="text-align:right;">' + (effectif ? fmtF(l.solde) : '<span style="color:var(--or);font-size:11px;">— en attente —</span>') + '</td>'
       + '</tr>';
   });
 
+  var mvtsAffiches = lignesAffichees.map(function(l){ return l.m; });
   var mvtsEffectifs2 = mvtsAffiches.filter(function(m){ return !m.requiert_validation || m.valide === true; });
   var totalEntrees = mvtsEffectifs2.filter(function(m){ return m.type==='entree'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
   var totalSorties = mvtsEffectifs2.filter(function(m){ return m.type==='sortie'; }).reduce(function(s,m){ return s+(parseFloat(m.montant)||0); }, 0);
@@ -121948,7 +122001,146 @@ function caisseRenderBrouillardPeriode() {
     + '<tbody>' + rows + '</tbody>'
     + '<tfoot><tr style="font-weight:800;border-top:2px solid var(--bord);"><td colspan="4">' + libellePeriode + (nbEnAttente2>0 ? ' <span style="font-weight:400;font-size:11px;color:var(--or);">(' + nbEnAttente2 + ' en attente, non comptée' + (nbEnAttente2>1?'s':'') + ')</span>' : '') + '</td><td style="text-align:right;color:var(--vert);">' + fmtF(totalEntrees) + '</td><td style="text-align:right;color:var(--rouge);">' + fmtF(totalSorties) + '</td><td style="text-align:right;">' + fmtF(solde) + '</td></tr></tfoot>'
     + '</table></div>'
-    + '<div style="margin-top:10px;font-size:11px;color:var(--blanc-dim);">' + mvtsAffiches.length + ' mouvement(s) affiché(s)' + (terme ? ' sur ' + mvts.length + ' au total' : '') + ' · 📥 = donnée importée (rattachée techniquement à la session ouverte au moment de l\'import, pas forcément celle de sa date réelle)</div>';
+    + '<div style="margin-top:10px;font-size:11px;color:var(--blanc-dim);">' + mvtsAffiches.length + ' mouvement(s) affiché(s)' + (terme ? ' sur ' + res.nbTotal + ' au total' : '') + ' · 📥 = donnée importée (rattachée techniquement à la session ouverte au moment de l\'import, pas forcément celle de sa date réelle)</div>';
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   BROUILLARDS DE CAISSE — vue consolidée depuis le module Comptabilité
+   Lecture seule (pas d'édition/suppression de bon depuis cet écran — ça
+   reste le rôle du module Caisse) : une caisse par carte, groupées par
+   division, sur une période libre. Réutilise _brouillardCalculerPeriode()
+   (même moteur que le brouillard mono-caisse du module Caisse) et
+   _caisseMvtCorrespond() (même recherche) — zéro logique dupliquée.
+   ══════════════════════════════════════════════════════════════════════ */
+function comptaBrouillardsRender() {
+  var box = document.getElementById('compta-brl-content');
+  if (!box) return;
+
+  var selDiv = document.getElementById('compta-brl-division');
+  if (selDiv && selDiv.options.length <= 1) {
+    selDiv.innerHTML = '<option value="">🏢 Toutes divisions</option>'
+      + (DATA.divisions||[]).map(function(d){ return '<option value="' + d.id + '">' + escHtml(d.nom) + '</option>'; }).join('');
+  }
+  var division = selDiv ? selDiv.value : '';
+
+  var caissesDiv = _cdCaissesDeDivision(division);
+  var selCaisse = document.getElementById('compta-brl-caisse');
+  if (selCaisse && selCaisse.getAttribute('data-div') !== division) {
+    selCaisse.setAttribute('data-div', division);
+    var caisseAvant = selCaisse.value;
+    selCaisse.innerHTML = '<option value="">💰 Toutes les caisses' + (division ? ' de la division' : '') + '</option>'
+      + caissesDiv.map(function(c){ return '<option value="' + c.id + '">' + escHtml(c.nom) + '</option>'; }).join('');
+    if (caissesDiv.some(function(c){ return c.id === caisseAvant; })) selCaisse.value = caisseAvant;
+  }
+  var caisseId = selCaisse ? selCaisse.value : '';
+  var caisses = caisseId ? caissesDiv.filter(function(c){ return c.id === caisseId; }) : caissesDiv;
+
+  var today0 = today();
+  var debutEl = document.getElementById('compta-brl-debut'), finEl = document.getElementById('compta-brl-fin');
+  if (debutEl && !debutEl.value) debutEl.value = today0.slice(0,8) + '01';
+  if (finEl && !finEl.value) finEl.value = today0;
+  var debut = debutEl ? debutEl.value : today0.slice(0,8)+'01';
+  var fin = finEl ? finEl.value : today0;
+  if (debut > fin) { box.innerHTML = '<div style="color:var(--rouge);">Date de début postérieure à la date de fin.</div>'; return; }
+
+  var terme = (document.getElementById('compta-brl-recherche')||{}).value || '';
+
+  var cartes = '';
+  var globalEntrees = 0, globalSorties = 0, globalSoldeFin = 0, nbCaissesAvecMvt = 0, nbMvtTotal = 0;
+
+  caisses.forEach(function(c) {
+    var res = _brouillardCalculerPeriode(c.id, debut, fin);
+    var lignesAffichees = res.lignes.filter(function(l){ return _caisseMvtCorrespond(l.m, terme); });
+    if (!res.nbTotal && !terme) return; /* caisse muette sur la période : pas de carte, écran moins chargé */
+    if (terme && !lignesAffichees.length) return;
+
+    globalEntrees += lignesAffichees.filter(function(l){ return !l.m.requiert_validation || l.m.valide===true; }).filter(function(l){ return l.m.type==='entree'; }).reduce(function(s,l){ return s+(parseFloat(l.m.montant)||0); },0);
+    globalSorties += lignesAffichees.filter(function(l){ return !l.m.requiert_validation || l.m.valide===true; }).filter(function(l){ return l.m.type==='sortie'; }).reduce(function(s,l){ return s+(parseFloat(l.m.montant)||0); },0);
+    globalSoldeFin += res.soldeFin;
+    nbCaissesAvecMvt++;
+    nbMvtTotal += lignesAffichees.length;
+
+    var divNom = c.division_id ? _nomDivision(c.division_id) : '';
+    var rows = lignesAffichees.map(function(l){
+      var m = l.m;
+      return '<tr' + (l.effectif ? '' : ' style="opacity:.55;"') + '>'
+        + '<td>' + (m.date||'').slice(0,10) + '</td>'
+        + '<td>' + escHtml(m.numero||'') + '</td>'
+        + '<td>' + escHtml(m.motif||'') + (m.beneficiaire ? ' — ' + escHtml(m.beneficiaire) : '') + (m.requiert_validation && !m.valide && !m.rejete ? ' <span title="En attente de validation" style="color:var(--or);">🔐</span>' : '') + (m.rejete ? ' <span title="Rejeté" style="color:var(--rouge);">✖</span>' : '') + '</td>'
+        + '<td style="text-align:right;color:var(--vert);">' + (m.type==='entree' ? fmtF(m.montant) : '') + '</td>'
+        + '<td style="text-align:right;color:var(--rouge);">' + (m.type==='sortie' ? fmtF(m.montant) : '') + '</td>'
+        + '<td style="text-align:right;">' + (l.effectif ? fmtF(l.solde) : '<span style="color:var(--or);font-size:11px;">— en attente —</span>') + '</td>'
+        + '</tr>';
+    }).join('');
+    var totEntrRow = lignesAffichees.filter(function(l){ return (!l.m.requiert_validation || l.m.valide===true) && l.m.type==='entree'; }).reduce(function(s,l){ return s+(parseFloat(l.m.montant)||0); },0);
+    var totSortRow = lignesAffichees.filter(function(l){ return (!l.m.requiert_validation || l.m.valide===true) && l.m.type==='sortie'; }).reduce(function(s,l){ return s+(parseFloat(l.m.montant)||0); },0);
+
+    cartes += '<div class="card" style="margin-bottom:16px;">'
+      + '<div style="padding:12px 16px;border-bottom:1px solid var(--bord);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">'
+      + '<strong style="font-size:14px;">💰 ' + escHtml(c.nom) + (divNom ? ' <span style="font-size:11px;font-weight:400;color:var(--blanc-dim);">— ' + escHtml(divNom) + '</span>' : '') + '</strong>'
+      + '<span style="font-size:12px;color:var(--blanc-dim);">Solde en fin de période : <strong style="color:' + (res.soldeFin>=0?'var(--blanc)':'var(--rouge)') + ';">' + fmtF(res.soldeFin) + '</strong></span>'
+      + '</div>'
+      + '<div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>N° bon</th><th>Motif</th><th style="text-align:right;">Entrée</th><th style="text-align:right;">Sortie</th><th style="text-align:right;">Solde</th></tr></thead>'
+      + '<tbody><tr style="font-weight:700;background:rgba(255,255,255,0.04);"><td colspan="5">Solde d\'ouverture au ' + dateShort(debut) + '</td><td style="text-align:right;">' + fmtF(res.soldeOuverture) + '</td></tr>' + rows + '</tbody>'
+      + '<tfoot><tr style="font-weight:800;border-top:2px solid var(--bord);"><td colspan="3">Totaux' + (res.nbEnAttente>0 ? ' <span style="font-weight:400;font-size:11px;color:var(--or);">(' + res.nbEnAttente + ' en attente)</span>' : '') + '</td><td style="text-align:right;color:var(--vert);">' + fmtF(totEntrRow) + '</td><td style="text-align:right;color:var(--rouge);">' + fmtF(totSortRow) + '</td><td style="text-align:right;">' + fmtF(res.soldeFin) + '</td></tr></tfoot>'
+      + '</table></div></div>';
+  });
+
+  var resume = document.getElementById('compta-brl-resume');
+  if (resume) {
+    resume.innerHTML =
+        '<div class="kpi-card"><div class="kpi-label">Caisses avec mouvement</div><div class="kpi-value">' + nbCaissesAvecMvt + ' / ' + caisses.length + '</div></div>'
+      + '<div class="kpi-card"><div class="kpi-label">Mouvements affichés</div><div class="kpi-value">' + nbMvtTotal + '</div></div>'
+      + '<div class="kpi-card"><div class="kpi-label">Total entrées</div><div class="kpi-value" style="color:var(--vert);">' + fmtF(globalEntrees) + '</div></div>'
+      + '<div class="kpi-card"><div class="kpi-label">Total sorties</div><div class="kpi-value" style="color:var(--rouge);">' + fmtF(globalSorties) + '</div></div>'
+      + '<div class="kpi-card"><div class="kpi-label">Solde cumulé fin de période</div><div class="kpi-value">' + fmtF(globalSoldeFin) + '</div></div>';
+  }
+
+  box.innerHTML = cartes || ('<div class="alert alert-info">' + (terme ? 'Aucun mouvement ne correspond à « ' + escHtml(terme) + ' » sur cette période.' : 'Aucun mouvement de caisse sur la période sélectionnée.') + '</div>');
+}
+
+/* Impression consolidée — une section par caisse, même moteur d'états que
+   le reste de l'application (genererEtatPDF), jamais filtrée par la
+   recherche à l'écran : un document de contrôle imprimé doit toujours
+   représenter la période entière. */
+function comptaImprimerBrouillards() {
+  var selDiv = document.getElementById('compta-brl-division');
+  var division = selDiv ? selDiv.value : '';
+  var selCaisse = document.getElementById('compta-brl-caisse');
+  var caisseId = selCaisse ? selCaisse.value : '';
+  var caissesDiv = _cdCaissesDeDivision(division);
+  var caisses = caisseId ? caissesDiv.filter(function(c){ return c.id === caisseId; }) : caissesDiv;
+  var debut = (document.getElementById('compta-brl-debut')||{}).value || today().slice(0,8)+'01';
+  var fin = (document.getElementById('compta-brl-fin')||{}).value || today();
+
+  var contenu = '';
+  var globalEntrees = 0, globalSorties = 0;
+  caisses.forEach(function(c) {
+    var res = _brouillardCalculerPeriode(c.id, debut, fin);
+    if (!res.nbTotal) return;
+    var divNom = c.division_id ? _nomDivision(c.division_id) : '';
+    var rows = res.lignes.map(function(l){
+      var m = l.m;
+      return '<tr><td>' + (m.date||'').slice(0,10) + '</td><td>' + escHtml(m.numero||'') + '</td><td>' + escHtml(m.motif||'') + (m.beneficiaire?' — '+escHtml(m.beneficiaire):'') + '</td>'
+        + '<td class="num">' + (m.type==='entree'?fmtF(m.montant):'') + '</td><td class="num">' + (m.type==='sortie'?fmtF(m.montant):'') + '</td>'
+        + '<td class="num">' + (l.effectif ? fmtF(l.solde) : '—') + '</td></tr>';
+    }).join('');
+    globalEntrees += res.totalEntrees; globalSorties += res.totalSorties;
+    contenu += '<h4 style="margin:18px 0 6px;">💰 ' + escHtml(c.nom) + (divNom ? ' — ' + escHtml(divNom) : '') + '</h4>'
+      + '<table><thead><tr><th>Date</th><th>N° bon</th><th>Motif</th><th class="num">Entrée</th><th class="num">Sortie</th><th class="num">Solde</th></tr></thead><tbody>'
+      + '<tr style="font-weight:700;"><td colspan="5">Solde d\'ouverture au ' + dateShort(debut) + '</td><td class="num">' + fmtF(res.soldeOuverture) + '</td></tr>'
+      + rows
+      + '<tr class="total"><td colspan="3">Totaux</td><td class="num">' + fmtF(res.totalEntrees) + '</td><td class="num">' + fmtF(res.totalSorties) + '</td><td class="num">' + fmtF(res.soldeFin) + '</td></tr>'
+      + '</tbody></table>';
+  });
+  if (!contenu) { toast('Aucun mouvement à imprimer sur cette période.', 'error'); return; }
+  contenu = '<p style="margin-bottom:10px;">Total général — Entrées : <strong style="color:#16A34A;">' + fmtF(globalEntrees) + '</strong> · Sorties : <strong style="color:#DC2626;">' + fmtF(globalSorties) + '</strong></p>' + contenu;
+
+  genererEtatPDF({
+    titre: 'Brouillards de caisse — vue consolidée',
+    sousTitre: (division ? _nomDivision(division) : 'Toutes divisions') + ' — Période du ' + dateShort(debut) + ' au ' + dateShort(fin),
+    orientation: 'paysage', couleur: '#1D4ED8', contenu: contenu
+  });
 }
 
 function caisseRenderBrouillardSession(sessionId) {
