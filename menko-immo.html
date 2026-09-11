@@ -4820,7 +4820,9 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <button class="btn btn-secondary btn-sm" onclick="detectRelances()">🔄 Actualiser la liste</button>
         </div>
 
-        <div id="relances-stats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;"></div>
+        <div id="relances-stats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;"></div>
+
+        <div id="relances-tabs" class="tab-nav" style="margin-bottom:14px;"></div>
 
         <div class="card">
           <div class="table-wrap">
@@ -43350,22 +43352,46 @@ async function deleteEcriture(id) {
 /* ──────────────────────────────────────────────────────
    RELANCES
 ────────────────────────────────────────────────────── */
+/* [Niveaux de criticité] Un seul barème, réutilisé par les compteurs, les
+   onglets et le badge par ligne — évite que les seuils (2/3/6 mois)
+   dérivent d'un endroit à l'autre. */
+var RELANCE_NIVEAUX = [
+  { cle:'rappel',           min:0, label:'Rappel simple',    icone:'💬', badge:'badge-bleu',   couleur:'var(--bleu)' },
+  { cle:'lettre',            min:2, label:'Lettre de relance', icone:'📧', badge:'badge-or',     couleur:'var(--or)' },
+  { cle:'mise_en_demeure',   min:3, label:'Mise en demeure',   icone:'⚖️', badge:'badge-rouge',  couleur:'var(--rouge)' },
+  { cle:'resiliation',       min:6, label:'Résiliation',       icone:'🚫', badge:'badge-violet', couleur:'var(--violet)' }
+];
+function _relanceNiveauDe(moisRetard) {
+  var trouve = RELANCE_NIVEAUX[0];
+  for (var i = 0; i < RELANCE_NIVEAUX.length; i++) {
+    if (moisRetard >= RELANCE_NIVEAUX[i].min) trouve = RELANCE_NIVEAUX[i];
+  }
+  return trouve;
+}
+var _relancesNiveauActif = 'tous';
+function setRelancesNiveau(cle) {
+  _relancesNiveauActif = cle;
+  detectRelances();
+}
+
 function detectRelances() {
   var retards = getRetardataires();
   var stats = document.getElementById('relances-stats');
-  var niveaux = [0, 0, 0, 0]; // rappel, lettre, mise en demeure, résiliation
-  retards.forEach(function(r) {
-    if (r.moisRetard >= 6) niveaux[3]++;
-    else if (r.moisRetard >= 3) niveaux[2]++;
-    else if (r.moisRetard >= 2) niveaux[1]++;
-    else niveaux[0]++;
-  });
+  var compteurs = {};
+  RELANCE_NIVEAUX.forEach(function(n){ compteurs[n.cle] = 0; });
+  retards.forEach(function(r) { compteurs[_relanceNiveauDe(r.moisRetard).cle]++; });
 
-  var niveauLabels = ['💬 Rappel simple', '📧 Lettre de relance', '⚖️ Mise en demeure', '🚫 Résiliation'];
-  var niveauColors = ['var(--bleu)', 'var(--or)', 'var(--rouge)', 'var(--violet)'];
-  stats.innerHTML = niveaux.map(function(n, i) {
-    return '<div class="kpi-card" style="border-top-color:' + niveauColors[i] + ';"><div class="kpi-label">' + niveauLabels[i] + '</div><div class="kpi-value" style="color:' + niveauColors[i] + ';">' + n + '</div></div>';
+  stats.innerHTML = RELANCE_NIVEAUX.map(function(n) {
+    return '<div class="kpi-card" style="border-top-color:' + n.couleur + ';cursor:pointer;" onclick="setRelancesNiveau(\'' + n.cle + '\')" title="Filtrer sur ce niveau"><div class="kpi-label">' + n.icone + ' ' + n.label + '</div><div class="kpi-value" style="color:' + n.couleur + ';">' + compteurs[n.cle] + '</div></div>';
   }).join('');
+
+  var tabs = document.getElementById('relances-tabs');
+  if (tabs) {
+    tabs.innerHTML = '<button type="button" class="tab-btn' + (_relancesNiveauActif==='tous'?' active':'') + '" onclick="setRelancesNiveau(\'tous\')">📋 Tous (' + retards.length + ')</button>'
+      + RELANCE_NIVEAUX.map(function(n){
+          return '<button type="button" class="tab-btn' + (_relancesNiveauActif===n.cle?' active':'') + '" onclick="setRelancesNiveau(\'' + n.cle + '\')">' + n.icone + ' ' + n.label + ' (' + compteurs[n.cle] + ')</button>';
+        }).join('');
+  }
 
   var tbody = document.getElementById('tbody-relances');
   if (!retards.length) {
@@ -43373,14 +43399,17 @@ function detectRelances() {
     return;
   }
 
-  /* Recherche par nom : filtre uniquement les lignes affichées, pas les
-     compteurs de niveaux ci-dessus (qui restent une vue d'ensemble). */
+  /* Recherche par nom + onglet de niveau : filtrent uniquement les lignes
+     affichées, pas les compteurs ci-dessus (qui restent une vue d'ensemble
+     du portefeuille entier). */
   var searchRel = ((document.getElementById('search-relances')||{}).value || '').toLowerCase().trim();
-  var retardsAffiches = !searchRel ? retards : retards.filter(function(r){
-    return ((r.nom||'') + ' ' + (r.prenoms||'') + ' ' + (r.tel||'') + ' ' + (r.dossier||'')).toLowerCase().indexOf(searchRel) !== -1;
+  var retardsAffiches = retards.filter(function(r){
+    if (_relancesNiveauActif !== 'tous' && _relanceNiveauDe(r.moisRetard).cle !== _relancesNiveauActif) return false;
+    if (searchRel && ((r.nom||'') + ' ' + (r.prenoms||'') + ' ' + (r.tel||'') + ' ' + (r.dossier||'')).toLowerCase().indexOf(searchRel) === -1) return false;
+    return true;
   });
   if (!retardsAffiches.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--blanc-dim);padding:24px;">Aucun souscripteur en retard ne correspond à « ' + escHtml(searchRel) + ' ».</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--blanc-dim);padding:24px;">Aucun souscripteur en retard ne correspond à ce filtre' + (searchRel ? ' « ' + escHtml(searchRel) + ' »' : '') + '.</td></tr>';
     return;
   }
 
@@ -43388,15 +43417,14 @@ function detectRelances() {
     var client = DATA.clients.find(function(c) { return c.id === r.id; });
     var prog = client ? DATA.programmes.find(function(p) { return p.id === client.programme_id; }) : null;
     var lot = client ? DATA.lots.find(function(l) { return l.id === client.lot_id; }) : null;
-    var niveau = r.moisRetard >= 6 ? '🚫 Résiliation' : r.moisRetard >= 3 ? '⚖️ Mise en demeure' : r.moisRetard >= 2 ? '📧 Lettre' : '💬 Rappel';
-    var niveauBadge = r.moisRetard >= 6 ? 'badge-violet' : r.moisRetard >= 3 ? 'badge-rouge' : r.moisRetard >= 2 ? 'badge-or' : 'badge-bleu';
+    var n = _relanceNiveauDe(r.moisRetard);
     var lastRelance = DATA.relances.filter(function(rel) { return rel.client_id === r.id; }).sort(function(a, b) { return new Date(b.date) - new Date(a.date); })[0];
     return '<tr>'
       + '<td><strong>' + r.nom + ' ' + r.prenoms + '</strong><br><span style="font-size:11px;color:var(--blanc-dim);">' + r.tel + '</span></td>'
       + '<td>' + (prog ? prog.nom : '—') + (lot ? ' / Lot ' + lot.numero : '') + '</td>'
       + '<td style="color:var(--rouge);font-weight:bold;">' + r.moisRetard + ' mois</td>'
       + '<td style="color:var(--rouge);">' + fcfa(r.montantDu) + '</td>'
-      + '<td><span class="badge ' + niveauBadge + '">' + niveau + '</span></td>'
+      + '<td><span class="badge ' + n.badge + '">' + n.icone + ' ' + n.label + '</span></td>'
       + '<td style="font-size:11px;">' + (lastRelance ? dateShort(lastRelance.date) : 'Jamais') + '</td>'
       + '<td style="white-space:nowrap;">'
       + '<button class="btn btn-primary btn-sm" onclick="openRelanceModal(\'' + r.id + '\')">📨 Relancer</button> '
