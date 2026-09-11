@@ -78734,6 +78734,60 @@ function renderDossiersJuridiques() {
       + '</td>'
       + '</tr>';
   }).join('');
+  renderContratsJuridiques();
+  renderContentieuxJuridiques();
+}
+
+/* [FIX] Onglets « Contrats » et « Contentieux » jamais alimentés : le
+   premier affichait en permanence « Aucun contrat enregistré » (aucune
+   fonction ne touchait #contrats-jur-box), le second une table
+   #tbody-contentieux vide à vie — alors que les dossiers correspondants
+   existent bel et bien dans DATA.dossiersJuridiques (mêmes types que le
+   filtre de l'onglet « Dossiers actifs »). Réutilisation directe des mêmes
+   données, sans nouveau store. */
+function renderContratsJuridiques() {
+  var box = document.getElementById('contrats-jur-box');
+  if (!box) return;
+  var list = (DATA.dossiersJuridiques || []).filter(function(d){ return d.type === 'contrat_vente' || d.type === 'convention'; })
+    .sort(function(a,b){ return (b.date_ouv||'').localeCompare(a.date_ouv||''); });
+  if (!list.length) { box.innerHTML = 'Aucun contrat enregistré.'; return; }
+  var statMap = { ouvert:'badge-or', en_instruction:'badge-bleu', en_attente:'badge-violet', clos_favorable:'badge-vert', clos_defavorable:'badge-rouge' };
+  var typeLabel = { contrat_vente:'Contrat de vente', convention:'Convention constructeur' };
+  box.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Référence</th><th>Type</th><th>Objet</th><th>Interlocuteur</th><th>Date</th><th style="text-align:right;">Montant</th><th>Statut</th><th></th></tr></thead><tbody>'
+    + list.map(function(d) {
+        return '<tr>'
+          + '<td style="font-weight:700;color:var(--or);font-family:monospace;">' + escHtml(d.ref) + '</td>'
+          + '<td style="font-size:11px;">' + (typeLabel[d.type] || d.type) + '</td>'
+          + '<td>' + escHtml(d.objet) + '</td>'
+          + '<td style="font-size:12px;">' + escHtml(d.interlocuteur || '—') + '</td>'
+          + '<td style="font-size:11px;">' + (d.date_ouv || '—') + '</td>'
+          + '<td style="text-align:right;">' + (d.montant ? fmtF(d.montant) + ' F' : '—') + '</td>'
+          + '<td><span class="badge ' + (statMap[d.statut]||'badge-bleu') + '">' + d.statut.replace(/_/g,' ') + '</span></td>'
+          + '<td><button class="btn btn-secondary btn-sm btn-icon" title="Modifier" onclick="openDossierJuridique(\'' + d.id + '\')">✏️</button></td>'
+          + '</tr>';
+      }).join('')
+    + '</tbody></table></div>';
+}
+function renderContentieuxJuridiques() {
+  var tbody = document.getElementById('tbody-contentieux');
+  if (!tbody) return;
+  var list = (DATA.dossiersJuridiques || []).filter(function(d){ return d.type === 'contentieux'; })
+    .sort(function(a,b){ var pr={urgente:0,haute:1,normale:2,basse:3}; return (pr[a.priorite]||2)-(pr[b.priorite]||2); });
+  if (!list.length) { tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--blanc-dim);padding:24px;">Aucun contentieux en cours.</td></tr>'; return; }
+  var statMap = { ouvert:'badge-or', en_instruction:'badge-bleu', en_attente:'badge-violet', clos_favorable:'badge-vert', clos_defavorable:'badge-rouge' };
+  tbody.innerHTML = list.map(function(d) {
+    var audience = d.date_ech ? (new Date(d.date_ech) < new Date() ? '<span style="color:var(--rouge);">⚠ ' + d.date_ech + '</span>' : d.date_ech) : '—';
+    return '<tr>'
+      + '<td style="font-weight:700;color:var(--or);font-family:monospace;">' + escHtml(d.ref) + '</td>'
+      + '<td>' + escHtml(d.objet) + '</td>'
+      + '<td style="font-size:12px;">' + escHtml(d.interlocuteur || '—') + '</td>'
+      + '<td style="font-size:11px;">—</td>'
+      + '<td style="text-align:right;">' + (d.montant ? fmtF(d.montant) + ' F' : '—') + '</td>'
+      + '<td style="font-size:12px;">' + escHtml(d.avocat || '—') + '</td>'
+      + '<td style="font-size:11px;">' + audience + '</td>'
+      + '<td><span class="badge ' + (statMap[d.statut]||'badge-bleu') + '">' + d.statut.replace(/_/g,' ') + '</span></td>'
+      + '</tr>';
+  }).join('');
 }
 
 function openDossierJuridique(id) {
@@ -78774,6 +78828,7 @@ async function saveDossierJuridique() {
   if (APP.editingId){var idx=DATA.dossiersJuridiques.findIndex(function(x){return x.id===APP.editingId;});if(idx>=0)DATA.dossiersJuridiques[idx]=d;}
   else DATA.dossiersJuridiques.push(d);
   await dbPut('dossiersJuridiques', d);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_dossiers_juridiques', d);
   closeModal('modal-dossier-jur'); renderDossiersJuridiques();
   toast('Dossier juridique enregistré.', 'success');
 }
