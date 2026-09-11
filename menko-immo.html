@@ -25432,6 +25432,16 @@ var DEP_MAP = {
     {store:'cessions_foncieres', hard:true,  label:'cession(s)',            match:function(c,id){return c.source_type==='operation'&&c.source_id===id;}},
     {store:'lots',              field:'operation_id',   hard:false, label:'lot(s)'},
     {store:'parcelles',         field:'operation_id',   hard:false, label:'parcelle(s) liée(s)'}
+  ],
+  /* Un ouvrage supprimé sans ce garde-fou laissait les lignes de métré des
+     études de prix pointer vers un id inexistant : le déboursé de la ligne
+     retombait silencieusement à 0 (edsRenderLignes), faussant le prix de
+     revient/vente sans le moindre avertissement. Bloqué s'il est utilisé
+     dans une étude ; simplement détaché s'il ne sert qu'au regroupement
+     « Par ouvrage » d'une nomenclature DQE. */
+  eds_ouvrages: [
+    {store:'eds_etudes',   hard:true,  label:'étude(s) de prix', match:function(e,id){ return (e.lignes||[]).some(function(l){ return l.ouvrage_id===id; }); }},
+    {store:'nomenclatures', field:'ouvrage_id', hard:false, label:'poste(s) de nomenclature DQE lié(s)'}
   ]
 };
 function recordDependances(store, id){
@@ -95165,6 +95175,7 @@ async function edsSaveRealisation() {
     date: document.getElementById('eds-r-date').value || today()
   });
   await dbPut('eds_etudes', e);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_etudes', e);
   closeModal('modal-eds-realise');
   var ss = document.getElementById('eds-suivi-etude'); if (ss) ss.value = id;
   edsRenderSuivi();
@@ -95176,6 +95187,7 @@ async function edsDeleteRealisation(eid, rid) {
   if (!e) return;
   e.realisations = (e.realisations || []).filter(function(r) { return r.id !== rid; });
   await dbPut('eds_etudes', e);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_etudes', e);
   edsRenderSuivi();
 }
 
@@ -103480,7 +103492,16 @@ async function edsDeleteRes(id) {
   var used = (DATA.eds_ouvrages||[]).some(function(o){ return (o.composants||[]).some(function(c){return c.res_id===id;}); });
   if (used && !confirm('Cette ressource est liée à des ouvrages. Supprimer quand même ? (les composants repasseront en prix libre)')) return;
   if (!used && !confirm('Supprimer cette ressource ?')) return;
-  (DATA.eds_ouvrages||[]).forEach(function(o){ (o.composants||[]).forEach(function(c){ if(c.res_id===id){ c.res_id=null; } }); });
+  var ouvragesModifies = [];
+  (DATA.eds_ouvrages||[]).forEach(function(o){
+    var touche = false;
+    (o.composants||[]).forEach(function(c){ if(c.res_id===id){ c.res_id=null; touche=true; } });
+    if (touche) ouvragesModifies.push(o);
+  });
+  for (var i=0;i<ouvragesModifies.length;i++) {
+    await dbPut('eds_ouvrages', ouvragesModifies[i]);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_eds_ouvrages', ouvragesModifies[i]);
+  }
   DATA.eds_ressources = DATA.eds_ressources.filter(function(x){return x.id!==id;});
   if (typeof deleteRecord === 'function') await deleteRecord('eds_ressources', id);
   else await dbDelete('eds_ressources', id);
