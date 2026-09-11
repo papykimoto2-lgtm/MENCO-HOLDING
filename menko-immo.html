@@ -122227,6 +122227,30 @@ function caisseRenderBrouillardPeriode() {
 
   var res = _brouillardCalculerPeriode(caisseId, debut, fin);
 
+  /* [FIX] Rien dans la période sélectionnée ne veut pas dire « rien saisi » :
+     un mouvement dont la date a été mal saisie (ex. janvier au lieu du mois
+     réel) reste bel et bien enregistré, mais tombe hors de la période par
+     défaut (1er du mois courant → aujourd'hui) — le brouillard paraît alors
+     vide sans le moindre indice, laissant croire à une perte de saisie.
+     Cas réel observé (Caisse Building) : mouvements correctement liés à
+     leur session mais datés de plusieurs mois avant celle-ci. On détecte ce
+     cas en comparant au total réel de la caisse (toutes dates confondues)
+     et on oriente l'utilisateur vers la bonne période au lieu de le laisser
+     croire que sa saisie a disparu. */
+  if (!res.nbTotal && !CAISSE_UI.brouillardRecherche) {
+    var tousMvtsCaisse = (DATA.caisse_mouvements || []).filter(function(m){ return m.caisse_id === caisseId; });
+    if (tousMvtsCaisse.length) {
+      var datesTri = tousMvtsCaisse.map(function(m){ return (m.date||'').slice(0,10); }).filter(Boolean).sort();
+      var dateMin = datesTri[0], dateMax = datesTri[datesTri.length - 1];
+      tbl.innerHTML = '<div class="alert alert-warning" style="margin-top:8px;">'
+        + '⚠️ Aucun mouvement entre le ' + dateShort(debut) + ' et le ' + dateShort(fin) + ' — mais cette caisse compte bien <strong>' + tousMvtsCaisse.length + ' mouvement(s)</strong> au total, daté(s) du ' + dateShort(dateMin) + ' au ' + dateShort(dateMax) + '.'
+        + ' Si une saisie récente semble manquante, vérifiez sa date sur le bon (une erreur de saisie de date la sort de la période affichée) — elle n\'est pas perdue.'
+        + ' <button class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="document.getElementById(\'cb-periode-debut\').value=\'' + dateMin + '\';document.getElementById(\'cb-periode-fin\').value=\'' + dateMax + '\';caisseRenderBrouillardPeriode();">📅 Afficher toute la période (' + dateShort(dateMin) + ' → ' + dateShort(dateMax) + ')</button>'
+        + '</div>';
+      return;
+    }
+  }
+
   var terme = CAISSE_UI.brouillardRecherche;
   var lignesAffichees = [];
   var solde = res.soldeOuverture;
