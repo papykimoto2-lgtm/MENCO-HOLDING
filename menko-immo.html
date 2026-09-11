@@ -38641,6 +38641,13 @@ function _visaControles(list) {
   return ko;
 }
 
+/* Montant (total débit) d'une écriture — même calcul que le plafond de
+   validation, réutilisé ici pour l'affichage des listes du visa. */
+function _visaMontant(e) {
+  return ecrLignes(e).filter(function(l){ return l.sens === 'D'; })
+    .reduce(function(s,l){ return s + (parseFloat(l.montant) || 0); }, 0);
+}
+
 function ouvrirVisaEcritures() {
   var list = _visaPerimetre();
   var brouillon = list.filter(function(e){ return !ecrEstValidee(e); });
@@ -38648,13 +38655,41 @@ function ouvrirVisaEcritures() {
   var ko = _visaControles(list);
   var okIds = brouillon.filter(function(e){ return !ko.some(function(k){ return k.e.id === e.id; }); });
 
-  var corps = '<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;margin-bottom:10px;">'
+  /* ── Onglet Résumé ── */
+  var ongletResume = '<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;margin-bottom:14px;">'
     + '<div>Périmètre : <strong>' + list.length + '</strong> écriture(s)</div>'
     + '<div>✔ Validées : <strong style="color:var(--vert);">' + validees + '</strong></div>'
     + '<div>✎ Brouillard : <strong style="color:var(--or);">' + brouillon.length + '</strong></div>'
-    + '<div>⛔ Non visables : <strong style="color:var(--rouge);">' + ko.length + '</strong></div></div>';
+    + '<div>⛔ Non visables : <strong style="color:var(--rouge);">' + ko.length + '</strong></div></div>'
+    + '<div style="padding:10px 12px;background:var(--card2);border-left:3px solid var(--or);border-radius:4px;font-size:11.5px;line-height:1.6;">'
+    + '<strong style="color:var(--or);">Effet du visa</strong><br>'
+    + '• La pièce devient <strong>intangible</strong> : ni modification, ni suppression. Toute correction passe par une contre-passation.<br>'
+    + '• Le visa est horodaté et nominatif — il alimente le champ <em>ValidDate</em> du FEC exigé par la DGI.<br>'
+    + '• Seules les pièces équilibrées, sans ligne vide et sans compte de regroupement peuvent être visées.<br>'
+    + '• La dévalidation est réservée à l\'administrateur et reste tracée dans le journal des actions.'
+    + '</div>';
 
-  if (ko.length) {
+  /* ── Onglet À viser — jusqu'ici la liste n'était jamais montrée, seul le
+     compte l'était : on validait donc « à l'aveugle ». Permet de vérifier
+     QUOI sera figé avant de cliquer. ── */
+  var ongletAViser = !okIds.length
+    ? '<div class="alert alert-info" style="margin-top:8px;">Aucune écriture en brouillard visable sur ce périmètre.</div>'
+    : '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Journal</th><th>Pièce</th><th>Libellé</th><th style="text-align:right;">Montant</th></tr></thead><tbody>'
+      + okIds.slice(0, 200).map(function(e){
+          return '<tr><td style="font-size:11px;">' + dateShort(e.date) + '</td>'
+            + '<td style="font-size:11px;">' + escHtml(e.journal || '—') + '</td>'
+            + '<td style="font-family:monospace;font-size:10.5px;">' + escHtml(e.piece || e.ref || '—') + '</td>'
+            + '<td style="font-size:11.5px;">' + escHtml((e.libelle || '').slice(0, 60)) + '</td>'
+            + '<td style="text-align:right;font-size:11.5px;">' + fmtF(_visaMontant(e)) + ' F</td></tr>';
+        }).join('') + '</tbody></table></div>'
+      + (okIds.length > 200 ? '<div style="font-size:11px;color:var(--blanc-dim);margin-top:6px;">… et ' + (okIds.length - 200) + ' autre(s), non affichée(s) (toutes seront visées).</div>' : '');
+
+  /* ── Onglet Anomalies ── */
+  var ongletAnomalies;
+  if (!ko.length) {
+    ongletAnomalies = '<div class="alert alert-info" style="margin-top:8px;">✅ Aucune anomalie bloquante sur ce périmètre.</div>';
+  } else {
+    ongletAnomalies = '';
     /* [Diagnostic] Quand un même compte « de regroupement » bloque des
        dizaines/centaines de pièces d'un coup (cas typique : le compte de
        trésorerie caisse par défaut est devenu un préfixe d'un autre compte
@@ -38669,7 +38704,7 @@ function ouvrirVisaEcritures() {
     });
     var codesRegroupement = Object.keys(comptesRegroupement).sort(function(a,b){ return comptesRegroupement[b]-comptesRegroupement[a]; });
     if (codesRegroupement.length) {
-      corps += '<div style="margin-bottom:12px;padding:10px 12px;background:rgba(225,29,72,0.08);border-left:3px solid var(--rouge);border-radius:4px;font-size:12px;line-height:1.7;">'
+      ongletAnomalies += '<div style="margin-bottom:12px;padding:10px 12px;background:rgba(225,29,72,0.08);border-left:3px solid var(--rouge);border-radius:4px;font-size:12px;line-height:1.7;">'
         + '<strong style="color:var(--rouge);">🔎 Diagnostic — compte(s) à l\'origine du blocage</strong><br>'
         + codesRegroupement.map(function(code){
             var enfants = compteEnfantsDe(code);
@@ -38680,24 +38715,25 @@ function ouvrirVisaEcritures() {
           }).join('')
         + '</div>';
     }
-    corps += '<div style="font-weight:700;color:var(--rouge);font-size:12.5px;">Anomalies bloquantes — ces pièces ne peuvent pas être visées</div>'
-      + '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Pièce</th><th>Libellé</th><th>Anomalie</th><th></th></tr></thead><tbody>'
+    ongletAnomalies += '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Pièce</th><th>Libellé</th><th>Anomalie</th><th></th></tr></thead><tbody>'
       + ko.slice(0, 30).map(function(k){
           return '<tr><td style="font-size:11px;">' + dateShort(k.e.date) + '</td>'
             + '<td style="font-family:monospace;font-size:10.5px;">' + escHtml(k.e.piece || k.e.ref || '—') + '</td>'
             + '<td style="font-size:11.5px;">' + escHtml((k.e.libelle || '').slice(0, 50)) + '</td>'
             + '<td style="font-size:11px;color:var(--rouge);">' + escHtml(k.pb.join(' · ')) + '</td>'
             + '<td><button class="btn btn-secondary btn-sm btn-icon" onclick="_visaFermer();openEcritureModal(\'' + k.e.id + '\')">✏️</button></td></tr>';
-        }).join('') + '</tbody></table></div>';
+        }).join('') + '</tbody></table></div>'
+      + (ko.length > 30 ? '<div style="font-size:11px;color:var(--blanc-dim);margin-top:6px;">… et ' + (ko.length - 30) + ' autre(s) anomalie(s), non affichée(s).</div>' : '');
   }
 
-  corps += '<div style="margin-top:12px;padding:10px 12px;background:var(--card2);border-left:3px solid var(--or);border-radius:4px;font-size:11.5px;line-height:1.6;">'
-    + '<strong style="color:var(--or);">Effet du visa</strong><br>'
-    + '• La pièce devient <strong>intangible</strong> : ni modification, ni suppression. Toute correction passe par une contre-passation.<br>'
-    + '• Le visa est horodaté et nominatif — il alimente le champ <em>ValidDate</em> du FEC exigé par la DGI.<br>'
-    + '• Seules les pièces équilibrées, sans ligne vide et sans compte de regroupement peuvent être visées.<br>'
-    + '• La dévalidation est réservée à l\'administrateur et reste tracée dans le journal des actions.'
-    + '</div>';
+  var corps = '<div class="tab-nav" style="margin-bottom:14px;">'
+    + '<button class="tab-btn active" onclick="switchTab(\'visa\',\'resume\')">📊 Résumé</button>'
+    + '<button class="tab-btn" onclick="switchTab(\'visa\',\'aviser\')">✎ À viser <span class="badge" style="background:var(--card2);color:var(--or);">' + okIds.length + '</span></button>'
+    + '<button class="tab-btn" onclick="switchTab(\'visa\',\'anomalies\')">⛔ Anomalies' + (ko.length ? ' <span class="badge" style="background:rgba(225,29,72,0.15);color:var(--rouge);">' + ko.length + '</span>' : '') + '</button>'
+    + '</div>'
+    + '<div class="tab-pane active" id="tab-visa-resume">' + ongletResume + '</div>'
+    + '<div class="tab-pane" id="tab-visa-aviser">' + ongletAViser + '</div>'
+    + '<div class="tab-pane" id="tab-visa-anomalies">' + ongletAnomalies + '</div>';
 
   var el = document.getElementById('modal-visa');
   if (!el) { el = document.createElement('div'); el.className = 'modal-overlay'; el.id = 'modal-visa'; document.body.appendChild(el); }
