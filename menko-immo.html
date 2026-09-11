@@ -24547,7 +24547,11 @@ function iaaExecuterOutil(name, input) {
       if (!prog) return 'Programme introuvable: ' + input.programme;
       var plots = (DATA.lots || []).filter(function (l) { return l.programme_id === prog.id; });
       var caVendu = plots.filter(function (l) { return l.statut === 'vendu'; }).reduce(function (s, l) { return s + (parseFloat(l.prix) || 0); }, 0);
-      var couts = (DATA.chantier_couts || []).filter(function (c) { return c.programme_id === prog.id; }).reduce(function (s, c) { return s + (parseFloat(c.montant) || 0); }, 0);
+      /* chantier_couts se rattache au programme via convention_id, pas via
+         un programme_id propre (qu'il n'a pas) — sans cette résolution,
+         les coûts chantier étaient toujours à 0 dans cette réponse. */
+      var conventionsDuProg = (DATA.conventions || []).filter(function (c) { return c.programme_id === prog.id; }).map(function (c) { return c.id; });
+      var couts = (DATA.chantier_couts || []).filter(function (c) { return conventionsDuProg.indexOf(c.convention_id) !== -1; }).reduce(function (s, c) { return s + (parseFloat(c.montant) || 0); }, 0);
       return 'Programme: ' + prog.nom + '\nCA lots vendus: ' + fmtF(caVendu) + ' FCFA\nCoûts chantier enregistrés: ' + fmtF(couts) + ' FCFA\nMarge estimée: ' + fmtF(caVendu - couts) + ' FCFA';
     }
     if (name === 'dossiers_echeance') {
@@ -34400,7 +34404,14 @@ async function deleteProgramme(id) {
   for (var i = 0; i < concLies.length; i++) { await deleteRecord('conceptions', concLies[i].id, { skipIntegrity: true }); }
   var agrLies = (DATA.agrement_programme || []).filter(function(a) { return a.programme_id === id; });
   for (var i = 0; i < agrLies.length; i++) { await deleteRecord('agrement_programme', agrLies[i].id, { skipIntegrity: true }); }
-  var coutsLies = (DATA.chantier_couts || []).filter(function(c) { return c.programme_id === id; });
+  /* [FIX] chantier_couts n'a pas de programme_id propre — il se rattache au
+     programme via convention_id (voir edsImporterDepensesReelles, même
+     résolution). Filtrer directement sur programme_id ne trouvait donc
+     jamais rien. En pratique le garde-fou nbConv ci-dessus bloque déjà la
+     suppression tant qu'une convention existe, donc ce cas est rare —
+     mais gardé correct pour ne pas laisser un champ inexistant en place. */
+  var conventionsDuProgramme = (DATA.conventions || []).filter(function(c) { return c.programme_id === id; }).map(function(c) { return c.id; });
+  var coutsLies = (DATA.chantier_couts || []).filter(function(c) { return conventionsDuProgramme.indexOf(c.convention_id) !== -1; });
   for (var i = 0; i < coutsLies.length; i++) { await deleteRecord('chantier_couts', coutsLies[i].id, { skipIntegrity: true }); }
   var permisLies = (DATA.permis || []).filter(function(p) { return p.programme_id === id; });
   for (var i = 0; i < permisLies.length; i++) { await deleteRecord('permis', permisLies[i].id, { skipIntegrity: true }); }
