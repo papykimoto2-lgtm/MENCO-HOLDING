@@ -15,8 +15,10 @@
 //
 // 1. Identifiants normalisés. L'ancienne version ne retirait QUE les espaces :
 //    une fiche portant « +225 07 68 65 37 63 » ne répondait pas à « 0768653763 »
-//    et renvoyait 401 avec le bon code. On compare désormais des identifiants
-//    normalisés (indicatif ivoirien retiré, ponctuation ignorée, casse unifiée).
+//    et renvoyait 401 avec le bon code. La comparaison se fait désormais sur
+//    l'ensemble des écritures plausibles d'un même numéro — indicatif présent
+//    ou non, zéro national présent ou non, ponctuation quelconque — ce qui
+//    couvre aussi les numéros de la diaspora (voir identVariants).
 // 2. Tous les identifiants de la fiche sont acceptés. L'acteur ne sait pas si
 //    on attend son n° de dossier, son email ou son téléphone ; les trois
 //    fonctionnent quand ils figurent sur sa fiche.
@@ -92,32 +94,70 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 // ── Normalisation d'un identifiant ─────────────────────────────────────────
-// Les emails passent en minuscules ; les téléphones perdent leur indicatif et
-// leur mise en forme ; les raisons sociales perdent espaces et tirets.
-//
-// L'indicatif est retiré EXPLICITEMENT plutôt qu'en gardant les 10 derniers
-// chiffres : la Côte d'Ivoire a migré de 8 à 10 chiffres et les deux formats
-// coexistent dans les fiches anciennes. Sur un ancien numéro préfixé
-// (+225 07 79 10 75), un découpage aveugle des 10 derniers chiffres emporte
-// une partie de l'indicatif et produit un identifiant qui ne correspond plus
-// à rien.
-function normIdent(s: unknown): string {
+// Réduit une valeur à sa forme comparable : emails en minuscules, raisons
+// sociales sans espaces ni tirets, téléphones réduits à leurs chiffres.
+function normBase(s: unknown): string {
   const v = String(s ?? "").trim().toLowerCase();
   if (!v) return "";
   if (v.includes("@")) return v;
-
   // Ressemble-t-il à un téléphone (chiffres et ponctuation de mise en forme) ?
   if (!/^[\d\s+().-]+$/.test(v)) return v.replace(/[\s-]/g, "");
+  return v.replace(/\D/g, "");
+}
 
-  let digits = v.replace(/\D/g, "");
-  if (digits.length < 6) return digits;   // trop court : n° de dossier numérique
+// Indicatifs reconnus, essayés du plus long au plus court pour qu'un préfixe
+// court (« 1 ») ne morde jamais sur un indicatif long (« 225 »). Volontairement
+// limité aux pays réellement concernés — Côte d'Ivoire, sous-région, et les
+// destinations habituelles de la diaspora. Un indicatif absent d'ici n'est pas
+// une panne : le numéro reste comparable dans sa forme brute.
+const INDICATIFS = [
+  "225", "221", "223", "224", "226", "227", "228", "229", "233", "235", "237",
+  "212", "213", "216", "351", "352", "971",
+  "33", "32", "41", "44", "49", "39", "34", "31", "27", "30", "45", "46", "47",
+  "48", "90", "86", "1", "7",
+].sort((a, b) => b.length - a.length);
 
-  if (digits.startsWith("225") && digits.length > 10) digits = digits.slice(3);
-  // Autres indicatifs (diaspora : 33 France, 1 USA/Canada, 44 UK…) : on ne
-  // devine pas, on garde les 10 derniers chiffres si c'est manifestement long.
-  else if (digits.length > 11) digits = digits.slice(-10);
+// Un même numéro s'écrit de plusieurs façons légitimes, et le zéro de départ
+// ne se comporte PAS pareil d'un pays à l'autre :
+//   Côte d'Ivoire  +225 07 68 65 37 63  ↔  0768653763   (le 0 fait partie du n°)
+//   France         +33 6 12 34 56 78    ↔  0612345678   (le 0 est un préfixe
+//                                                        national, absent à
+//                                                        l'international)
+// Chercher UNE forme canonique oblige donc à connaître la règle de chaque pays.
+// On produit plutôt, des deux côtés de la comparaison, l'ensemble des formes
+// plausibles : deux valeurs correspondent dès que leurs ensembles se croisent.
+// C'est ce qui permet à un investisseur de la diaspora de saisir son numéro
+// comme il en a l'habitude, quelle que soit la façon dont sa fiche a été
+// remplie.
+function identVariants(s: unknown): string[] {
+  const base = normBase(s);
+  if (!base) return [];
+  // Email, raison sociale, n° de dossier alphanumérique : une seule forme.
+  if (!/^\d+$/.test(base)) return [base];
+  // Trop court pour être un téléphone : n° de dossier purement numérique.
+  if (base.length < 6) return [base];
 
-  return digits;
+  const out = new Set<string>();
+  const ajouter = (n: string) => {
+    if (n.length < 6) return;
+    out.add(n);
+    // Avec et sans le zéro national, puisqu'on ignore lequel des deux pays
+    // écrit le numéro stocké.
+    if (n.startsWith("0")) out.add(n.slice(1)); else out.add("0" + n);
+  };
+
+  ajouter(base);
+  for (const cc of INDICATIFS) {
+    if (!base.startsWith(cc)) continue;
+    const reste = base.slice(cc.length);
+    // Un indicatif n'est retenu que s'il laisse derrière lui un numéro national
+    // de longueur plausible : sans ce garde-fou, « 1 » rognerait le premier
+    // chiffre de numéros qui n'ont rien d'américain.
+    if (reste.length < 8 || reste.length > 10) continue;
+    ajouter(reste);
+    break;
+  }
+  return [...out];
 }
 
 // ── Carte des profils ──────────────────────────────────────────────────────
@@ -203,8 +243,8 @@ async function resolvePortalLogin(kind: string, ident: string, code: string): Pr
   const cfg = KINDS[kind];
   if (!cfg) return null;
 
-  const cible = normIdent(ident);
-  if (!cible || !code) return null;
+  const cibles = new Set(identVariants(ident));
+  if (!cibles.size || !code) return null;
 
   const rows = await fetchAllRows(cfg.table);
 
@@ -218,7 +258,9 @@ async function resolvePortalLogin(kind: string, ident: string, code: string): Pr
       if (!rec) continue;
       // On accepte n'importe lequel des identifiants présents sur la fiche :
       // l'acteur ne sait pas lequel on attend de lui.
-      const matches = cfg.identFields.some((f) => rec[f] && normIdent(rec[f]) === cible);
+      const matches = cfg.identFields.some(
+        (f) => rec[f] && identVariants(rec[f]).some((v) => cibles.has(v)),
+      );
       if (!matches) continue;
       if (!(await codeValide(rec, code))) continue;
 
@@ -252,7 +294,9 @@ Deno.serve(async (req) => {
   if (!KINDS[kind]) return json({ error: "unknown_kind" }, 400);
 
   const ip = req.headers.get("x-forwarded-for") || "0.0.0.0";
-  const rlKey = kind + "|" + ip + "|" + normIdent(ident);
+  // normBase et non une variante : la clé doit rester stable pour un même
+  // identifiant saisi, sans dépendre de l'ordre des variantes produites.
+  const rlKey = kind + "|" + ip + "|" + normBase(ident);
   if (blocked(rlKey)) return json({ error: "rate_limited" }, 429);
 
   let res: Resolution | null;
