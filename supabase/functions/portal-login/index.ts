@@ -4,12 +4,22 @@
 // scoped. Le hash du code ne quitte JAMAIS le serveur.
 //
 //   supabase functions deploy portal-login --no-verify-jwt
-//   supabase secrets set SB_URL=https://<projet>.supabase.co
-//   supabase secrets set SB_SERVICE_ROLE=<service_role_key>
-//   supabase secrets set SB_JWT_SECRET=<Settings ▸ API ▸ JWT secret>
 //
-// Le même fichier sert les deux instances (Zahara et Menco) : seuls les
-// secrets changent, jamais le code.
+// Secrets : les MÊMES que staff-login, déjà configurés sur le projet Menco —
+// voir staff-login/index.ts (SB_URL/SUPABASE_URL, SERVICE_ROLE_KEY/
+// SUPABASE_SERVICE_ROLE_KEY, SB_PROJECT_JWT_SECRET). Rien à créer.
+//
+// [FIX PORTAGE ZAHARA — SECRETS INTROUVABLES AU DÉMARRAGE]
+// Cette fonction lisait SB_SERVICE_ROLE et SB_JWT_SECRET, deux noms qui ne
+// correspondent à AUCUN de ceux réellement configurés sur le projet (seul
+// staff-login a été déployé avec des secrets, sous d'autres noms). Les trois
+// constantes étaient donc évaluées à `undefined!` au chargement du module,
+// AVANT tout try/catch et avant le moindre `return json(...)` : la fonction
+// plantait au cold-start, sans en-têtes CORS, et le navigateur ne voyait
+// qu'une erreur CORS opaque — symptôme observé en production sur Zahara
+// (même cause, même correctif, appliqué le 15/09/2026). On retient les noms
+// confirmés fonctionnels par staff-login, avec repli sur les variables
+// SUPABASE_* injectées d'office par la plateforme.
 //
 // CE QUI CHANGE PAR RAPPORT À LA VERSION PRÉCÉDENTE
 //
@@ -46,14 +56,12 @@
 // qu'une cession. Corriger cela suppose de renvoyer une liste et d'adapter
 // l'écran correspondant du portail.
 // ═══════════════════════════════════════════════════════════════════════════
-import { create, getNumericDate } from "https://deno.land/x/djwt@v3.0.2/mod.ts";
-
-const SB_URL = Deno.env.get("SB_URL")!;
-const SB_SERVICE_ROLE = Deno.env.get("SB_SERVICE_ROLE")!;
-const SB_JWT_SECRET = Deno.env.get("SB_JWT_SECRET")!;
+const SB_URL = Deno.env.get("SB_URL") ?? Deno.env.get("SUPABASE_URL")!;
+const SB_SERVICE_ROLE = Deno.env.get("SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SB_JWT_SECRET = Deno.env.get("SB_PROJECT_JWT_SECRET")!;
 
 const CORS = {
-  "Access-Control-Allow-Origin": "*", // ⚠️ restreindre au domaine du portail en prod
+  "Access-Control-Allow-Origin": "https://erp-menko-holding.com",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "content-type, apikey, authorization",
 };
@@ -75,6 +83,28 @@ function blocked(k: string) {
 function fail(k: string) {
   const e = ATTEMPTS.get(k), now = Date.now();
   if (!e || now - e.t > WINDOW_MS) ATTEMPTS.set(k, { n: 1, t: now }); else e.n++;
+}
+
+// ── Signature du jeton — implémentation locale, sans dépendance externe ────
+// Identique à staff-login/index.ts (fonction confirmée fonctionnelle en
+// production sur ce projet) : un import distant (ex. deno.land/x/djwt) ajoute
+// un point de défaillance au cold-start (résolution DNS, disponibilité du
+// CDN) qui n'a pas sa place dans un chemin d'authentification.
+function base64url(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+async function signSupabaseJwt(payload: Record<string, unknown>): Promise<string> {
+  const enc = new TextEncoder();
+  const header = { alg: "HS256", typ: "JWT" };
+  const headerB64 = base64url(enc.encode(JSON.stringify(header)));
+  const payloadB64 = base64url(enc.encode(JSON.stringify(payload)));
+  const signingInput = `${headerB64}.${payloadB64}`;
+  const key = await crypto.subtle.importKey(
+    "raw", enc.encode(SB_JWT_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
+  return `${signingInput}.${base64url(new Uint8Array(sig))}`;
 }
 
 // ── Empreinte du code ──────────────────────────────────────────────────────
@@ -325,15 +355,13 @@ Deno.serve(async (req) => {
 
   if (res.expiration && new Date(res.expiration) < new Date()) return json({ error: "expired" }, 403);
 
-  const key = await crypto.subtle.importKey(
-    "raw", new TextEncoder().encode(SB_JWT_SECRET),
-    { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
-  );
+  const nowSec = Math.floor(Date.now() / 1000);
   const claims: Record<string, unknown> = {
     aud: "authenticated",
     role: "authenticated",
     sub: res.id,
-    exp: getNumericDate(2 * 60 * 60),
+    iat: nowSec,
+    exp: nowSec + 2 * 60 * 60,
     // Anciens claims — lus par portal_rls.sql. Ne pas retirer.
     kind: res.kind,
     scope_id: res.id,
@@ -341,7 +369,7 @@ Deno.serve(async (req) => {
     portal_kind: res.kind,
     [res.idClaim]: res.id,
   };
-  const token = await create({ alg: "HS256", typ: "JWT" }, claims, key);
+  const token = await signSupabaseJwt(claims);
 
   return json({
     access_token: token,

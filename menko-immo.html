@@ -25163,8 +25163,25 @@ function saveIAConfig() {
   toast(k ? '🤖 Clé IA enregistrée.' : '🤖 Clé IA effacée.', k ? 'success' : 'info');
 }
 
+/* Projet Supabase de ce déploiement : lu une seule fois depuis l'écran de
+   configuration (#cfg-url / #cfg-key), qui porte déjà ces valeurs. Rien n'est
+   dupliqué ici — une seule source dans le fichier, donc rien à maintenir en
+   double le jour où le projet change. Les renseigner évite de reconfigurer
+   chaque poste à la main : la synchro est active dès la première ouverture.
+   Un réglage saisi dans Paramètres reste prioritaire, et le mode local
+   volontaire est respecté (voir getSBConfig). */
 var SB_URL_DEFAUT = '';
 var SB_KEY_DEFAUT = '';
+(function _sbDefautsDepuisEcranConfig(){
+  function lire(){
+    var u=document.getElementById('cfg-url'), k=document.getElementById('cfg-key');
+    var vu=u?String(u.value||'').trim():'', vk=k?String(k.value||'').trim():'';
+    if(/^https?:\/\/[^ ]+\.supabase\.co\/?$/i.test(vu)) SB_URL_DEFAUT=vu;
+    if(vk.length>20) SB_KEY_DEFAUT=vk;
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',lire);
+  else lire();
+})();
 /* ══════════════════════════════════════════════════════════════════
    SESSION DU PERSONNEL
    La clé anonyme est publique : elle figure en clair dans le portail
@@ -25266,8 +25283,14 @@ function getSBConfig() {
      (ex. la clé collée par erreur dans le champ URL), on ignore les valeurs
      sauvegardées. */
   if (!/^https?:\/\/[^ ]+\.supabase\.co\/?$/i.test(u)) { u = ''; k = ''; }
-  /* Aucun repli automatique : tant qu'aucune config société valide n'est saisie
-     dans Paramètres ⚙️, l'app reste en mode local (IndexedDB uniquement). */
+  /* Repli sur le projet du déploiement quand aucun réglage n'a été saisi : la
+     synchro est active sans configuration poste par poste. Le mode local reste
+     possible, mais seulement s'il a été CHOISI (« Continuer sans Supabase » ou
+     « Effacer la configuration ») — jamais par simple absence de réglage, qui
+     laissait les données prisonnières d'un seul navigateur. */
+  if ((!u || !k) && localStorage.getItem('sb_mode') !== 'local' && SB_URL_DEFAUT && SB_KEY_DEFAUT) {
+    u = SB_URL_DEFAUT; k = SB_KEY_DEFAUT;
+  }
   SB.url = u.replace(/\/+$/, '');
   SB.key = k;
 }
@@ -25276,7 +25299,18 @@ function getSBConfig() {
 async function fetchUserFromCloud(login) {
   if (!SB.url || !SB.key || !navigator.onLine) return null;
   try {
-    var rows = await sbFetch('pi_users?login=eq.' + encodeURIComponent(login) + '&select=*&limit=1', 'GET');
+    /* [FIX connexion aléatoire] Sans ORDER BY, 'limit=1' renvoie une ligne au
+       choix de Postgres — non déterministe — dès qu'un même login existe en
+       double (plusieurs comptes créés par erreur pour le même identifiant,
+       cas rencontré en production). Résultat vécu : les MÊMES identifiants
+       étaient acceptés une fois et refusés la suivante, selon la ligne
+       renvoyée par hasard, chacune ayant potentiellement un mot de passe
+       différent. On prend désormais systématiquement le compte le plus
+       récemment modifié — cohérent avec la logique "cloud le plus récent
+       gagne" déjà appliquée juste après par doLogin(). Ne résout pas les
+       doublons existants (à nettoyer côté Paramètres → Utilisateurs), mais
+       rend le comportement stable au lieu d'aléatoire en attendant. */
+    var rows = await sbFetch('pi_users?login=eq.' + encodeURIComponent(login) + '&select=*&order=updated_at.desc.nullslast&limit=1', 'GET');
     return (rows && rows.length) ? rows[0] : null;
   } catch (e) { return null; }
 }
@@ -25285,6 +25319,7 @@ function saveConfig() {
   var url = document.getElementById('cfg-url').value.trim();
   var key = document.getElementById('cfg-key').value.trim();
   if (!url || !key) { alert('Veuillez remplir les deux champs.'); return; }
+  localStorage.removeItem('sb_mode');
   localStorage.setItem('sb_url', url);
   localStorage.setItem('sb_key', key);
   SB.url = url; SB.key = key;
@@ -25293,6 +25328,10 @@ function saveConfig() {
 }
 
 function skipConfig() {
+  /* Choix explicite du mode local : mémorisé, sinon getSBConfig() rebrancherait
+     la synchro par défaut à la prochaine ouverture. */
+  localStorage.setItem('sb_mode', 'local');
+  SB.url = ''; SB.key = '';
   document.getElementById('config-overlay').style.display = 'none';
   startApp();
 }
@@ -46631,6 +46670,7 @@ function saveSupabaseConfig() {
   var url = document.getElementById('param-sb-url').value.trim();
   var key = document.getElementById('param-sb-key').value.trim();
   if (!url || !key) { toast('Veuillez remplir les deux champs.', 'error'); return; }
+  localStorage.removeItem('sb_mode');
   localStorage.setItem('sb_url', url);
   localStorage.setItem('sb_key', key);
   SB.url = url; SB.key = key;
@@ -46640,6 +46680,7 @@ function saveSupabaseConfig() {
 
 function clearSupabaseConfig() {
   if (!confirm('Effacer la configuration Supabase ? L\'application passera en mode local.')) return;
+  localStorage.setItem('sb_mode', 'local');
   localStorage.removeItem('sb_url');
   localStorage.removeItem('sb_key');
   SB.url = ''; SB.key = '';
@@ -46661,6 +46702,9 @@ function updateSBStatusBadge() {
   if (url && key) {
     badge.style.display = 'block';
     badge.innerHTML = '<span style="color:#16a34a;font-weight:600;">● Connecté — ' + url + '</span>';
+  } else if (SB.url && SB.key) {
+    badge.style.display = 'block';
+    badge.innerHTML = '<span style="color:#16a34a;font-weight:600;">● Connecté — ' + SB.url + ' (projet par défaut)</span>';
   } else {
     badge.style.display = 'block';
     badge.innerHTML = '<span style="color:#dc2626;font-weight:600;">● Mode local — aucune config Supabase</span>';
