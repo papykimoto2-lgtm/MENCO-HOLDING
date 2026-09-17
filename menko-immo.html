@@ -17491,7 +17491,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                que de compter sur une déduction après coup. ── -->
           <div class="form-group span-2">
             <label>🏗️ Nature du bien *</label>
-            <select class="form-control" id="c-nature-manuel" onchange="updateNatureBienUI((DATA.lots||[]).find(function(l){return l.id===document.getElementById('c-lot').value;}));updateLotsByProgramme(true)" style="font-weight:700;">
+            <select class="form-control" id="c-nature-manuel" onchange="updateNatureBienUI((DATA.lots||[]).find(function(l){return l.id===document.getElementById('c-lot').value;}))" style="font-weight:700;">
               <option value="auto">— Auto / Tous les lots (à défaut, choisissez ci-dessous) —</option>
               <option value="terrain">🗺️ Terrain nu (parcelle)</option>
               <option value="maison">🏠 Logement (bâti)</option>
@@ -48690,22 +48690,29 @@ function updateLotsByProgramme(gardeSelection) {
      pouvaient être enregistrés sur le même lot (double vente). */
   var editingClientId = APP.editingId || null;
   var estLibrePourEdition = function(l) { return !l.client_id || l.client_id === editingClientId; };
-  /* [FIX UX] Filtre par nature choisie manuellement — utile sur un programme
-     à des centaines/milliers de lots (ex. lotissement de 2000+ parcelles) où
-     chercher un terrain nu au milieu des logements bâtis serait impraticable. */
-  var natureManuelle = (document.getElementById('c-nature-manuel')||{}).value || 'auto';
-  var correspondNature = function(l) {
-    if (natureManuelle === 'auto') return true;
-    return natureManuelle === 'terrain' ? l.nature === 'terrain' : l.nature !== 'terrain';
-  };
+  /* Le contenu de ce sélecteur ne dépend QUE du Programme choisi.
+     Un filtre par « Nature du bien » s'appliquait auparavant à la population :
+     choisir « Terrain nu » retirait de la liste tous les lots bâtis, et
+     inversement. Deux contrôles pilotaient donc un même champ, avec une
+     conséquence difficile à diagnostiquer : un lot pourtant rattaché au bon
+     programme restait introuvable tant que la nature n'était pas remise sur
+     « Auto », sans que rien ne l'indique. Le pire cas venait des lots dont le
+     champ nature n'est pas renseigné : ils étaient traités comme du bâti et
+     disparaissaient dès qu'on sélectionnait « Terrain nu ». Le sélecteur
+     Nature reste à sa place et garde son rôle — qualifier le dossier et
+     primer sur la déduction faite depuis le lot (voir updateNatureBienUI) —
+     mais il ne retire plus aucun lot de la liste.
+     Les seuls autres écarts de population sont les lots vendus et ceux
+     réservés par un AUTRE souscripteur : ils restent AFFICHÉS, dans leur
+     propre groupe, simplement non sélectionnables — c'est le garde-fou
+     anti-double-vente, pas un filtre : aucun lot du programme n'est masqué. */
   var dispo = lotsProg.filter(function(l) {
-    if (!correspondNature(l)) return false;
     if (l.statut === 'vendu') return false;
     if (l.statut === 'reserve') return estLibrePourEdition(l);
     return true; /* disponible ou statut vide */
   });
-  var vendus = lotsProg.filter(function(l) { return l.statut === 'vendu' && correspondNature(l); });
-  var reservesAutrui = lotsProg.filter(function(l) { return l.statut === 'reserve' && !estLibrePourEdition(l) && correspondNature(l); });
+  var vendus = lotsProg.filter(function(l) { return l.statut === 'vendu'; });
+  var reservesAutrui = lotsProg.filter(function(l) { return l.statut === 'reserve' && !estLibrePourEdition(l); });
   if (APP.editingId) {
     var editClient = DATA.clients.find(function(c) { return c.id === APP.editingId; });
     if (editClient && editClient.lot_id) {
@@ -48752,7 +48759,7 @@ function updateLotsByProgramme(gardeSelection) {
   dispo.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
   vendus.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
   reservesAutrui.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
-  var html = '<option value="">— Choisir un lot (' + dispo.length + ' dispo / ' + lotsProg.length + ' au total' + (natureManuelle!=='auto' ? ', filtré par nature' : '') + ') —</option>';
+  var html = '<option value="">— Choisir un lot (' + dispo.length + ' dispo / ' + lotsProg.length + ' au total) —</option>';
   html += dispo.map(fmt).join('');
   if (reservesAutrui.length) {
     html += '<optgroup label="Déjà réservés par un autre souscripteur (' + reservesAutrui.length + ', non sélectionnables)">'
