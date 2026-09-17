@@ -61,8 +61,11 @@
 -- journaux dans des colonnes plates absentes du schéma jsonb, donc une
 -- connexion serveur réussie ne laisse aucune trace. Il reste que rien ne
 -- prouve aujourd'hui qu'un jeton app_role atteigne PostgREST sur Menco.
--- À lever en déployant staff-login v7 (le dépôt est à jour, pas la
--- production) puis en revérifiant ce compteur.
+-- staff-login v7 a été déployée sur Menco le 17/09/2026, ce qui répare la
+-- journalisation : le compteur devient exploitable à partir de la première
+-- connexion post-déploiement. À revérifier alors — tant qu'il vaut 0, la
+-- chaîne reste non prouvée sur cette instance. Cela ne libère PAS le pilote
+-- pour autant : le blocage ci-dessus est indépendant de staff-login.
 --
 -- ✅ CE QUI EST DÉJÀ VÉRIFIÉ — la condition elle-même est bonne
 -- Testée sur Menco le 17/09/2026 avec de vrais jeux de claims :

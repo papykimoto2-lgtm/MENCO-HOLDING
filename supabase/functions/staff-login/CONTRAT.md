@@ -12,16 +12,19 @@ Sources déployées, récupérées et déposées à côté de ce fichier :
 | Instance | Projet | Version | Fichier |
 |---|---|---|---|
 | Zahara | `ilvusckdanwrckxqvhmr` | **v7** | `functions/staff-login/index.ts` (dépôt Zahara) |
-| Menco | `pxwgefdxgrskusjbzrxz` | **v7** (source — ⚠️ **v4 encore déployée**) | `functions/staff-login/index.ts` (dépôt Menco) |
+| Menco | `pxwgefdxgrskusjbzrxz` | **v7** (déployée le 17/09/2026) | `functions/staff-login/index.ts` (dépôt Menco) |
 
-> **État au 17/09/2026 — portage v4 → v7 effectué dans le dépôt Menco.**
+> **État au 17/09/2026 — portage v4 → v7 effectué ET DÉPLOYÉ sur Menco.**
 > Le code des deux instances est désormais **identique à l'origine CORS près**,
-> seule divergence légitime (voir §3). Les deux défauts v4 décrits plus bas
-> sont corrigés dans la source ; la description historique est conservée
-> plutôt qu'effacée, car **la v4 reste la version déployée sur
-> `pxwgefdxgrskusjbzrxz` jusqu'au prochain `Deploy`** — tant que ce déploiement
-> n'a pas eu lieu, le comportement décrit en §3 est celui observé en production
-> sur Menco.
+> seule divergence légitime (voir §3), dans le dépôt comme en production.
+> Le déploiement a été fait le 17/09/2026 sur `pxwgefdxgrskusjbzrxz` (compteur
+> Supabase : version 5), et la source servie a été reliue pour confirmer
+> qu'elle correspond octet pour octet à ce fichier. Aucun secret n'a été
+> ajouté ni modifié : la v7 lit exactement les mêmes que la v4.
+>
+> La description des défauts v4 est conservée plutôt qu'effacée : elle
+> documente ce qui a été réparé, et elle explique pourquoi l'audit des
+> connexions serveur est vide pour toute la période antérieure.
 
 ---
 
@@ -159,11 +162,19 @@ monde pendant 24 h — et faisaient retomber l'ERP entier sur la clé anon.
 
 ### Reste à faire
 
-- [ ] **Déployer** la v7 sur `pxwgefdxgrskusjbzrxz` (Supabase Dashboard →
-  Edge Functions → staff-login → Deploy). Le dépôt est à jour, la production
-  non.
-- [ ] Nettoyer les doublons de `pi_users` (Paramètres → Utilisateurs) : la v7
-  rend la connexion possible malgré eux, elle ne les supprime pas.
+- [x] **Déployer** la v7 sur `pxwgefdxgrskusjbzrxz` — fait le 17/09/2026.
+- [x] `portal-login` déployé le même jour (version 2) : 9 profils au lieu de 7,
+  lecture paginée, normalisation des numéros, claims `kind`/`scope_id`
+  rétablis. Les 9 tables cibles ont été vérifiées présentes sur le projet.
+- [ ] **Vérifier après la première connexion réelle** que le compteur de
+  connexions serveur décolle enfin :
+  `select count(*) from pi_logs_connexion where data->>'src'='srv'`.
+  Il valait 0 avant ce déploiement, la v4 écrivant dans des colonnes
+  inexistantes. Un zéro persistant après connexion signifierait que
+  `SB_PROJECT_JWT_SECRET` est absent ou erroné.
+- [ ] Nettoyer les doublons de `pi_users` : aucun sur Menco aujourd'hui
+  (26 comptes, 0 doublon — vérifié), mais la v7 les rend non bloquants si
+  le cas se présente.
 
 ---
 
