@@ -17523,10 +17523,25 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           </div>
           <div class="form-group span-2">
             <label>Lot *</label>
+            <!-- Recherche CONTEXTUELLE : elle ne cherche que dans les lots du
+                 programme choisi ci-dessus, et ne fait que restreindre l'affichage.
+                 Utile sur un morcellement de plusieurs milliers de parcelles,
+                 où dérouler la liste n'est pas praticable. -->
+            <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+              <input type="search" class="form-control" id="c-lot-recherche" autocomplete="off"
+                     placeholder="🔎 Rechercher dans les lots de ce programme — n°, îlot, type, surface…"
+                     oninput="lotRendreOptions(this.value)"
+                     onkeydown="if(event.key==='Escape'){this.value='';lotRendreOptions('');}"
+                     style="flex:1;font-size:12px;">
+              <button type="button" class="btn btn-secondary btn-sm" title="Effacer la recherche"
+                      onclick="var c=document.getElementById('c-lot-recherche'); if(c){c.value='';} lotRendreOptions('');"
+                      style="white-space:nowrap;">✕</button>
+            </div>
             <select class="form-control" id="c-lot" onchange="onClientLotChange()">
               <option value="">— Choisir —</option>
             </select>
             <div id="c-lot-diag" style="display:none;"></div>
+            <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">La liste reste celle du programme choisi ; la recherche n'en restreint que l'affichage. Le lot déjà sélectionné y demeure toujours visible.</div>
           </div>
           <div class="form-group span-2">
             <label>Autres lots de ce souscripteur (même programme, même échéancier/montant total)</label>
@@ -48751,15 +48766,99 @@ function updateLotsByProgramme(gardeSelection) {
   }
   var wrapDiag2 = document.getElementById('c-lot-diag');
   if (wrapDiag2) { wrapDiag2.style.display = 'none'; wrapDiag2.innerHTML = ''; }
+  dispo.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
+  vendus.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
+  reservesAutrui.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
+
+  /* Contexte de rendu conserve. La recherche contextuelle ci-dessous ne refait
+     AUCUN calcul de population : elle ne restreint que l'affichage de cet
+     ensemble, lequel reste determine par le seul Programme. */
+  APP._lotContexte = { dispo: dispo, vendus: vendus, reservesAutrui: reservesAutrui, total: lotsProg.length };
+
+  var champRech = document.getElementById('c-lot-recherche');
+  /* Le terme de recherche n'est conserve que sur un simple rafraichissement.
+     Un changement de programme change le contexte : garder l'ancien terme
+     masquerait d'entree la quasi-totalite des lots du nouveau programme. */
+  var terme = (gardeSelection && champRech) ? champRech.value : '';
+  if (champRech && !gardeSelection) champRech.value = '';
+  lotRendreOptions(terme, selectionPrecedente);
+
+  if (typeof updateLotsSupplementairesSelect === 'function') updateLotsSupplementairesSelect();
+}
+
+/* Recherche contextuelle dans « Lot * » — purement un filtre d'AFFICHAGE.
+   L'ensemble parcouru est celui qu'a produit updateLotsByProgramme pour le
+   programme choisi, et rien d'autre : la regle « la population ne depend que
+   du Programme » reste entiere. Champ vide, liste entiere.
+
+   Le lot deja selectionne est toujours conserve dans la liste, meme s'il ne
+   correspond pas au terme : sans cela le <select> perdrait silencieusement sa
+   valeur des la premiere frappe, et le dossier partirait a l'enregistrement
+   sans lot rattache. */
+function lotRendreOptions(terme, selectionForcee) {
+  var lotSelect = document.getElementById('c-lot');
+  var ctx = APP._lotContexte;
+  if (!lotSelect || !ctx) return;
+  var selectionCourante = selectionForcee || lotSelect.value || '';
+
+  /* Comparaison insensible a la casse ET aux accents : « ilot » trouve
+     « Îlot », « duplex » trouve « Duplex ». */
+  var norm = function(v) {
+    var t = String(v == null ? '' : v).toLowerCase();
+    return t.normalize ? t.normalize('NFD').replace(/[\u0300-\u036f]/g, '') : t;
+  };
+  var mots = norm(terme).split(/\s+/).filter(Boolean);
+  /* La fiche est decoupee en MOTS, pas laissee en une seule chaine. Un simple
+     indexOf sur la chaine entiere rendait la recherche inutilisable des qu'on
+     tapait peu de lettres : « ilot b » remontait tous les lots, parce que « b »
+     se trouve dans « disponible ». */
+  var motsLot = function(l) {
+    return norm([l.numero, l.ilot ? 'ilot ' + l.ilot : '', l.type, l.nature, l.statut,
+                 l.surface ? Math.round(l.surface) + ' m2' : ''].join(' '))
+           .split(/[^a-z0-9]+/).filter(Boolean);
+  };
+  /* Regle de correspondance, par mot saisi :
+       · un mot de chiffres correspond en SOUS-CHAINE d'un mot de la fiche,
+         parce qu'un numero se cherche par fragment — « 12 » doit trouver le
+         lot 012 comme le lot 120 ;
+       · un mot de lettres correspond en DEBUT d'un mot de la fiche, jamais au
+         milieu — « b » trouve l'ilot B, pas « disponible », et « vil » trouve
+         « Villa » sans remonter tout le programme.
+     Tous les mots saisis doivent correspondre, dans n'importe quel ordre :
+     « 12 duplex » et « duplex 12 » donnent le meme resultat. */
+  var correspondMot = function(mots_fiche, m) {
+    var numerique = /^[0-9]+$/.test(m);
+    return mots_fiche.some(function(t) {
+      return numerique ? t.indexOf(m) !== -1 : t.indexOf(m) === 0;
+    });
+  };
+  var correspond = function(l) {
+    if (!mots.length) return true;
+    if (l.id === selectionCourante) return true;
+    var mf = motsLot(l);
+    return mots.every(function(m) { return correspondMot(mf, m); });
+  };
+
+  var dispo = ctx.dispo.filter(correspond);
+  var reservesAutrui = ctx.reservesAutrui.filter(correspond);
+  var vendus = ctx.vendus.filter(correspond);
+
   var fmt = function(l){
     return '<option value="' + l.id + '">Lot ' + l.numero + (l.ilot ? ' / Îlot ' + l.ilot : '')
       + (l.surface ? ' — ' + Math.round(l.surface) + ' m²' : '')
       + ' — ' + (l.type || '') + ' — ' + new Intl.NumberFormat('fr-FR').format(l.prix || 0) + ' FCFA</option>';
   };
-  dispo.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
-  vendus.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
-  reservesAutrui.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
-  var html = '<option value="">— Choisir un lot (' + dispo.length + ' dispo / ' + lotsProg.length + ' au total) —</option>';
+
+  var trouves = dispo.length + reservesAutrui.length + vendus.length;
+  var entete;
+  if (!mots.length) {
+    entete = '— Choisir un lot (' + ctx.dispo.length + ' dispo / ' + ctx.total + ' au total) —';
+  } else if (!trouves) {
+    entete = '— Aucun lot ne correspond à « ' + escHtml(terme) + ' » —';
+  } else {
+    entete = '— ' + trouves + ' lot(s) trouvé(s) sur ' + ctx.total + ' (' + dispo.length + ' sélectionnable(s)) —';
+  }
+  var html = '<option value="">' + entete + '</option>';
   html += dispo.map(fmt).join('');
   if (reservesAutrui.length) {
     html += '<optgroup label="Déjà réservés par un autre souscripteur (' + reservesAutrui.length + ', non sélectionnables)">'
@@ -48776,10 +48875,10 @@ function updateLotsByProgramme(gardeSelection) {
       + '</optgroup>';
   }
   lotSelect.innerHTML = html;
-  if (selectionPrecedente && dispo.some(function(l){ return l.id === selectionPrecedente; })) {
-    lotSelect.value = selectionPrecedente;
+  /* La selection survit au filtrage : conservee ci-dessus, on la repose. */
+  if (selectionCourante && dispo.some(function(l){ return l.id === selectionCourante; })) {
+    lotSelect.value = selectionCourante;
   }
-  if (typeof updateLotsSupplementairesSelect === 'function') updateLotsSupplementairesSelect();
 }
 
 /* [multi-lot] Un souscripteur peut avoir plusieurs lots sur le MÊME programme,
