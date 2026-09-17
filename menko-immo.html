@@ -637,6 +637,11 @@ textarea.form-control { resize:vertical; min-height:90px; }
 .tab-btn { transition: color 150ms ease, border-bottom-color 150ms ease; }
 .tab-pane { display:none; }
 
+/* Étiquettes des mentions du plan (annotations SIG ponctuelles) */
+.leaflet-tooltip.sig-lbl { background:rgba(17,17,24,.82); color:#f7f7fa; border:1px solid rgba(245,158,11,.55);
+  border-radius:4px; font-size:11px; font-weight:600; padding:1px 5px; box-shadow:none; }
+.leaflet-tooltip.sig-lbl::before { display:none; }
+
 /* ══════ MODAL PARCELLE — chips, timeline, mini-états ═══ */
 .tab-btn { position:relative; display:inline-flex; align-items:center; gap:5px; }
 .tab-btn .tbadge {
@@ -6374,6 +6379,47 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <div class="form-group span-2">
                 <label>Vision</label>
                 <textarea class="form-control" id="param-portail-vision" rows="2" placeholder="Vide = texte générique"></textarea>
+              </div>
+
+              <!-- ── Mot du DG (onglet « La société » du portail public) ── -->
+              <div class="form-group span-2" style="border-top:1px solid #E0E0EA;padding-top:14px;margin-top:4px;">
+                <label style="font-weight:700;">🗣️ Mot du DG — portail public</label>
+                <div style="font-size:11px;color:#6B6B9A;margin-top:2px;">Laissez le texte ET la photo vides pour ne pas afficher la section du tout.</div>
+              </div>
+              <div class="form-group">
+                <label>Titre de la section</label>
+                <input type="text" id="param-portail-motdg-titre" class="form-control" placeholder="Vide = « Mot du DG »">
+              </div>
+              <div class="form-group">
+                <label>Nom du dirigeant</label>
+                <input type="text" id="param-portail-motdg-nom" class="form-control" placeholder="Nom affiché sous le texte">
+              </div>
+              <div class="form-group">
+                <label>Fonction</label>
+                <input type="text" id="param-portail-motdg-fonction" class="form-control" placeholder="Ex : Directeur Général">
+              </div>
+              <div class="form-group">
+                <label>Phrase d'accroche (en italique)</label>
+                <input type="text" id="param-portail-motdg-accroche" class="form-control" placeholder="Une phrase forte, mise en avant avant le texte">
+              </div>
+              <div class="form-group span-2">
+                <label>Texte du mot</label>
+                <textarea class="form-control" id="param-portail-motdg-texte" rows="6" placeholder="Un paragraphe par ligne vide.&#10;&#10;Comme ici : ce second bloc formera un paragraphe distinct sur le portail."></textarea>
+                <div style="font-size:11px;color:#6B6B9A;margin-top:4px;">Une ligne vide sépare deux paragraphes ; un simple retour à la ligne reste dans le même paragraphe.</div>
+              </div>
+              <div class="form-group span-2">
+                <label>Photo du dirigeant</label>
+                <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                  <input type="text" id="param-portail-motdg-photo" class="form-control" placeholder="URL d'image, ou importez un fichier →" oninput="updatePortailMotDgPreview(this.value)" style="flex:1;min-width:200px;">
+                  <div id="portail-motdg-preview-zone" style="width:44px;height:56px;border:1px dashed #E0E0EA;border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#F5F5F8;">
+                    <img id="portail-motdg-preview" src="" alt="" style="max-width:100%;max-height:100%;object-fit:cover;display:none;">
+                    <span id="portail-motdg-preview-icon" style="font-size:18px;opacity:.3;">👤</span>
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('portail-motdg-file-input').click()">📁 Importer</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="portail-motdg-clear-btn" onclick="clearPortailMotDgPhoto()" style="display:none;">🗑️</button>
+                  <input type="file" id="portail-motdg-file-input" accept="image/png,image/jpeg,image/webp" style="display:none;" onchange="handlePortailMotDgUpload(event)">
+                </div>
+                <div style="font-size:11px;color:#6B6B9A;margin-top:4px;">Portrait recommandé (vertical). Une photo importée est automatiquement réduite à 800 px de large avant enregistrement — une URL déjà hébergée reste préférable si vous en avez une.</div>
               </div>
               <div class="form-group">
                 <label>Durée de paiement max (mois)</label>
@@ -17486,7 +17532,7 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                que de compter sur une déduction après coup. ── -->
           <div class="form-group span-2">
             <label>🏗️ Nature du bien *</label>
-            <select class="form-control" id="c-nature-manuel" onchange="updateNatureBienUI((DATA.lots||[]).find(function(l){return l.id===document.getElementById('c-lot').value;}));updateLotsByProgramme(true)" style="font-weight:700;">
+            <select class="form-control" id="c-nature-manuel" onchange="updateNatureBienUI((DATA.lots||[]).find(function(l){return l.id===document.getElementById('c-lot').value;}))" style="font-weight:700;">
               <option value="auto">— Auto / Tous les lots (à défaut, choisissez ci-dessous) —</option>
               <option value="terrain">🗺️ Terrain nu (parcelle)</option>
               <option value="maison">🏠 Logement (bâti)</option>
@@ -17518,10 +17564,25 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           </div>
           <div class="form-group span-2">
             <label>Lot *</label>
+            <!-- Recherche CONTEXTUELLE : elle ne cherche que dans les lots du
+                 programme choisi ci-dessus, et ne fait que restreindre l'affichage.
+                 Utile sur un morcellement de plusieurs milliers de parcelles,
+                 où dérouler la liste n'est pas praticable. -->
+            <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+              <input type="search" class="form-control" id="c-lot-recherche" autocomplete="off"
+                     placeholder="🔎 Rechercher dans les lots de ce programme — n°, îlot, type, surface…"
+                     oninput="lotRendreOptions(this.value)"
+                     onkeydown="if(event.key==='Escape'){this.value='';lotRendreOptions('');}"
+                     style="flex:1;font-size:12px;">
+              <button type="button" class="btn btn-secondary btn-sm" title="Effacer la recherche"
+                      onclick="var c=document.getElementById('c-lot-recherche'); if(c){c.value='';} lotRendreOptions('');"
+                      style="white-space:nowrap;">✕</button>
+            </div>
             <select class="form-control" id="c-lot" onchange="onClientLotChange()">
               <option value="">— Choisir —</option>
             </select>
             <div id="c-lot-diag" style="display:none;"></div>
+            <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">La liste reste celle du programme choisi ; la recherche n'en restreint que l'affichage. Le lot déjà sélectionné y demeure toujours visible.</div>
           </div>
           <div class="form-group span-2">
             <label>Autres lots de ce souscripteur (même programme, même échéancier/montant total)</label>
@@ -25163,8 +25224,25 @@ function saveIAConfig() {
   toast(k ? '🤖 Clé IA enregistrée.' : '🤖 Clé IA effacée.', k ? 'success' : 'info');
 }
 
+/* Projet Supabase de ce déploiement : lu une seule fois depuis l'écran de
+   configuration (#cfg-url / #cfg-key), qui porte déjà ces valeurs. Rien n'est
+   dupliqué ici — une seule source dans le fichier, donc rien à maintenir en
+   double le jour où le projet change. Les renseigner évite de reconfigurer
+   chaque poste à la main : la synchro est active dès la première ouverture.
+   Un réglage saisi dans Paramètres reste prioritaire, et le mode local
+   volontaire est respecté (voir getSBConfig). */
 var SB_URL_DEFAUT = '';
 var SB_KEY_DEFAUT = '';
+(function _sbDefautsDepuisEcranConfig(){
+  function lire(){
+    var u=document.getElementById('cfg-url'), k=document.getElementById('cfg-key');
+    var vu=u?String(u.value||'').trim():'', vk=k?String(k.value||'').trim():'';
+    if(/^https?:\/\/[^ ]+\.supabase\.co\/?$/i.test(vu)) SB_URL_DEFAUT=vu;
+    if(vk.length>20) SB_KEY_DEFAUT=vk;
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',lire);
+  else lire();
+})();
 /* ══════════════════════════════════════════════════════════════════
    SESSION DU PERSONNEL
    La clé anonyme est publique : elle figure en clair dans le portail
@@ -25266,8 +25344,14 @@ function getSBConfig() {
      (ex. la clé collée par erreur dans le champ URL), on ignore les valeurs
      sauvegardées. */
   if (!/^https?:\/\/[^ ]+\.supabase\.co\/?$/i.test(u)) { u = ''; k = ''; }
-  /* Aucun repli automatique : tant qu'aucune config société valide n'est saisie
-     dans Paramètres ⚙️, l'app reste en mode local (IndexedDB uniquement). */
+  /* Repli sur le projet du déploiement quand aucun réglage n'a été saisi : la
+     synchro est active sans configuration poste par poste. Le mode local reste
+     possible, mais seulement s'il a été CHOISI (« Continuer sans Supabase » ou
+     « Effacer la configuration ») — jamais par simple absence de réglage, qui
+     laissait les données prisonnières d'un seul navigateur. */
+  if ((!u || !k) && localStorage.getItem('sb_mode') !== 'local' && SB_URL_DEFAUT && SB_KEY_DEFAUT) {
+    u = SB_URL_DEFAUT; k = SB_KEY_DEFAUT;
+  }
   SB.url = u.replace(/\/+$/, '');
   SB.key = k;
 }
@@ -25276,7 +25360,18 @@ function getSBConfig() {
 async function fetchUserFromCloud(login) {
   if (!SB.url || !SB.key || !navigator.onLine) return null;
   try {
-    var rows = await sbFetch('pi_users?login=eq.' + encodeURIComponent(login) + '&select=*&limit=1', 'GET');
+    /* [FIX connexion aléatoire] Sans ORDER BY, 'limit=1' renvoie une ligne au
+       choix de Postgres — non déterministe — dès qu'un même login existe en
+       double (plusieurs comptes créés par erreur pour le même identifiant,
+       cas rencontré en production). Résultat vécu : les MÊMES identifiants
+       étaient acceptés une fois et refusés la suivante, selon la ligne
+       renvoyée par hasard, chacune ayant potentiellement un mot de passe
+       différent. On prend désormais systématiquement le compte le plus
+       récemment modifié — cohérent avec la logique "cloud le plus récent
+       gagne" déjà appliquée juste après par doLogin(). Ne résout pas les
+       doublons existants (à nettoyer côté Paramètres → Utilisateurs), mais
+       rend le comportement stable au lieu d'aléatoire en attendant. */
+    var rows = await sbFetch('pi_users?login=eq.' + encodeURIComponent(login) + '&select=*&order=updated_at.desc.nullslast&limit=1', 'GET');
     return (rows && rows.length) ? rows[0] : null;
   } catch (e) { return null; }
 }
@@ -25285,6 +25380,7 @@ function saveConfig() {
   var url = document.getElementById('cfg-url').value.trim();
   var key = document.getElementById('cfg-key').value.trim();
   if (!url || !key) { alert('Veuillez remplir les deux champs.'); return; }
+  localStorage.removeItem('sb_mode');
   localStorage.setItem('sb_url', url);
   localStorage.setItem('sb_key', key);
   SB.url = url; SB.key = key;
@@ -25293,6 +25389,10 @@ function saveConfig() {
 }
 
 function skipConfig() {
+  /* Choix explicite du mode local : mémorisé, sinon getSBConfig() rebrancherait
+     la synchro par défaut à la prochaine ouverture. */
+  localStorage.setItem('sb_mode', 'local');
+  SB.url = ''; SB.key = '';
   document.getElementById('config-overlay').style.display = 'none';
   startApp();
 }
@@ -44836,6 +44936,87 @@ function clearPortailLogoImg() {
   if (fileInput) fileInput.value = '';
 }
 
+/** ── Photo du dirigeant (« Mot du DG » du portail public) ──────────────
+    Le fichier importé est RÉDUIT avant d'être conservé. Les autres images de
+    ce module (logo, bandeau) sont stockées en base64 brut ; pour un portrait
+    venu d'un téléphone, cela ferait entrer plusieurs méga-octets de texte dans
+    la ligne pi_params — poussée vers Supabase à CHAQUE enregistrement de
+    paramètre, et injectée telle quelle dans le portail généré, donc
+    téléchargée par chaque visiteur. On redimensionne à 800 px de large et on
+    réencode en JPEG : le portrait tombe autour de 100 Ko, sans différence
+    visible à la taille où il est affiché. */
+function handlePortailMotDgUpload(event) {
+  var file = event.target.files[0];
+  if (!file) return;
+  var maxSource = 8 * 1024 * 1024; /* garde-fou de lecture, avant réduction */
+  if (file.size > maxSource) {
+    toast('Photo trop lourde (max 8 Mo à l\'import).', 'error');
+    return;
+  }
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    _portailMotDgReduire(e.target.result, 800, function(reduit, octets) {
+      var input = document.getElementById('param-portail-motdg-photo');
+      if (input) input.value = reduit;
+      updatePortailMotDgPreview(reduit);
+      toast('Photo importée (' + Math.round(octets/1024) + ' Ko après réduction) — pensez à « Enregistrer » pour la publier.', 'success');
+    });
+  };
+  reader.readAsDataURL(file);
+}
+
+/** Réduit une image dataURL à largeurMax et la réencode en JPEG.
+    En cas d'échec (format exotique, canvas indisponible), on conserve
+    l'original plutôt que de perdre la photo de l'utilisateur. */
+function _portailMotDgReduire(dataUrl, largeurMax, apres) {
+  try {
+    var img = new Image();
+    img.onload = function() {
+      try {
+        var ratio = img.width > largeurMax ? (largeurMax / img.width) : 1;
+        var c = document.createElement('canvas');
+        c.width = Math.round(img.width * ratio);
+        c.height = Math.round(img.height * ratio);
+        var ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0, c.width, c.height);
+        var out = c.toDataURL('image/jpeg', 0.82);
+        /* Si la réduction n'apporte rien (image déjà petite, ou PNG a plat
+           plus compact), on garde la plus légère des deux. */
+        if (out.length >= dataUrl.length) out = dataUrl;
+        apres(out, Math.round(out.length * 0.75));
+      } catch (e) { apres(dataUrl, Math.round(dataUrl.length * 0.75)); }
+    };
+    img.onerror = function() { apres(dataUrl, Math.round(dataUrl.length * 0.75)); };
+    img.src = dataUrl;
+  } catch (e) { apres(dataUrl, Math.round(dataUrl.length * 0.75)); }
+}
+
+/** Aperçu miniature de la photo du dirigeant */
+function updatePortailMotDgPreview(src) {
+  var img = document.getElementById('portail-motdg-preview');
+  var icon = document.getElementById('portail-motdg-preview-icon');
+  var clearBtn = document.getElementById('portail-motdg-clear-btn');
+  if (!img) return;
+  if (src) {
+    img.src = src; img.style.display = 'block';
+    if (icon) icon.style.display = 'none';
+    if (clearBtn) clearBtn.style.display = '';
+  } else {
+    img.removeAttribute('src'); img.style.display = 'none';
+    if (icon) icon.style.display = '';
+    if (clearBtn) clearBtn.style.display = 'none';
+  }
+}
+
+/** Retire la photo du dirigeant (URL ou fichier importé) */
+function clearPortailMotDgPhoto() {
+  var input = document.getElementById('param-portail-motdg-photo');
+  if (input) input.value = '';
+  updatePortailMotDgPreview('');
+  var fileInput = document.getElementById('portail-motdg-file-input');
+  if (fileInput) fileInput.value = '';
+}
+
 /** Upload de l'image de fond du bandeau d'accueil du portail public */
 function handlePortailHeroUpload(event) {
   var file = event.target.files[0];
@@ -45596,6 +45777,12 @@ async function saveParams() {
     portail_description:          gv('param-portail-description'),
     portail_mission:              gv('param-portail-mission'),
     portail_vision:               gv('param-portail-vision'),
+    portail_motdg_titre:          gv('param-portail-motdg-titre'),
+    portail_motdg_accroche:       gv('param-portail-motdg-accroche'),
+    portail_motdg_texte:          gv('param-portail-motdg-texte'),
+    portail_motdg_photo:          gv('param-portail-motdg-photo'),
+    portail_motdg_nom:            gv('param-portail-motdg-nom'),
+    portail_motdg_fonction:       gv('param-portail-motdg-fonction'),
     portail_duree:                parseInt(gv('param-portail-duree'))||0,
     portail_jouissance:           parseFloat(gv('param-portail-jouissance'))||0,
     portail_programme_nom:          gv('param-portail-programme-nom'),
@@ -45715,6 +45902,12 @@ function buildPortailBrand(){
     description:            p.portail_description || '',
     mission:                p.portail_mission || '',
     vision:                 p.portail_vision || '',
+    motdg_titre:            p.portail_motdg_titre || '',
+    motdg_accroche:         p.portail_motdg_accroche || '',
+    motdg_texte:            p.portail_motdg_texte || '',
+    motdg_photo:            p.portail_motdg_photo || '',
+    motdg_nom:              p.portail_motdg_nom || '',
+    motdg_fonction:         p.portail_motdg_fonction || '',
     duree:                  p.portail_duree || 0,
     jouissance:             p.portail_jouissance || 0,
     programme_nom:            p.portail_programme_nom || '',
@@ -45871,6 +46064,13 @@ function loadParamFields() {
   sv('param-portail-description', p.portail_description||'');
   sv('param-portail-mission', p.portail_mission||'');
   sv('param-portail-vision', p.portail_vision||'');
+  sv('param-portail-motdg-titre', p.portail_motdg_titre||'');
+  sv('param-portail-motdg-accroche', p.portail_motdg_accroche||'');
+  sv('param-portail-motdg-texte', p.portail_motdg_texte||'');
+  sv('param-portail-motdg-photo', p.portail_motdg_photo||'');
+  sv('param-portail-motdg-nom', p.portail_motdg_nom||'');
+  sv('param-portail-motdg-fonction', p.portail_motdg_fonction||'');
+  if (typeof updatePortailMotDgPreview === 'function') updatePortailMotDgPreview(p.portail_motdg_photo||'');
   sv('param-portail-duree', p.portail_duree||'');
   sv('param-portail-jouissance', p.portail_jouissance||'');
   sv('param-portail-programme-nom', p.portail_programme_nom||'');
@@ -46631,6 +46831,7 @@ function saveSupabaseConfig() {
   var url = document.getElementById('param-sb-url').value.trim();
   var key = document.getElementById('param-sb-key').value.trim();
   if (!url || !key) { toast('Veuillez remplir les deux champs.', 'error'); return; }
+  localStorage.removeItem('sb_mode');
   localStorage.setItem('sb_url', url);
   localStorage.setItem('sb_key', key);
   SB.url = url; SB.key = key;
@@ -46640,6 +46841,7 @@ function saveSupabaseConfig() {
 
 function clearSupabaseConfig() {
   if (!confirm('Effacer la configuration Supabase ? L\'application passera en mode local.')) return;
+  localStorage.setItem('sb_mode', 'local');
   localStorage.removeItem('sb_url');
   localStorage.removeItem('sb_key');
   SB.url = ''; SB.key = '';
@@ -46661,6 +46863,9 @@ function updateSBStatusBadge() {
   if (url && key) {
     badge.style.display = 'block';
     badge.innerHTML = '<span style="color:#16a34a;font-weight:600;">● Connecté — ' + url + '</span>';
+  } else if (SB.url && SB.key) {
+    badge.style.display = 'block';
+    badge.innerHTML = '<span style="color:#16a34a;font-weight:600;">● Connecté — ' + SB.url + ' (projet par défaut)</span>';
   } else {
     badge.style.display = 'block';
     badge.innerHTML = '<span style="color:#dc2626;font-weight:600;">● Mode local — aucune config Supabase</span>';
@@ -48641,22 +48846,29 @@ function updateLotsByProgramme(gardeSelection) {
      pouvaient être enregistrés sur le même lot (double vente). */
   var editingClientId = APP.editingId || null;
   var estLibrePourEdition = function(l) { return !l.client_id || l.client_id === editingClientId; };
-  /* [FIX UX] Filtre par nature choisie manuellement — utile sur un programme
-     à des centaines/milliers de lots (ex. lotissement de 2000+ parcelles) où
-     chercher un terrain nu au milieu des logements bâtis serait impraticable. */
-  var natureManuelle = (document.getElementById('c-nature-manuel')||{}).value || 'auto';
-  var correspondNature = function(l) {
-    if (natureManuelle === 'auto') return true;
-    return natureManuelle === 'terrain' ? l.nature === 'terrain' : l.nature !== 'terrain';
-  };
+  /* Le contenu de ce sélecteur ne dépend QUE du Programme choisi.
+     Un filtre par « Nature du bien » s'appliquait auparavant à la population :
+     choisir « Terrain nu » retirait de la liste tous les lots bâtis, et
+     inversement. Deux contrôles pilotaient donc un même champ, avec une
+     conséquence difficile à diagnostiquer : un lot pourtant rattaché au bon
+     programme restait introuvable tant que la nature n'était pas remise sur
+     « Auto », sans que rien ne l'indique. Le pire cas venait des lots dont le
+     champ nature n'est pas renseigné : ils étaient traités comme du bâti et
+     disparaissaient dès qu'on sélectionnait « Terrain nu ». Le sélecteur
+     Nature reste à sa place et garde son rôle — qualifier le dossier et
+     primer sur la déduction faite depuis le lot (voir updateNatureBienUI) —
+     mais il ne retire plus aucun lot de la liste.
+     Les seuls autres écarts de population sont les lots vendus et ceux
+     réservés par un AUTRE souscripteur : ils restent AFFICHÉS, dans leur
+     propre groupe, simplement non sélectionnables — c'est le garde-fou
+     anti-double-vente, pas un filtre : aucun lot du programme n'est masqué. */
   var dispo = lotsProg.filter(function(l) {
-    if (!correspondNature(l)) return false;
     if (l.statut === 'vendu') return false;
     if (l.statut === 'reserve') return estLibrePourEdition(l);
     return true; /* disponible ou statut vide */
   });
-  var vendus = lotsProg.filter(function(l) { return l.statut === 'vendu' && correspondNature(l); });
-  var reservesAutrui = lotsProg.filter(function(l) { return l.statut === 'reserve' && !estLibrePourEdition(l) && correspondNature(l); });
+  var vendus = lotsProg.filter(function(l) { return l.statut === 'vendu'; });
+  var reservesAutrui = lotsProg.filter(function(l) { return l.statut === 'reserve' && !estLibrePourEdition(l); });
   if (APP.editingId) {
     var editClient = DATA.clients.find(function(c) { return c.id === APP.editingId; });
     if (editClient && editClient.lot_id) {
@@ -48695,15 +48907,99 @@ function updateLotsByProgramme(gardeSelection) {
   }
   var wrapDiag2 = document.getElementById('c-lot-diag');
   if (wrapDiag2) { wrapDiag2.style.display = 'none'; wrapDiag2.innerHTML = ''; }
+  dispo.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
+  vendus.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
+  reservesAutrui.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
+
+  /* Contexte de rendu conserve. La recherche contextuelle ci-dessous ne refait
+     AUCUN calcul de population : elle ne restreint que l'affichage de cet
+     ensemble, lequel reste determine par le seul Programme. */
+  APP._lotContexte = { dispo: dispo, vendus: vendus, reservesAutrui: reservesAutrui, total: lotsProg.length };
+
+  var champRech = document.getElementById('c-lot-recherche');
+  /* Le terme de recherche n'est conserve que sur un simple rafraichissement.
+     Un changement de programme change le contexte : garder l'ancien terme
+     masquerait d'entree la quasi-totalite des lots du nouveau programme. */
+  var terme = (gardeSelection && champRech) ? champRech.value : '';
+  if (champRech && !gardeSelection) champRech.value = '';
+  lotRendreOptions(terme, selectionPrecedente);
+
+  if (typeof updateLotsSupplementairesSelect === 'function') updateLotsSupplementairesSelect();
+}
+
+/* Recherche contextuelle dans « Lot * » — purement un filtre d'AFFICHAGE.
+   L'ensemble parcouru est celui qu'a produit updateLotsByProgramme pour le
+   programme choisi, et rien d'autre : la regle « la population ne depend que
+   du Programme » reste entiere. Champ vide, liste entiere.
+
+   Le lot deja selectionne est toujours conserve dans la liste, meme s'il ne
+   correspond pas au terme : sans cela le <select> perdrait silencieusement sa
+   valeur des la premiere frappe, et le dossier partirait a l'enregistrement
+   sans lot rattache. */
+function lotRendreOptions(terme, selectionForcee) {
+  var lotSelect = document.getElementById('c-lot');
+  var ctx = APP._lotContexte;
+  if (!lotSelect || !ctx) return;
+  var selectionCourante = selectionForcee || lotSelect.value || '';
+
+  /* Comparaison insensible a la casse ET aux accents : « ilot » trouve
+     « Îlot », « duplex » trouve « Duplex ». */
+  var norm = function(v) {
+    var t = String(v == null ? '' : v).toLowerCase();
+    return t.normalize ? t.normalize('NFD').replace(/[\u0300-\u036f]/g, '') : t;
+  };
+  var mots = norm(terme).split(/\s+/).filter(Boolean);
+  /* La fiche est decoupee en MOTS, pas laissee en une seule chaine. Un simple
+     indexOf sur la chaine entiere rendait la recherche inutilisable des qu'on
+     tapait peu de lettres : « ilot b » remontait tous les lots, parce que « b »
+     se trouve dans « disponible ». */
+  var motsLot = function(l) {
+    return norm([l.numero, l.ilot ? 'ilot ' + l.ilot : '', l.type, l.nature, l.statut,
+                 l.surface ? Math.round(l.surface) + ' m2' : ''].join(' '))
+           .split(/[^a-z0-9]+/).filter(Boolean);
+  };
+  /* Regle de correspondance, par mot saisi :
+       · un mot de chiffres correspond en SOUS-CHAINE d'un mot de la fiche,
+         parce qu'un numero se cherche par fragment — « 12 » doit trouver le
+         lot 012 comme le lot 120 ;
+       · un mot de lettres correspond en DEBUT d'un mot de la fiche, jamais au
+         milieu — « b » trouve l'ilot B, pas « disponible », et « vil » trouve
+         « Villa » sans remonter tout le programme.
+     Tous les mots saisis doivent correspondre, dans n'importe quel ordre :
+     « 12 duplex » et « duplex 12 » donnent le meme resultat. */
+  var correspondMot = function(mots_fiche, m) {
+    var numerique = /^[0-9]+$/.test(m);
+    return mots_fiche.some(function(t) {
+      return numerique ? t.indexOf(m) !== -1 : t.indexOf(m) === 0;
+    });
+  };
+  var correspond = function(l) {
+    if (!mots.length) return true;
+    if (l.id === selectionCourante) return true;
+    var mf = motsLot(l);
+    return mots.every(function(m) { return correspondMot(mf, m); });
+  };
+
+  var dispo = ctx.dispo.filter(correspond);
+  var reservesAutrui = ctx.reservesAutrui.filter(correspond);
+  var vendus = ctx.vendus.filter(correspond);
+
   var fmt = function(l){
     return '<option value="' + l.id + '">Lot ' + l.numero + (l.ilot ? ' / Îlot ' + l.ilot : '')
       + (l.surface ? ' — ' + Math.round(l.surface) + ' m²' : '')
       + ' — ' + (l.type || '') + ' — ' + new Intl.NumberFormat('fr-FR').format(l.prix || 0) + ' FCFA</option>';
   };
-  dispo.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
-  vendus.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
-  reservesAutrui.sort(function(a,b){ return String(a.numero).localeCompare(String(b.numero), undefined, {numeric:true}); });
-  var html = '<option value="">— Choisir un lot (' + dispo.length + ' dispo / ' + lotsProg.length + ' au total' + (natureManuelle!=='auto' ? ', filtré par nature' : '') + ') —</option>';
+
+  var trouves = dispo.length + reservesAutrui.length + vendus.length;
+  var entete;
+  if (!mots.length) {
+    entete = '— Choisir un lot (' + ctx.dispo.length + ' dispo / ' + ctx.total + ' au total) —';
+  } else if (!trouves) {
+    entete = '— Aucun lot ne correspond à « ' + escHtml(terme) + ' » —';
+  } else {
+    entete = '— ' + trouves + ' lot(s) trouvé(s) sur ' + ctx.total + ' (' + dispo.length + ' sélectionnable(s)) —';
+  }
+  var html = '<option value="">' + entete + '</option>';
   html += dispo.map(fmt).join('');
   if (reservesAutrui.length) {
     html += '<optgroup label="Déjà réservés par un autre souscripteur (' + reservesAutrui.length + ', non sélectionnables)">'
@@ -48720,10 +49016,10 @@ function updateLotsByProgramme(gardeSelection) {
       + '</optgroup>';
   }
   lotSelect.innerHTML = html;
-  if (selectionPrecedente && dispo.some(function(l){ return l.id === selectionPrecedente; })) {
-    lotSelect.value = selectionPrecedente;
+  /* La selection survit au filtrage : conservee ci-dessus, on la repose. */
+  if (selectionCourante && dispo.some(function(l){ return l.id === selectionCourante; })) {
+    lotSelect.value = selectionCourante;
   }
-  if (typeof updateLotsSupplementairesSelect === 'function') updateLotsSupplementairesSelect();
 }
 
 /* [multi-lot] Un souscripteur peut avoir plusieurs lots sur le MÊME programme,
@@ -60862,7 +61158,7 @@ function sigRapportParcellaire(){
     doc.setFontSize(5.5); doc.setTextColor(30);
     geoParcs.forEach(function(g){ var c=L.polygon(g.path).getBounds().getCenter(); try{ doc.text(String(g.p.ref||'').slice(0,12),TX(c.lng),TY(c.lat),{align:'center'}); }catch(e){} });
     // couches
-    (DATA.sig_couches||[]).forEach(function(f){ if(!f.coords)return; var rgb=_sigHexRgb(f.color||(SIG_COUCHE_DEFS[f.type]?SIG_COUCHE_DEFS[f.type].color:'#f59e0b')); if(f.geom_type==='polygon') poly(f.coords.concat([f.coords[0]]),null,rgb,'S'); else poly(f.coords,null,rgb,'S'); });
+    (DATA.sig_couches||[]).forEach(function(f){ if(!f.coords||f.geom_type==='point')return; var rgb=_sigHexRgb(f.color||(SIG_COUCHE_DEFS[f.type]?SIG_COUCHE_DEFS[f.type].color:'#f59e0b')); if(f.geom_type==='polygon') poly(f.coords.concat([f.coords[0]]),null,rgb,'S'); else poly(f.coords,null,rgb,'S'); });
     // flèche Nord + échelle
     doc.setDrawColor(0); doc.setLineWidth(0.4); var nx=box.x+box.w-8,ny=box.y+12; doc.line(nx,ny,nx,ny-8); doc.line(nx,ny-8,nx-2,ny-5); doc.line(nx,ny-8,nx+2,ny-5); doc.setFontSize(8); doc.setTextColor(0); doc.text('N',nx-1.3,ny+4);
     var wM=_sigHaversine([minLa,minLo],[minLa,maxLo]); var mmPerM=(box.w-14)/ (wM||1); var barM=100; if(barM*mmPerM>60)barM=50; if(barM*mmPerM<8)barM=500; var barMM=barM*mmPerM; var bx=box.x+6,by=box.y+box.h-6; doc.setLineWidth(0.4); doc.line(bx,by,bx+barMM,by); doc.line(bx,by-1.2,bx,by+1.2); doc.line(bx+barMM,by-1.2,bx+barMM,by+1.2); doc.setFontSize(7); doc.text(barM+' m',bx+barMM/2,by-1.5,{align:'center'});
@@ -60977,9 +61273,14 @@ function _sigRenderCouches(){
       +avctTxt
       +'<br><button class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="sigCoucheEdit(\''+f.id+'\')">✏️ Éditer</button>';
     var recep=(f.statut_travaux==='receptionne');
-    var lyr=(f.geom_type==='polygon')
+    /* geom_type 'point' : libellés du plan (équipements, mentions du géomètre)
+       que l'on conserve à leur position exacte plutôt que de les perdre. */
+    var lyr=(f.geom_type==='point')
+      ? L.circleMarker((f.coords&&f.coords[0]&&f.coords[0].length)?f.coords[0]:f.coords,{radius:5,color:col,weight:2,fillColor:col,fillOpacity:0.85})
+      : (f.geom_type==='polygon')
       ? L.polygon(f.coords,{color:col,weight:2,fillColor:col,fillOpacity:0.2})
       : L.polyline(f.coords,{color:col,weight:recep?5:3,dashArray:(f.statut_travaux==='en_cours'?'8,5':null)});
+    if(f.geom_type==='point' && f.label) lyr.bindTooltip(escHtml(f.label),{permanent:true,direction:'right',className:'sig-lbl'});
     lyr.addTo(_sig.couchesLayer).bindPopup(pop);
   });
   var cnt=document.getElementById('sig-couches-count'); if(cnt) cnt.textContent=list.length;
@@ -131218,7 +131519,7 @@ function masseParseDXF(txt){
     if (c==='0'){
       cur=v.trim();
       if (cur==='LWPOLYLINE'||cur==='POLYLINE'){ cw={ layer:'0', closed:false, verts:[] }; polys.push(cw); }
-      else if (cur==='TEXT'||cur==='MTEXT'){ cw={ layer:'0', x:0, y:0, t:'' }; texts.push(cw); }
+      else if (cur==='TEXT'||cur==='MTEXT'){ cw={ layer:'0', x:0, y:0, t:'', h:0 }; texts.push(cw); }
       else if (cur==='ENDSEC'){ break; }
       else cw=null;
       continue;
@@ -131232,6 +131533,10 @@ function masseParseDXF(txt){
     } else if (cur==='TEXT'||cur==='MTEXT'){
       if (c==='10') cw.x=parseFloat(v)||0;
       else if (c==='20') cw.y=parseFloat(v)||0;
+      /* Hauteur de texte : seul discriminant fiable entre les numéros de lot
+         et les autres nombres du plan (n° d'îlot, cotes, repères de bornes)
+         quand tout est dessiné sur un calque unique. */
+      else if (c==='40') cw.h=parseFloat(v)||0;
       else if (c==='1') cw.t=_masseStripM(_masseFix(v));
     }
   }
@@ -131255,10 +131560,183 @@ function _masseCentroid(vs){ var x=0,y=0; for(var i=0;i<vs.length;i++){ x+=vs[i]
 function _massePIP(px,py,vs){ var c=false,j=vs.length-1; for(var i=0;i<vs.length;i++){ var xi=vs[i][0],yi=vs[i][1],xj=vs[j][0],yj=vs[j][1]; if(((yi>py)!==(yj>py)) && (px<(xj-xi)*(py-yi)/((yj-yi)||1e-12)+xi)) c=!c; j=i; } return c; }
 function _masseParseSurf(s){ var m=String(s).match(/(\d+[.,]?\d*)/); return m? parseFloat(m[1].replace(',','.')) : null; }
 
+/* ══ Plans « mono-calque » ══════════════════════════════════════════════
+   Beaucoup de DXF de géomètre sortent avec TOUT le dessin sur un seul calque
+   (ILOTS, PLAN, 0...) : lots, îlots, réserves, numéros et surfaces mélangés.
+   Aucun mapping calque↔rôle n'est alors exploitable — les rôles sont déduits
+   de la géométrie (imbrication des polygones) et du contenu des textes.     */
+function _masseEstNumero(t){ return /^\s*\d{1,4}\s*$/.test(t); }
+function _masseEstSurface(t){ return /(m²|m2|\bca\b)/i.test(t); }
+/* Hauteur de texte dominante : dans un plan de masse, les numéros de lot sont
+   tous écrits à la même hauteur. Les autres nombres (n° d'îlot, cotes, repères)
+   ont une autre hauteur — sans ce filtre ils volent le numéro d'un lot. */
+function _masseHauteurDominante(txs){
+  var h={}, best=null, bc=0;
+  txs.forEach(function(t){ var k=(+(t.h||0)).toFixed(2); h[k]=(h[k]||0)+1; if(h[k]>bc){ bc=h[k]; best=parseFloat(k); } });
+  return (best && bc>=txs.length*0.5) ? best : null;
+}
+/* Un calque unique porte-t-il les polygones ? (déclenche le mode mono) */
+function masseMonoDetecte(inv){
+  var avecPoly=Object.keys(inv).filter(function(l){ return inv[l].poly>0; });
+  if(avecPoly.length!==1) return '';
+  return inv[avecPoly[0]].texte>0 ? avecPoly[0] : '';
+}
+/* Classement géométrique : îlot = polygone contenant ≥2 autres polygones ;
+   lot = polygone contenu dans un îlot ; réserve = polygone hors îlot
+   (équipements : école, terrain de sport, espace vert, voirie interne...). */
+function masseClasserMono(parsed){
+  var rings=[], lignes=[];
+  parsed.polys.forEach(function(p){
+    var a=(p.verts.length>=3)?_masseShoelace(p.verts):0;
+    if(p.verts.length>=3 && a>1) rings.push({ verts:p.verts, a:a, c:_masseCentroid(p.verts) });
+    else if(p.verts.length>=2) lignes.push(p.verts);
+  });
+  rings.forEach(function(r){ r.inner=0; });
+  rings.forEach(function(r){
+    rings.forEach(function(q){ if(q!==r && _massePIP(q.c[0],q.c[1],r.verts)) r.inner++; });
+  });
+  var ilots=rings.filter(function(r){ return r.inner>=2; });
+  var lots=rings.filter(function(r){
+    return ilots.indexOf(r)<0 && ilots.some(function(i){ return _massePIP(r.c[0],r.c[1],i.verts); });
+  });
+  var reserves=rings.filter(function(r){ return ilots.indexOf(r)<0 && lots.indexOf(r)<0; });
+  /* Plan sans îlot dessiné : les lots sont les polygones de surface courante,
+     les polygones nettement plus grands deviennent des réserves. */
+  if(!ilots.length && rings.length){
+    var ar=rings.map(function(r){ return r.a; }).sort(function(a,b){ return a-b; });
+    var med=ar[ar.length>>1]||1;
+    lots=rings.filter(function(r){ return r.a<=med*3; });
+    reserves=rings.filter(function(r){ return lots.indexOf(r)<0; });
+  }
+  var numTx=parsed.texts.filter(function(t){ return t.t && _masseEstNumero(t.t); });
+  var hDom=_masseHauteurDominante(numTx);
+  if(hDom) numTx=numTx.filter(function(t){ return Math.abs((+t.h||0)-hDom)<=hDom*0.3; });
+  return {
+    ilots:ilots, lots:lots, reserves:reserves, lignes:lignes, numTx:numTx,
+    surfTx:parsed.texts.filter(function(t){ return t.t && _masseEstSurface(t.t); }),
+    labelTx:parsed.texts.filter(function(t){ return t.t && !_masseEstNumero(t.t) && !_masseEstSurface(t.t); })
+  };
+}
+/* Extraction mono-calque — même forme de résultat que masseExtract(). */
+function masseExtractMono(parsed, cfg){
+  var C=masseClasserMono(parsed);
+  if(!C.lots.length) throw new Error('Aucun polygone de lot exploitable dans ce plan (polygones fermés attendus).');
+
+  /* Numéros — affectation 1 pour 1, jamais de réutilisation (sinon doublons) :
+     passe 1 = texte à l'intérieur du lot ; passe 2 = plus proche du centre,
+     dans un rayon raisonnable, pour les libellés posés hors du polygone. */
+  var libre=C.numTx.slice();
+  C.lots.forEach(function(L){
+    var ins=libre.filter(function(t){ return _massePIP(t.x,t.y,L.verts); });
+    if(!ins.length) return;
+    ins.sort(function(a,b){ return Math.hypot(a.x-L.c[0],a.y-L.c[1])-Math.hypot(b.x-L.c[0],b.y-L.c[1]); });
+    L.num=String(ins[0].t).trim();
+    libre=libre.filter(function(t){ return t!==ins[0]; });
+  });
+  var surfsTri=C.lots.map(function(L){ return L.a; }).sort(function(a,b){ return a-b; });
+  var RAYON=2*Math.sqrt(surfsTri[surfsTri.length>>1]||200);
+  var paires=[];
+  C.lots.forEach(function(L){ if(L.num) return;
+    libre.forEach(function(t){
+      var d=Math.hypot(t.x-L.c[0],t.y-L.c[1]);
+      if(d<=RAYON) paires.push({d:d,L:L,t:t});
+    });
+  });
+  paires.sort(function(a,b){ return a.d-b.d; });
+  paires.forEach(function(pr){
+    if(pr.L.num || libre.indexOf(pr.t)<0) return;
+    pr.L.num=String(pr.t.t).trim();
+    libre=libre.filter(function(t){ return t!==pr.t; });
+  });
+
+  /* Surfaces écrites (contrôle de concordance) — 1 pour 1 également. */
+  var libreS=C.surfTx.slice();
+  C.lots.forEach(function(L){
+    var ins=libreS.filter(function(t){ return _massePIP(t.x,t.y,L.verts); });
+    if(!ins.length) return;
+    L.s=_masseParseSurf(ins[0].t);
+    libreS=libreS.filter(function(t){ return t!==ins[0]; });
+  });
+
+  /* Numéros manquants : déduits uniquement si la série est complète et que le
+     compte tombe juste — sinon numérotation neutre, jamais de numéro inventé. */
+  var sansNum=C.lots.filter(function(L){ return !L.num; });
+  var numDeduits=0;
+  if(sansNum.length){
+    var pris={}, max=0;
+    C.lots.forEach(function(L){ if(L.num && /^\d+$/.test(L.num)){ pris[+L.num]=1; max=Math.max(max,+L.num); } });
+    var trous=[]; for(var n=1;n<=max;n++){ if(!pris[n]) trous.push(n); }
+    if(trous.length===sansNum.length){
+      sansNum.sort(function(a,b){ return (b.c[1]-a.c[1])||(a.c[0]-b.c[0]); });
+      sansNum.forEach(function(L,i){ L.num=String(trous[i]); L.deduit=true; numDeduits++; });
+    } else {
+      sansNum.forEach(function(L,i){ L.num='SN-'+(i+1); L.deduit=true; numDeduits++; });
+    }
+  }
+
+  function idxIlot(L){ for(var i=0;i<C.ilots.length;i++){ if(_massePIP(L.c[0],L.c[1],C.ilots[i].verts)) return i+1; } return 0; }
+  var surfWarn=0;
+  var lots=C.lots.map(function(L){
+    var sCalc=Math.round(L.a*10)/10;
+    var ecart=L.s? Math.abs(L.a-L.s)/L.s*100 : null;
+    if(ecart!==null && ecart>5) surfWarn++;
+    return {
+      numero:String(L.num), type:null, pieces:null, type_label:'Lot (plan de masse)',
+      ilot:idxIlot(L), numero_deduit:!!L.deduit,
+      surface_dxf:L.s||null, surface_calc:sCalc, ecart_pct:ecart!==null?Math.round(ecart*10)/10:null,
+      surface:(L.s||Math.round(L.a)),
+      bornes:L.verts.map(function(pt,ix){ return {nom:'B'+(ix+1),x:+pt[0].toFixed(3),y:+pt[1].toFixed(3),z:0}; }),
+      geo_polygon:L.verts.map(function(pt){ return utm30ToLatLng(pt[0],pt[1],30); }),
+      centre_utm:[Math.round(L.c[0]),Math.round(L.c[1])]
+    };
+  });
+  lots.sort(function(a,b){ var na=parseInt(a.numero,10), nb=parseInt(b.numero,10);
+    if(isNaN(na)||isNaN(nb)) return String(a.numero).localeCompare(String(b.numero));
+    return na-nb; });
+
+  /* Réserves / équipements : libellé repris des textes posés dedans
+     (« Terrain de sport », « Bureau du syndic », « ev+aj »...). */
+  var labelsRestants=C.labelTx.slice();
+  var reserves=C.reserves.map(function(R,i){
+    var dedans=labelsRestants.filter(function(t){ return _massePIP(t.x,t.y,R.verts); });
+    dedans.sort(function(a,b){ return b.y-a.y; });
+    dedans.forEach(function(t){ labelsRestants=labelsRestants.filter(function(x){ return x!==t; }); });
+    var mots=dedans.map(function(t){ return String(t.t).trim(); });
+    return { label:(mots.join(' ')||('Réserve '+(i+1))), surface:Math.round(R.a),
+             geo:R.verts.map(function(pt){ return utm30ToLatLng(pt[0],pt[1],30); }) };
+  });
+  /* Libellés hors polygone (mentions posées à même le plan : « Terrain de
+     sport », « Bureau du syndic »...) : conservés comme annotations géolocalisées. */
+  var annotations=labelsRestants.map(function(t){
+    return { label:String(t.t).trim(), pt:utm30ToLatLng(t.x,t.y,30) };
+  });
+
+  /* Périmètre = plus grand îlot, sinon enveloppe des lots. */
+  var perim=null, pa=0;
+  C.ilots.concat(C.reserves).forEach(function(r){ if(r.a>pa && r.inner>=2){ pa=r.a; perim=r.verts; } });
+  if(!perim){
+    var minx=1e18,miny=1e18,maxx=-1e18,maxy=-1e18;
+    C.lots.forEach(function(L){ L.verts.forEach(function(pt){
+      minx=Math.min(minx,pt[0]); miny=Math.min(miny,pt[1]); maxx=Math.max(maxx,pt[0]); maxy=Math.max(maxy,pt[1]); }); });
+    perim=[[minx,miny],[maxx,miny],[maxx,maxy],[minx,maxy]]; pa=(maxx-minx)*(maxy-miny);
+  }
+  var cxy=_masseCentroid(perim);
+  return {
+    center:[cxy[0],cxy[1]], lots:lots, typo:{'(sans type)':lots.length}, surfWarn:surfWarn,
+    perimetre:{ geo:perim.map(function(pt){ return utm30ToLatLng(pt[0],pt[1],30); }),
+                bornes:perim.map(function(pt,ix){ return {nom:'B'+(ix+1),x:+pt[0].toFixed(3),y:+pt[1].toFixed(3),z:0}; }),
+                surface:Math.round(pa) },
+    voirie:(cfg&&cfg.monoLignes===false)?[]:C.lignes.map(function(vs){ return vs.map(function(pt){ return utm30ToLatLng(pt[0],pt[1],30); }); }),
+    courbes:[], ilots:C.ilots.length, reserves:reserves, annotations:annotations,
+    numDeduits:numDeduits, mono:true
+  };
+}
+
 /* Extraction complète → objet prêt à importer. `cfg` porte le mapping calque
    ↔ rôle choisi par l'utilisateur (voir masseOuvrirMapping) : plus aucun nom
    de calque n'est en dur ici. */
 function masseExtract(parsed, cfg){
+  if(cfg && cfg.mono) return masseExtractMono(parsed, cfg);
   var polys=parsed.polys, texts=parsed.texts;
   if(!cfg || !cfg.numLayer) throw new Error('Mapping incomplet : calque des numéros de lot non défini.');
   var numTx  = texts.filter(function(t){ return t.layer===cfg.numLayer  && t.t; });
@@ -131353,6 +131831,8 @@ function masseExtract(parsed, cfg){
 /* ── Type de couche courbes de niveau (ajout au registre SIG) ── */
 try { if (typeof SIG_COUCHE_DEFS==='object' && !SIG_COUCHE_DEFS.courbe_niveau)
   SIG_COUCHE_DEFS.courbe_niveau={label:'⛰️ Courbes de niveau',geom:'line',color:'#8a5a2b'}; } catch(e){}
+try { if (typeof SIG_COUCHE_DEFS==='object' && !SIG_COUCHE_DEFS.equipement)
+  SIG_COUCHE_DEFS.equipement={label:'🏟️ Équipements / réserves',geom:'polygon',color:'#8b5cf6'}; } catch(e){}
 
 var _masseData=null;   /* résultat d'extraction prêt à importer (après mapping) */
 var _masseParsed=null; /* {polys,texts} bruts du fichier en cours */
@@ -131403,14 +131883,20 @@ function masseOuvrirMapping(){
   var inv=masseInventaireCalques(_masseParsed);
   if(!Object.keys(inv).length){ toast('Aucun calque exploitable dans ce DXF.','error'); return; }
   _masseInv=inv;
-  var best=masseMeilleurPreset(inv);
+  var mono=masseMonoDetecte(inv);
+  var best=mono? null : masseMeilleurPreset(inv);
   if(best){ _masseWorkCfg=JSON.parse(JSON.stringify(best)); _masseWorkCfg._presetId=best.id; }
   else { _masseWorkCfg=masseHeuristique(inv); _masseWorkCfg._presetId='__auto__'; }
+  /* Tout le dessin sur un calque unique : aucun mapping calque↔rôle n'a de
+     sens, on bascule d'office en détection géométrique. */
+  if(mono){ _masseWorkCfg.mono=true; _masseWorkCfg.monoLayer=mono; }
   masseRenderMapping();
 }
 
 function masseMappingLire(){
   var c=_masseWorkCfg; if(!c) return c;
+  var mo=document.getElementById('masse-map-mono'); if(mo) c.mono=mo.checked;
+  var ml=document.getElementById('masse-map-monolignes'); if(ml) c.monoLignes=ml.checked;
   var g=document.getElementById('masse-map-generique'); if(g) c.generique=g.checked;
   var num=document.getElementById('masse-map-num'); if(num) c.numLayer=num.value;
   var surf=document.getElementById('masse-map-surf'); if(surf) c.surfLayer=surf.value;
@@ -131444,6 +131930,7 @@ function masseMappingChangerPreset(id){
   _masseWorkCfg=cfg;
   masseRenderMapping();
 }
+function masseMappingToggleMono(){ masseMappingLire(); _masseWorkCfg.mono=!_masseWorkCfg.mono; masseRenderMapping(); }
 function masseMappingToggleGenerique(){ masseMappingLire(); _masseWorkCfg.generique=!_masseWorkCfg.generique; masseRenderMapping(); }
 function masseMappingAjouterType(){
   masseMappingLire();
@@ -131458,9 +131945,9 @@ function masseMappingAnalyser(){
   masseMappingLire();
   var err=document.getElementById('masse-map-error'); if(err) err.textContent='';
   var cfg=_masseWorkCfg;
-  if(!cfg.numLayer){ if(err) err.textContent='Sélectionnez le calque des numéros de lot.'; return; }
-  if(cfg.generique && !cfg.lotLayer){ if(err) err.textContent='Sélectionnez le calque des lots.'; return; }
-  if(!cfg.generique && !(cfg.typesLots||[]).some(function(t){return t.layer && t.code;})){ if(err) err.textContent='Ajoutez au moins un type de lot avec un calque et un code, ou basculez en mode « générique ».'; return; }
+  if(!cfg.mono && !cfg.numLayer){ if(err) err.textContent='Sélectionnez le calque des numéros de lot.'; return; }
+  if(!cfg.mono && cfg.generique && !cfg.lotLayer){ if(err) err.textContent='Sélectionnez le calque des lots.'; return; }
+  if(!cfg.mono && !cfg.generique && !(cfg.typesLots||[]).some(function(t){return t.layer && t.code;})){ if(err) err.textContent='Ajoutez au moins un type de lot avec un calque et un code, ou basculez en mode « générique ».'; return; }
   try{
     var R=masseExtract(_masseParsed, cfg);
     if(!R.lots.length){ if(err) err.textContent='Aucun lot détecté avec ce mapping — vérifiez les calques sélectionnés.'; return; }
@@ -131513,8 +132000,17 @@ function masseRenderMapping(){
       +'</div>';
   }).join('');
 
+  var mono=!!cfg.mono;
   var body=''
    +'<div style="font-size:12px;color:var(--dim);margin-bottom:10px;">'+layers.length+' calque(s) détecté(s) dans <b>'+esc(_masseSource)+'</b>. Faites correspondre chaque rôle au calque correspondant — aucun nom de calque n\'est imposé.</div>'
+   +'<div style="margin:0 0 12px;padding:10px;border:1px solid var(--bord);border-radius:8px;">'
+     +'<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:600;">'
+     +'<input type="checkbox" id="masse-map-mono" '+(mono?'checked':'')+' onchange="masseMappingToggleMono()"> '
+     +'🧠 Plan <b>mono-calque</b> — détection automatique par la géométrie</label>'
+     +'<div style="font-size:11px;color:var(--dim);margin-top:6px;">Pour les DXF où lots, îlots, réserves, numéros et surfaces sont tous sur le même calque : les îlots sont reconnus comme les polygones englobants, les lots comme les polygones qu\'ils contiennent, les réserves comme les polygones hors îlot ; les numéros de lot sont distingués des autres nombres par leur hauteur de texte.</div>'
+     +(mono?'<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;margin-top:8px;"><input type="checkbox" id="masse-map-monolignes" '+(cfg.monoLignes===false?'':'checked')+'> Importer aussi la trame de lignes du plan (limites, axes de voie)</label>':'')
+   +'</div>'
+   +'<div id="masse-map-roles" style="'+(mono?'display:none;':'')+'">'
    +'<div class="form-grid"><div class="form-group span-2"><label>Préréglage (convention de calques)</label>'
    +'<select id="masse-map-preset" class="form-control" onchange="masseMappingChangerPreset(this.value)">'+presetOpts+'</select></div></div>'
    +'<div style="margin:8px 0 14px;"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;">'
@@ -131537,6 +132033,7 @@ function masseRenderMapping(){
      +'<div class="form-group span-2"><label>Calque(s) périmètre / polygonale (séparés par une virgule)</label><input id="masse-map-perim" class="form-control" value="'+esc((cfg.perimLayers||[]).join(', '))+'"></div>'
    +'</div>'
    +'<div style="font-size:11px;color:var(--dim);margin:6px 0 10px;">Les courbes de niveau sont détectées automatiquement (calques contenant « CN_xx_yy »), sans configuration.</div>'
+   +'</div>'
    +'<div id="masse-map-error" style="color:#dc2626;font-size:12px;margin-bottom:8px;"></div>'
    +'<div style="display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap;">'
      +'<button class="btn btn-secondary" onclick="masseMappingEnregistrer()">💾 Enregistrer ce mapping comme préréglage</button>'
@@ -131583,7 +132080,10 @@ function masseRenderPreview(R){
    +'<tr><td>🏷️ Typologie</td><td style="text-align:right;">'+typo+'</td></tr>'
    +'<tr><td>🧩 Îlots</td><td style="text-align:right;">'+R.ilots+'</td></tr>'
    +'<tr><td>📐 Concordance surface (DXF vs recalcul)</td><td style="text-align:right;font-weight:700;color:'+(ecmax<=5?'#059669':'#d97706')+';">'+(R.surfWarn?R.surfWarn+' écart(s) >5%':'exacte (max '+ecmax.toFixed(1)+'%)')+'</td></tr>'
-   +'<tr><td>🛣️ Voirie (segments)</td><td style="text-align:right;">'+R.voirie.length+'</td></tr>'
+   +(R.reserves&&R.reserves.length? '<tr><td>🏟️ Réserves / équipements</td><td style="text-align:right;">'+R.reserves.map(function(x){return x.label+' ('+x.surface.toLocaleString('fr-FR')+' m²)';}).join(' · ')+'</td></tr>':'')
+   +(R.annotations&&R.annotations.length? '<tr><td>✏️ Mentions du plan</td><td style="text-align:right;">'+R.annotations.map(function(a){return a.label;}).join(' · ')+'</td></tr>':'')
+   +(R.numDeduits? '<tr><td>🔢 Numéros déduits (absents du DXF)</td><td style="text-align:right;font-weight:700;color:#d97706;">'+R.numDeduits+' — à vérifier</td></tr>':'')
+   +'<tr><td>🛣️ '+(R.mono?'Trame / lignes du plan':'Voirie (segments)')+'</td><td style="text-align:right;">'+R.voirie.length+'</td></tr>'
    +'<tr><td>⛰️ Courbes de niveau</td><td style="text-align:right;">'+R.courbes.length+'</td></tr>'
    +'<tr><td>🗂️ Périmètre du site</td><td style="text-align:right;">'+(R.perimetre.surface/10000).toFixed(2)+' ha ('+R.perimetre.bornes.length+' bornes)</td></tr>'
    +'</table>'
@@ -131597,7 +132097,8 @@ function masseRenderPreview(R){
    +'<div class="form-grid">'
    +'<div class="form-group"><label><input type="checkbox" id="masse-opt-sig" checked> Créer parcelle SIG</label></div>'
    +'<div class="form-group"><label><input type="checkbox" id="masse-opt-lots" checked> Créer les lots</label></div>'
-   +'<div class="form-group"><label><input type="checkbox" id="masse-opt-voirie" checked> Importer voirie</label></div>'
+   +'<div class="form-group"><label><input type="checkbox" id="masse-opt-voirie" checked> Importer '+(R.mono?'la trame':'voirie')+'</label></div>'
+   +((R.reserves&&R.reserves.length)||(R.annotations&&R.annotations.length)?'<div class="form-group"><label><input type="checkbox" id="masse-opt-reserves" checked> Importer réserves &amp; mentions</label></div>':'')
    +'<div class="form-group"><label><input type="checkbox" id="masse-opt-courbes" checked> Importer courbes niveau</label></div>'
    +'</div>'
    +'<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">'
@@ -131612,6 +132113,8 @@ async function masseCommit(){
   var doSig=document.getElementById('masse-opt-sig').checked;
   var doLots=document.getElementById('masse-opt-lots').checked;
   var doVoirie=document.getElementById('masse-opt-voirie').checked;
+  var elRes=document.getElementById('masse-opt-reserves');
+  var doReserves=!!(elRes&&elRes.checked);
   var doCourbes=document.getElementById('masse-opt-courbes').checked;
   var progSel=document.getElementById('masse-prog').value;
   DATA.programmes=DATA.programmes||[]; DATA.parcelles=DATA.parcelles||[];
@@ -131676,7 +132179,7 @@ async function masseCommit(){
         geo_polygon:l.geo_polygon, bornes:l.bornes, utm_zone:30,
         lat:(function(){var a=0;l.geo_polygon.forEach(function(q){a+=q[0];});return a/l.geo_polygon.length;})(),
         lng:(function(){var o=0;l.geo_polygon.forEach(function(q){o+=q[1];});return o/l.geo_polygon.length;})(),
-        notes:l.type_label+' — import plan de masse '+R.source, created_at:today() };
+        notes:l.type_label+' — import plan de masse '+R.source+(l.numero_deduit?' — ⚠️ numéro déduit automatiquement (absent du DXF), à confirmer':''), created_at:today() };
       DATA.lots.push(lot); await dbPut('lots',lot); if(typeof syncToSupabase==='function') syncToSupabase('pi_lots',lot); nLots++;
     }
   }
@@ -131693,6 +132196,21 @@ async function masseCommit(){
       var f={ id:uid(), type:'voirie', geom_type:'line', coords:R.voirie[v], color:'#64748b',
         label:'Voirie '+(v+1), source:R.source, programme_id:prog.id, created_at:today() };
       DATA.sig_couches.push(f); await dbPut('sig_couches',f); if(typeof syncToSupabase==='function') syncToSupabase('pi_sig_couches',f); nSig++;
+    }
+  }
+  if(doReserves && R.reserves && R.reserves.length){
+    for(var rs=0;rs<R.reserves.length;rs++){
+      var rf={ id:uid(), type:'equipement', geom_type:'polygon', coords:R.reserves[rs].geo, color:'#8b5cf6',
+        label:R.reserves[rs].label+' — '+R.reserves[rs].surface.toLocaleString('fr-FR')+' m²',
+        surface:R.reserves[rs].surface, source:R.source, programme_id:prog.id, created_at:today() };
+      DATA.sig_couches.push(rf); await dbPut('sig_couches',rf); if(typeof syncToSupabase==='function') syncToSupabase('pi_sig_couches',rf); nSig++;
+    }
+  }
+  if(doReserves && R.annotations && R.annotations.length){
+    for(var an=0;an<R.annotations.length;an++){
+      var af={ id:uid(), type:'annotation', geom_type:'point', coords:[R.annotations[an].pt], color:'#f59e0b',
+        label:R.annotations[an].label, source:R.source, programme_id:prog.id, created_at:today() };
+      DATA.sig_couches.push(af); await dbPut('sig_couches',af); if(typeof syncToSupabase==='function') syncToSupabase('pi_sig_couches',af); nSig++;
     }
   }
   if(doCourbes){
