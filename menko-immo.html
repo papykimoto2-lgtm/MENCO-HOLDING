@@ -6380,6 +6380,47 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                 <label>Vision</label>
                 <textarea class="form-control" id="param-portail-vision" rows="2" placeholder="Vide = texte générique"></textarea>
               </div>
+
+              <!-- ── Mot du DG (onglet « La société » du portail public) ── -->
+              <div class="form-group span-2" style="border-top:1px solid #E0E0EA;padding-top:14px;margin-top:4px;">
+                <label style="font-weight:700;">🗣️ Mot du DG — portail public</label>
+                <div style="font-size:11px;color:#6B6B9A;margin-top:2px;">Laissez le texte ET la photo vides pour ne pas afficher la section du tout.</div>
+              </div>
+              <div class="form-group">
+                <label>Titre de la section</label>
+                <input type="text" id="param-portail-motdg-titre" class="form-control" placeholder="Vide = « Mot du DG »">
+              </div>
+              <div class="form-group">
+                <label>Nom du dirigeant</label>
+                <input type="text" id="param-portail-motdg-nom" class="form-control" placeholder="Nom affiché sous le texte">
+              </div>
+              <div class="form-group">
+                <label>Fonction</label>
+                <input type="text" id="param-portail-motdg-fonction" class="form-control" placeholder="Ex : Directeur Général">
+              </div>
+              <div class="form-group">
+                <label>Phrase d'accroche (en italique)</label>
+                <input type="text" id="param-portail-motdg-accroche" class="form-control" placeholder="Une phrase forte, mise en avant avant le texte">
+              </div>
+              <div class="form-group span-2">
+                <label>Texte du mot</label>
+                <textarea class="form-control" id="param-portail-motdg-texte" rows="6" placeholder="Un paragraphe par ligne vide.&#10;&#10;Comme ici : ce second bloc formera un paragraphe distinct sur le portail."></textarea>
+                <div style="font-size:11px;color:#6B6B9A;margin-top:4px;">Une ligne vide sépare deux paragraphes ; un simple retour à la ligne reste dans le même paragraphe.</div>
+              </div>
+              <div class="form-group span-2">
+                <label>Photo du dirigeant</label>
+                <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                  <input type="text" id="param-portail-motdg-photo" class="form-control" placeholder="URL d'image, ou importez un fichier →" oninput="updatePortailMotDgPreview(this.value)" style="flex:1;min-width:200px;">
+                  <div id="portail-motdg-preview-zone" style="width:44px;height:56px;border:1px dashed #E0E0EA;border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#F5F5F8;">
+                    <img id="portail-motdg-preview" src="" alt="" style="max-width:100%;max-height:100%;object-fit:cover;display:none;">
+                    <span id="portail-motdg-preview-icon" style="font-size:18px;opacity:.3;">👤</span>
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('portail-motdg-file-input').click()">📁 Importer</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="portail-motdg-clear-btn" onclick="clearPortailMotDgPhoto()" style="display:none;">🗑️</button>
+                  <input type="file" id="portail-motdg-file-input" accept="image/png,image/jpeg,image/webp" style="display:none;" onchange="handlePortailMotDgUpload(event)">
+                </div>
+                <div style="font-size:11px;color:#6B6B9A;margin-top:4px;">Portrait recommandé (vertical). Une photo importée est automatiquement réduite à 800 px de large avant enregistrement — une URL déjà hébergée reste préférable si vous en avez une.</div>
+              </div>
               <div class="form-group">
                 <label>Durée de paiement max (mois)</label>
                 <input type="number" id="param-portail-duree" class="form-control" placeholder="Ex : 60" min="0">
@@ -44895,6 +44936,87 @@ function clearPortailLogoImg() {
   if (fileInput) fileInput.value = '';
 }
 
+/** ── Photo du dirigeant (« Mot du DG » du portail public) ──────────────
+    Le fichier importé est RÉDUIT avant d'être conservé. Les autres images de
+    ce module (logo, bandeau) sont stockées en base64 brut ; pour un portrait
+    venu d'un téléphone, cela ferait entrer plusieurs méga-octets de texte dans
+    la ligne pi_params — poussée vers Supabase à CHAQUE enregistrement de
+    paramètre, et injectée telle quelle dans le portail généré, donc
+    téléchargée par chaque visiteur. On redimensionne à 800 px de large et on
+    réencode en JPEG : le portrait tombe autour de 100 Ko, sans différence
+    visible à la taille où il est affiché. */
+function handlePortailMotDgUpload(event) {
+  var file = event.target.files[0];
+  if (!file) return;
+  var maxSource = 8 * 1024 * 1024; /* garde-fou de lecture, avant réduction */
+  if (file.size > maxSource) {
+    toast('Photo trop lourde (max 8 Mo à l\'import).', 'error');
+    return;
+  }
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    _portailMotDgReduire(e.target.result, 800, function(reduit, octets) {
+      var input = document.getElementById('param-portail-motdg-photo');
+      if (input) input.value = reduit;
+      updatePortailMotDgPreview(reduit);
+      toast('Photo importée (' + Math.round(octets/1024) + ' Ko après réduction) — pensez à « Enregistrer » pour la publier.', 'success');
+    });
+  };
+  reader.readAsDataURL(file);
+}
+
+/** Réduit une image dataURL à largeurMax et la réencode en JPEG.
+    En cas d'échec (format exotique, canvas indisponible), on conserve
+    l'original plutôt que de perdre la photo de l'utilisateur. */
+function _portailMotDgReduire(dataUrl, largeurMax, apres) {
+  try {
+    var img = new Image();
+    img.onload = function() {
+      try {
+        var ratio = img.width > largeurMax ? (largeurMax / img.width) : 1;
+        var c = document.createElement('canvas');
+        c.width = Math.round(img.width * ratio);
+        c.height = Math.round(img.height * ratio);
+        var ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0, c.width, c.height);
+        var out = c.toDataURL('image/jpeg', 0.82);
+        /* Si la réduction n'apporte rien (image déjà petite, ou PNG a plat
+           plus compact), on garde la plus légère des deux. */
+        if (out.length >= dataUrl.length) out = dataUrl;
+        apres(out, Math.round(out.length * 0.75));
+      } catch (e) { apres(dataUrl, Math.round(dataUrl.length * 0.75)); }
+    };
+    img.onerror = function() { apres(dataUrl, Math.round(dataUrl.length * 0.75)); };
+    img.src = dataUrl;
+  } catch (e) { apres(dataUrl, Math.round(dataUrl.length * 0.75)); }
+}
+
+/** Aperçu miniature de la photo du dirigeant */
+function updatePortailMotDgPreview(src) {
+  var img = document.getElementById('portail-motdg-preview');
+  var icon = document.getElementById('portail-motdg-preview-icon');
+  var clearBtn = document.getElementById('portail-motdg-clear-btn');
+  if (!img) return;
+  if (src) {
+    img.src = src; img.style.display = 'block';
+    if (icon) icon.style.display = 'none';
+    if (clearBtn) clearBtn.style.display = '';
+  } else {
+    img.removeAttribute('src'); img.style.display = 'none';
+    if (icon) icon.style.display = '';
+    if (clearBtn) clearBtn.style.display = 'none';
+  }
+}
+
+/** Retire la photo du dirigeant (URL ou fichier importé) */
+function clearPortailMotDgPhoto() {
+  var input = document.getElementById('param-portail-motdg-photo');
+  if (input) input.value = '';
+  updatePortailMotDgPreview('');
+  var fileInput = document.getElementById('portail-motdg-file-input');
+  if (fileInput) fileInput.value = '';
+}
+
 /** Upload de l'image de fond du bandeau d'accueil du portail public */
 function handlePortailHeroUpload(event) {
   var file = event.target.files[0];
@@ -45655,6 +45777,12 @@ async function saveParams() {
     portail_description:          gv('param-portail-description'),
     portail_mission:              gv('param-portail-mission'),
     portail_vision:               gv('param-portail-vision'),
+    portail_motdg_titre:          gv('param-portail-motdg-titre'),
+    portail_motdg_accroche:       gv('param-portail-motdg-accroche'),
+    portail_motdg_texte:          gv('param-portail-motdg-texte'),
+    portail_motdg_photo:          gv('param-portail-motdg-photo'),
+    portail_motdg_nom:            gv('param-portail-motdg-nom'),
+    portail_motdg_fonction:       gv('param-portail-motdg-fonction'),
     portail_duree:                parseInt(gv('param-portail-duree'))||0,
     portail_jouissance:           parseFloat(gv('param-portail-jouissance'))||0,
     portail_programme_nom:          gv('param-portail-programme-nom'),
@@ -45774,6 +45902,12 @@ function buildPortailBrand(){
     description:            p.portail_description || '',
     mission:                p.portail_mission || '',
     vision:                 p.portail_vision || '',
+    motdg_titre:            p.portail_motdg_titre || '',
+    motdg_accroche:         p.portail_motdg_accroche || '',
+    motdg_texte:            p.portail_motdg_texte || '',
+    motdg_photo:            p.portail_motdg_photo || '',
+    motdg_nom:              p.portail_motdg_nom || '',
+    motdg_fonction:         p.portail_motdg_fonction || '',
     duree:                  p.portail_duree || 0,
     jouissance:             p.portail_jouissance || 0,
     programme_nom:            p.portail_programme_nom || '',
@@ -45930,6 +46064,13 @@ function loadParamFields() {
   sv('param-portail-description', p.portail_description||'');
   sv('param-portail-mission', p.portail_mission||'');
   sv('param-portail-vision', p.portail_vision||'');
+  sv('param-portail-motdg-titre', p.portail_motdg_titre||'');
+  sv('param-portail-motdg-accroche', p.portail_motdg_accroche||'');
+  sv('param-portail-motdg-texte', p.portail_motdg_texte||'');
+  sv('param-portail-motdg-photo', p.portail_motdg_photo||'');
+  sv('param-portail-motdg-nom', p.portail_motdg_nom||'');
+  sv('param-portail-motdg-fonction', p.portail_motdg_fonction||'');
+  if (typeof updatePortailMotDgPreview === 'function') updatePortailMotDgPreview(p.portail_motdg_photo||'');
   sv('param-portail-duree', p.portail_duree||'');
   sv('param-portail-jouissance', p.portail_jouissance||'');
   sv('param-portail-programme-nom', p.portail_programme_nom||'');
