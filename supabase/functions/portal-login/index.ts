@@ -40,6 +40,12 @@
 //    fiches suivantes étaient invisibles et ces acteurs ne pouvaient PLUS
 //    JAMAIS se connecter, sans le moindre message d'erreur.
 // 5. Comparaison du hash à temps constant.
+// 6. Fiches supprimées refusées. Aucune version précédente ne filtrait les
+//    suppressions : un souscripteur supprimé gardait l'accès au portail tant
+//    que son code figurait sur sa fiche, car genererCodeAcces n'est pas rejoué
+//    à la suppression et rien ne retirait son identifiant. Constaté en
+//    production sur deux dossiers supprimés le 07/09/2026 qui portaient encore
+//    un code d'accès en clair (voir estSupprimeLogique / porteUneTombstone).
 //
 // COMPATIBILITÉ DES CLAIMS — NE PAS RETIRER `kind` NI `scope_id`
 // portal_rls.sql filtre sur auth.jwt()->>'kind' et auth.jwt()->>'scope_id'.
@@ -190,6 +196,38 @@ function identVariants(s: unknown): string[] {
   return [...out];
 }
 
+// ── Fiche supprimée : accès révoqué ───────────────────────────────────
+// L'ERP marque une suppression de DEUX façons, et il faut refuser sur l'une
+// comme sur l'autre :
+//   · data._deleted = "true" — suppression logique, la ligne reste en base
+//     pour que la synchro propage l'effacement aux autres postes ;
+//   · pi_suppressions, clé « ts::<store>::<id> » — pierre tombale posée à la
+//     suppression, qui interdit ensuite toute réinjection (trigger
+//     guard_tombstone). La clé est construite exactement comme côté Postgres :
+//     le store se déduit de la table (pi_clients → clients) et l'identifiant
+//     est coalesce(data->>'id', colonne id), dans cet ordre. Les deux valeurs
+//     coïncident sur les neuf tables du portail aujourd'hui ; reprendre la
+//     même précédence évite que le contrôle rate une pierre tombale le jour
+//     où une ligne divergerait.
+// Une fiche peut ne porter que la seconde marque : la ligne subsiste sans
+// _deleted, seule la pierre tombale témoigne de la suppression. Tester un seul
+// des deux marquages ne suffit donc pas.
+function estSupprimeLogique(rec: any): boolean {
+  return String((rec || {})._deleted) === "true";
+}
+async function porteUneTombstone(table: string, id: string): Promise<boolean> {
+  const store = table.replace(/^pi_/, "");
+  const cle = "ts::" + store + "::" + id;
+  const resp = await fetch(
+    `${SB_URL}/rest/v1/pi_suppressions?id=eq.${encodeURIComponent(cle)}&select=id&limit=1`,
+    { headers: { apikey: SB_SERVICE_ROLE, Authorization: `Bearer ${SB_SERVICE_ROLE}` } });
+  // Contrôle indisponible → on refuse. Ouvrir par défaut reviendrait à rendre
+  // l'accès à une fiche supprimée dès la première erreur réseau.
+  if (!resp.ok) throw new Error("server");
+  const rows = await resp.json();
+  return Array.isArray(rows) && rows.length > 0;
+}
+
 // ── Carte des profils ──────────────────────────────────────────────────────
 // Pour chaque profil : la table, les champs pouvant servir d'identifiant, la
 // clé du tableau imbriqué s'il y a lieu, et le claim porté par le JWT.
@@ -258,11 +296,16 @@ async function fetchAllRows(table: string): Promise<Array<{ id: string; data: an
 }
 
 // ── Vérification du code ───────────────────────────────────────────────────
-// Le repli en clair est conservé À DESSEIN : des fiches anciennes portent
-// encore code_acces / mot_de_passe sans hash, et les supprimer ici priverait
-// ces acteurs d'accès du jour au lendemain. L'ERP re-hache chaque code à sa
-// régénération ; ce repli pourra disparaître une fois toutes les fiches
-// migrées (vérifier qu'aucune ligne n'a code_acces sans code_acces_hash).
+// État de pi_clients au 17/09/2026 : les 371 fiches actives portent toutes un
+// hash, ZERO code en clair. Les codes qui y traînaient ont été hachés sur
+// place — donc sans changer le code connu du souscripteur — après vérification
+// en base que digest(clair || sel) redonnait bien le hash écrit.
+// Le repli en clair ci-dessous ne sert donc plus aucune fiche de pi_clients.
+// Il est néanmoins conservé : les huit autres tables du portail (apporteurs,
+// cessions, partenaires, copropriétaires…) n'ont pas été migrées, et une
+// fiche ancienne peut revenir par un import ou par la synchro d'un poste
+// resté longtemps hors ligne. Le retirer suppose d'avoir vérifié les neuf
+// tables, pas seulement pi_clients.
 async function codeValide(rec: any, code: string): Promise<boolean> {
   if (!rec || !code) return false;
   if (rec.code_acces_hash && rec.code_acces_salt) {
@@ -294,12 +337,16 @@ async function resolvePortalLogin(kind: string, ident: string, code: string): Pr
 
   for (const row of rows) {
     const base = row.data || {};
+    if (estSupprimeLogique(base)) continue;
     const candidats = cfg.nested
       ? (base[cfg.nested] || []).map((p: any) => ({ rec: p, parentId: row.id }))
       : [{ rec: base, parentId: row.id }];
 
     for (const { rec, parentId } of candidats) {
       if (!rec) continue;
+      // Profil imbriqué (propriétaire terrien) : l'élément du tableau porte sa
+      // propre suppression, indépendamment de l'opération qui le contient.
+      if (estSupprimeLogique(rec)) continue;
       // On accepte n'importe lequel des identifiants présents sur la fiche :
       // l'acteur ne sait pas lequel on attend de lui.
       const matches = cfg.identFields.some((f) => {
@@ -308,6 +355,11 @@ async function resolvePortalLogin(kind: string, ident: string, code: string): Pr
       });
       if (!matches) continue;
       if (!(await codeValide(rec, code))) continue;
+      // Contrôle placé APRÈS la vérification du code : une seule requête, et
+      // seulement quand des identifiants valides viennent d'être présentés.
+      // La pierre tombale porte sur la LIGNE, donc sur parentId, y compris
+      // pour un profil imbriqué.
+      if (await porteUneTombstone(cfg.table, String(base.id ?? parentId))) continue;
 
       return {
         kind,
