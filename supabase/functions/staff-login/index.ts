@@ -1,67 +1,100 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Edge Function : staff-login — MENKO HOLDING (v6)
+// Edge Function : staff-login — MENKO IMMO (v9)
 //
-// [FIX v6 — IDENTIFIANT SENSIBLE À LA CASSE]
+// [FIX v9 — RÉGRESSION CRITIQUE DU FIX v8 : PRESQUE PLUS PERSONNE NE POUVAIT
+//  SE CONNECTER]
+// v8 forçait l'identifiant reçu en minuscules puis le comparait par égalité
+// stricte (.eq) à pi_users.login — en supposant, à tort, que les comptes y
+// sont enregistrés en minuscules. Vérifié en base : c'est l'inverse. La
+// quasi-totalité des comptes réels sont en MAJUSCULES/mixte ("KESSIE",
+// "ABIBA", "TRAORE", "CYRILLE"...) ; deux seulement en minuscules. En
+// forçant l'entrée en minuscules, v8 a donc cassé la connexion de PRESQUE
+// TOUS LES COMPTES — pour corriger celle d'un seul, côté Zahara (même code
+// partagé). Incident total immédiatement rapporté côté Zahara ("plus aucun
+// mot de passe et login ne passe") — corrigé ici avant même un signalement
+// côté Menco, qui partage exactement le même défaut.
+//
+// Corrigé en comparant réellement SANS CASSE (ILIKE, motif échappé — un
+// identifiant ne contient légitimement aucun des caractères spéciaux % _ \
+// qu'ILIKE interprète) au lieu de forcer une casse d'un côté et d'en
+// supposer une autre de l'autre. Aucune réécriture des logins existants
+// n'est nécessaire : la comparaison s'adapte à leur casse réelle, quelle
+// qu'elle soit.
+//
+// [FIX v8 — IDENTIFIANT SENSIBLE À LA CASSE, cause du symptôme initial]
 // .eq("login", login) est une égalité stricte Postgres : un compte enregistré
 // en minuscules (cas normal côté client — voir createUserFromModal) refusait
 // toute saisie avec une majuscule, pourtant le réflexe naturel pour taper un
-// prénom ("Patrice"). Incident réel côté Zahara (même code partagé) : mot de
-// passe réinitialisé par un administrateur, test de connexion immédiat avec
-// le nouveau mot de passe échoué — l'identifiant tapé avec une majuscule ne
-// correspondait à aucune ligne ("Identifiant introuvable"), sans rapport
-// avec le mot de passe. Normalisé ici en minuscules, comme côté client
-// (doLogin, fetchUserFromCloud, createUserFromModal).
+// prénom ("Patrice"). Le PRINCIPE (comparer sans casse) était le bon ; son
+// IMPLÉMENTATION (forcer une casse supposée) a produit la régression ci-
+// dessus, corrigée en v9.
 //
-// [FIX v5 — ANTI-FORCE-BRUTE INOPÉRANT + AUDIT VIDE + DOUBLONS DE LOGIN]
-// Porte ici les correctifs déjà validés côté Zahara (v6/v7, même schéma de
-// base), adaptés à l'origine CORS et au projet Supabase propres à Menco.
-// Voir functions/staff-login/CONTRAT.md pour le détail de l'investigation.
+// Authentification du personnel côté serveur. Le hash n'est jamais renvoyé au
+// client ; le jeton émis est un vrai JWT Supabase HS256 à 3 segments signé avec
+// le Legacy JWT Secret du projet, avec role="authenticated" — reconnu
+// nativement par PostgREST et auth.jwt(), donc exploitable par les politiques
+// RLS. Vérification SHA-256+sel (rétro-compatible) avec migration PBKDF2
+// transparente à la première connexion réussie.
 //
-//   1. Le compteur anti-force-brute et les journaux d'audit filtraient sur
-//      .eq("login"), .eq("success"), .gte("date") — trois colonnes qui
-//      n'existent PAS sur pi_logs_connexion (schéma réel vérifié :
-//      { id, data jsonb, updated_at, scope_id }). Chaque requête échouait
-//      silencieusement : `count` restait nul (verrou jamais déclenché) et
-//      chaque insertion échouait (aucune trace serveur, succès ou échec).
-//      Corrigé en lisant/écrivant ces champs sous data->>…, comme Zahara.
-//   2. Seuls les échecs VÉRIFIÉS ICI sont désormais comptés (marqueur
-//      data.src="srv") pour éviter qu'un employé qui se trompe plusieurs
-//      fois via le client (hors ligne compris) ne sature le verrou serveur
-//      pour tout le monde — incident déjà rencontré côté Zahara.
-//      Fenêtre glissante de 15 minutes, plafond porté à 10 (au lieu de
-//      5 échecs / 24 h, bien plus punitif pour une simple faute de frappe).
-//   3. .maybeSingle() cassait toute authentification dès qu'un login
-//      existait en double dans pi_users (erreur PGRST116 jamais vérifiée,
-//      silencieusement traitée comme "introuvable"). On récupère désormais
-//      toutes les lignes partageant ce login et on essaie le mot de passe
-//      contre chacune (comptes actifs en priorité) jusqu'à trouver la
-//      correspondance.
+// ⚠️ PORTAGE v4 → v7 : cette fonction était restée en version 4 sur Menco
+// alors que Zahara tourne en v7 depuis le 16/09/2026. La v4 est conservée dans
+// l'historique git et décrite dans CONTRAT.md ; elle portait TROIS défauts
+// bloquants, tous corrigés ci-dessous. Le schéma réel de pi_logs_connexion sur
+// Menco — { id, data jsonb, updated_at, scope_id } — est identique à celui de
+// Zahara, et les colonnes plates login/success/date qu'attendait la v4
+// n'existent sur aucun des deux projets : le portage s'applique tel quel.
 //
-// Historique conservé (corrections précédentes, toujours valables) :
+// [FIX v7 — DOUBLONS DE LOGIN CASSAIENT TOUTE AUTHENTIFICATION]
+// pi_users contient des doublons (jusqu'à 10 lignes pour un même login,
+// probablement issus d'un import/seed initial). L'ancien code faisait
+// .eq("login", login).maybeSingle() : dès que PLUSIEURS lignes correspondent,
+// maybeSingle() renvoie une erreur PGRST116 ("multiple rows") — jamais
+// vérifiée ici (seul `data` était déstructuré, pas `error`). `data` valait
+// alors null, et le code retombait sur "Identifiant introuvable" (401) —
+// message trompeur : le login existe bel et bien, il existe juste en trop
+// d'exemplaires. Résultat mesuré sur Zahara : AUCUNE connexion serveur
+// possible pour un login dupliqué, quel que soit le mot de passe saisi,
+// indéfiniment.
 //
-// [FIX 2026-08-18] Le jeton émis auparavant (base64url(payload).hexsig, signé
-// avec un secret maison STAFF_JWT_SECRET) n'était PAS un JWT valide au sens
-// Supabase : format à 2 segments (pas 3), secret différent du secret réel du
-// projet, champ "exp" en millisecondes au lieu de secondes. PostgREST ne
-// pouvait donc JAMAIS le reconnaître comme authentifié — toute requête
-// retombait en rôle "anon", quel que soit le succès de la connexion. Toute
-// table dont la politique RLS exige explicitement le rôle "authenticated"
-// (ex. pi_factures_fournisseur_attente) rejetait alors systématiquement les
-// écritures avec une erreur 42501, même avec des identifiants corrects.
-// Cette version signe un vrai JWT HS256 à 3 segments avec le secret réel du
-// projet (Legacy JWT Secret, encore utilisé par Supabase pour VÉRIFIER les
-// jetons), avec role="authenticated" — reconnu nativement par auth.jwt().
+// Corrigé : on récupère TOUTES les lignes partageant ce login, et on essaie
+// le mot de passe contre chacune (en priorité les comptes actifs) jusqu'à
+// trouver la correspondance — la connexion aboutit dès qu'UN des doublons a
+// le bon mot de passe, sans qu'il soit nécessaire de nettoyer les doublons
+// en base au préalable. Le nettoyage reste recommandé côté application
+// (Paramètres → Utilisateurs), mais n'est plus bloquant pour se connecter.
 //
-// [FIX 2026-08-18 bis] Deuxième bug trouvé en testant en conditions réelles :
-// le client historique envoie { login, motdepasse } (français) alors que
-// cette fonction attendait { login, password } (anglais) depuis TOUJOURS —
-// bug présent dès la version d'origine, jamais remarqué car l'erreur 400
-// générique masquait la vraie cause. Résultat concret : staff-login échouait
-// systématiquement pour TOUT LE MONDE, indépendamment du mot de passe saisi.
+// [FIX v5/v6 — COMPTEUR ANTI-FORCE-BRUTE INOPÉRANT, PUIS REFERMÉ SUR L'APP]
+// La v4 filtrait sur .eq("login"), .eq("success") et .gte("date") — trois
+// colonnes qui n'existent pas dans pi_logs_connexion (schéma jsonb ci-dessus).
+// La requête échouait, `count` restait nul, et le verrou ne se déclenchait
+// donc JAMAIS : aucune protection réelle contre la force brute. Pour la même
+// raison, les insertions échouaient et l'audit des connexions serveur restait
+// vide. Les lectures et écritures passent désormais par data->>…, conforme au
+// schéma, et sont donc effectives.
 //
-// Déploiement : supabase functions deploy staff-login --no-verify-jwt
-// Secrets requis : SERVICE_ROLE_KEY, SB_PROJECT_JWT_SECRET (Legacy JWT Secret
-//                  du projet Menco — Project Settings → JWT Keys → Legacy JWT Secret)
+// Une fois le compteur opérationnel, un second piège apparaît : la table
+// reçoit AUSSI les échecs écrits par le NAVIGATEUR (logConnexion(), appelée à
+// chaque saisie erronée côté client, y compris hors ligne). Un employé qui se
+// trompe 5 fois dans la journée saturerait le compteur SERVEUR, et la fonction
+// répondrait ensuite 429 à tout le monde pendant 24 h, même avec le bon mot de
+// passe — plus aucun jeton `authenticated` émis, et l'ERP entier retombant sur
+// la clé anonyme, exactement ce que les politiques RLS sont censées empêcher.
+//
+// Prévenu sur deux points :
+//   1. Seuls les échecs VÉRIFIÉS ICI sont comptés (marqueur data.src="srv").
+//      Les lignes écrites par le client n'ont pas ce marqueur et n'entrent
+//      pas dans le calcul — elles restent en base pour l'audit.
+//   2. Fenêtre glissante de 15 minutes au lieu de 24 h, plafond porté à 10.
+//      Une attaque par force brute reste stoppée net ; une faute de frappe
+//      ne condamne plus la journée.
+// Le garde-fou client (5 essais/jour, localStorage) est inchangé.
+//
+// DÉPLOIEMENT : Supabase Dashboard → Edge Functions → staff-login → Deploy,
+// sur le projet MENCO (pxwgefdxgrskusjbzrxz) — pas celui de Zahara.
+// Secrets requis (déjà configurés, inchangés depuis la v4) :
+//   SB_URL / SUPABASE_URL, SERVICE_ROLE_KEY / SUPABASE_SERVICE_ROLE_KEY,
+//   SB_PROJECT_JWT_SECRET (Legacy JWT Secret DU PROJET MENCO).
+// Origine CORS : https://erp-menko-holding.com (propre à Menco).
 // ═══════════════════════════════════════════════════════════════════════════
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -70,8 +103,8 @@ const SERVICE_KEY  = Deno.env.get("SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_
 const PROJECT_JWT_SECRET = Deno.env.get("SB_PROJECT_JWT_SECRET")!;
 const MAX_ATTEMPTS = 10;                 // échecs vérifiés serveur, par identifiant
 const ATTEMPT_WINDOW_MIN = 15;           // fenêtre glissante
-const TOKEN_TTL_SEC = 8 * 3600;          // 8 h — en SECONDES (norme JWT "exp")
-const PBKDF2_ITER  = 210000;             // OWASP 2024 (SHA-256)
+const TOKEN_TTL_SEC = 8 * 3600;
+const PBKDF2_ITER  = 210000;
 
 const CORS = {
   "Access-Control-Allow-Origin": "https://erp-menko-holding.com",
@@ -85,11 +118,9 @@ const enc = new TextEncoder();
 const toHex = (buf: ArrayBuffer) =>
   Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
 
-// SHA-256(password + salt) — identique à hashPassword() côté client (rétro-compat)
 async function sha256Salt(pwd: string, salt: string) {
   return toHex(await crypto.subtle.digest("SHA-256", enc.encode(pwd + salt)));
 }
-// PBKDF2-HMAC-SHA256 (nouveau standard)
 async function pbkdf2(pwd: string, salt: string, iter: number) {
   const key = await crypto.subtle.importKey("raw", enc.encode(pwd), "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits(
@@ -97,7 +128,6 @@ async function pbkdf2(pwd: string, salt: string, iter: number) {
   return toHex(bits);
 }
 
-// ── Émission d'un vrai JWT Supabase (HS256, 3 segments base64url) ───────────
 function base64url(bytes: Uint8Array): string {
   let bin = "";
   for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
@@ -114,7 +144,6 @@ async function signSupabaseJwt(payload: Record<string, unknown>): Promise<string
   return `${signingInput}.${base64url(new Uint8Array(sig))}`;
 }
 
-// Comparaison temps-constant
 function safeEq(a: string, b: string) {
   if (a.length !== b.length) return false;
   let r = 0;
@@ -130,20 +159,31 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json();
     login = body.login || "";
-    /* Le client historique envoie "motdepasse" (français), pas "password" —
-       on accepte les deux noms, sans casser aucun appelant existant. */
     password = body.password || body.motdepasse || "";
   } catch { return json({ ok: false, error: "payload" }, 400); }
-  login = (login || "").trim().toLowerCase();
+  login = (login || "").trim();
   if (!login || !password) return json({ ok: false, error: "champs" }, 400);
 
   const db = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
   const since = new Date(Date.now() - ATTEMPT_WINDOW_MIN * 60 * 1000).toISOString();
 
+  /* [FIX v9 — RÉGRESSION DU FIX v8] v8 forçait login en minuscules puis
+     comparait par égalité stricte (.eq) — casse en pi_users.login vérifiée :
+     la QUASI-TOTALITÉ des comptes existants sont en MAJUSCULES/mixte
+     ("KESSIE", "ABIBA", "TRAORE"...), deux seulement en minuscules.
+     Comparer une entrée forcée en minuscules à une colonne majoritairement
+     en majuscules ne correspond donc PLUS JAMAIS : v8 a cassé la connexion
+     de PRESQUE TOUS les comptes pour corriger celle d'un seul. Corrigé en
+     comparant réellement sans casse (ILIKE, motif échappé — % _ \ n'ont pas
+     de sens dans un identifiant) au lieu de forcer une casse côté serveur
+     ET de supposer une casse côté données. Aucune réécriture des logins
+     existants n'est nécessaire : la comparaison s'adapte à eux. */
+  const loginIlike = login.replace(/[%_\\]/g, (c) => "\\" + c);
+
   // ── Anti-brute-force : uniquement les échecs vérifiés par CETTE fonction ──
   const { count } = await db.from("pi_logs_connexion")
     .select("id", { count: "exact", head: true })
-    .eq("data->>login", login)
+    .ilike("data->>login", loginIlike)
     .eq("data->>success", "false")
     .eq("data->>src", "srv")
     .gte("data->>date", since);
@@ -161,9 +201,11 @@ Deno.serve(async (req) => {
       updated_at: new Date().toISOString(),
     });
 
-  // Toutes les lignes partageant ce login — le mot de passe est essayé
-  // contre chacune (comptes actifs d'abord) pour rester robuste aux doublons.
-  const { data: candidats } = await db.from("pi_users").select("*").eq("login", login);
+  // [FIX v7] .maybeSingle() cassait tout dès qu'un login existait en double
+  // (erreur PGRST116 jamais vérifiée, silencieusement traitée comme "pas
+  // trouvé"). On récupère toutes les lignes et on essaie le mot de passe
+  // contre chacune — les comptes actifs d'abord.
+  const { data: candidats } = await db.from("pi_users").select("*").ilike("login", loginIlike);
   if (!candidats || candidats.length === 0) {
     await logFail("Identifiant introuvable");
     return json({ ok: false, error: "invalide" }, 401);
@@ -198,7 +240,6 @@ Deno.serve(async (req) => {
     return json({ ok: false, error: "invalide" }, 401);
   }
 
-  // ── Upgrade transparent vers PBKDF2 ────────────────────────────────────────
   if (upgrade) {
     const newHash = await pbkdf2(password, user.salt, PBKDF2_ITER);
     await db.from("pi_users").update({
@@ -216,12 +257,11 @@ Deno.serve(async (req) => {
     updated_at: new Date().toISOString(),
   });
 
-  // ── Profil SANS secret + vrai JWT Supabase signé (role=authenticated) ──────
   const nowSec = Math.floor(Date.now() / 1000);
   const token = await signSupabaseJwt({
     aud: "authenticated",
-    role: "authenticated",     // ← reconnu nativement par PostgREST/auth.jwt()->>'role'
-    app_role: user.role,       // ← rôle métier (admin/manager/caissiere/...), consommé par certaines policies existantes
+    role: "authenticated",
+    app_role: user.role,
     sub: user.id,
     login: user.login,
     iat: nowSec,
