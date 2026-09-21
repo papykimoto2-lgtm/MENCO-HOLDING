@@ -1,5 +1,16 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Edge Function : staff-login — MENKO IMMO (v7)
+// Edge Function : staff-login — MENKO IMMO (v8)
+//
+// [FIX v8 — IDENTIFIANT SENSIBLE À LA CASSE]
+// .eq("login", login) est une égalité stricte Postgres : un compte enregistré
+// en minuscules (cas normal côté client — voir createUserFromModal) refusait
+// toute saisie avec une majuscule, pourtant le réflexe naturel pour taper un
+// prénom ("Patrice"). Incident réel côté Zahara (même code partagé) : mot de
+// passe réinitialisé par un administrateur, test de connexion immédiat avec
+// le nouveau mot de passe échoué — l'identifiant tapé avec une majuscule ne
+// correspondait à aucune ligne ("Identifiant introuvable"), sans rapport
+// avec le mot de passe. Normalisé ici en minuscules, comme côté client
+// (doLogin, fetchUserFromCloud, createUserFromModal).
 //
 // Authentification du personnel côté serveur. Le hash n'est jamais renvoyé au
 // client ; le jeton émis est un vrai JWT Supabase HS256 à 3 segments signé avec
@@ -133,7 +144,7 @@ Deno.serve(async (req) => {
     login = body.login || "";
     password = body.password || body.motdepasse || "";
   } catch { return json({ ok: false, error: "payload" }, 400); }
-  login = (login || "").trim();
+  login = (login || "").trim().toLowerCase();
   if (!login || !password) return json({ ok: false, error: "champs" }, 400);
 
   const db = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
