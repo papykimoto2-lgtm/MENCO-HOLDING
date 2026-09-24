@@ -41573,6 +41573,12 @@ function _intragFluxFiltres(annee) {
 function _intragMatrice(annee) {
   var flux = _intragFlux(annee);
   var divs = _consoDivisions();
+  /* [FIX revue] Une écriture sans division (ou d'une division supprimée)
+     n'était comptée dans AUCUNE colonne : son montant disparaissait du
+     total et pouvait masquer — ou créer — un écart de réciprocité. */
+  var connues = {}; divs.forEach(function(d){ connues[d.id] = true; });
+  if (flux.some(function(x){ return !connues[x.division]; })) divs = divs.concat([{ id: '__sans__', nom: 'Sans division / inconnue' }]);
+  flux = flux.map(function(x){ return connues[x.division] ? x : Object.assign({}, x, { division: '__sans__' }); });
   var comptes = {};
   flux.forEach(function(x){
     if (!comptes[x.compte]) comptes[x.compte] = {};
@@ -41599,10 +41605,13 @@ function _intragCaisseTermesListe() {
     .map(function(t){ return sfcNormalise(t.trim()); }).filter(Boolean);
 }
 function _intragCaisseClasser(motifNorm) {
-  if (motifNorm.indexOf('retour') !== -1) return 'retour';
-  if (motifNorm.indexOf('appro') !== -1) return 'appro';
-  if (motifNorm.indexOf('reserv') !== -1) return 'reserve';
-  if (motifNorm.indexOf('associ') !== -1) return 'associe';
+  /* [FIX revue] sfcNormalise() renvoie du texte en MAJUSCULES : les tests en
+     minuscules ne trouvaient jamais rien et TOUT tombait en « Autre ». */
+  var t = String(motifNorm || '').toUpperCase();
+  if (t.indexOf('RETOUR') !== -1) return 'retour';
+  if (t.indexOf('APPRO') !== -1) return 'appro';
+  if (t.indexOf('RESERV') !== -1) return 'reserve';
+  if (t.indexOf('ASSOCI') !== -1) return 'associe';
   return 'autre';
 }
 function _intragCaisseCandidats() {
@@ -41610,6 +41619,8 @@ function _intragCaisseCandidats() {
   if (!termes.length) return [];
   var out = [];
   (DATA.caisse_mouvements || []).forEach(function(m){
+    /* [FIX revue] Un bon rejeté n'a jamais eu lieu : il gonflait les totaux. */
+    if (m.rejete) return;
     var hay = sfcNormalise([m.motif, m.beneficiaire].filter(Boolean).join(' '));
     if (!termes.some(function(t){ return hay.indexOf(t) !== -1; })) return;
     var caisse = (DATA.caisses || []).find(function(c){ return c.id === m.caisse_id; });
@@ -41617,7 +41628,8 @@ function _intragCaisseCandidats() {
       id: m.id, date: (m.date || '').slice(0,10), division: caisse ? (caisse.division_id || '') : '',
       caisse: caisse ? (caisse.nom || '') : '—', type: m.type, montant: parseFloat(m.montant) || 0,
       motif: m.motif || '', beneficiaire: m.beneficiaire || '',
-      statut: m.statut || (m.compte_ventile ? 'ventile' : 'a_ventiler'), compte_ventile: m.compte_ventile || '',
+      /* Un bon en attente de validation n'est pas encore effectif (cf. caisseSoldeSession). */
+      statut: (m.requiert_validation && m.valide !== true) ? 'en_attente' : (m.statut || (m.compte_ventile ? 'ventile' : 'a_ventiler')), compte_ventile: m.compte_ventile || '',
       categorie: _intragCaisseClasser(hay)
     });
   });
@@ -41655,6 +41667,7 @@ function _intragRenderCaisseApercu() {
     + divs.map(function(d){ return '<option value="' + d.id + '"' + (d.id === _intragCaisseDiv ? ' selected' : '') + '>' + escHtml(d.nom) + '</option>'; }).join('')
     + '</select>'
     + '<select class="filter-select" id="intrag-caisse-statut" onchange="_intragCaisseSetStatut()"><option value="">Tous statuts</option>'
+    + '<option value="en_attente"' + (_intragCaisseStatut === 'en_attente' ? ' selected' : '') + '>🔐 En attente de validation</option>'
     + '<option value="a_ventiler"' + (_intragCaisseStatut === 'a_ventiler' ? ' selected' : '') + '>⏳ À ventiler</option>'
     + '<option value="ventile"' + (_intragCaisseStatut === 'ventile' ? ' selected' : '') + '>✓ Ventilé</option></select>'
     + '<button class="btn btn-secondary btn-sm" onclick="_intragCaisseExportCSV()">⬇ CSV</button>'
@@ -41671,7 +41684,8 @@ function _intragRenderCaisseApercu() {
 
   var rows = list.slice(0, 300).map(function(x){
     var cat = INTRAG_CAISSE_CATEGORIES[x.categorie];
-    var statutHtml = x.statut === 'ventile' ? ('✓ ventilé' + (x.compte_ventile ? ' (' + escHtml(x.compte_ventile) + ')' : '')) : '⏳ à ventiler';
+    var statutHtml = x.statut === 'ventile' ? ('✓ ventilé' + (x.compte_ventile ? ' (' + escHtml(x.compte_ventile) + ')' : ''))
+      : x.statut === 'en_attente' ? '🔐 en attente de validation' : '⏳ à ventiler';
     return '<tr><td>' + dateShort(x.date) + '</td><td>' + escHtml(_nomDivision(x.division)) + '</td><td>' + escHtml(x.caisse) + '</td>'
       + '<td style="text-align:center;">' + (x.type === 'entree' ? '📥' : '📤') + '</td>'
       + '<td class="num">' + fmtF(x.montant) + '</td>'
@@ -41688,17 +41702,29 @@ function _intragRenderCaisseApercu() {
   el.innerHTML = filtres + resume + tbl;
 }
 
+/* [FIX revue] Export CSV lisible par Excel en français : séparateur « ; »,
+   champs entre guillemets, BOM UTF-8. Avant, seules les virgules du libellé
+   étaient remplacées : une virgule dans une pièce ou un journal décalait les
+   colonnes, et Excel FR affichait tout sur une seule colonne. */
+function _intragCsv(lignes) {
+  return '\uFEFF' + lignes.map(function(r){
+    return r.map(function(v){ v = (v === null || v === undefined) ? '' : String(v); return '"' + v.replace(/"/g, '""') + '"'; }).join(';');
+  }).join('\r\n');
+}
+function _intragTelecharger(csv, nom) {
+  var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = nom; a.click();
+  toast('Export CSV téléchargé.', 'success');
+}
+
 function _intragCaisseExportCSV() {
   var list = _intragCaisseFiltres();
-  var rows = ['Date,Division,Caisse,Type,Montant,Motif,Categorie,Statut,CompteVentile'];
+  var rows = [['Date','Division','Caisse','Type','Montant','Motif','Categorie','Statut','CompteVentile']];
   list.forEach(function(x){
-    rows.push([x.date, _nomDivision(x.division), x.caisse, x.type, x.montant, (x.motif||'').replace(/,/g,';'), INTRAG_CAISSE_CATEGORIES[x.categorie].label, x.statut, x.compte_ventile].join(','));
+    rows.push([x.date, _nomDivision(x.division), x.caisse, x.type, x.montant, x.motif || '', INTRAG_CAISSE_CATEGORIES[x.categorie].label, x.statut, x.compte_ventile]);
   });
-  var blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
-  var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-  a.download = 'apercu_caisse_intragroupe_' + (new Date().toISOString().slice(0,10)) + '.csv';
-  a.click();
-  toast('Export CSV téléchargé.', 'success');
+  _intragTelecharger(_intragCsv(rows), 'apercu_caisse_intragroupe_' + (new Date().toISOString().slice(0,10)) + '.csv');
 }
 
 function _intragRender() {
@@ -41765,20 +41791,32 @@ function _intragRenderFlux() {
       + '<div class="table-wrap"><table><thead>' + thMat + '</thead><tbody>' + rowsMat + '</tbody></table></div>';
   }
 
-  el.innerHTML = filtres + tbl + matriceHtml;
+  /* [FIX revue] Un registre vide n'est PAS un registre sain : il signifie
+     qu'aucun flux intragroupe n'a été comptabilisé sur les comptes de
+     liaison surveillés — la matrice ne contrôle alors rien. */
+  var tousFlux = _intragFlux(_intragAnnee);
+  var alerte = '';
+  if (!tousFlux.length) {
+    var nbCaisse = _intragCaisseCandidats().filter(function(x){ return x.date.slice(0,4) === String(_intragAnnee); }).length;
+    alerte = '<div class="alert alert-warn" style="margin-bottom:10px;font-size:12px;">⚠️ <strong>Aucune écriture de l\'exercice ' + escHtml(_intragAnnee) + ' ne touche les comptes de liaison surveillés (' + escHtml(_consoCfg().liaison.join(', ')) + ').</strong> '
+      + 'Le contrôle de réciprocité ci-dessous ne vérifie donc rien.'
+      + (nbCaisse ? ' Pourtant, <strong>' + nbCaisse + ' mouvement(s) de caisse</strong> de cet exercice ressemblent à des flux intragroupe (onglet 🔍 Aperçu caisse) : ils ont été ventilés sur d\'autres comptes (4621 associés, 422 personnel, charges…) ou ne sont pas encore ventilés.' : '')
+      + ' Vérifiez la liste des comptes de liaison (🏛️ Périmètre groupe) et le plan de ventilation des flux entre divisions.</div>';
+  } else {
+    var sansDiv = tousFlux.filter(function(x){ return !x.division || !_consoDivisions().some(function(d){ return d.id === x.division; }); }).length;
+    if (sansDiv) alerte = '<div class="alert alert-warn" style="margin-bottom:10px;font-size:12px;">⚠️ ' + sansDiv + ' ligne(s) sur comptes de liaison sans division valide : impossible de savoir quelle entité porte la créance ou la dette. Voir la colonne « Sans division » de la matrice.</div>';
+  }
+
+  el.innerHTML = filtres + alerte + tbl + matriceHtml;
 }
 
 function _intragExportCSV() {
   var flux = _intragFluxFiltres(_intragAnnee);
-  var rows = ['Date,Division,Journal,Piece,Compte,Sens,Montant,Libelle'];
+  var rows = [['Date','Division','Journal','Piece','Compte','Sens','Montant','Libelle']];
   flux.forEach(function(x){
-    rows.push([x.date, _nomDivision(x.division), x.journal, x.piece, x.compte, x.sens, x.montant, (x.libelle || '').replace(/,/g, ';')].join(','));
+    rows.push([x.date, x.division ? _nomDivision(x.division) : 'Sans division', x.journal, x.piece, x.compte, x.sens, x.montant, x.libelle || '']);
   });
-  var blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
-  var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-  a.download = 'flux_intragroupe_' + _intragAnnee + '.csv';
-  a.click();
-  toast('Export CSV téléchargé.', 'success');
+  _intragTelecharger(_intragCsv(rows), 'flux_intragroupe_' + _intragAnnee + '.csv');
 }
 
 function _intragExportPDF() {
@@ -41968,7 +42006,12 @@ function _intragExportCACPdf() {
   }).join('');
 
   var comptesKo = mat.lignes.filter(function(l){ return Math.abs(l.total) >= 1; });
-  var alerte = comptesKo.length
+  /* [FIX revue] Sans aucune écriture sur les comptes de liaison, le dossier
+     affichait « ✔ Aucun écart de réciprocité » — une fausse assurance
+     remise au commissaire aux comptes : le contrôle n'avait rien vérifié. */
+  var alerte = !flux.length
+    ? '<p style="color:#b45309;font-weight:700;">⚠ Aucune écriture de l\'exercice sur les comptes de liaison surveillés (' + escHtml(_consoCfg().liaison.join(', ')) + ') : le contrôle de réciprocité n\'a porté sur aucune opération. Les flux entre divisions éventuels ont été comptabilisés sur d\'autres comptes et doivent être justifiés séparément.</p>'
+    : comptesKo.length
     ? '<p style="color:#b91c1c;font-weight:700;">⚠ ' + comptesKo.length + ' compte(s) de liaison présentent un écart de réciprocité non nul — voir matrice ci-dessous.</p>'
     : '<p style="color:#0a7a3d;font-weight:700;">✔ Aucun écart de réciprocité détecté sur les comptes de liaison intra-groupe.</p>';
 
@@ -41989,18 +42032,17 @@ function _intragExportCACCsv() {
   var annee = (document.getElementById('intrag-export-annee')||{}).value || _intragAnnee;
   var flux = _intragFlux(annee);
   var conventions = DATA.conventions_reglementees || [];
-  var rows = ['=== FLUX INTRAGROUPE ===', 'Date,Division,Journal,Piece,Compte,Sens,Montant,Libelle'];
-  flux.forEach(function(x){ rows.push([x.date, _nomDivision(x.division), x.journal, x.piece, x.compte, x.sens, x.montant, (x.libelle || '').replace(/,/g, ';')].join(',')); });
-  rows.push(''); rows.push('=== CONVENTIONS REGLEMENTEES ===');
-  rows.push('Type,DivisionA,DivisionB_Tiers,Date,Montant,Objet,ApprouveeCA,Statut');
-  conventions.forEach(function(c){
-    rows.push([CONV_REG_TYPES[c.type] || c.type, _nomDivision(c.division_a), c.division_b === '__tiers__' ? c.tiers_lie : _nomDivision(c.division_b), c.date_signature, c.montant, (c.objet || '').replace(/,/g, ';'), c.approuvee_ca ? 'Oui' : 'Non', c.statut].join(','));
+  var rows = [['=== FLUX INTRAGROUPE ==='], ['Date','Division','Journal','Piece','Compte','Sens','Montant','Libelle']];
+  flux.forEach(function(x){ rows.push([x.date, x.division ? _nomDivision(x.division) : 'Sans division', x.journal, x.piece, x.compte, x.sens, x.montant, x.libelle || '']); });
+  if (!flux.length) rows.push(['AUCUNE ECRITURE SUR LES COMPTES DE LIAISON (' + _consoCfg().liaison.join(', ') + ') : aucun controle de reciprocite n\'a pu etre effectue']);
+  rows.push([]); rows.push(['=== CONVENTIONS REGLEMENTEES ===']);
+  rows.push(['Type','DivisionA','DivisionB_Tiers','Date','Montant','Objet','ApprouveeCA','Statut']);
+  /* [FIX revue] Même périmètre que le PDF : seules les conventions signées au
+     plus tard pendant l'exercice exporté (le CSV les exportait toutes). */
+  conventions.filter(function(c){ return (c.date_signature || '').slice(0,4) <= annee; }).forEach(function(c){
+    rows.push([CONV_REG_TYPES[c.type] || c.type, _nomDivision(c.division_a), c.division_b === '__tiers__' ? c.tiers_lie : _nomDivision(c.division_b), c.date_signature, c.montant, c.objet || '', c.approuvee_ca ? 'Oui' : 'Non', c.statut]);
   });
-  var blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
-  var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-  a.download = 'dossier_cac_intragroupe_' + annee + '.csv';
-  a.click();
-  toast('Export CSV téléchargé.', 'success');
+  _intragTelecharger(_intragCsv(rows), 'dossier_cac_intragroupe_' + annee + '.csv');
 }
 
 /* ══════════════════════════════════════════════════════════════════════
