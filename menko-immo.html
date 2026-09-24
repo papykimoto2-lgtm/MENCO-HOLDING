@@ -39295,7 +39295,7 @@ function loadComptabilite() {
      grand livre. Le système de permissions ne descend qu'au niveau du
      module, pas de l'onglet — restriction posée ici pour ne pas exposer
      tout le reste de la comptabilité à un rôle de caisse. */
-  if (APP.currentUser && APP.currentUser.role === 'caissiere') {
+  if (APP.currentUser && roleEstCaissiere(APP.currentUser.role)) {
     var tabs = document.getElementById('compta-tabs');
     if (tabs) {
       tabs.querySelectorAll('.tab-btn').forEach(function(b) {
@@ -47542,6 +47542,23 @@ var STORE_MODULE = {
   relances_locatives:'Gestion Locative', biens_locatifs:'Gestion Locative', demarcheurs:'Gestion Locative',
   etats_lieux_bail:'Gestion Locative', restitutions_caution:'Gestion Locative'
 };
+/* [INC-0005] Un rôle « caissière » ne se reconnaît pas qu'à son identifiant
+   système 'caissiere' : l'éditeur permet de le CLONER (« Caissière (Copie) »,
+   id caissi_re_copie__…), et toutes les règles absolues ci-dessous — pas de
+   validation, cloisonnement à ses caisses — sautaient alors silencieusement.
+   C'est ainsi qu'une caissière a pu valider elle-même un réapprovisionnement
+   de 750 000 F. Est caissière : le rôle système, tout rôle cloné depuis lui
+   (base_role), ou tout rôle dont l'id/le libellé contient « caissi(er/ère) ». */
+function roleEstCaissiere(roleId) {
+  if (roleId === undefined) roleId = APP.currentUser && APP.currentUser.role;
+  if (!roleId) return false;
+  if (roleId === 'caissiere') return true;
+  var r = (typeof getAllRoles === 'function') ? getAllRoles()[roleId] : null;
+  if (r && r.base_role === 'caissiere') return true;
+  var txt = (String(roleId) + ' ' + ((r && r.label) || '')).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  return /caissi/.test(txt);
+}
+
 function userPeut(module, action) {
   if (!APP.currentUser) return false;
   var r = getAllRoles()[APP.currentUser.role];
@@ -47568,7 +47585,10 @@ function userPeut(module, action) {
      cocherait « V » par erreur dans l'éditeur de rôles (case verrouillée
      côté UI, cf. buildModulesGrid) ne pourrait de toute façon pas rouvrir
      cette brèche. */
-  if (module === 'Caisse' && action === 'v' && APP.currentUser.role === 'caissiere') return false;
+  if (module === 'Caisse' && action === 'v' && roleEstCaissiere(APP.currentUser.role)) return false;
+  /* Le module « Validations » (circuit d'approbation transversal) lui est
+     fermé pour la même raison, quelle que soit la case cochée. */
+  if (module === 'Validations' && roleEstCaissiere(APP.currentUser.role)) return false;
   var d = r.droits && module ? r.droits[module] : null;
   if (d === undefined || d === null) return true;      /* non restreint */
   return String(d).indexOf(action) !== -1;
@@ -47764,6 +47784,9 @@ function userCanAccess(module) {
   /* L'administrateur conserve l'accès complet même si sa surcharge enregistrée
      est antérieure à l'ajout d'un module (cohérent avec hasRole). */
   if (role === 'admin') return true;
+  /* [INC-0005] Le circuit de validation n'est jamais visible d'une caissière
+     (rôle système ou copie), même si la case du module est cochée. */
+  if (module === 'Validations' && typeof roleEstCaissiere === 'function' && roleEstCaissiere(role)) return false;
   var allRoles = getAllRoles();
   if (!allRoles[role]) {
     /* Rôle inconnu de ce poste — presque toujours un rôle personnalisé pas
@@ -48484,6 +48507,7 @@ function renderRolesList() {
 
 // ══ MODAL RÔLE : OUVRIR ═══════════════════════════════════════════════════════
 function openRoleModal(roleId) {
+  window._roleCloneBase = '';
   setTimeout(function(){
     var cb = document.getElementById('role-peut-supprimer');
     if (!cb) return;
@@ -48593,7 +48617,7 @@ function buildModulesGrid(permissions, droits, roleId) {
                qu'elle a un effet : l'éditeur de rôles ne doit jamais
                suggérer une possibilité que le code refuse ensuite en
                silence. */
-            var verrouille = (roleId === 'caissiere' && mod === 'Caisse' && a === 'v');
+            var verrouille = (roleId && roleEstCaissiere(roleId) && mod === 'Caisse' && a === 'v');
             var on = verrouille ? false : _droitActif(mod, a);
             return '<label title="'+(verrouille ? 'Verrouillé — la Caissière ne peut jamais valider un mouvement de caisse (séparation des tâches).' : ACTIONS_LIB[a])+'" style="display:flex;align-items:center;gap:3px;font-size:10px;color:'+(verrouille?'#CBD5E1':'#64748B')+';cursor:'+(verrouille?'not-allowed':'pointer')+';">'
               +'<input type="checkbox" class="actchk" data-mod="'+_modAttr(mod)+'" data-act="'+a+'" '+(on?'checked':'')+(verrouille?' disabled':'')
@@ -48677,7 +48701,17 @@ async function saveRoleFromModal() {
 
   var rid = editId || nom.toLowerCase().replace(/[^a-z0-9]/g,'_').replace(/__+/g,'_');
   if (!editId && (SYSTEM_ROLES[rid] || CUSTOM_ROLES[rid])) rid = rid+'_'+Date.now().toString(36);
-  var roleObj = { id:rid, label:nom, icon:icon||'👤', level:level, description:desc, system:false, permissions:permissions };
+  /* [INC-0005] Les cases C/M/S/V, le plafond de validation, le périmètre
+     division et le droit de suppression n'étaient enregistrés QUE pour les
+     rôles système : un rôle personnalisé perdait tout ça et devenait « non
+     restreint » (userPeut autorise tout quand droits est absent) — y compris
+     la validation, sans plafond. */
+  var _existant = editId ? CUSTOM_ROLES[editId] : null;
+  var _base = (_existant && _existant.base_role) || window._roleCloneBase || '';
+  var roleObj = { id:rid, label:nom, icon:icon||'👤', level:level, description:desc, system:false, permissions:permissions,
+    peut_supprimer:_peutSup, droits:_droits, scope_division:_scope, plafond_validation:_plafond };
+  if (_base) roleObj.base_role = _base;
+  window._roleCloneBase = '';
   CUSTOM_ROLES[rid] = roleObj;
   await dbPut('custom_roles', roleObj);
   if (typeof syncToSupabase==='function') syncToSupabase('pi_custom_roles', roleObj);
@@ -48894,6 +48928,10 @@ function clonerRole() {
   /* Vider le role-edit-id pour créer un nouveau */
   var editEl = document.getElementById('role-edit-id');
   if (editEl) editEl.textContent = '';
+  /* [INC-0005] La copie hérite du rôle d'origine (base_role) : les règles
+     absolues attachées au rôle système (ex. Caissière → jamais de
+     validation) s'appliquent aussi à ses clones. */
+  window._roleCloneBase = r.base_role || (r.system ? r.id : '') || '';
   var warn = document.getElementById('role-system-warning');
   if (warn) warn.style.display = 'none';
   var btnCloner = document.getElementById('btn-cloner-role');
@@ -94709,7 +94747,7 @@ function togglePwdVisibility(inputId, eyeId) {
 
     /* Code PIN de caisse : obligatoire à la création d'une caissière (attribué
        à ce moment, comme demandé), optionnel en modification (vide = inchangé). */
-    if (role === 'caissiere') {
+    if (roleEstCaissiere(role)) {
       if (!isEdit && !pin) { toast('⚠️ Le code PIN de caisse est obligatoire pour le rôle Caissière.', 'error'); return; }
       if (pin && !/^[0-9]{4}$/.test(pin)) { toast('⚠️ Le code PIN doit comporter exactement 4 chiffres.', 'error'); return; }
     }
@@ -122284,7 +122322,7 @@ function caisseRoleAdminLike() {
      cloisonnement par division ne s'applique jamais à ces rôles. */
   if (role === 'admin' || role === 'manager' || role === 'comptable') return true;
   /* La Caissière reste toujours cloisonnée à ses caisses assignées / sa division. */
-  if (role === 'caissiere') return false;
+  if (roleEstCaissiere(role)) return false;
   /* [FIX] Rôle personnalisé : traité comme admin-like dès lors qu'il a un droit
      de vue non limité à sa propre division sur le module Caisse — qu'il ait ou
      non une chaîne de droits (c/m/s/v) définie pour ce module. Se baser sur la
@@ -124577,6 +124615,8 @@ function reapRender() {
       actions = '<button class="btn btn-secondary btn-sm btn-icon" title="Modifier" onclick="reapOuvrirModal(\''+d.id+'\')">✏️</button> '
               + '<button class="btn btn-primary btn-sm" onclick="reapSoumettre(\''+d.id+'\')">📤 Soumettre</button> '
               + '<button class="btn btn-danger btn-sm btn-icon" title="Supprimer" onclick="reapSupprimer(\''+d.id+'\')">🗑</button>';
+    } else if (d.statut === 'soumise' && !(typeof userPeut === 'function' ? userPeut('Caisse', 'v') : true)) {
+      actions = '<span style="font-size:11px;color:var(--blanc-dim);">🕓 En attente d\'un responsable</span>';
     } else if (d.statut === 'soumise') {
       actions = '<button class="btn btn-primary btn-sm" onclick="(function(){var m=prompt(\'Montant accordé (FCFA) :\', \''+(d.montant_demande||0)+'\');if(m!==null)reapValider(\''+d.id+'\', m);})()">✅ Valider</button> '
               + '<button class="btn btn-danger btn-sm" onclick="(function(){var m=prompt(\'Motif du rejet :\');if(m!==null)reapRejeter(\''+d.id+'\', m);})()">❌ Rejeter</button>';
@@ -127177,6 +127217,10 @@ function caisseRenderValidations() {
 
   var monPlafond = (typeof userPlafond === 'function') ? userPlafond() : Infinity;
   var jePeuxValider = (typeof userPeut === 'function') ? userPeut('Caisse', 'v') : true;
+  /* [INC-0005] Un profil sans droit de validation (caissière) ne voit plus du
+     tout le panneau de validation : il suit ses bons dans l'onglet « Mes
+     demandes de validation ». */
+  if (!jePeuxValider) { box.innerHTML = ''; return; }
   var nbSorties = liste.filter(function(m){ return m.type==='sortie'; }).length;
   var nbEntrees = liste.filter(function(m){ return m.type==='entree'; }).length;
 
