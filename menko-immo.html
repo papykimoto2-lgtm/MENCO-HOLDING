@@ -125358,8 +125358,9 @@ function cvRender() {
         return '<tr><td style="font-family:monospace;font-weight:700;">' + escHtml(b.numero) + '</td><td>' + dateShort((b.cree_le || '').slice(0,10)) + '<div style="font-size:10px;color:var(--blanc-dim);">' + escHtml(b.cree_par || '') + '</div></td>'
           + '<td>' + (b.mvt_ids || []).length + '</td><td style="text-align:right;">' + fmtF(b.total_entrees || 0) + '</td><td style="text-align:right;">' + fmtF(b.total_sorties || 0) + '</td><td style="font-size:11.5px;">' + st + '</td>'
           + '<td style="white-space:nowrap;"><button class="btn btn-secondary btn-sm" onclick="cvImprimerBordereau(\'' + b.id + '\')">🖨️</button> '
-          + (b.statut !== 'vise' && admin ? '<button class="btn btn-secondary btn-sm" onclick="cvJoindreScan(\'' + b.id + '\')">📎 Scan</button> ' : '')
-          + (b.scan_joint ? '<button class="btn btn-secondary btn-sm" onclick="cvVoirScan(\'' + b.id + '\')">👁️</button> ' : '')
+          + (b.statut !== 'vise' && admin ? '<button class="btn btn-secondary btn-sm" onclick="cvJoindreScan(\'' + b.id + '\')" title="' + (b.scan_joint ? 'Remplacer le scan de la liasse' : 'Joindre le scan de la liasse signée') + '">' + (b.scan_joint ? '🔄 Remplacer' : '📎 Scan') + '</button> ' : '')
+          + (b.scan_joint ? '<button class="btn btn-secondary btn-sm" title="Voir le scan" onclick="cvVoirScan(\'' + b.id + '\')">👁️</button> ' : '')
+          + (b.scan_joint && b.statut !== 'vise' && admin ? '<button class="btn btn-secondary btn-sm btn-icon" title="Retirer le scan" onclick="cvRetirerScan(\'' + b.id + '\')">❌</button> ' : '')
           + (b.statut !== 'vise' && signataire ? '<button class="btn btn-primary btn-sm" onclick="cvOuvrirVisa(\'' + b.id + '\')"' + (b.scan_joint ? '' : ' disabled title="Joindre d\'abord le scan de la liasse signée"') + '>🖋️ Viser</button> ' : '')
           + (b.statut !== 'vise' && admin ? '<button class="btn btn-danger btn-sm btn-icon" title="Annuler le bordereau (les bons redeviennent à transmettre)" onclick="cvAnnulerBordereau(\'' + b.id + '\')">🗑</button>' : '')
           + '</td></tr>';
@@ -125476,13 +125477,17 @@ function cvScanChoisi(input) {
   var id = _cvScanPour, r = new FileReader();
   r.onload = async function(e) {
     var b = (DATA.bordereaux_caisse || []).find(function(x){ return x.id === id; }); if (!b) return;
+    if (b.statut === 'vise') { toast('🔒 Bordereau déjà visé — le scan ne peut plus être modifié.', 'error'); return; }
+    var ancienDoc = b.scan_doc_id || null;
     var doc = { id: uid(), entity_type: 'bordereau_caisse', entity_id: id, doc_categorie: 'liasse_signee', name: f.name, type: f.type || 'application/pdf', size: f.size,
       blob: e.target.result, upload_date: today(), description: 'Liasse signée — bordereau ' + b.numero };
     try { await dbPut('documents', doc); if (typeof syncToSupabase === 'function') syncToSupabase('pi_documents', doc); }
     catch(err) { toast('Enregistrement du scan impossible.', 'error'); return; }
     b.scan_joint = true; b.scan_doc_id = doc.id; b.scan_joint_par = (APP.currentUser && APP.currentUser.nom) || '—'; b.scan_joint_le = new Date().toISOString();
     await _cvSauverBordereau(b);
-    toast('📎 Scan joint au bordereau ' + b.numero + ' — le Gérant peut maintenant viser.', 'success', 7000);
+    if (ancienDoc && ancienDoc !== doc.id) { try { await deleteRecord('documents', ancienDoc, { skipIntegrity: true }); } catch(err) {} }
+    if (typeof logAction === 'function') { try { logAction(ancienDoc ? 'SCAN_REMPLACE' : 'SCAN_JOINT', 'Bordereau ' + b.numero + ' — ' + f.name); } catch(err){} }
+    toast(ancienDoc ? '🔄 Scan remplacé sur le bordereau ' + b.numero + '.' : '📎 Scan joint au bordereau ' + b.numero + ' — le Gérant peut maintenant viser.', 'success', 7000);
     cvRender();
   };
   r.readAsDataURL(f);
@@ -125492,7 +125497,25 @@ async function cvVoirScan(id) {
   var all = []; try { all = await dbGetAll('documents'); } catch(e){}
   var d = (all || []).find(function(x){ return x.id === b.scan_doc_id; }) || (all || []).find(function(x){ return x.entity_type === 'bordereau_caisse' && x.entity_id === id; });
   if (!d || !d.blob) { toast('Scan introuvable sur ce poste (synchronisation en cours ?).', 'error'); return; }
-  var w = window.open(''); if (w) w.document.write('<iframe src="' + d.blob + '" style="border:0;width:100%;height:100vh;"></iframe>');
+  try {
+    var blob = await (await fetch(d.blob)).blob();
+    var url = URL.createObjectURL(blob);
+    var w = window.open(url, '_blank');
+    if (!w) { var a = document.createElement('a'); a.href = url; a.download = d.name || ('liasse_' + b.numero); document.body.appendChild(a); a.click(); a.remove(); toast('Pop-up bloquée — le scan a été téléchargé.', 'info'); }
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 120000);
+  } catch(err) { toast('Impossible d\'ouvrir le scan.', 'error'); }
+}
+async function cvRetirerScan(id) {
+  if (!caisseRoleAdminLike()) return;
+  var b = (DATA.bordereaux_caisse || []).find(function(x){ return x.id === id; }); if (!b || b.statut === 'vise' || !b.scan_joint) return;
+  if (!confirm('Retirer le scan du bordereau ' + b.numero + ' ?\n\nLe bouton « Viser » sera de nouveau bloqué jusqu\'à ce qu\'un nouveau scan soit joint.')) return;
+  var docId = b.scan_doc_id;
+  b.scan_joint = false; delete b.scan_doc_id; delete b.scan_joint_par; delete b.scan_joint_le;
+  await _cvSauverBordereau(b);
+  if (docId) { try { await deleteRecord('documents', docId, { skipIntegrity: true }); } catch(err) {} }
+  if (typeof logAction === 'function') { try { logAction('SCAN_RETIRE', 'Bordereau ' + b.numero); } catch(err){} }
+  toast('Scan retiré.', 'info');
+  cvRender();
 }
 
 /* ── Visa du Gérant : c'est LUI qui clique ── */
