@@ -125207,7 +125207,7 @@ function reapRender() {
    qu'aux bons datés à partir de la date de mise en service du circuit.
    ══════════════════════════════════════════════════════════════════════ */
 var CIRCUIT_VISA_DEPUIS_DEFAUT = '2026-09-26';
-var CV_UI = { caisse: '', du: '', au: '' };
+var CV_UI = { caisse: '', du: '', au: '', etat: 'tous' };
 
 function _cvDepuis() { return (DATA.params && DATA.params.circuit_visa_depuis) || CIRCUIT_VISA_DEPUIS_DEFAUT; }
 function _cvSignataires() {
@@ -125280,6 +125280,15 @@ function _cvQrDataUrl(texte) {
   try { var q = qrcode(0, 'M'); q.addData(texte); q.make(); return q.createDataURL(3, 4); } catch(e) { return ''; }
 }
 
+/* Filtre commun caisse + période (dates ISO, tolère une date vide) */
+function _cvFiltre(m) {
+  var d = String(m.date || '').slice(0, 10);
+  if (CV_UI.caisse && m.caisse_id !== CV_UI.caisse) return false;
+  if (CV_UI.du && d < CV_UI.du) return false;
+  if (CV_UI.au && d > CV_UI.au) return false;
+  return true;
+}
+
 /* ── Rendu de l'onglet ── */
 function cvRender() {
   var box = document.getElementById('caisse-visas-box'); if (!box) return;
@@ -125289,13 +125298,15 @@ function cvRender() {
   var mvts = (DATA.caisse_mouvements || []).filter(_cvConcerne);
   var parEtat = {}; Object.keys(CV_ETATS).forEach(function(k){ parEtat[k] = 0; });
   mvts.forEach(function(m){ parEtat[_cvEtat(m)]++; });
+  var parEtatF = {}; Object.keys(CV_ETATS).forEach(function(k){ parEtatF[k] = 0; });
+  mvts.filter(_cvFiltre).forEach(function(m){ parEtatF[_cvEtat(m)]++; });
   var html = '';
 
   if (!p.caisse_signataire_final_id) {
     html += '<div class="alert alert-warn" style="font-size:12px;margin-bottom:10px;">⚠️ <b>Signataire final non désigné.</b> Un administrateur doit désigner le Gérant Holding ci-dessous : sans lui, aucun bordereau ne peut être visé.</div>';
   }
   html += '<div class="kpi-grid" style="margin-bottom:12px;">' + Object.keys(CV_ETATS).map(function(k){
-    return '<div class="kpi-card" data-icon="' + CV_ETATS[k].ico + '"><div class="kpi-label">' + CV_ETATS[k].lib + '</div><div class="kpi-value">' + parEtat[k] + '</div></div>';
+    return '<div class="kpi-card" data-icon="' + CV_ETATS[k].ico + '"><div class="kpi-label">' + CV_ETATS[k].lib + '</div><div class="kpi-value">' + parEtatF[k] + '</div></div>';
   }).join('') + '</div>';
 
   if (admin) {
@@ -125311,12 +125322,15 @@ function cvRender() {
 
   /* Bons à transmettre */
   var caisses = (typeof caissesVisibles === 'function') ? caissesVisibles() : (DATA.caisses || []);
-  var aTrans = mvts.filter(function(m){ var e = _cvEtat(m); return e === 'a_transmettre' || e === 'refuse'; })
-    .filter(function(m){ return (!CV_UI.caisse || m.caisse_id === CV_UI.caisse) && (!CV_UI.du || m.date.slice(0,10) >= CV_UI.du) && (!CV_UI.au || m.date.slice(0,10) <= CV_UI.au); })
+  var _cvTransmissible = function(m){ var e = _cvEtat(m); return e === 'a_transmettre' || e === 'refuse'; };
+  var aTrans = mvts.filter(_cvFiltre)
+    .filter(function(m){ return CV_UI.etat === 'tous' ? true : (CV_UI.etat === 'transmissibles' ? _cvTransmissible(m) : _cvEtat(m) === CV_UI.etat); })
     .sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
+  var _cvAvant = (DATA.caisse_mouvements || []).filter(function(m){ return _cvFiltre(m) && !_cvConcerne(m) && !m.rejete; }).length;
   html += '<div class="card" style="margin-bottom:12px;"><div class="card-title">📤 Bons comptabilisés à transmettre au Gérant</div>'
     + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0;">'
     + '<select class="filter-select" onchange="CV_UI.caisse=this.value;cvRender()"><option value="">Toutes caisses</option>' + caisses.map(function(c){ return '<option value="' + c.id + '"' + (c.id === CV_UI.caisse ? ' selected' : '') + '>' + escHtml(c.nom) + '</option>'; }).join('') + '</select>'
+    + '<select class="filter-select" onchange="CV_UI.etat=this.value;cvRender()"><option value="tous"' + (CV_UI.etat === 'tous' ? ' selected' : '') + '>Tous les états</option><option value="transmissibles"' + (CV_UI.etat === 'transmissibles' ? ' selected' : '') + '>À transmettre / refusés</option>' + Object.keys(CV_ETATS).map(function(k){ return '<option value="' + k + '"' + (CV_UI.etat === k ? ' selected' : '') + '>' + CV_ETATS[k].ico + ' ' + CV_ETATS[k].lib + '</option>'; }).join('') + '</select>'
     + '<label style="font-size:12px;">Du</label><input type="date" class="form-control" style="width:150px;" value="' + escHtml(CV_UI.du) + '" onchange="CV_UI.du=this.value;cvRender()">'
     + '<label style="font-size:12px;">au</label><input type="date" class="form-control" style="width:150px;" value="' + escHtml(CV_UI.au) + '" onchange="CV_UI.au=this.value;cvRender()">'
     + (admin ? '<button class="btn btn-primary btn-sm" onclick="cvCreerBordereau()">📋 Créer le bordereau avec la sélection</button>' : '')
@@ -125324,12 +125338,14 @@ function cvRender() {
     + (aTrans.length ? '<div class="table-wrap" style="max-height:45vh;overflow:auto;"><table class="data-table"><thead><tr><th><input type="checkbox" onchange="document.querySelectorAll(\'.cv-chk\').forEach(function(c){c.checked=this.checked;}.bind(this))"></th><th>Date</th><th>Bon</th><th>Caisse</th><th>Type</th><th style="text-align:right;">Montant</th><th>Motif</th><th>Compte</th><th>État</th></tr></thead><tbody>'
       + aTrans.map(function(m){
         var c = (DATA.caisses || []).find(function(x){ return x.id === m.caisse_id; });
-        return '<tr><td><input type="checkbox" class="cv-chk" value="' + m.id + '"></td><td>' + dateShort(m.date.slice(0,10)) + '</td><td style="font-family:monospace;">' + escHtml(m.numero || '') + '</td><td>' + escHtml(c ? c.nom : '') + '</td>'
+        return '<tr><td>' + (_cvTransmissible(m) ? '<input type="checkbox" class="cv-chk" value="' + m.id + '">' : '') + '</td><td>' + dateShort(String(m.date || '').slice(0,10)) + '</td><td style="font-family:monospace;">' + escHtml(m.numero || '') + '</td><td>' + escHtml(c ? c.nom : '') + '</td>'
           + '<td>' + (m.type === 'entree' ? '📥 Entrée' : '📤 Sortie') + '</td><td style="text-align:right;font-weight:700;">' + fmtF(m.montant) + '</td><td style="font-size:11px;">' + escHtml((m.motif || '').slice(0, 70)) + '</td>'
           + '<td style="font-family:monospace;font-size:11px;">' + escHtml(m.compte_ventile || '') + '</td>'
-          + '<td style="font-size:11px;">' + (m.visa_dg_refus ? '<span style="color:var(--rouge);">✖ refusé : ' + escHtml(m.visa_dg_refus.motif || '') + '</span>' : '—') + '</td></tr>';
+          + '<td style="font-size:11px;">' + (m.visa_dg_refus ? '<span style="color:var(--rouge);">✖ refusé : ' + escHtml(m.visa_dg_refus.motif || '') + '</span>' : (CV_ETATS[_cvEtat(m)].ico + ' ' + CV_ETATS[_cvEtat(m)].lib)) + '</td></tr>';
       }).join('') + '</tbody></table></div>'
-      : '<div style="font-size:12px;color:var(--blanc-dim);">Aucun bon comptabilisé en attente de transmission pour ces critères.</div>')
+      : '<div style="font-size:12px;color:var(--blanc-dim);">Aucun bon pour ces critères.'
+        + (_cvAvant ? ' <b>' + _cvAvant + ' bon(s)</b> de cette période sont antérieurs à la mise en service du circuit (' + escHtml(dateShort(_cvDepuis())) + ') et ne sont pas concernés.' : '')
+        + (CV_UI.etat !== 'tous' ? ' Essayez « Tous les états ».' : '') + '</div>')
     + '</div>';
 
   /* Bordereaux */
