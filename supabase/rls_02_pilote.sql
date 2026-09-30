@@ -7,7 +7,7 @@
 --
 -- HISTORIQUE VÉRIFIÉ dans supabase_migrations.schema_migrations, pas déduit :
 --
---   · Zahara (ilvusckdanwrckxqvhmr)
+--   · Zahara (projet Zahara Multi service)
 --       20260914210216  rls_pilote_demandes_reappro
 --                       → pilote appliqué le 14/09/2026 à 21:02
 --       20260915143625  align_pi_demandes_reappro_grants_with_generic_sync
@@ -85,7 +85,7 @@
 -- des données sans rapport, et le pilote y a été appliqué par erreur avant
 -- d'être retiré. Le 17/09/2026, le connecteur a été recontrôlé : organisation
 -- « immosuite », projets « MENCO HOLDING » (pxwgefdxgrskusjbzrxz) et
--- « Zahara Multi service » (ilvusckdanwrckxqvhmr) tous deux présents — le bon
+-- « Zahara Multi service » tous deux présents — le bon
 -- compte. Leçon : une référence de projet ne suffit pas à s'identifier,
 -- confirmer l'organisation ET le nom du projet avant d'écrire.
 -- ═══════════════════════════════════════════════════════════════════════════
