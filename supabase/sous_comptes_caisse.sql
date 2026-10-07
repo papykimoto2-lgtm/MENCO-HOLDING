@@ -82,6 +82,18 @@ update pi_ecritures e set data = e.data
 -- (la marche arrière a) ci-dessous couvre aussi cette étape : elle restaure
 -- compte_caisse_avant sur toute écriture marquée migration_sous_compte.)
 
+-- 4) Versements en espèces historiques -> CAISSE CENTRALE SOUSCRIPTEURS
+--    (décision du 07/10/2026, cohérente avec la règle « les encaissements des
+--    souscripteurs passent par la caisse souscripteurs » ; 629 écritures ecr_vrs_*).
+update pi_ecritures e set data = e.data
+   || jsonb_build_object('_modifie', to_char((now() at time zone 'utc'),'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), 'migration_sous_compte', '2026-10-07-versements-souscripteurs')
+   || (case when e.data->>'compte'='57110001' then jsonb_build_object('compte','57110002') else '{}'::jsonb end)
+   || (case when e.data->>'compte_debit'='57110001' then jsonb_build_object('compte_debit','57110002') else '{}'::jsonb end)
+   || (case when e.data->>'compte_credit'='57110001' then jsonb_build_object('compte_credit','57110002') else '{}'::jsonb end)
+ where e.id like 'ecr_vrs_%' and e.data->>'migration_sous_compte'='2026-10-07-hors-caisse'
+   and (e.data->>'compte_debit'='57110001' or e.data->>'compte_credit'='57110001' or e.data->>'compte'='57110001')
+   and not (e.data ? 'valide_le') and coalesce(e.data->>'statut_ecr','')<>'valide' and coalesce(e.data->>'_deleted','')<>'true';
+
 -- ─────────────────────────────────────────────────────────────────────────
 -- MARCHE ARRIÈRE (non exécutée) — à lancer dans cet ordre
 -- ─────────────────────────────────────────────────────────────────────────
