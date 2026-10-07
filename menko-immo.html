@@ -124026,6 +124026,12 @@ function caisseConfigModal(caisseId) {
   }).join('');
   selDiv.value = c ? (c.division_id || '') : '';
   selDiv.onchange = function(){ _caisseConfigRenderCaissieres(c); };
+  /* Comptes de caisse proposés : tout le groupe 57 du plan (571, 572, et leurs sous-comptes). */
+  var dlCc = document.getElementById('dl-cc-compte');
+  if (dlCc) {
+    dlCc.innerHTML = (APP.planComptable || []).filter(function(p){ return p && p.code && String(p.code).indexOf('57') === 0; })
+      .map(function(p){ return '<option value="' + escHtml(p.code) + '">' + escHtml(p.label || '') + '</option>'; }).join('');
+  }
   document.getElementById('cc-compte').value = c ? (c.compte||'571') : '571';
   document.getElementById('cc-actif').value = (c && c.actif === false) ? '0' : '1';
   document.getElementById('cc-envoi-auto-jour').checked = !c || c.envoi_auto_journalier !== false;
@@ -124067,7 +124073,13 @@ async function caisseSaveConfig() {
     if (!nom) { toast('Le nom de la caisse est obligatoire.', 'error'); return; }
     var divisionId = document.getElementById('cc-division').value;
     if ((DATA.divisions||[]).length && !divisionId) { toast('Veuillez rattacher la caisse à une division.', 'error'); return; }
-    var compte = document.getElementById('cc-compte').value;
+    var compte = (document.getElementById('cc-compte').value || '').trim();
+    /* Le compte doit exister dans le plan et appartenir au groupe 57 (trésorerie caisse) :
+       un code libre ferait ventiler les bons sur un compte inconnu du grand livre. */
+    if (!compte || compte.indexOf('57') !== 0 || !(APP.planComptable || []).some(function(p){ return p && p.code === compte; })) {
+      toast('Compte de caisse invalide : choisissez un compte du plan commençant par 57 (ex. 57110001).', 'error');
+      return;
+    }
     var actif = document.getElementById('cc-actif').value === '1';
     var caissiereIds = Array.from(document.getElementById('cc-caissieres').selectedOptions).map(function(o){ return o.value; });
     var destInternes = Array.from(document.getElementById('cc-dest-internes').selectedOptions).map(function(o){ return o.value; });
@@ -132240,10 +132252,9 @@ goTo = function(page) {
           <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">Chaque caisse est rattachée à une division du promoteur (voir Divisions). Le tableau de bord ventile automatiquement par division.</div>
         </div>
         <div class="form-group"><label>Compte SYSCOHADA</label>
-          <select class="form-control" id="cc-compte">
-            <option value="571">571 — Caisse principale</option>
-            <option value="572">572 — Caisse annexe / petite caisse</option>
-          </select>
+          <input type="text" class="form-control" id="cc-compte" list="dl-cc-compte" placeholder="ex. 57110001" autocomplete="off">
+          <datalist id="dl-cc-compte"></datalist>
+          <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">Un sous-compte de trésorerie (57…) propre à cette caisse, pour que le grand livre suive chaque caisse séparément.</div>
         </div>
         <div class="form-group"><label>Statut</label>
           <select class="form-control" id="cc-actif"><option value="1">Active</option><option value="0">Inactive</option></select>
