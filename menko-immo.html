@@ -3866,6 +3866,9 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
               <option value="produit">Produits (cl. 7)</option>
               <option value="actif">Actif (cl. 1-5)</option>
               <option value="passif">Passif / Tiers (cl. 4)</option>
+              <option value="tresorerie">Trésorerie (caisse, banque)</option>
+              <option value="a_nouveau">À-nouveau</option>
+              <option value="recette">Recette</option>
             </select>
             <select class="filter-select" id="filter-classe-ecriture" onchange="filterEcritures()">
               <option value="">Toutes classes</option>
@@ -40654,6 +40657,8 @@ function filterEcritures() {
   var journalF = document.getElementById('filter-journal-ecriture') ? document.getElementById('filter-journal-ecriture').value : '';
   var mois = document.getElementById('filter-mois-ecriture') ? document.getElementById('filter-mois-ecriture').value : '';
   var search = (document.getElementById('search-ecritures') ? document.getElementById('search-ecritures').value : '').toLowerCase();
+  var searchNum = search.replace(/[\s.,]/g, '');
+  if (!/^[0-9]+$/.test(searchNum)) searchNum = '';
   var d1 = document.getElementById('filter-date-debut') ? document.getElementById('filter-date-debut').value : '';
   var d2 = document.getElementById('filter-date-fin') ? document.getElementById('filter-date-fin').value : '';
   if (d1 && d2 && d1 > d2) { var tmp = d1; d1 = d2; d2 = tmp; }
@@ -40695,11 +40700,18 @@ function filterEcritures() {
     var matchType = !type || e.type === type;
     var matchClasse = true;
     if (classe) {
+      /* La classe est cherchée sur le compte débit OU crédit : une écriture de
+         caisse (débit 571, crédit 462…) doit remonter dans les deux classes. */
       var cDebitF = idxPlan[e.compte_debit || e.compte];
-      matchClasse = cDebitF && cDebitF.classe === classe;
+      var cCreditF = idxPlan[e.compte_credit];
+      matchClasse = !!((cDebitF && cDebitF.classe === classe) || (cCreditF && cCreditF.classe === classe));
     }
     var matchJournal = !journalF || getEcritureJournal(e) === journalF;
-    var matchSearch = !search || (e.libelle||'').toLowerCase().includes(search) || (e.ref||'').toLowerCase().includes(search) || (e.compte_debit||e.compte||'').includes(search);
+    /* Recherche : libellé, référence, pièce, comptes débit/crédit et montant
+       (« 200000 » retrouve « 200 000 »). */
+    var matchSearch = !search || (e.libelle||'').toLowerCase().includes(search) || (e.ref||'').toLowerCase().includes(search)
+      || (e.piece||'').toLowerCase().includes(search) || (e.compte_debit||e.compte||'').includes(search) || (e.compte_credit||'').includes(search)
+      || (searchNum && String(Math.round(parseFloat(e.montant)||0)).includes(searchNum));
     var matchDivision = !divF || (e.division||'') === divF;
     return matchPeriode(e) && matchType && matchClasse && matchJournal && matchSearch && matchDivision;
   }).sort(function(a, b) { return new Date(a.date) - new Date(b.date); });
@@ -40717,7 +40729,14 @@ function filterEcritures() {
     var cDebit = idxPlan[e.compte_debit || e.compte];
     var cCredit = idxPlan[e.compte_credit];
     var prog = e.programme_id ? ((idxProg[e.programme_id]||{}).nom || '') : '';
-    totDebit += e.montant; totCredit += e.montant;
+    /* Totaux calculés sur les lignes D/C réelles (et non sur le montant en
+       double) : sinon le contrôle d'équilibre ne pouvait jamais échouer. */
+    if (Array.isArray(e.lignes) && e.lignes.length) {
+      e.lignes.forEach(function(l){
+        var mnt = parseFloat(l.montant) || 0;
+        if (l.sens === 'D') totDebit += mnt; else if (l.sens === 'C') totCredit += mnt;
+      });
+    } else { totDebit += e.montant; totCredit += e.montant; }
     return '<tr>'
       + '<td style="font-family:monospace;font-size:11px;color:var(--bleu);">' + (e.ref||'—') + '</td>'
       + '<td>' + journalBadgeHtml(getEcritureJournal(e)) + '</td>'
@@ -40745,7 +40764,7 @@ function filterEcritures() {
     totEl.innerHTML = '<span style="color:var(--blanc-dim);">' + periodeLabel + 'Total ' + list.length + ' écriture(s) :</span>'
       + '<span>Débit : <strong style="color:var(--rouge);">' + fmtF(totDebit) + ' FCFA</strong></span>'
       + '<span>Crédit : <strong style="color:var(--vert);">' + fmtF(totCredit) + ' FCFA</strong></span>'
-      + (totDebit === totCredit ? '<span style="color:var(--vert);">✔ Journal équilibré</span>' : '<span style="color:var(--rouge);">⚠ Déséquilibre !</span>');
+      + (Math.abs(totDebit - totCredit) < 0.5 ? '<span style="color:var(--vert);">✔ Journal équilibré</span>' : '<span style="color:var(--rouge);">⚠ Déséquilibre de ' + fmtF(Math.abs(totDebit - totCredit)) + ' FCFA</span>');
   }
 }
 
