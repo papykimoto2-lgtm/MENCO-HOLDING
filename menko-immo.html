@@ -3885,6 +3885,10 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <div class="filters-bar" style="margin-top:8px;align-items:flex-end;">
             <div class="form-group" style="margin:0;"><label style="font-size:11px;">📅 Date début</label><input type="date" class="filter-select" id="filter-date-debut" onchange="document.getElementById('filter-mois-ecriture').value='';filterEcritures()"></div>
             <div class="form-group" style="margin:0;"><label style="font-size:11px;">📅 Date fin</label><input type="date" class="filter-select" id="filter-date-fin" onchange="document.getElementById('filter-mois-ecriture').value='';filterEcritures()"></div>
+            <div class="form-group" style="margin:0;"><label style="font-size:11px;">💰 Montant min (FCFA)</label><input type="text" inputmode="numeric" class="filter-select" id="filter-montant-min" placeholder="ex. 100 000" style="width:120px;" oninput="_debInput('filterEcritures')"></div>
+            <div class="form-group" style="margin:0;"><label style="font-size:11px;">💰 Montant max (FCFA)</label><input type="text" inputmode="numeric" class="filter-select" id="filter-montant-max" placeholder="ex. 500 000" style="width:120px;" oninput="_debInput('filterEcritures')"></div>
+            <div class="form-group" style="margin:0;"><label style="font-size:11px;">↔ Montant porté en</label><select class="filter-select" id="filter-montant-sens" onchange="filterEcritures()" title="Débit/Crédit : pour une écriture multi-lignes, total des lignes débit ou des lignes crédit. Sans écriture multi-lignes, débit = crédit."><option value="">Débit ou crédit</option><option value="D">Débit</option><option value="C">Crédit</option></select></div>
+            <button class="btn btn-secondary btn-sm" onclick="journalMontantReset()">✕ Montant</button>
             <button class="btn btn-secondary btn-sm" onclick="journalPeriodePreset('mois')">Ce mois</button>
             <button class="btn btn-secondary btn-sm" onclick="journalPeriodePreset('trim')">Ce trimestre</button>
             <button class="btn btn-secondary btn-sm" onclick="journalPeriodePreset('annee')">Cet exercice</button>
@@ -40662,6 +40666,16 @@ function filterEcritures() {
   var d1 = document.getElementById('filter-date-debut') ? document.getElementById('filter-date-debut').value : '';
   var d2 = document.getElementById('filter-date-fin') ? document.getElementById('filter-date-fin').value : '';
   if (d1 && d2 && d1 > d2) { var tmp = d1; d1 = d2; d2 = tmp; }
+  /* Montant : saisie tolérante (« 1 000 000 »), vide = pas de borne, bornes inversées remises dans l'ordre. */
+  function _montantSaisi(id) {
+    var el = document.getElementById(id);
+    var s = ((el && el.value) || '').replace(/[\s.,]/g, '');
+    return /^[0-9]+$/.test(s) ? parseInt(s, 10) : null;
+  }
+  var mMin = _montantSaisi('filter-montant-min'), mMax = _montantSaisi('filter-montant-max');
+  if (mMin !== null && mMax !== null && mMin > mMax) { var tmpM = mMin; mMin = mMax; mMax = tmpM; }
+  var mSensEl = document.getElementById('filter-montant-sens');
+  var mSens = mSensEl ? mSensEl.value : '';
 
   /* Si une période libre (date début/fin) est renseignée, elle prime sur les filtres année/mois. */
   function matchPeriode(e) {
@@ -40713,7 +40727,18 @@ function filterEcritures() {
       || (e.piece||'').toLowerCase().includes(search) || (e.compte_debit||e.compte||'').includes(search) || (e.compte_credit||'').includes(search)
       || (searchNum && String(Math.round(parseFloat(e.montant)||0)).includes(searchNum));
     var matchDivision = !divF || (e.division||'') === divF;
-    return matchPeriode(e) && matchType && matchClasse && matchJournal && matchSearch && matchDivision;
+    /* Montant min/max, porté au débit, au crédit ou aux deux. Pour une écriture
+       multi-lignes : total des lignes D (ou C) ; sinon débit = crédit = montant. */
+    var matchMontant = true;
+    if (mMin !== null || mMax !== null) {
+      var mD = 0, mC = 0;
+      if (Array.isArray(e.lignes) && e.lignes.length) {
+        e.lignes.forEach(function(l){ var v = parseFloat(l.montant) || 0; if (l.sens === 'D') mD += v; else if (l.sens === 'C') mC += v; });
+      } else { mD = mC = parseFloat(e.montant) || 0; }
+      var cand = mSens === 'D' ? [mD] : mSens === 'C' ? [mC] : [mD, mC];
+      matchMontant = cand.some(function(v){ return (mMin === null || v >= mMin) && (mMax === null || v <= mMax); });
+    }
+    return matchPeriode(e) && matchType && matchClasse && matchJournal && matchSearch && matchDivision && matchMontant;
   }).sort(function(a, b) { return new Date(a.date) - new Date(b.date); });
 
   var tbody = document.getElementById('tbody-ecritures');
@@ -40777,6 +40802,12 @@ function journalPeriodePreset(kind) {
   document.getElementById('filter-mois-ecriture').value = '';
   document.getElementById('filter-date-debut').value = _epISO(d1);
   document.getElementById('filter-date-fin').value = _epISO(d2);
+  filterEcritures();
+}
+function journalMontantReset() {
+  ['filter-montant-min', 'filter-montant-max', 'filter-montant-sens'].forEach(function(id){
+    var el = document.getElementById(id); if (el) el.value = '';
+  });
   filterEcritures();
 }
 function journalPeriodeReset() {
