@@ -65,6 +65,23 @@ update pi_ecritures e set data = e.data
 from cible c
 where e.id=c.id and not (e.data ? 'valide_le') and coalesce(e.data->>'statut_ecr','')<>'valide' and coalesce(e.data->>'_deleted','')<>'true';
 
+-- 3) Écritures sur 571 qui ne passent par aucun mouvement de caisse -> CAISSE PRINCIPALE
+--    (décision du 07/10/2026 : 629 versements en espèces, 33 bons de caisse sans
+--    mouvement, 17 écritures du parc auto, 8 cessions = 687 écritures).
+--    Laissés sur 571 : les 3 bilans d'ouverture (ecr_bo_*), soldes de départ par
+--    division et non des flux, et les 52 pièces visées d'Agro / Building.
+update pi_ecritures e set data = e.data
+   || jsonb_build_object('_modifie', to_char((now() at time zone 'utc'),'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'), 'compte_caisse_avant', '571', 'migration_sous_compte', '2026-10-07-hors-caisse')
+   || (case when e.data->>'compte'='571' then jsonb_build_object('compte','57110001') else '{}'::jsonb end)
+   || (case when e.data->>'compte_debit'='571' then jsonb_build_object('compte_debit','57110001') else '{}'::jsonb end)
+   || (case when e.data->>'compte_credit'='571' then jsonb_build_object('compte_credit','57110001') else '{}'::jsonb end)
+ where (e.data->>'compte_debit'='571' or e.data->>'compte_credit'='571' or e.data->>'compte'='571')
+   and e.id not like 'ecr_bo_%'
+   and not exists (select 1 from pi_caisse_mouvements m where e.id = coalesce(m.data->>'ecriture_id','ecr_cse_'||m.id))
+   and not (e.data ? 'valide_le') and coalesce(e.data->>'statut_ecr','')<>'valide' and coalesce(e.data->>'_deleted','')<>'true';
+-- (la marche arrière a) ci-dessous couvre aussi cette étape : elle restaure
+-- compte_caisse_avant sur toute écriture marquée migration_sous_compte.)
+
 -- ─────────────────────────────────────────────────────────────────────────
 -- MARCHE ARRIÈRE (non exécutée) — à lancer dans cet ordre
 -- ─────────────────────────────────────────────────────────────────────────
