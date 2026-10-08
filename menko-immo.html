@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.113 · 2026-10-08 — Synchronisation fiabilisée (suppressions jamais renvoyées au cloud, remise à zéro locale sans effet sur le cloud, réinitialisation des postes à distance, protection contre une base étrangère) ; sous-comptes de caisse ; filtres du Journal ; Session majeure : (1) Souscripteurs multi-lots sur un même programme avec échéancier/montant combiné unique (client.lot_ids, client.lot_id conservé comme lot principal pour compatibilité) ; (2) Surface relevée manuellement sur la fiche Lot et surface souscrite sur la fiche Souscripteur, comparées en direct à la surface au plan/aux lots rattachés ; (3) Nouveau module Budget : Compte d\'exploitation prévisionnel (Budget vs Réel comptable, mensualisé, par division), masque de saisie simplifié façon business-plan (24 rubriques dont 11 propres à l\'immobilier, lignes personnalisables), diagnostic de viabilité (résultat + trésorerie cumulée) ; (4) Cockpit étendu au Budget et au Parc Auto (file d\'actions + Pouls de santé) ; (5) Audit de synchronisation : 4 stores écrits/synchronisés mais jamais rechargés corrigés (declarations_versement_financier invisible sur tout autre poste, audit_log, cout_gestion_exercices, conflits_sync) ; (6) 4 sélecteurs de lots (souscription, lots supplémentaires, simulateur fiscal, livraison) désormais rafraîchis après création d\'un lot, localement et après synchro cloud ; (7) Correctif charge Supabase : pull de secours espacé de 60 s à ~6 min (Realtime reste le canal principal) suite à saturation du compute observée le 31/08 (527k requêtes/24h sur instance Nano) ; (8) Parc Auto : bouton "Actualiser les données" + badge "Hors ligne" cliquable avec diagnostic de la cause probable (projet en pause/clé invalide, jamais un vrai bug CORS).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.114 · 2026-10-08 — Résiliation à taux libre et conditions de rupture paramétrables, fiche de souscription + engagement d\'acquisition, 2 téléphones (CI/international), choix du système de commissions ; Synchronisation fiabilisée (suppressions jamais renvoyées au cloud, remise à zéro locale sans effet sur le cloud, réinitialisation des postes à distance, protection contre une base étrangère) ; sous-comptes de caisse ; filtres du Journal ; Session majeure : (1) Souscripteurs multi-lots sur un même programme avec échéancier/montant combiné unique (client.lot_ids, client.lot_id conservé comme lot principal pour compatibilité) ; (2) Surface relevée manuellement sur la fiche Lot et surface souscrite sur la fiche Souscripteur, comparées en direct à la surface au plan/aux lots rattachés ; (3) Nouveau module Budget : Compte d\'exploitation prévisionnel (Budget vs Réel comptable, mensualisé, par division), masque de saisie simplifié façon business-plan (24 rubriques dont 11 propres à l\'immobilier, lignes personnalisables), diagnostic de viabilité (résultat + trésorerie cumulée) ; (4) Cockpit étendu au Budget et au Parc Auto (file d\'actions + Pouls de santé) ; (5) Audit de synchronisation : 4 stores écrits/synchronisés mais jamais rechargés corrigés (declarations_versement_financier invisible sur tout autre poste, audit_log, cout_gestion_exercices, conflits_sync) ; (6) 4 sélecteurs de lots (souscription, lots supplémentaires, simulateur fiscal, livraison) désormais rafraîchis après création d\'un lot, localement et après synchro cloud ; (7) Correctif charge Supabase : pull de secours espacé de 60 s à ~6 min (Realtime reste le canal principal) suite à saturation du compute observée le 31/08 (527k requêtes/24h sur instance Nano) ; (8) Parc Auto : bouton "Actualiser les données" + badge "Hors ligne" cliquable avec diagnostic de la cause probable (projet en pause/clé invalide, jamais un vrai bug CORS).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -3284,8 +3284,6 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
             <input type="text" class="search-input" placeholder="🔍 Nom, dossier..." id="search-desist" oninput="renderRegistreDesistements()">
             <select class="filter-select" id="filter-desist-motif" onchange="renderRegistreDesistements()">
               <option value="">Tous les motifs</option>
-              <option value="desistement_client">Désistement souscripteur</option>
-              <option value="faute_promoteur">Faute promoteur</option>
             </select>
             <select class="filter-select" id="filter-desist-remb" onchange="renderRegistreDesistements()">
               <option value="">Remboursement : tous</option>
@@ -6264,6 +6262,18 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                   <label>Commission commerciale (%)</label>
                   <input type="number" id="param-commission" class="form-control" value="3" min="0" max="10">
                 </div>
+                <div class="form-group span-2" style="background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;padding:12px;">
+                  <label>🧮 Système de calcul des commissions</label>
+                  <select id="param-commission-mode" class="form-control">
+                    <option value="versement">Par versement — taux du commercial / de l'apporteur appliqué à chaque versement encaissé</option>
+                    <option value="bien">Sur la valeur du bien vendu — taux fixé sur la fiche du lot (logement ou terrain) × prix de vente</option>
+                  </select>
+                  <div style="font-size:11px;color:var(--blanc-dim);margin-top:6px;line-height:1.5;">
+                    <b>Par versement</b> : utilise les taux ci-dessous (commercial) et ceux de la fiche apporteur, souscription ou régulier selon le versement.<br>
+                    <b>Sur la valeur du bien</b> : la commission = prix du lot × taux saisi à la création du lot. Elle est générée en une fois au 1er versement sur le prix. Si le lot n'a pas de taux, on retombe sur le taux « régulier » du commercial ou de la fiche apporteur.<br>
+                    Changer de système ne recalcule pas les commissions déjà générées. En passant « sur la valeur du bien », les commissions déjà générées pour un souscripteur sont déduites, pour ne jamais payer deux fois.
+                  </div>
+                </div>
                 <div class="form-group">
                   <label>🏦 Comm. commercial — Souscription (%)</label>
                   <input type="number" id="param-comm-souscription" class="form-control" value="10" min="0" max="30" step="0.5">
@@ -6316,6 +6326,23 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                 <div class="form-group">
                   <label>Pénalités retard (%/semaine)</label>
                   <input type="number" id="param-penalites" class="form-control" value="0.5" step="0.1">
+                </div>
+                <div class="form-group span-2" style="border:1px solid var(--bordure,#D1D5DB);border-radius:8px;padding:12px;">
+                  <label style="font-weight:700;">📄 Conditions de résiliation d'un souscripteur</label>
+                  <div style="font-size:11px;color:#6B6B9A;margin-bottom:6px;">Définissez vous-même les motifs de rupture et, pour chacun, le taux de remboursement, la retenue minimale, le sort des commissions, la libération des lots et les règles de suggestion. Rien n'est figé dans le logiciel. Les résiliations déjà enregistrées conservent les conditions appliquées à leur date.</div>
+                  <div id="param-resil-motifs"></div>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="_resilEdAjouter()">➕ Ajouter un motif</button>
+                  <div class="form-group" style="margin-top:10px;"><label>Texte de la clause affiché dans la fenêtre de résiliation (vide = généré automatiquement depuis les motifs)</label>
+                    <textarea id="param-resil-clause" class="form-control" rows="2"></textarea></div>
+                  <div class="form-group"><label>Fondement contractuel imprimé sur le décompte (vide = généré automatiquement)</label>
+                    <textarea id="param-resil-fondement" class="form-control" rows="2"></textarea></div>
+                </div>
+                <div class="form-group span-2" style="border:1px solid var(--bordure,#D1D5DB);border-radius:8px;padding:12px;">
+                  <label style="font-weight:700;">📄 Documents de souscription (fiche + engagement d'acquisition)</label>
+                  <div class="form-group"><label>Rappel des conditions générales du promoteur (encadré de la fiche de souscription)</label>
+                    <textarea id="param-doc-rappel-cgv" class="form-control" rows="5"></textarea></div>
+                  <div class="form-group"><label>Texte de l'engagement ferme et irrévocable — variables : {nom} {piece} {adresse} {societe} {logement} {prix} {apport} {duree} {mensualite} {date_debut} {conditions_resiliation}</label>
+                    <textarea id="param-doc-engagement" class="form-control" rows="9"></textarea></div>
                 </div>
                 <div class="form-group">
                   <label>Banque principale (cpt 512)</label>
@@ -17573,6 +17600,14 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
 ════════════════════════════════════════════════════ -->
 
 <!-- Modal Client -->
+<div class="modal-overlay" id="modal-docs-souscription">
+  <div class="modal">
+    <div class="modal-header"><h3>📄 Documents de souscription</h3><button class="btn btn-secondary btn-icon" onclick="closeModal('modal-docs-souscription')">✕</button></div>
+    <div class="modal-body" id="docs-souscription-corps"></div>
+    <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('modal-docs-souscription')">Fermer</button></div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-client">
   <div class="modal modal-lg">
     <div class="modal-header">
@@ -17606,12 +17641,23 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           </div>
           <div class="form-group">
             <label>Situation matrimoniale</label>
-            <select class="form-control" id="c-matrimonial">
+            <select class="form-control" id="c-matrimonial" onchange="clientToggleConjoint()">
               <option value="celibataire">Célibataire</option>
               <option value="marie">Marié(e)</option>
               <option value="divorce">Divorcé(e)</option>
               <option value="veuf">Veuf/Veuve</option>
             </select>
+          </div>
+          <div class="form-group span-2" id="c-conjoint-bloc" style="display:none;border:1px solid var(--bord,#D1D5DB);border-radius:8px;padding:10px 12px;">
+            <label style="font-weight:700;">Conjoint(e)</label>
+            <div class="form-grid">
+              <div class="form-group"><label>Nom</label><input type="text" class="form-control" id="c-conj-nom"></div>
+              <div class="form-group"><label>Prénoms</label><input type="text" class="form-control" id="c-conj-prenoms"></div>
+              <div class="form-group"><label>Date de naissance</label><input type="date" class="form-control" id="c-conj-ddn"></div>
+              <div class="form-group"><label>Profession</label><input type="text" class="form-control" id="c-conj-profession"></div>
+              <div class="form-group"><label>Téléphone</label><input type="tel" class="form-control" id="c-conj-tel"></div>
+              <div class="form-group"><label>N° pièce d'identité</label><input type="text" class="form-control" id="c-conj-piece-num"></div>
+            </div>
           </div>
           <div class="form-group">
             <label>Profession</label>
@@ -17623,7 +17669,13 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           </div>
           <div class="form-group">
             <label>Téléphone *</label>
-            <input type="tel" class="form-control" id="c-tel">
+            <input type="tel" class="form-control" id="c-tel" placeholder="07 12 34 56 78 ou +33 6 12 34 56 78" oninput="clientTelIndice('c-tel','c-tel-hint')">
+            <div id="c-tel-hint" style="font-size:11px;margin-top:3px;"></div>
+          </div>
+          <div class="form-group">
+            <label>Téléphone 2 (facultatif)</label>
+            <input type="tel" class="form-control" id="c-tel2" placeholder="05 12 34 56 78 ou +225 05 12 34 56 78" oninput="clientTelIndice('c-tel2','c-tel2-hint')">
+            <div id="c-tel2-hint" style="font-size:11px;margin-top:3px;"></div>
           </div>
           <div class="form-group">
             <label>Email</label>
@@ -17971,29 +18023,24 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
     <div class="modal-body">
       <input type="hidden" id="rs-client-id">
       <div id="rs-alerte-gele" style="display:none;"></div>
-      <div class="alert alert-info" style="font-size:11.5px;">
-        Clause contractuelle applicable : désistement du souscripteur → remboursement de <b>60%</b> des versements
-        (effectif à la fin du délai de réalisation) ; désistement imputable au promoteur → remboursement <b>total (100%)</b>.
-      </div>
+      <div class="alert alert-info" style="font-size:11.5px;" id="rs-clause"></div>
       <div class="card" style="margin:10px 0;padding:10px 12px;">
         <div id="rs-recap" style="font-size:12.5px;line-height:1.7;"></div>
       </div>
       <div class="form-group">
         <label>Motif de la résiliation</label>
-        <select class="form-control" id="rs-motif" onchange="resilierRecalculer()">
-          <option value="desistement_client">Désistement du souscripteur (60%)</option>
-          <option value="faute_promoteur">Défaut/retard imputable au promoteur (100%)</option>
-        </select>
+        <select class="form-control" id="rs-motif" onchange="resilierMotifChange()"></select>
         <div id="rs-suggestion-auto" style="font-size:11px;color:var(--or,#B87333);margin-top:4px;"></div>
       </div>
-      <div class="form-group"><label>Justification / motif détaillé (obligatoire)</label><textarea class="form-control" id="rs-justification" rows="3" placeholder="Ex. Retard de livraison de 14 mois sur programme dont l'échéance contractuelle était le..."></textarea></div>
+      <div class="form-group"><label id="rs-justification-label">Justification / motif détaillé (obligatoire)</label><textarea class="form-control" id="rs-justification" rows="3" placeholder="Ex. Retard de livraison de 14 mois sur programme dont l'échéance contractuelle était le..."></textarea></div>
       <div class="form-grid">
         <div class="form-group"><label>Montant total versé (hors frais de dossier)</label><input type="text" class="form-control" id="rs-montant-verse" disabled></div>
-        <div class="form-group"><label>Taux de remboursement</label><input type="text" class="form-control" id="rs-taux" disabled></div>
+        <div class="form-group"><label>Taux de remboursement (%) — à fixer pour ce dossier</label><input type="number" class="form-control" id="rs-taux" min="0" max="100" step="0.5" oninput="resilierRecalculer()"><div id="rs-taux-info" style="font-size:11px;color:var(--or,#B87333);margin-top:4px;"></div></div>
         <div class="form-group"><label>Montant à rembourser</label><input type="text" class="form-control" id="rs-montant-rembourse" disabled style="font-weight:700;color:var(--vert);"></div>
         <div class="form-group"><label>Montant retenu (conservé)</label><input type="text" class="form-control" id="rs-montant-retenu" disabled style="font-weight:700;color:var(--or,#B87333);"></div>
       </div>
       <div id="rs-commissions-info" class="alert" style="font-size:11.5px;"></div>
+      <div id="rs-lots-info" style="font-size:11.5px;color:var(--or,#B87333);margin-bottom:8px;"></div>
       <div class="form-group"><label><input type="checkbox" id="rs-confirme"> Je confirme avoir vérifié le motif et le calcul ci-dessus — cette opération est tracée et génère une écriture comptable.</label></div>
     </div>
     <div class="modal-footer">
@@ -18355,6 +18402,11 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
         <div class="form-group span-2">
           <label>Description</label>
           <textarea class="form-control" id="p-description"></textarea>
+        </div>
+        <div class="form-group span-2">
+          <label>Rappel du cahier des charges du programme (encadré de la fiche de souscription)</label>
+          <textarea class="form-control" id="p-rappel-cgv" rows="6" placeholder="Laissé vide : seules les conditions générales du promoteur sont rappelées."></textarea>
+          <button type="button" class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="programmeInsererModeleCgv()">📋 Insérer le modèle « cahier des charges Cité Maphouet »</button>
         </div>
         <div class="form-group span-2" style="border-top:1px solid var(--bord);padding-top:14px;margin-top:4px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
@@ -19305,6 +19357,15 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
           <label>Prix de vente (FCFA)</label>
           <input type="number" class="form-control" id="l-prix">
           <div id="l-prix-note" style="font-size:11px;color:var(--blanc-dim);margin-top:4px;"></div>
+        </div>
+        <div class="form-group">
+          <label>🏦 Taux commission commercial (%)</label>
+          <input type="number" class="form-control" id="l-taux-comm-commercial" min="0" max="100" step="0.1" placeholder="Taux du commercial">
+        </div>
+        <div class="form-group">
+          <label>🤝 Taux commission apporteur (%)</label>
+          <input type="number" class="form-control" id="l-taux-comm-apporteur" min="0" max="100" step="0.1" placeholder="Taux de l'apporteur">
+          <div id="l-comm-note" style="font-size:11px;color:var(--blanc-dim);margin-top:4px;"></div>
         </div>
         <div class="form-group span-2" id="l-grp-terrain-tva" style="display:none;">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
@@ -32028,7 +32089,9 @@ function openClientModal(id) {
     var _lotDoc = DATA.lots.find(function(l) { return l.id === c.lot_id; });
     var _libelleDoc = (_lotDoc && _lotDoc.statut === 'vendu') ? '📄 Contrat de vente' : '📄 Contrat réservation';
     docBtns.innerHTML = '<button class="btn btn-secondary btn-sm" onclick="printContrat(\'' + id + '\')">' + _libelleDoc + '</button>'
-      + '<button class="btn btn-secondary btn-sm" onclick="etatEcheancier(\'' + id + '\')">📅 Échéancier</button>';
+      + '<button class="btn btn-secondary btn-sm" onclick="etatEcheancier(\'' + id + '\')">📅 Échéancier</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="genererDocsSouscription(\'' + id + '\',\'fiche\')">📄 Fiche de souscription</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="genererDocsSouscription(\'' + id + '\',\'engagement\')">✍️ Engagement d\'acquisition</button>';
     // Documents téléversés
     setTimeout(function(){ refreshDocumentsForEntity('client', id); }, 80);
     renderClientHistorique(id);
@@ -32063,17 +32126,20 @@ function openClientModal(id) {
 }
 
 function clearClientForm() {
-  ['c-nom','c-prenoms','c-ddn','c-nationalite','c-profession','c-employeur','c-tel','c-email','c-adresse','c-commune','c-lat','c-lng',
+  ['c-nom','c-prenoms','c-ddn','c-nationalite','c-profession','c-employeur','c-tel','c-tel2','c-email','c-adresse','c-commune','c-lat','c-lng',
    'c-piece-num','c-montant-total','c-apport','c-duree','c-date-debut','c-date-souscription','c-mensualite','c-type-logement','c-surface',
    'c-commercial','c-apporteur',
    'c-num-dm','c-numero-tf','c-ilot','c-superficie-reelle','c-superficie-supplementaire','c-superficie-totale',
-   'c-terrain-supplementaire','c-cout-villa','c-modification'].forEach(function(id) {
+   'c-terrain-supplementaire','c-cout-villa','c-modification',
+   'c-conj-nom','c-conj-prenoms','c-conj-ddn','c-conj-profession','c-conj-tel','c-conj-piece-num'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.value = el.id === 'c-nationalite' ? 'Ivoirienne' : el.id === 'c-duree' ? '60' : el.id === 'c-apport' ? '0' : '';
   });
   var modeAcqEl = document.getElementById('c-mode-acquisition'); if (modeAcqEl) modeAcqEl.value = '';
+  if (typeof clientToggleConjoint === 'function') clientToggleConjoint();
   var svEcart = document.getElementById('c-surface-ecart'); if (svEcart) svEcart.style.display = 'none';
   var cGeoStatutClear = document.getElementById('c-geoloc-statut'); if (cGeoStatutClear) cGeoStatutClear.textContent = '';
+  ['c-tel-hint','c-tel2-hint'].forEach(function(i){ var h=document.getElementById(i); if(h) h.textContent=''; });
   document.getElementById('doc-btns').style.display = 'none';
   document.getElementById('doc-btns').innerHTML = '';
   var modeEl = document.getElementById('c-mode-livraison'); if (modeEl) modeEl.value = 'gros_oeuvre';
@@ -32086,7 +32152,7 @@ function clearClientForm() {
 
 function fillClientForm(c) {
   var map = { 'c-nom': 'nom', 'c-prenoms': 'prenoms', 'c-ddn': 'ddn', 'c-nationalite': 'nationalite',
-    'c-profession': 'profession', 'c-employeur': 'employeur', 'c-tel': 'tel', 'c-email': 'email', 'c-adresse': 'adresse',
+    'c-profession': 'profession', 'c-employeur': 'employeur', 'c-tel': 'tel', 'c-tel2': 'tel2', 'c-email': 'email', 'c-adresse': 'adresse',
     'c-piece-num': 'piece_num', 'c-montant-total': 'montant_total', 'c-apport': 'apport',
     'c-duree': 'duree', 'c-date-debut': 'date_debut', 'c-date-souscription': 'date_souscription', 'c-type-logement': 'type_logement', 'c-surface': 'surface',
     'c-lat': 'lat', 'c-lng': 'lng', 'c-commune': 'commune',
@@ -32100,9 +32166,11 @@ function fillClientForm(c) {
     if (id === 'c-date-souscription') { el.value = c.date_souscription || c.date_debut || c.created_at || ''; return; }
     el.value = c[map[id]] || '';
   });
+  clientTelIndice('c-tel','c-tel-hint'); clientTelIndice('c-tel2','c-tel2-hint');
   var cGeoStatut = document.getElementById('c-geoloc-statut');
   if (cGeoStatut) cGeoStatut.textContent = c.geoloc_at ? ('✅ Position GPS capturée le '+dateShort(c.geoloc_at)) : '';
   setSelectValue('c-matrimonial', c.matrimonial);
+  _clientRemplirConjoint(c);
   setSelectValue('c-standing', c.standing);
   setSelectValue('c-programme', c.programme_id);
   setSelectValue('c-commercial', c.commercial_id || '');
@@ -32324,6 +32392,16 @@ async function saveClient() {
   var nom = document.getElementById('c-nom').value.trim();
   var tel = document.getElementById('c-tel').value.trim();
   if (!nom || !tel) { toast('Nom et téléphone obligatoires.', 'error'); return; }
+  /* Numéros : ivoirien (10 chiffres) ou international (+indicatif). Un numéro
+     déjà enregistré et non modifié n'est jamais bloqué (anciennes fiches). */
+  var tel2 = ((document.getElementById('c-tel2') || {}).value || '').trim();
+  var _exTel = APP.editingId ? (DATA.clients.find(function(x){ return x.id === APP.editingId; }) || {}) : {};
+  var _aTel = telAnalyser(tel), _aTel2 = telAnalyser(tel2);
+  if (!_aTel.valide && tel !== (_exTel.tel || '')) { toast('Téléphone 1 : ' + _aTel.message, 'error'); return; }
+  if (tel2 && !_aTel2.valide && tel2 !== (_exTel.tel2 || '')) { toast('Téléphone 2 : ' + _aTel2.message, 'error'); return; }
+  if (_aTel.valide && _aTel2.valide && _aTel.e164 === _aTel2.e164) { toast('Téléphone 1 et Téléphone 2 sont identiques : laissez le second vide ou saisissez un autre numéro.', 'error'); return; }
+  if (_aTel.valide && tel !== (_exTel.tel || '')) tel = _aTel.stockage;
+  if (tel2 && _aTel2.valide && tel2 !== (_exTel.tel2 || '')) tel2 = _aTel2.stockage;
 
   // ── Validation : commercial OU apporteur obligatoire ──────────────────────
   var commId = document.getElementById('c-commercial') ? document.getElementById('c-commercial').value : '';
@@ -32367,9 +32445,11 @@ async function saveClient() {
     ddn: document.getElementById('c-ddn').value,
     nationalite: document.getElementById('c-nationalite').value,
     matrimonial: document.getElementById('c-matrimonial').value,
+    conjoint: (document.getElementById('c-matrimonial').value === 'marie') ? _clientLireConjoint() : null,
     profession: document.getElementById('c-profession').value,
     employeur: document.getElementById('c-employeur').value,
     tel: tel,
+    tel2: tel2,
     email: document.getElementById('c-email').value,
     adresse: document.getElementById('c-adresse').value,
     piece_type: document.getElementById('c-piece-type').value,
@@ -32486,6 +32566,7 @@ async function saveClient() {
     toast('Souscripteur enregistré.', 'success');
     renderClients();
     refreshDashboard();
+    if (!_clientAvant) ouvrirDocsSouscription(client.id);
   } finally {
     APP._savingClient = false;
   }
@@ -32639,7 +32720,7 @@ function renderClients() {
   var idxAp = {}; DATA.apporteurs.forEach(function(a){ idxAp[a.id] = a; });
 
   var list = scopeFiltrer(DATA.clients, 'programme_id').filter(function(c) {
-    var match = !search || (c.nom + ' ' + c.prenoms + ' ' + c.tel + ' ' + (c.email || '')).toLowerCase().indexOf(search) !== -1;
+    var match = !search || (c.nom + ' ' + c.prenoms + ' ' + c.tel + ' ' + (c.tel2 || '') + ' ' + (c.email || '')).toLowerCase().indexOf(search) !== -1;
     var prog = !filterProg || c.programme_id === filterProg;
     var stand = !filterStand || c.standing === filterStand;
     var ca = true;
@@ -32806,6 +32887,72 @@ function setVueClients(v) {
    ressembler à un doublon sans en être un. Réutilise la normalisation/
    similarité de noms du module de criblage LBC/FT (sfcNormalise/sfcSimilarite)
    pour éviter de dupliquer cette logique. ═══════════════════════════════ */
+/* ═══ NUMÉROS DE TÉLÉPHONE — format ivoirien ET international ═══════════
+   Ivoirien (plan de numérotation à 10 chiffres depuis 2021) : 10 chiffres,
+   avec ou sans +225 / 00225 devant (07 12 34 56 78, +225 07 12 34 56 78).
+   International : indicatif pays obligatoire, précédé de + ou 00
+   (+33 6 12 34 56 78, 0033 6 12 34 56 78) — 8 à 15 chiffres au total (E.164).
+   Stockage : ivoirien = 10 chiffres sans espace (comme avant, compatible avec
+   l'existant) ; international = +indicatif+numéro sans espace. */
+function telAnalyser(v) {
+  var brut = String(v == null ? '' : v).trim();
+  if (!brut) return { vide:true, valide:false, message:'' };
+  var compact = brut.replace(/[\s.\-()\/]/g, '');
+  if (/[^0-9+]/.test(compact) || (compact.indexOf('+') > 0) || (compact.match(/\+/g) || []).length > 1)
+    return { valide:false, message:'Caractères non autorisés : utilisez uniquement des chiffres, des espaces et un + initial.' };
+  var intl = compact.charAt(0) === '+' || compact.indexOf('00') === 0;
+  var d = compact.replace(/\D/g, '');
+  if (compact.indexOf('00') === 0) d = d.slice(2);
+  var repete = function(x){ return /^(\d)\1+$/.test(x); };
+  if (!intl && d.length === 13 && d.indexOf('225') === 0) { intl = true; }   /* 225… saisi sans + */
+  if (!intl) {
+    if (d.length === 10) {
+      if (repete(d)) return { valide:false, message:'Numéro impossible (chiffre répété).' };
+      return { valide:true, pays:'CI', national:d, stockage:d, e164:'+225' + d, wa:'225' + d,
+               affichage:d.replace(/(\d{2})(?=\d)/g, '$1 ').trim() };
+    }
+    if (d.length === 8) return { valide:false, message:'Ancien format ivoirien à 8 chiffres : le numéro doit comporter 10 chiffres (préfixe 01, 05, 07, 21, 25, 27…).' };
+    return { valide:false, message:'Numéro ivoirien : 10 chiffres attendus (ex. 07 12 34 56 78). Pour un numéro étranger, commencez par + et l\'indicatif pays (ex. +33…).' };
+  }
+  if (d.indexOf('225') === 0) {
+    var nat = d.slice(3);
+    if (nat.length !== 10) return { valide:false, message:'Numéro +225 : 10 chiffres attendus après l\'indicatif (ex. +225 07 12 34 56 78).' };
+    if (repete(nat)) return { valide:false, message:'Numéro impossible (chiffre répété).' };
+    return { valide:true, pays:'CI', national:nat, stockage:nat, e164:'+225' + nat, wa:'225' + nat,
+             affichage:nat.replace(/(\d{2})(?=\d)/g, '$1 ').trim() };
+  }
+  if (d.length < 8 || d.length > 15 || d.charAt(0) === '0')
+    return { valide:false, message:'Numéro international : indicatif pays puis numéro, 8 à 15 chiffres au total (ex. +33 6 12 34 56 78).' };
+  if (repete(d)) return { valide:false, message:'Numéro impossible (chiffre répété).' };
+  return { valide:true, pays:'INT', stockage:'+' + d, e164:'+' + d, wa:d, affichage:_telAffichageIntl(d) };
+}
+/* Découpe indicatif pays / numéro pour l'affichage (+33 6 12 34 56 78). */
+function _telAffichageIntl(d) {
+  var deux = ',20,27,30,31,32,33,34,36,39,40,41,43,44,45,46,47,48,49,51,52,53,54,55,56,57,58,60,61,62,63,64,65,66,81,82,84,86,90,91,92,93,94,95,98,';
+  var n = (d.charAt(0) === '1' || d.charAt(0) === '7') ? 1 : (deux.indexOf(',' + d.slice(0, 2) + ',') !== -1 ? 2 : 3);
+  var reste = d.slice(n), tete = reste.length % 2, g = [];
+  if (tete) g.push(reste.slice(0, tete));
+  for (var i = tete; i < reste.length; i += 2) g.push(reste.slice(i, i + 2));
+  return '+' + d.slice(0, n) + ' ' + g.join(' ');
+}
+/* Numéro affichable (document, liste) : formaté si reconnu, tel quel sinon. */
+function telAffichage(v) { var a = telAnalyser(v); return a.valide ? a.affichage : String(v == null ? '' : v); }
+/* Numéro pour wa.me : chiffres avec indicatif pays (225 par défaut pour un numéro national). */
+function telWhatsApp(v) {
+  var a = telAnalyser(v);
+  if (a.valide) return a.wa;
+  var d = String(v == null ? '' : v).replace(/\D/g, '');
+  return (d.indexOf('225') !== 0 && d.length <= 10) ? '225' + d : d;
+}
+/* Indication en direct sous le champ du formulaire. */
+function clientTelIndice(inputId, hintId) {
+  var el = document.getElementById(inputId), h = document.getElementById(hintId); if (!el || !h) return;
+  var a = telAnalyser(el.value);
+  if (a.vide) { h.textContent = ''; return; }
+  if (!a.valide) { h.style.color = '#DC2626'; h.textContent = '⚠️ ' + a.message; return; }
+  h.style.color = '#0E9F6E';
+  h.textContent = (a.pays === 'CI' ? '✅ Numéro ivoirien : ' : '🌍 Numéro international : ') + a.affichage;
+}
 function _cdNormPhone(t) { return (t || '').toString().replace(/[^0-9]/g, '').replace(/^00225/, '').replace(/^225/, '').replace(/^0+/, ''); }
 /* [Détection] Numéro structurellement impossible — distinct d'un doublon
    (deux fiches qui PARTAGENT un numéro). Ici une seule fiche suffit : le
@@ -32819,10 +32966,7 @@ function _cdNormPhone(t) { return (t || '').toString().replace(/[^0-9]/g, '').re
    total avant ce correctif. */
 function _telChiffres(t) { return (t || '').toString().replace(/[^0-9]/g, ''); }
 function _telInvalide(t) {
-  var n = _telChiffres(t);
-  if (n.length !== 10) return true;
-  if (/^(\d)\1{9}$/.test(n)) return true;
-  return false;
+  return !telAnalyser(t).valide;
 }
 function _clientsTelInvalidesListe() {
   return (DATA.clients || []).filter(function(c){ return c.statut !== 'resilie' && _telInvalide(c.tel); });
@@ -33197,6 +33341,120 @@ function updateClientSolde() {
    sort des commissions déjà payées dépend du motif (choix retenu) :
    conservées si faute du promoteur (le travail commercial était valide),
    à récupérer si désistement du client. ═══════════════════════════════ */
+/* ─── Conditions de résiliation PARAMÉTRABLES (Paramètres → Comptabilité) ──
+   Plus aucune règle de rupture n'est figée dans le code : la liste des motifs
+   et, pour chacun, le taux de remboursement, la retenue minimale, le sort des
+   commissions, la libération des lots, la suggestion automatique et le
+   caractère obligatoire de la justification sont saisis par l'utilisateur
+   (params.resil_motifs). Les deux motifs historiques (désistement du
+   souscripteur 60 % / faute du promoteur 100 %) servent uniquement de valeurs
+   de départ tant que rien n'a été enregistré, et reprennent les anciens
+   réglages resil_taux_* s'ils existent — comportement inchangé par défaut.
+   Chaque résiliation conserve un INSTANTANÉ des conditions appliquées
+   (libellé, taux, règle commissions…) : modifier les paramètres plus tard ne
+   réécrit jamais une résiliation déjà actée. ─────────────────────────── */
+var RESIL_COMMISSION_REGLES = {
+  conserver:          'Conserver toutes les commissions',
+  annuler_non_payees: 'Annuler les commissions non payées (les payées sont conservées)',
+  annuler_recuperer:  'Annuler les non payées et récupérer les déjà payées'
+};
+var RESIL_IMPUTABLES = { souscripteur:'Souscripteur', promoteur:'Promoteur', autre:'Autre' };
+function _resilNum(v, dflt, min, max){
+  var n = parseFloat(v); if (!isFinite(n)) n = dflt;
+  if (min!=null && n<min) n=min; if (max!=null && n>max) n=max; return n;
+}
+function _resilMotifsDefaut(p){
+  p = p || {};
+  return [
+    { id:'desistement_client', libelle:'Désistement du souscripteur', imputable:'souscripteur',
+      taux:_resilNum(p.resil_taux_desistement, 60, 0, 100), retenue_min:0, commissions:'annuler_recuperer',
+      liberer_lots:true, taux_libre:true, suggestion:'aucune', tolerance_jours:0, justification_obligatoire:true, actif:true },
+    { id:'faute_promoteur', libelle:'Défaut/retard imputable au promoteur', imputable:'promoteur',
+      taux:_resilNum(p.resil_taux_faute, 100, 0, 100), retenue_min:0, commissions:'conserver',
+      liberer_lots:true, taux_libre:true, suggestion:'livraison_depassee', tolerance_jours:0, justification_obligatoire:true, actif:true }
+  ];
+}
+function _resilNormMotif(m){
+  m = m || {};
+  return {
+    id: String(m.id || ('motif_'+Date.now().toString(36))),
+    libelle: String(m.libelle || '').trim() || 'Motif sans nom',
+    imputable: RESIL_IMPUTABLES[m.imputable] ? m.imputable : 'autre',
+    taux: _resilNum(m.taux, 0, 0, 100),
+    taux_libre: m.taux_libre !== false,
+    retenue_min: _resilNum(m.retenue_min, 0, 0, null),
+    commissions: RESIL_COMMISSION_REGLES[m.commissions] ? m.commissions : 'annuler_recuperer',
+    liberer_lots: m.liberer_lots !== false,
+    suggestion: m.suggestion === 'livraison_depassee' ? 'livraison_depassee' : 'aucune',
+    tolerance_jours: Math.round(_resilNum(m.tolerance_jours, 0, 0, 3650)),
+    justification_obligatoire: m.justification_obligatoire !== false,
+    actif: m.actif !== false
+  };
+}
+/* Tous les motifs configurés (actifs ou non). */
+function _resilTousMotifs(){
+  var p = DATA.params || {};
+  var src = (Array.isArray(p.resil_motifs) && p.resil_motifs.length) ? p.resil_motifs : _resilMotifsDefaut(p);
+  return src.map(_resilNormMotif);
+}
+/* Motifs proposables à la saisie. */
+function _resilMotifs(){
+  var l = _resilTousMotifs().filter(function(m){ return m.actif; });
+  return l.length ? l : _resilTousMotifs().slice(0,1);
+}
+function _resilMotif(id){
+  return _resilTousMotifs().filter(function(m){ return m.id===id; })[0] || null;
+}
+/* Libellé d'une résiliation acquise : l'instantané gagne sur la configuration. */
+function _resilLibelle(r){
+  if (!r) return '—';
+  if (r.motif_libelle) return r.motif_libelle;
+  var m = _resilMotif(r.motif);
+  if (m) return m.libelle;
+  return r.motif==='faute_promoteur' ? 'Défaut/retard imputable au promoteur' : 'Désistement du souscripteur';
+}
+function _resilImputable(r){
+  if (r && r.imputable) return r.imputable;
+  var m = r && _resilMotif(r.motif);
+  if (m) return m.imputable;
+  return (r && r.motif==='faute_promoteur') ? 'promoteur' : 'souscripteur';
+}
+/* Calcul du décompte : taux de remboursement + retenue minimale éventuelle. */
+function _resilCalc(verse, m){
+  verse = Math.max(0, verse||0);
+  var rembourse = Math.round(verse * (m.taux/100));
+  var retenu = verse - rembourse;
+  var min = Math.max(0, m.retenue_min||0);
+  if (retenu < min) { retenu = Math.min(verse, min); rembourse = verse - retenu; }
+  return { rembourse:rembourse, retenu:retenu };
+}
+/* Taux réellement appliqué à CE dossier : saisi dans la fenêtre de résiliation
+   (cas par cas) quand le motif l'autorise, sinon taux du motif. */
+function _resilTauxDossier(m){
+  var el = document.getElementById('rs-taux');
+  if (!m.taux_libre || !el || String(el.value).trim() === '') return m.taux;
+  var n = parseFloat(String(el.value).replace(',', '.'));
+  return isFinite(n) ? n : NaN;
+}
+function resilierMotifChange(){
+  var m = _resilMotif(document.getElementById('rs-motif').value); if (!m) return;
+  var el = document.getElementById('rs-taux'); if (el) el.value = m.taux;
+  resilierRecalculer();
+}
+function _resilCommissionsTexte(m, nb, total){
+  if (m.commissions==='conserver')
+    return '✅ '+nb+' commission(s) pour '+fcfa(total)+' — <b>conservées</b> (règle du motif « '+escHtml(m.libelle)+' »).';
+  if (m.commissions==='annuler_non_payees')
+    return '⚠️ '+nb+' commission(s) pour '+fcfa(total)+' — les <b>non payées seront annulées</b>, les déjà payées sont conservées (règle du motif « '+escHtml(m.libelle)+' »).';
+  return '⚠️ '+nb+' commission(s) pour '+fcfa(total)+' — <b>à récupérer</b> : les non payées seront annulées ; celles déjà payées seront marquées "à récupérer" pour reprise sur la prochaine paie (règle du motif « '+escHtml(m.libelle)+' »).';
+}
+function _resilClauseTexte(){
+  var p = DATA.params || {};
+  if (p.resil_clause && String(p.resil_clause).trim()) return escHtml(String(p.resil_clause).trim()).replace(/\n/g,'<br>');
+  return 'Conditions de résiliation applicables : ' + _resilMotifs().map(function(m){
+    return escHtml(m.libelle)+' → remboursement de <b>'+m.taux+'%</b>'+(m.taux_libre?' (indicatif, fixé au cas par cas)':'')+(m.retenue_min>0?' (retenue minimale '+fcfa(m.retenue_min)+')':'');
+  }).join(' ; ') + '.';
+}
 function resilierOuvrir(clientId){
   var c = (DATA.clients||[]).find(function(x){return x.id===clientId;});
   if (!c) return;
@@ -33211,13 +33469,32 @@ function resilierOuvrir(clientId){
   var lots = lotIds.map(function(id){ return (DATA.lots||[]).find(function(l){return l.id===id;}); }).filter(Boolean);
   var prog = (DATA.programmes||[]).find(function(p){ return p.id===c.programme_id || (lots[0]&&lots[0].programme_id===p.id); });
 
+  /* Liste des motifs = configuration de l'utilisateur */
+  var motifs = _resilMotifs();
   var sel = document.getElementById('rs-motif');
+  sel.innerHTML = motifs.map(function(m){
+    return '<option value="'+escHtml(m.id)+'">'+escHtml(m.libelle)+(m.taux_libre?' (indicatif '+m.taux+'%)':' ('+m.taux+'%)')+'</option>';
+  }).join('');
+
+  /* Suggestion automatique : premier motif dont la condition « livraison
+     dépassée » (avec sa tolérance) est remplie ; sinon premier motif sans
+     condition. Toujours modifiable à la main. */
   var sugg = document.getElementById('rs-suggestion-auto');
-  var autoFaute = !!(prog && prog.date_livraison && prog.date_livraison < today());
-  sel.value = autoFaute ? 'faute_promoteur' : 'desistement_client';
-  sugg.textContent = autoFaute
-    ? '⚠️ Suggestion automatique : programme "'+(prog.nom||'')+'" au-delà de sa date de livraison prévue ('+dateShort(prog.date_livraison)+') — modifiable si non pertinent.'
-    : '';
+  var choisi = null, raison = '';
+  if (prog && prog.date_livraison) {
+    motifs.some(function(m){
+      if (m.suggestion !== 'livraison_depassee') return false;
+      var lim = new Date(prog.date_livraison+'T00:00:00'); lim.setDate(lim.getDate() + (m.tolerance_jours||0));
+      if (isFinite(lim.getTime()) && lim.toISOString().slice(0,10) < today()) { choisi = m; return true; }
+      return false;
+    });
+    if (choisi) raison = '⚠️ Suggestion automatique : programme "'+(prog.nom||'')+'" au-delà de sa date de livraison prévue ('+dateShort(prog.date_livraison)
+      +(choisi.tolerance_jours?' + '+choisi.tolerance_jours+' j de tolérance':'')+') — modifiable si non pertinent.';
+  }
+  if (!choisi) choisi = motifs.filter(function(m){ return m.suggestion==='aucune'; })[0] || motifs[0];
+  sel.value = choisi.id;
+  sugg.textContent = raison;
+  var _tEl = document.getElementById('rs-taux'); if (_tEl) _tEl.value = choisi.taux;
 
   document.getElementById('rs-recap').innerHTML =
     '<b>'+escHtml(((c.nom||'')+' '+(c.prenoms||'')).trim())+'</b> — '+(prog?escHtml(prog.nom):'—')
@@ -33227,6 +33504,9 @@ function resilierOuvrir(clientId){
   var alerteGele = document.getElementById('rs-alerte-gele');
   alerteGele.style.display='none';
 
+  var clauseEl = document.getElementById('rs-clause');
+  if (clauseEl) clauseEl.innerHTML = _resilClauseTexte();
+
   resilierRecalculer();
   openModal('modal-resiliation');
 }
@@ -33234,15 +33514,24 @@ function resilierRecalculer(){
   var clientId = document.getElementById('rs-client-id').value;
   var c = (DATA.clients||[]).find(function(x){return x.id===clientId;});
   if (!c) return;
-  var motif = document.getElementById('rs-motif').value;
+  var m = _resilMotif(document.getElementById('rs-motif').value) || _resilMotifs()[0];
   var verse = totalPayePrix(clientId);
-  var taux = motif === 'faute_promoteur' ? 1 : 0.6;
-  var rembourse = Math.round(verse * taux);
-  var retenu = verse - rembourse;
+  var tauxEl = document.getElementById('rs-taux');
+  tauxEl.disabled = !m.taux_libre;
+  if (!m.taux_libre) tauxEl.value = m.taux;
+  var tauxDossier = _resilTauxDossier(m);
+  var tauxOk = isFinite(tauxDossier) && tauxDossier >= 0 && tauxDossier <= 100;
+  var calc = _resilCalc(verse, Object.assign({}, m, { taux: tauxOk ? tauxDossier : m.taux }));
   document.getElementById('rs-montant-verse').value = fcfa(verse);
-  document.getElementById('rs-taux').value = Math.round(taux*100)+'%';
-  document.getElementById('rs-montant-rembourse').value = fcfa(rembourse);
-  document.getElementById('rs-montant-retenu').value = fcfa(retenu);
+  var infoTaux = document.getElementById('rs-taux-info');
+  if (infoTaux) infoTaux.textContent = !tauxOk ? '⚠️ Taux invalide : saisissez une valeur entre 0 et 100.'
+    : (m.taux_libre ? 'Taux indicatif du motif : '+m.taux+'% — à fixer pour ce dossier.' : 'Taux imposé par le motif.')
+      + (tauxOk && tauxDossier !== m.taux && m.taux_libre ? ' Taux modifié : précisez la raison dans la justification.' : '')
+      + (m.retenue_min>0 ? ' Retenue minimale : '+fcfa(m.retenue_min)+'.' : '');
+  document.getElementById('rs-montant-rembourse').value = fcfa(calc.rembourse);
+  document.getElementById('rs-montant-retenu').value = fcfa(calc.retenu);
+  var lj = document.getElementById('rs-justification-label');
+  if (lj) lj.textContent = 'Justification / motif détaillé' + (m.justification_obligatoire ? ' (obligatoire)' : ' (facultatif)');
 
   var commsActives = (DATA.commissions||[]).filter(function(cm){
     return (cm.client_id===clientId || (DATA.versements||[]).some(function(v){return v.id===cm.versement_id && v.client_id===clientId;})) && cm.statut!=='annulee';
@@ -33251,41 +33540,52 @@ function resilierRecalculer(){
   var info = document.getElementById('rs-commissions-info');
   if (!commsActives.length){
     info.className='alert alert-info'; info.textContent='Aucune commission active liée à ce souscripteur.';
-  } else if (motif==='faute_promoteur'){
-    info.className='alert alert-info';
-    info.innerHTML='✅ '+commsActives.length+' commission(s) pour '+fcfa(totalComm)+' — <b>conservées</b> (faute du promoteur, travail commercial valide).';
   } else {
-    info.className='alert alert-danger';
-    info.innerHTML='⚠️ '+commsActives.length+' commission(s) pour '+fcfa(totalComm)+' — <b>à récupérer</b> (désistement du client). '
-      +'Les commissions non payées seront annulées ; celles déjà payées seront marquées "à récupérer" pour reprise sur la prochaine paie.';
+    info.className = m.commissions==='conserver' ? 'alert alert-info' : 'alert alert-danger';
+    info.innerHTML = _resilCommissionsTexte(m, commsActives.length, totalComm);
   }
+  var lots = document.getElementById('rs-lots-info');
+  if (lots) lots.textContent = m.liberer_lots ? '' : 'ℹ️ Ce motif ne libère pas le(s) lot(s) : ils restent attribués au souscripteur.';
 }
 async function resilierConfirmer(){
   var clientId = document.getElementById('rs-client-id').value;
   var c = (DATA.clients||[]).find(function(x){return x.id===clientId;});
   if (!c) { toast('Souscripteur introuvable.','error'); return; }
   if (!exigerDroit('Souscripteurs', 'v', 'la résiliation de cette souscription')) return;
-  var motif = document.getElementById('rs-motif').value;
+  var m = _resilMotif(document.getElementById('rs-motif').value);
+  if (!m) { toast('Motif de résiliation introuvable — vérifiez Paramètres → Conditions de résiliation.','error'); return; }
+  var motif = m.id;
   var justification = document.getElementById('rs-justification').value.trim();
-  if (!justification) { toast('La justification est obligatoire — pièce du dossier juridique.','error'); return; }
+  var tauxDossier = _resilTauxDossier(m);
+  if (!isFinite(tauxDossier) || tauxDossier < 0 || tauxDossier > 100) { toast('Taux de remboursement invalide — saisissez une valeur entre 0 et 100.','error'); return; }
+  var tauxAjuste = (tauxDossier !== m.taux);
+  if ((m.justification_obligatoire || tauxAjuste) && !justification) {
+    toast(tauxAjuste && !m.justification_obligatoire ? 'Taux modifié : précisez la raison dans la justification.' : 'La justification est obligatoire — pièce du dossier juridique.','error'); return;
+  }
   if (!document.getElementById('rs-confirme').checked) { toast('Cochez la case de confirmation avant de valider.','error'); return; }
 
   var verse = totalPayePrix(clientId);
-  var taux = motif === 'faute_promoteur' ? 1 : 0.6;
-  var rembourse = Math.round(verse * taux);
-  var retenu = verse - rembourse;
+  var calc = _resilCalc(verse, Object.assign({}, m, { taux: tauxDossier }));
+  var taux = tauxDossier/100;
+  var rembourse = calc.rembourse;
+  var retenu = calc.retenu;
 
   /* 1) Libérer TOUS les lots (principal + secondaires — même correctif multi-lots
-     que deleteClient/deleteLot) — mais SANS supprimer le client : trace conservée. */
+     que deleteClient/deleteLot) — mais SANS supprimer le client : trace conservée.
+     Facultatif selon le motif paramétré. */
   var lotIds = (typeof _lotIdsDeClient==='function') ? _lotIdsDeClient(c) : (c.lot_id?[c.lot_id]:[]);
-  for (var i=0;i<lotIds.length;i++){
-    var lot = (DATA.lots||[]).find(function(l){return l.id===lotIds[i];});
-    if (!lot) continue;
-    lot.historique_statuts = lot.historique_statuts||[];
-    lot.historique_statuts.push({ date:new Date().toISOString(), ancien:lot.statut, nouveau:'disponible',
-      user:(APP.currentUser&&APP.currentUser.nom)||'—', notes:'Résiliation souscription '+((c.nom||'')+' '+(c.prenoms||'')).trim()+' — libéré pour réattribution' });
-    lot.statut='disponible'; lot.client_id=null;
-    await dbPut('lots', lot); if (typeof syncToSupabase==='function') syncToSupabase('pi_lots', lot);
+  var lotsLiberes = [];
+  if (m.liberer_lots) {
+    for (var i=0;i<lotIds.length;i++){
+      var lot = (DATA.lots||[]).find(function(l){return l.id===lotIds[i];});
+      if (!lot) continue;
+      lot.historique_statuts = lot.historique_statuts||[];
+      lot.historique_statuts.push({ date:new Date().toISOString(), ancien:lot.statut, nouveau:'disponible',
+        user:(APP.currentUser&&APP.currentUser.nom)||'—', notes:'Résiliation souscription '+((c.nom||'')+' '+(c.prenoms||'')).trim()+' — libéré pour réattribution' });
+      lot.statut='disponible'; lot.client_id=null;
+      await dbPut('lots', lot); if (typeof syncToSupabase==='function') syncToSupabase('pi_lots', lot);
+      lotsLiberes.push(lotIds[i]);
+    }
   }
 
   /* 2) Écritures comptables — contre-passation du compte client_lots :
@@ -33309,16 +33609,18 @@ async function resilierConfirmer(){
   if (typeof buildBalance==='function') buildBalance();
   if (typeof buildGrandLivre==='function') buildGrandLivre();
 
-  /* 3) Commissions — sort dépendant du motif (choix retenu) */
+  /* 3) Commissions — sort défini par la règle du motif */
   var commsActives = (DATA.commissions||[]).filter(function(cm){
     return (cm.client_id===clientId || (DATA.versements||[]).some(function(v){return v.id===cm.versement_id && v.client_id===clientId;})) && cm.statut!=='annulee';
   });
   var nbAnnulees=0, nbARecuperer=0;
-  if (motif !== 'faute_promoteur') {
+  if (m.commissions !== 'conserver') {
     for (var j=0;j<commsActives.length;j++){
       var cm = commsActives[j];
-      if (cm.statut==='payee'){ cm.statut='a_recuperer'; cm.a_recuperer_motif='Résiliation souscription '+clientId; nbARecuperer++; }
-      else { cm.statut='annulee'; nbAnnulees++; }
+      if (cm.statut==='payee'){
+        if (m.commissions !== 'annuler_recuperer') continue;
+        cm.statut='a_recuperer'; cm.a_recuperer_motif='Résiliation souscription '+clientId; nbARecuperer++;
+      } else { cm.statut='annulee'; nbAnnulees++; }
       cm._modifie=new Date().toISOString();
       await dbPut('commissions', cm); if (typeof syncToSupabase==='function') syncToSupabase('pi_commissions', cm);
     }
@@ -33331,24 +33633,86 @@ async function resilierConfirmer(){
      du souscripteur résilié continuait d'afficher ce même lot comme le sien
      (colonne "Lot" de la liste, fiche client...). Dès qu'un nouveau
      souscripteur reprend ce lot, DEUX fiches clients l'auraient affiché
-     simultanément. L'historique reste consultable via resiliation.lots_liberes. */
-  c.lot_id = null;
-  c.lot_ids = [];
-  c.resiliation = { date:dat, motif:motif, justification:justification, montant_verse:verse,
-    taux_remboursement:Math.round(taux*100), montant_rembourse:rembourse, montant_retenu:retenu,
+     simultanément. L'historique reste consultable via resiliation.lots_liberes.
+     Si le motif ne libère pas les lots, le souscripteur les garde. */
+  if (m.liberer_lots) { c.lot_id = null; c.lot_ids = []; }
+  c.resiliation = { date:dat, motif:motif, motif_libelle:m.libelle, imputable:m.imputable, justification:justification, montant_verse:verse,
+    taux_remboursement:tauxDossier, taux_indicatif:m.taux, taux_ajuste:tauxAjuste, retenue_min:m.retenue_min, regle_commissions:m.commissions, lots_liberes_auto:m.liberer_lots,
+    montant_rembourse:rembourse, montant_retenu:retenu,
     commissions_annulees:nbAnnulees, commissions_a_recuperer:nbARecuperer,
-    lots_liberes:lotIds, valide_par:(APP.currentUser&&APP.currentUser.nom)||'—', cree_le:new Date().toISOString() };
+    lots_liberes:lotsLiberes, valide_par:(APP.currentUser&&APP.currentUser.nom)||'—', cree_le:new Date().toISOString() };
   c._modifie = new Date().toISOString();
   await logAudit('clients', clientId, 'resiliation', null, c.resiliation);
-  await clientLierDossierJuridique(c, 'Résiliation de souscription — motif : '+(motif==='faute_promoteur'?'faute du promoteur':'désistement du souscripteur')+' ('+Math.round(taux*100)+'%). '+justification, rembourse, true);
+  await clientLierDossierJuridique(c, 'Résiliation de souscription — motif : '+m.libelle+' (taux de remboursement appliqué : '+tauxDossier+'%'+(tauxAjuste?', taux indicatif du motif : '+m.taux+'%':'')+'). '+justification, rembourse, true);
   await dbPut('clients', c); if (typeof syncToSupabase==='function') syncToSupabase('pi_clients', c);
 
   closeModal('modal-resiliation');
   renderClients(); if (typeof renderLots==='function') renderLots();
   if (typeof renderRegistreDesistements === 'function') renderRegistreDesistements();
   refreshDashboard();
-  toast('Souscription résiliée — '+fcfa(rembourse)+' à rembourser, '+fcfa(retenu)+' retenu, '+lotIds.length+' lot(s) libéré(s) pour réattribution.', 'success');
+  toast('Souscription résiliée — '+fcfa(rembourse)+' à rembourser, '+fcfa(retenu)+' retenu, '+lotsLiberes.length+' lot(s) libéré(s) pour réattribution.', 'success');
   resilierImprimerDecompte(clientId);
+}
+/* ─── Éditeur des conditions de résiliation (Paramètres → Comptabilité) ── */
+var _RESIL_ED = null;
+function _resilEdCharger(p){
+  p = p || DATA.params || {};
+  _RESIL_ED = ((Array.isArray(p.resil_motifs) && p.resil_motifs.length) ? p.resil_motifs : _resilMotifsDefaut(p)).map(_resilNormMotif);
+  var a = document.getElementById('param-resil-clause'); if (a) a.value = p.resil_clause || '';
+  var b = document.getElementById('param-resil-fondement'); if (b) b.value = p.resil_fondement || '';
+  _resilEdRendre();
+}
+function _resilEdRendre(){
+  var box = document.getElementById('param-resil-motifs'); if (!box || !_RESIL_ED) return;
+  var opt = function(map, cur){ return Object.keys(map).map(function(k){ return '<option value="'+k+'"'+(k===cur?' selected':'')+'>'+escHtml(map[k])+'</option>'; }).join(''); };
+  box.innerHTML = _RESIL_ED.map(function(m,i){
+    var f = function(k, type, extra){ return 'oninput="_resilEdMaj('+i+',\''+k+'\',this)" onchange="_resilEdMaj('+i+',\''+k+'\',this)"'; };
+    return '<div class="card" style="margin:8px 0;padding:10px 12px;'+(m.actif?'':'opacity:.6;')+'">'
+      +'<div class="form-grid">'
+      +'<div class="form-group span-2"><label>Libellé du motif</label><input type="text" class="form-control" value="'+escHtml(m.libelle)+'" '+f('libelle')+'></div>'
+      +'<div class="form-group"><label>Imputable à</label><select class="form-control" '+f('imputable')+'>'+opt(RESIL_IMPUTABLES, m.imputable)+'</select></div>'
+      +'<div class="form-group"><label>Taux de remboursement indicatif (% des versements)</label><input type="number" class="form-control" min="0" max="100" step="1" value="'+m.taux+'" '+f('taux')+'></div>'
+      +'<div class="form-group"><label><input type="checkbox" '+(m.taux_libre?'checked ':'')+f('taux_libre')+'> Taux ajustable au cas par cas lors de la résiliation</label></div>'
+      +'<div class="form-group"><label>Retenue minimale (FCFA, 0 = aucune)</label><input type="number" class="form-control" min="0" step="1000" value="'+m.retenue_min+'" '+f('retenue_min')+'></div>'
+      +'<div class="form-group span-2"><label>Sort des commissions déjà générées</label><select class="form-control" '+f('commissions')+'>'+opt(RESIL_COMMISSION_REGLES, m.commissions)+'</select></div>'
+      +'<div class="form-group"><label>Suggestion automatique</label><select class="form-control" '+f('suggestion')+'>'
+        +'<option value="aucune"'+(m.suggestion==='aucune'?' selected':'')+'>Aucune</option>'
+        +'<option value="livraison_depassee"'+(m.suggestion==='livraison_depassee'?' selected':'')+'>Si la date de livraison du programme est dépassée</option></select></div>'
+      +'<div class="form-group"><label>Tolérance après livraison (jours)</label><input type="number" class="form-control" min="0" step="1" value="'+m.tolerance_jours+'" '+f('tolerance_jours')+'></div>'
+      +'<div class="form-group"><label><input type="checkbox" '+(m.liberer_lots?'checked ':'')+f('liberer_lots')+'> Libérer le(s) lot(s) pour réattribution</label></div>'
+      +'<div class="form-group"><label><input type="checkbox" '+(m.justification_obligatoire?'checked ':'')+f('justification_obligatoire')+'> Justification obligatoire</label></div>'
+      +'<div class="form-group"><label><input type="checkbox" '+(m.actif?'checked ':'')+f('actif')+'> Motif proposé à la saisie</label></div>'
+      +'<div class="form-group" style="text-align:right;"><button type="button" class="btn btn-secondary btn-sm" onclick="_resilEdSupprimer('+i+')">🗑 Supprimer ce motif</button></div>'
+      +'</div></div>';
+  }).join('') || '<div style="color:var(--blanc-dim);padding:8px;">Aucun motif — ajoutez-en un.</div>';
+}
+function _resilEdMaj(i, k, el){
+  if (!_RESIL_ED || !_RESIL_ED[i]) return;
+  var checkboxes = { liberer_lots:1, justification_obligatoire:1, actif:1, taux_libre:1 };
+  _RESIL_ED[i][k] = checkboxes[k] ? !!el.checked : el.value;
+  /* Re-dessiner seulement quand la mise en page change (actif, suggestion) */
+  if (k==='actif' || k==='suggestion') _resilEdRendre();
+}
+function _resilEdAjouter(){
+  if (!_RESIL_ED) _resilEdCharger();
+  _RESIL_ED.push(_resilNormMotif({ id:'motif_'+Date.now().toString(36), libelle:'Nouveau motif', imputable:'autre', taux:0 }));
+  _resilEdRendre();
+}
+function _resilEdSupprimer(i){
+  if (!_RESIL_ED || !_RESIL_ED[i]) return;
+  if (!confirm('Supprimer le motif « '+(_RESIL_ED[i].libelle||'')+' » ?\nLes résiliations déjà enregistrées avec ce motif ne sont pas modifiées.')) return;
+  _RESIL_ED.splice(i,1); _resilEdRendre();
+}
+/* Lit l'éditeur pour saveParams(). Renvoie la configuration déjà enregistrée
+   si l'éditeur n'a jamais été chargé (évite d'effacer les réglages). */
+function _resilEdLire(){
+  var p = DATA.params || {};
+  if (!_RESIL_ED) return p.resil_motifs;
+  var liste = _RESIL_ED.map(_resilNormMotif);
+  var ids = {};
+  liste.forEach(function(m){ if (ids[m.id]) m.id = m.id+'_'+Math.random().toString(36).slice(2,6); ids[m.id]=1; });
+  if (!liste.some(function(m){ return m.actif; })) { toast('Conditions de résiliation : au moins un motif doit rester actif.','error'); return p.resil_motifs; }
+  return liste;
 }
 function resilierImprimerDecompte(clientId){
   var c = (DATA.clients||[]).find(function(x){return x.id===clientId;});
@@ -33357,7 +33721,7 @@ function resilierImprimerDecompte(clientId){
   var soc = (DATA.params&&(DATA.params.societe||DATA.params.nom))||'';
   var w = window.open('','_blank');
   if (!w) { toast('Autorisez les fenêtres surgissantes.','error'); return; }
-  var motifLabel = r.motif==='faute_promoteur' ? 'Défaut/retard imputable au promoteur' : 'Désistement du souscripteur';
+  var motifLabel = _resilLibelle(r);
   w.document.write('<html><head><title>Décompte de résiliation — '+escHtml(c.nom||'')+'</title>'
     +'<style>body{font-family:Georgia,serif;padding:38px;color:#111;font-size:13px;line-height:1.55;}'
     +'h1{font-size:17px;margin:0 0 4px;}h2{font-size:13.5px;margin:18px 0 6px;border-bottom:1px solid #ccc;padding-bottom:3px;}'
@@ -33375,11 +33739,11 @@ function resilierImprimerDecompte(clientId){
     +'<h2>Motif de la résiliation</h2><p>'+escHtml(motifLabel)+'</p><p style="font-style:italic;color:#444;">'+escHtml(r.justification||'')+'</p>'
     +'<h2>Décompte financier</h2><table><tbody>'
     +'<tr><td class="k">Montant total versé (hors frais de dossier)</td><td>'+fcfa(r.montant_verse)+'</td></tr>'
-    +'<tr><td class="k">Taux de remboursement applicable</td><td>'+r.taux_remboursement+'%</td></tr>'
+    +'<tr><td class="k">Taux de remboursement applicable</td><td>'+r.taux_remboursement+'%'+(r.taux_ajuste?' (taux indicatif du motif : '+r.taux_indicatif+'%, fixé pour ce dossier)':'')+(r.retenue_min>0?' (retenue minimale '+fcfa(r.retenue_min)+')':'')+'</td></tr>'
     +'<tr><td class="k"><b>Montant à rembourser</b></td><td><b>'+fcfa(r.montant_rembourse)+'</b></td></tr>'
     +'<tr><td class="k">Montant retenu (frais de dossier non remboursables exclus)</td><td>'+fcfa(r.montant_retenu)+'</td></tr>'
     +'</tbody></table>'
-    +'<div class="pied">Fondement contractuel : cahier des charges — clause de désistement (60%/100% selon partie à l\'origine de la résiliation).'
+    +'<div class="pied">'+(((DATA.params||{}).resil_fondement||'').trim() ? escHtml((DATA.params.resil_fondement||'').trim()).replace(/\n/g,'<br>') : 'Fondement contractuel : cahier des charges — conditions de résiliation, motif « '+escHtml(motifLabel)+' » (taux de remboursement appliqué : '+r.taux_remboursement+'% des versements).')
     +'<br><br>Fait à '+escHtml((DATA.params&&DATA.params.ville)||'Abidjan')+', le '+new Date().toLocaleDateString('fr-FR')
     +'<br><br>Pour '+escHtml(soc)+' : ___________________________<br><br>Le souscripteur (bon pour accord) : ___________________________</div>'
     +'</body></html>');
@@ -33398,6 +33762,91 @@ function getTauxCommissions() {
     apporteur_souscription:  parseFloat(p.comm_apporteur_souscription_pct) || 10,
     apporteur_regulier:      parseFloat(p.comm_apporteur_regulier_pct)     || 5,
   };
+}
+
+/** Système de calcul actif : 'versement' (historique) ou 'bien' (valeur du bien vendu). */
+function commissionMode() {
+  return (DATA.params && DATA.params.commission_mode === 'bien') ? 'bien' : 'versement';
+}
+
+/* Taux explicitement renseigné (0 compris) ou valeur par défaut. */
+function _commTauxOu(v, dflt) { return (v !== undefined && v !== null && v !== '') ? (parseFloat(v) || 0) : dflt; }
+
+/* Premier versement « sur prix » d'un client (hors frais de souscription),
+   chronologiquement — même règle de départage que isVersementSouscription. */
+function _premierVersementPrix(clientId) {
+  return (DATA.versements || []).filter(function(v){ return v.client_id === clientId && _versementSurPrix(v); })
+    .sort(function(a, b){ return (a.date || '').localeCompare(b.date || '') || String(a.id).localeCompare(String(b.id)); })[0] || null;
+}
+
+/* ── Système « valeur du bien vendu » ─────────────────────────────────────
+   Commission = Σ (prix du lot × taux du lot) sur tous les lots du
+   souscripteur (multi-lots : client.lot_ids). Générée en UNE fois, rattachée
+   au versement qui la déclenche (versement_id), pour rester compatible avec
+   les outils existants (suppression/modification de versement, vérification,
+   régénération). On déduit ce qui a déjà été généré pour ce souscripteur et
+   ce bénéficiaire, quel que soit le système (payé compris) : un changement de
+   système en cours de vente, ou une hausse du prix du lot, ne génère que la
+   différence — jamais un double paiement. */
+async function _genererCommissionsBien(versement, client) {
+  if (!_versementSurPrix(versement)) return [];
+  var lots = _lotIdsDeClient(client).map(function(id){ return (DATA.lots || []).find(function(l){ return l.id === id; }); })
+    .filter(function(l){ return l && (parseFloat(l.prix) || 0) > 0; });
+  if (!lots.length) {
+    toast('⚠️ Commission « valeur du bien » non calculée pour ' + ((client.prenoms || '') + ' ' + (client.nom || '')).trim() + ' : aucun lot avec un prix de vente.', 'error', 7000);
+    return [];
+  }
+  var taux = getTauxCommissions();
+  var baseTotale = lots.reduce(function(s, l){ return s + (parseFloat(l.prix) || 0); }, 0);
+  var dejaGenere = function(typeB){
+    return (DATA.commissions || []).filter(function(c){ return c.client_id === client.id && c.type_beneficiaire === typeB && c.statut !== 'annulee'; })
+      .reduce(function(s, c){ return s + (parseFloat(c.montant_comm) || 0); }, 0);
+  };
+  var nouvelles = [];
+  var creer = async function(typeB, tauxDefaut, benef){
+    var detail = [], du = 0, defaut = false;
+    lots.forEach(function(l){
+      var brut = typeB === 'commercial' ? l.taux_comm_commercial : l.taux_comm_apporteur;
+      var t = _commTauxOu(brut, tauxDefaut);
+      if (brut === undefined || brut === null || brut === '') defaut = true;
+      var m = Math.round((parseFloat(l.prix) || 0) * t / 100);
+      du += m;
+      detail.push('Lot ' + (l.numero || l.id) + ' : ' + fmtF(l.prix) + ' F × ' + t + '%' + (brut === undefined || brut === null || brut === '' ? ' (taux par défaut)' : ''));
+    });
+    var reste = du - dejaGenere(typeB);
+    if (reste <= 0) return;
+    var c = Object.assign({
+      id: uid(), versement_id: versement.id, client_id: client.id,
+      client_nom: client.prenoms + ' ' + client.nom,
+      type_beneficiaire: typeB, type_versement: 'valeur_bien', mode_calcul: 'bien',
+      lot_ids: lots.map(function(l){ return l.id; }),
+      taux: baseTotale ? Math.round(du / baseTotale * 10000) / 100 : 0,
+      montant_base: baseTotale, montant_comm: reste,
+      date_versement: versement.date, date_generation: today(), statut: 'a_payer',
+      programme_id: client.programme_id || '',
+      notes: 'Sur valeur du bien — ' + detail.join(' ; ') + (reste !== du ? ' — déjà généré déduit : ' + fmtF(du - reste) + ' F' : '') + (defaut ? ' — ⚠️ taux par défaut utilisé (pas de taux sur le lot)' : '')
+    }, benef);
+    nouvelles.push(c);
+    if (!DATA.commissions) DATA.commissions = [];
+    DATA.commissions.push(c);
+    await dbPut('commissions', c);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_commissions', c);
+  };
+
+  var commEmpC = client.commercial_id ? DATA.employes.find(function(e){ return e.id === client.commercial_id; }) : null;
+  var commNomC = commEmpC ? ((commEmpC.prenoms || '') + ' ' + commEmpC.nom).trim() : (client.commercial || '');
+  if (commNomC || client.commercial_id) {
+    await creer('commercial', taux.commercial_regulier, { beneficiaire: commNomC, beneficiaire_id: client.commercial_id || '' });
+  }
+  if (client.apporteur || client.apporteur_id) {
+    var apObj = client.apporteur_id ? DATA.apporteurs.find(function(a){ return a.id === client.apporteur_id; }) : null;
+    await creer('apporteur', apObj ? _commTauxOu(apObj.taux_regulier, taux.apporteur_regulier) : taux.apporteur_regulier, {
+      apporteur_id: apObj ? apObj.id : (client.apporteur_id || ''),
+      beneficiaire: apObj ? ((apObj.prenoms ? apObj.prenoms + ' ' : '') + apObj.nom) : (client.apporteur || ''),
+      beneficiaire_tel: apObj ? (apObj.tel || '') : (client.apporteur_tel || '')
+    });
+  }
+  return nouvelles;
 }
 
 /** Détermine si un versement est le 1er (souscription) ou régulier */
@@ -33627,15 +34076,25 @@ async function genererCommissionsVersement(versement) {
      bien vendu, contrairement à tous les autres versements sur prix. */
   if (versement.type === 'frais_souscription' && !(DATA.params && DATA.params.commission_sur_frais_souscription)) return;
 
+  var nouvelles = [];
+  if (commissionMode() === 'bien') {
+    nouvelles = await _genererCommissionsBien(versement, client);
+  } else {
+
   // Anti-doublon : types de commission déjà présents pour ce versement (hors annulées)
   var existTypes = (DATA.commissions||[]).filter(function(c){
     return c.versement_id === versement.id && c.statut !== 'annulee';
   }).map(function(c){ return c.type_beneficiaire; });
+  /* Système « par versement » : un bénéficiaire déjà commissionné sur la
+     valeur du bien pour ce souscripteur (avant un retour à ce système) a
+     déjà reçu sa commission totale — on n'en rajoute pas par versement. */
+  (DATA.commissions||[]).forEach(function(c){
+    if (c.client_id === client.id && c.mode_calcul === 'bien' && c.statut !== 'annulee' && existTypes.indexOf(c.type_beneficiaire) === -1) existTypes.push(c.type_beneficiaire);
+  });
 
   var taux = getTauxCommissions();
   var isSouscription = isVersementSouscription(versement);
   var montant = parseFloat(versement.montant) || 0;
-  var nouvelles = [];
 
   // ── Commission commerciale ──────────────────────────────────────────────────
   var commEmpC = client.commercial_id ? DATA.employes.find(function(e){return e.id===client.commercial_id;}) : null;
@@ -33712,6 +34171,7 @@ async function genererCommissionsVersement(versement) {
       if (typeof syncToSupabase === 'function') syncToSupabase('pi_commissions', commAp);
     }
   }
+  } /* fin système « par versement » */
 
   if (nouvelles.length > 0) {
     var total = nouvelles.reduce(function(s,c){ return s+c.montant_comm; }, 0);
@@ -33880,11 +34340,18 @@ async function verifierCommissionsVersements(reparer) {
   });
 
   // Manquantes : versement éligible sans commission du type attendu
+  var _modeBien = commissionMode() === 'bien';
   DATA.versements.forEach(function(v){
     var cl = DATA.clients.find(function(c){ return c.id === v.client_id; });
     if (!cl) return;
+    /* Système « valeur du bien » : une commission par souscripteur (pas par
+       versement), attendue sur son 1er versement sur prix uniquement. */
+    if (_modeBien) {
+      var _p1 = _premierVersementPrix(cl.id);
+      if (!_p1 || _p1.id !== v.id) return;
+    }
     var present = (DATA.commissions||[]).filter(function(c){
-      return c.versement_id === v.id && c.statut !== 'annulee';
+      return (_modeBien ? c.client_id === cl.id : c.versement_id === v.id) && c.statut !== 'annulee';
     }).map(function(c){ return c.type_beneficiaire; });
     var attendCommercial = !!(cl.commercial_id || cl.commercial);
     var attendApporteur  = !!(cl.apporteur_id || cl.apporteur);
@@ -34074,6 +34541,8 @@ function renderCommissions() {
   var versTypeMeta = {
     souscription: { lbl:'Souscription', col:'#B87333' },
     regulier:     { lbl:'Régulier',     col:'#3B82F6' },
+    valeur_bien:  { lbl:'Valeur du bien', col:'#10B981' },
+    cession:      { lbl:'Cession',      col:'#8B5CF6' },
   };
 
   if (!comms.length) {
@@ -35483,6 +35952,7 @@ function openProgrammeModal(id) {
     document.getElementById('p-nb-lots').value = p.nbLots || p.nb_lots || 0;
     var _pp = document.getElementById('p-publier-portail'); if (_pp) _pp.value = p.publier_portail ? 'oui' : 'non';
     document.getElementById('p-description').value = p.description || '';
+    var _rc = document.getElementById('p-rappel-cgv'); if (_rc) _rc.value = p.rappel_cgv || '';
     document.getElementById('p-date-lancement').value = p.dateLancement || p.date_lancement || '';
     document.getElementById('p-date-livraison').value = p.dateLivraison || p.date_livraison || '';
     setSelectValue('p-statut', p.statut);
@@ -35535,7 +36005,7 @@ function _progPopulateParcelles() {
 }
 
 function clearProgrammeForm() {
-  ['p-nom','p-localisation','p-nb-lots','p-date-lancement','p-date-livraison','p-description'].forEach(function(id) {
+  ['p-nom','p-localisation','p-nb-lots','p-date-lancement','p-date-livraison','p-description','p-rappel-cgv'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.value = '';
   });
@@ -35560,6 +36030,7 @@ async function saveProgramme() {
     nature: (document.getElementById('p-nature')||{}).value || 'construction',
     date_lancement: document.getElementById('p-date-lancement').value,
     date_livraison: document.getElementById('p-date-livraison').value,
+    rappel_cgv: ((document.getElementById('p-rappel-cgv') || {}).value || '').trim(),
     parcelle_id: document.getElementById('p-parcelle-id').value,
     division_id: (document.getElementById('p-division')||{}).value || '',
     pct_honoraires_tech: parseFloat(document.getElementById('p-pct-honoraires-tech').value) || 0,
@@ -37080,16 +37551,28 @@ function openLotModal(id) {
     setSelectValue('l-mode-livraison', l.mode_livraison || 'gros_oeuvre');
     document.getElementById('l-numero-tf').value = l.numero_tf || '';
     document.getElementById('l-frais-notaire').value = l.frais_notaire || '';
+    var _v = function(x){ return (x === null || x === undefined) ? '' : x; };
+    document.getElementById('l-taux-comm-commercial').value = _v(l.taux_comm_commercial);
+    document.getElementById('l-taux-comm-apporteur').value = _v(l.taux_comm_apporteur);
     lotNatureUI(); lotRecalcPrixM2(); lotRecalcCoutM2();
   } else {
     document.getElementById('modal-lot-title').textContent = 'Nouveau Lot';
     populateTypeLogementOptions();
+    /* Taux de commission fixés à la création du bien : pré-remplis avec les
+       taux « régulier » des Paramètres, modifiables lot par lot. */
+    var _tx = getTauxCommissions();
+    document.getElementById('l-taux-comm-commercial').value = _tx.commercial_regulier;
+    document.getElementById('l-taux-comm-apporteur').value = _tx.apporteur_regulier;
   }
+  var _cn = document.getElementById('l-comm-note');
+  if (_cn) _cn.textContent = (commissionMode() === 'bien')
+    ? 'Système actif : commission = prix du lot × ces taux.'
+    : 'Système actif : par versement — ces taux ne servent que si vous passez au calcul « sur la valeur du bien » (Paramètres).';
   openModal('modal-lot');
 }
 
 function clearLotForm() {
-  ['l-numero','l-ilot','l-surface','l-surface-mesuree','l-pieces','l-prix','l-prix-m2','l-cout-revient','l-cout-m2','l-notes','l-numero-tf','l-frais-notaire'].forEach(function(id) {
+  ['l-numero','l-ilot','l-surface','l-surface-mesuree','l-pieces','l-prix','l-prix-m2','l-cout-revient','l-cout-m2','l-notes','l-numero-tf','l-frais-notaire','l-taux-comm-commercial','l-taux-comm-apporteur'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.value = '';
   });
@@ -37218,6 +37701,13 @@ function populateTypeLogementOptions(selectedType) {
   sel.value = selectedType || '';
 }
 
+function _tauxLotSaisi(id) {
+  var v = ((document.getElementById(id) || {}).value || '').trim();
+  if (v === '') return null;
+  var n = parseFloat(v);
+  return isNaN(n) ? null : Math.max(0, n);
+}
+
 async function saveLot() {
   var numero = document.getElementById('l-numero').value.trim();
   if (!numero) { toast('Numéro de lot obligatoire.', 'error'); return; }
@@ -37255,6 +37745,9 @@ async function saveLot() {
     mode_livraison: document.getElementById('l-mode-livraison').value,
     numero_tf: document.getElementById('l-numero-tf').value.trim(),
     frais_notaire: parseFloat(document.getElementById('l-frais-notaire').value) || 0,
+    /* Vide = pas de taux propre au lot (null), distinct d'un 0 explicite. */
+    taux_comm_commercial: _tauxLotSaisi('l-taux-comm-commercial'),
+    taux_comm_apporteur: _tauxLotSaisi('l-taux-comm-apporteur'),
     nature: _lotNature,
     statut: document.getElementById('l-statut').value,
     notes: document.getElementById('l-notes').value,
@@ -45698,7 +46191,7 @@ function openRelanceModal(clientId) {
     + '<textarea class="form-control" id="relance-msg" style="min-height:100px;">' + msgSMS + '</textarea></div>'
     + '<div style="display:flex;gap:10px;margin-top:12px;">'
     + '<a class="btn btn-secondary btn-sm" href="sms:' + client.tel + '" target="_blank">📱 Ouvrir SMS</a>'
-    + '<a class="btn btn-secondary btn-sm" href="https://wa.me/225' + client.tel.replace(/[\s+\-()]/g,'') + '?text=' + encodeURIComponent(msgSMS) + '" target="_blank">💬 WhatsApp</a>'
+    + '<a class="btn btn-secondary btn-sm" href="https://wa.me/' + telWhatsApp(client.tel) + '?text=' + encodeURIComponent(msgSMS) + '" target="_blank">💬 WhatsApp</a>'
     + '</div>';
 
   document.getElementById('relance-body').innerHTML = body;
@@ -46833,6 +47326,7 @@ async function saveParams() {
     frais_souscription:           parseFloat(gv('param-frais-souscription'))||0,
     compte_frais_souscription:    gv('param-frais-souscription-compte')||'',
     commission_sur_frais_souscription: gv('param-commission-sur-frais')==='oui',
+    commission_mode:              gv('param-commission-mode')==='bien' ? 'bien' : 'versement',
     bandeau_couleur:              gv('param-bandeau-couleur')||'#003366',
     bandeau_texte:                gv('param-bandeau-texte')||'',
     portail_nom:                  gv('param-portail-nom'),
@@ -46878,6 +47372,10 @@ async function saveParams() {
     portail_divisions:               _lireDivisionsPubliees(),
     auto_compta_commissions: document.getElementById('param-auto-compta-comm') ? document.getElementById('param-auto-compta-comm').checked : true,
     penalites_pct: parseFloat(gv('param-penalites'))||0.5,
+    resil_motifs: _resilEdLire(),
+    resil_clause: document.getElementById('param-resil-clause') ? gv('param-resil-clause') : (DATA.params||{}).resil_clause,
+    resil_fondement: document.getElementById('param-resil-fondement') ? gv('param-resil-fondement') : (DATA.params||{}).resil_fondement,
+    cdc: _cdcParamsLire(),
     banque:      gv('param-banque'),
     exercice:    gv('param-exercice'),
   });
@@ -47154,6 +47652,7 @@ function loadParamFields() {
   sv('param-frais-souscription', p.frais_souscription||0);
   sv('param-frais-souscription-compte', p.compte_frais_souscription||'');
   sv('param-commission-sur-frais', p.commission_sur_frais_souscription ? 'oui' : 'non');
+  sv('param-commission-mode', p.commission_mode === 'bien' ? 'bien' : 'versement');
   sv('param-bandeau-couleur', p.bandeau_couleur||'#003366');
   sv('param-bandeau-texte', p.bandeau_texte||'');
   sv('param-portail-nom', p.portail_nom||'');
@@ -47210,7 +47709,9 @@ function loadParamFields() {
   if (typeof renderDivisionsPubliees==='function') renderDivisionsPubliees(p.portail_divisions||[]);
   var autoComptaEl = document.getElementById('param-auto-compta-comm');
   if (autoComptaEl) autoComptaEl.checked = p.auto_compta_commissions !== false; sv('param-penalites',p.penalites_pct||0.5);
+  _resilEdCharger(p);
   sv('param-banque',p.banque); sv('param-exercice',p.exercice||'2025');
+  _cdcParamsCharger(p);
   sv('param-obj-ca',p.objectif_ca_mensuel||20000000);
   sv('param-obj-ventes',p.objectif_ventes_mensuel||5);
   sv('param-obj-leads',p.objectif_leads_mensuel||20);
@@ -59081,7 +59582,7 @@ function resilierOuvrirRemboursement(clientId){
   document.getElementById('rr-reference').value = '';
   document.getElementById('rr-recap').innerHTML =
     '<b>'+escHtml(((c.nom||'')+' '+(c.prenoms||'')).trim())+'</b> — montant à rembourser : <b>'+fcfa(c.resiliation.montant_rembourse)+'</b>'
-    +'<br>Résiliation du '+dateShort(c.resiliation.date)+' — motif : '+(c.resiliation.motif==='faute_promoteur'?'faute du promoteur':'désistement du souscripteur');
+    +'<br>Résiliation du '+dateShort(c.resiliation.date)+' — motif : '+escHtml(_resilLibelle(c.resiliation));
   openModal('modal-resiliation-remb');
 }
 async function resilierConfirmerRemboursement(){
@@ -59143,7 +59644,7 @@ function renderRegistreDesistements(){
   list.forEach(function(c){ var r=c.resiliation;
     tVerse+=r.montant_verse||0; tRemb+=r.montant_rembourse||0; tRetenu+=r.montant_retenu||0;
     if (r.montant_rembourse>0 && !r.rembourse) tDu+=r.montant_rembourse;
-    if (r.motif==='faute_promoteur') nbFau++; else nbDes++;
+    if (_resilImputable(r)==='promoteur') nbFau++; else nbDes++;
   });
   if (kpiEl) kpiEl.innerHTML = [
     ['Résiliations', list.length, 'var(--bleu,#1D4ED8)'],
@@ -59159,7 +59660,7 @@ function renderRegistreDesistements(){
     var etat = r.montant_rembourse<=0 ? '<span class="badge badge-neutre">Rien à rembourser</span>'
       : (r.rembourse ? '<span class="badge badge-vert">Remboursé '+(r.rembourse_le?dateShort(r.rembourse_le):'')+'</span>'
                      : '<span class="badge badge-rouge">À rembourser</span>');
-    var motif = r.motif==='faute_promoteur' ? 'Faute promoteur' : 'Désistement';
+    var motif = _resilLibelle(r);
     var actionRemb = (r.montant_rembourse>0 && !r.rembourse)
       ? '<button class="btn btn-primary btn-sm" onclick="resilierOuvrirRemboursement(\''+c.id+'\')">💰 Rembourser</button>' : '';
     return '<tr>'
@@ -59186,7 +59687,7 @@ function exportDesistementsCSV(){
   var rows=[['Date','Nom','Dossier','Motif','Taux %','Verse','Rembourse','Retenu','Rembourse_effectif','Date_remboursement','Lots_liberes','Justification']];
   list.forEach(function(c){ var r=c.resiliation;
     rows.push([r.date||'', ((c.nom||'')+' '+(c.prenoms||'')).trim(), c.dossier||'',
-      r.motif==='faute_promoteur'?'Faute promoteur':'Desistement', r.taux_remboursement!=null?r.taux_remboursement:'',
+      _resilLibelle(r), r.taux_remboursement!=null?r.taux_remboursement:'',
       r.montant_verse||0, r.montant_rembourse||0, r.montant_retenu||0,
       r.rembourse?'Oui':'Non', r.rembourse_le||'', (r.lots_liberes||[]).length, (r.justification||'').replace(/[\r\n]+/g,' ')]);
   });
@@ -78873,8 +79374,7 @@ function envoyerSMSClient() {
 function envoyerWhatsAppClient() {
   var c = DATA.clients.find(function(x){ return x.id === APP.editingId; });
   if (!c||!c.tel) { toast('Numéro de téléphone manquant.','error'); return; }
-  var tel   = c.tel.replace(/[\s\-\/\+]/g,'');
-  if (!tel.startsWith('225') && tel.length <= 10) tel = '225' + tel;
+  var tel   = telWhatsApp(c.tel);
   var prog  = DATA.programmes.find(function(p){ return p.id===c.programme_id; })||{nom:'votre programme'};
   var texte = 'Bonjour ' + c.prenoms + ' ' + c.nom + ',\n\nNous vous contactons au sujet de votre dossier *' + (c.dossier||'N/A') + '* — Programme *' + prog.nom + '*.\n\nCordialement,\n*' + (DATA.params.societe||'ImmoSuite ERP') + '*';
   window.open('https://wa.me/' + tel + '?text=' + encodeURIComponent(texte), '_blank');
@@ -88010,7 +88510,7 @@ var CDC_DEFAULTS = {
   conditions_souscription:
     "Dès la souscription : paiement obligatoire de 500 000 FCFA (frais de dossiers et de souscription, non négociables et non remboursables).\nDès l'entame du projet : paiement de la première cotisation mensuelle selon le tableau d'amortissement (pénalité de 10 % sur les cotisations dues en cas de retard ≥ 3 mois).\nImmobilisation du bien après paiement de 70 % du coût total.\nRéception du contrat de cession au paiement du solde. Remise des clés après levée des réserves et procédures notariées.",
   autres_conditions:
-    "Toute modification (interne/externe) mettant en péril la stabilité du logement dans les 10 ans après livraison annule la garantie décennale du promoteur. Les modifications autorisées sont soumises à l'architecte, l'urbaniste agréés et au syndic ; les frais sont à la charge du souscripteur.\nL'ensemble immobilier est placé sous le régime de la copropriété à l'achèvement.\nEn cas de désistement du souscripteur (hors faute du promoteur), le remboursement de 60 % des versements n'est effectif qu'à la fin du délai de réalisation ; remboursement total si le désistement provient du promoteur.",
+    "Toute modification (interne/externe) mettant en péril la stabilité du logement dans les 10 ans après livraison annule la garantie décennale du promoteur. Les modifications autorisées sont soumises à l'architecte, l'urbaniste agréés et au syndic ; les frais sont à la charge du souscripteur.\nL'ensemble immobilier est placé sous le régime de la copropriété à l'achèvement.\nEn cas de désistement du souscripteur (hors faute du promoteur), le taux de remboursement des versements est fixé au cas par cas selon les conditions de résiliation du promoteur ; il n'est effectif qu'à la fin du délai de réalisation. Si le désistement provient du promoteur, le remboursement est fixé selon ces mêmes conditions.",
   moyens_paiement:
     "Par virement bancaire (RIB communiqué en agence). Espèces et chèques via nos caisses en agence."
 };
@@ -88302,6 +88802,216 @@ function etatEcheancier(clientId) {
     couleur: '#1D4ED8',
     contenu: contenu
   });
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   DOCUMENTS DE SOUSCRIPTION — générés après l'enregistrement d'un nouveau
+   souscripteur : 1) Fiche de souscription (souscripteur, conjoint(e),
+   logement choisi + encadré « Rappel des conditions générales du
+   promoteur ») ; 2) Engagement ferme et irrévocable d'acquisition.
+   Les textes juridiques (rappel des conditions, engagement) sont
+   modifiables dans Paramètres → Comptabilité (DATA.params.cdc) ; les
+   valeurs ci-dessous ne sont que des modèles de départ. ═══════════ */
+CDC_DEFAULTS.engagement_acquisition =
+  "Je soussigné(e) {nom}, titulaire de la pièce d'identité {piece}, demeurant à {adresse}, déclare m'engager de manière FERME ET IRRÉVOCABLE à acquérir auprès de {societe} le logement désigné ci-après : {logement}, au prix global de {prix}.\n"
+  + "1. Je m'engage à payer ce prix selon les modalités suivantes : apport initial de {apport}, puis {duree} mensualités de {mensualite} à compter du {date_debut}, conformément au tableau d'amortissement qui me sera remis.\n"
+  + "2. Je reconnais avoir pris connaissance des conditions générales du promoteur rappelées dans ma fiche de souscription, ainsi que du cahier des charges du logement, et je les accepte sans réserve.\n"
+  + "3. Je reconnais que tout désistement de ma part est régi par les conditions de résiliation du promoteur{conditions_resiliation}.\n"
+  + "4. Le présent engagement est ferme et irrévocable : je ne peux le rétracter ni le modifier unilatéralement. Il est établi en deux exemplaires originaux, dont un m'est remis.";
+CDC_DEFAULTS.rappel_cgv = '';
+/* Modèle de résumé du cahier des charges de l'ensemble immobilier « Cité Maphouet »
+   (acte notarié). Proposé à l'insertion depuis la fiche Programme : le texte reste
+   modifiable par programme, et un lotissement sans texte n'affiche rien de tel.
+   C'est un RÉSUMÉ : le cahier des charges intégral fait foi. */
+var CDC_MODELE_CGV_MAPHOUET =
+  "Résumé du cahier des charges de l'ensemble immobilier (le texte intégral remis à l'acquéreur fait foi) :\n"
+  + "• Destination : maisons individuelles à usage de résidence principale ou secondaire ; toute activité commerciale ou artisanale est interdite, sauf dans les locaux prévus à cet effet.\n"
+  + "• Constructions : l'esthétique d'ensemble doit être maintenue. Toute construction ou extension respecte les modules d'extension du promoteur et est visée par l'Association des copropriétaires avant le dépôt de la demande d'autorisation. Surélévation limitée à un étage sur rez-de-chaussée ; aucune construction en zone non aedificandi.\n"
+  + "• Clôture : chaque propriétaire clôture sa parcelle dans les 6 mois suivant la vente ou la remise des clés ; le mur d'enceinte de la cité est commun et entretenu par tous.\n"
+  + "• Entretien : le logement est maintenu en bon état extérieur ; l'Association peut y pourvoir aux frais du propriétaire défaillant.\n"
+  + "• Jardins et espaces verts : jardins d'agrément uniquement (pas de cultures potagères) ; espaces verts à respecter, sans dépôt d'ordures ni sortie de garage.\n"
+  + "• Parcelles : toute subdivision est interdite ; la réunion de deux parcelles est libre mais ne permet pas de modifier l'aspect extérieur des maisons.\n"
+  + "• Vie commune : linge étendu uniquement à l'arrière et de façon discrète ; usage discret des appareils sonores.\n"
+  + "• Charges : entretien des équipements communs, voiries et réseaux réparti entre les propriétaires selon les millièmes de leur lot ; appels de fonds par le syndic, provision en début d'exercice ; gardiennage de la cité à la charge des propriétaires (et locataires).\n"
+  + "• Charges impayées : 30 jours après mise en demeure par lettre recommandée, le propriétaire perd la jouissance des services de l'Association ; intérêts de 10 % par mois ; hypothèque forcée sur le lot.\n"
+  + "• Assurances : assurance incendie et dégâts des eaux obligatoire, avec clause de recours des voisins ; responsabilité civile couverte collectivement par l'Association.\n"
+  + "• Location : le propriétaire impose le cahier des charges à son locataire, qui contribue aussi aux charges.\n"
+  + "• Impôts : à la charge de l'acquéreur dès l'entrée en jouissance ; déclaration foncière annuelle.\n"
+  + "• Revente : le vendeur impose à son acquéreur de prendre sa place dans l'Association et en informe le syndic 15 jours avant la signature.\n"
+  + "• Association des copropriétaires : tout propriétaire en est membre de plein droit.";
+function programmeInsererModeleCgv() {
+  var el = document.getElementById('p-rappel-cgv'); if (!el) return;
+  if (el.value.trim() && !confirm('Remplacer le texte actuel par le modèle « cahier des charges Cité Maphouet » ?')) return;
+  el.value = CDC_MODELE_CGV_MAPHOUET;
+}
+
+/* Rappel des conditions générales : surcharge éventuelle, sinon les
+   conditions de souscription + autres conditions du cahier des charges. */
+function _rappelCgvTexte() {
+  var ov = (DATA.params && DATA.params.cdc) ? DATA.params.cdc.rappel_cgv : null;
+  if (ov && String(ov).trim()) return String(ov).trim();
+  return [_cdcTxt('conditions_souscription'), _cdcTxt('autres_conditions')].filter(Boolean).join('\n');
+}
+
+/* ── Conjoint(e) : lecture / remplissage / affichage du formulaire ── */
+var CLIENT_CONJOINT_CHAMPS = { nom:'c-conj-nom', prenoms:'c-conj-prenoms', ddn:'c-conj-ddn', profession:'c-conj-profession',
+  tel:'c-conj-tel', piece_num:'c-conj-piece-num' };
+function _clientLireConjoint() {
+  var out = {}, any = false;
+  Object.keys(CLIENT_CONJOINT_CHAMPS).forEach(function(k){
+    var el = document.getElementById(CLIENT_CONJOINT_CHAMPS[k]);
+    out[k] = el ? String(el.value || '').trim() : ''; if (out[k]) any = true;
+  });
+  return any ? out : null;
+}
+function _clientRemplirConjoint(c) {
+  var cj = (c && c.conjoint) || {};
+  Object.keys(CLIENT_CONJOINT_CHAMPS).forEach(function(k){
+    var el = document.getElementById(CLIENT_CONJOINT_CHAMPS[k]); if (el) el.value = cj[k] || '';
+  });
+  clientToggleConjoint();
+}
+function clientToggleConjoint() {
+  var sel = document.getElementById('c-matrimonial'), bloc = document.getElementById('c-conjoint-bloc');
+  if (bloc) bloc.style.display = (sel && sel.value === 'marie') ? '' : 'none';
+}
+
+/* ── Données communes aux deux documents ── */
+function _docsSouscriptionDonnees(clientId) {
+  var c = (DATA.clients || []).find(function(x){ return x.id === clientId; });
+  if (!c) return null;
+  var lotIds = (typeof _lotIdsDeClient === 'function') ? _lotIdsDeClient(c) : (c.lot_id ? [c.lot_id] : []);
+  var lots = lotIds.map(function(id){ return (DATA.lots || []).find(function(l){ return l.id === id; }); }).filter(Boolean);
+  var prog = (DATA.programmes || []).find(function(p){ return p.id === c.programme_id || (lots[0] && lots[0].programme_id === p.id); }) || null;
+  var prix = c.montant_total || lots.reduce(function(s,l){ return s + (parseFloat(l.prix) || 0); }, 0);
+  var apport = c.apport || 0, duree = c.duree || 0;
+  var mensualite = duree > 0 ? Math.round(Math.max(0, prix - apport) / duree) : 0;
+  var standingLbl = { economique:'Économique', moyen:'Moyen standing', haut:'Haut standing' };
+  var logement = lots.length
+    ? lots.map(function(l){ return 'Lot ' + (l.numero || l.id) + (l.type ? ' — ' + l.type : '') + (l.surface ? ' (' + l.surface + ' m²)' : ''); }).join(' ; ')
+    : (c.type_logement || '—');
+  return { c:c, lots:lots, prog:prog, prix:prix, apport:apport, duree:duree, mensualite:mensualite,
+    standing: standingLbl[c.standing] || c.standing || '—', logement:logement,
+    nom: ((c.prenoms ? c.prenoms + ' ' : '') + (c.nom || '')).trim(),
+    piece: ((c.piece_type || '') + ' ' + (c.piece_num || '')).trim() || '—' };
+}
+
+function _docsFicheSouscriptionHTML(d) {
+  var c = d.c, cj = c.conjoint || null, marie = (c.matrimonial === 'marie');
+  var e = escHtml;
+  var matLbl = { celibataire:'Célibataire', marie:'Marié(e)', divorce:'Divorcé(e)', veuf:'Veuf/Veuve' }[c.matrimonial] || (c.matrimonial || '—');
+  var row = function(k, v){ return '<tr><th style="width:32%;">' + e(k) + '</th><td>' + e(v == null || v === '' ? '—' : String(v)) + '</td></tr>'; };
+  var h = '';
+  h += '<h3>1. Informations sur le souscripteur</h3><table>'
+    + row('Nom et prénoms', d.nom) + row('N° de dossier', c.dossier || c.id)
+    + row('Date de naissance', c.ddn ? dateShort(c.ddn) : '') + row('Nationalité', c.nationalite)
+    + row('Situation matrimoniale', matLbl) + row('Profession', c.profession) + row('Employeur', c.employeur)
+    + row('Pièce d\'identité', d.piece) + row('Téléphone 1', telAffichage(c.tel)) + row('Téléphone 2', c.tel2 ? telAffichage(c.tel2) : '') + row('Email', c.email) + row('Adresse', c.adresse)
+    + '</table>';
+  h += '<h3>2. Informations sur le/la conjoint(e)</h3>';
+  if (marie && cj) {
+    h += '<table>' + row('Nom et prénoms', ((cj.prenoms ? cj.prenoms + ' ' : '') + (cj.nom || '')).trim())
+      + row('Date de naissance', cj.ddn ? dateShort(cj.ddn) : '') + row('Profession', cj.profession)
+      + row('Téléphone', cj.tel) + row('N° pièce d\'identité', cj.piece_num) + '</table>';
+  } else if (marie) {
+    h += '<p style="color:#b45309;">Souscripteur marié(e) : informations du/de la conjoint(e) non renseignées.</p>';
+  } else {
+    h += '<p style="color:#555;">Sans objet — situation matrimoniale : ' + e(matLbl) + '.</p>';
+  }
+  h += '<h3>3. Logement choisi</h3><table>'
+    + row('Programme', d.prog ? d.prog.nom : '') + row('Logement / lot(s)', d.logement)
+    + row('Type de logement', c.type_logement) + row('Standing', d.standing)
+    + row('Surface', c.surface ? c.surface + ' m²' : '')
+    + row('Prix total', fcfa(d.prix)) + row('Apport initial', fcfa(d.apport))
+    + row('Durée', d.duree ? d.duree + ' mois' : '') + row('Mensualité', d.mensualite ? fcfa(d.mensualite) : '')
+    + row('Date de souscription', (c.date_souscription || c.date_debut) ? dateShort(c.date_souscription || c.date_debut) : '')
+    + row('Début des paiements', c.date_debut ? dateShort(c.date_debut) : '')
+    + row('Livraison prévue', d.prog && d.prog.date_livraison ? dateShort(d.prog.date_livraison) : '')
+    + row('Conseiller commercial', c.commercial || c.apporteur || '')
+    + '</table>';
+  h += '<div style="border:2px solid #1D4ED8;border-radius:6px;padding:10px 14px;margin:16px 0;background:#F5F8FF;page-break-inside:avoid;">'
+    + '<div style="font-weight:700;color:#1D4ED8;margin-bottom:4px;">📌 Rappel des conditions générales du promoteur</div>'
+    + _cdcPara(_rappelCgvTexte())
+    + ((d.prog && d.prog.rappel_cgv && String(d.prog.rappel_cgv).trim())
+        ? '<div style="font-weight:700;margin-top:8px;">Cahier des charges du programme « ' + escHtml(d.prog.nom || '') + ' »</div>' + _cdcPara(String(d.prog.rappel_cgv).trim())
+        : '')
+    + '</div>';
+  h += '<div class="etat-signatures"><div><div class="etat-sign-line">Le souscripteur (lu et approuvé)</div></div>'
+    + '<div><div class="etat-sign-line">Pour ' + e(_identiteSociete().nom || 'le promoteur') + '</div></div></div>';
+  return h;
+}
+
+function _docsEngagementHTML(d) {
+  var c = d.c, s = _identiteSociete();
+  var cond = '';
+  if (typeof _resilMotifs === 'function') {
+    cond = ' : ' + _resilMotifs().map(function(m){ return m.libelle + (m.taux_libre ? ' → taux de remboursement fixé au cas par cas (indicatif : ' + m.taux + '%)' : ' → remboursement de ' + m.taux + '% des versements'); }).join(' ; ');
+  }
+  var vars = { nom:d.nom, piece:d.piece, adresse:c.adresse || '—', societe:s.nom || 'le promoteur',
+    logement:d.logement + (d.prog ? ' (programme ' + d.prog.nom + ')' : ''), prix:fcfa(d.prix), apport:fcfa(d.apport),
+    duree:String(d.duree || '—'), mensualite:fcfa(d.mensualite), date_debut:c.date_debut ? dateShort(c.date_debut) : '—',
+    conditions_resiliation:cond };
+  var texte = _cdcTxt('engagement_acquisition').replace(/\{([a-z_]+)\}/g, function(m, k){ return vars.hasOwnProperty(k) ? vars[k] : m; });
+  var ville = (DATA.params && DATA.params.ville) || 'Abidjan';
+  return '<div style="text-align:center;margin:0 0 14px;"><div style="font-size:16px;font-weight:700;text-transform:uppercase;">Engagement ferme et irrévocable d\'acquisition de logement</div>'
+    + '<div style="font-size:11px;color:#555;">Dossier ' + escHtml(c.dossier || c.id) + '</div></div>'
+    + '<div style="font-size:12px;line-height:1.8;text-align:justify;">' + _cdcPara(texte).replace('font-size:11px;line-height:1.6;', 'font-size:12px;line-height:1.8;') + '</div>'
+    + '<p style="margin-top:18px;">Fait à ' + escHtml(ville) + ', le ' + new Date().toLocaleDateString('fr-FR') + '</p>'
+    + '<div class="etat-signatures"><div><div class="etat-sign-line">Le souscripteur<br>(mention « Lu et approuvé — bon pour engagement ferme et irrévocable »)</div></div>'
+    + '<div><div class="etat-sign-line">Pour ' + escHtml(s.nom || 'le promoteur') + '</div></div></div>';
+}
+
+/* which : 'fiche' | 'engagement' | 'tous' */
+function genererDocsSouscription(clientId, which) {
+  var d = _docsSouscriptionDonnees(clientId);
+  if (!d) { toast('Souscripteur introuvable.', 'error'); return; }
+  which = which || 'tous';
+  var contenu = '', titre;
+  if (which === 'fiche' || which === 'tous') contenu += _docsFicheSouscriptionHTML(d);
+  if (which === 'tous') contenu += '<div style="page-break-before:always;"></div>';
+  if (which === 'engagement' || which === 'tous') contenu += _docsEngagementHTML(d);
+  titre = which === 'fiche' ? 'Fiche de souscription' : which === 'engagement' ? 'Engagement d\'acquisition' : 'Dossier de souscription';
+  genererEtatPDF({ titre: titre, sousTitre: d.nom, reference: d.c.dossier || d.c.id, contenu: contenu });
+}
+
+/* Fenêtre proposée automatiquement après l'enregistrement d'un NOUVEAU
+   souscripteur (un clic utilisateur est requis pour ouvrir le PDF sans
+   être bloqué par le navigateur). */
+function ouvrirDocsSouscription(clientId) {
+  var d = _docsSouscriptionDonnees(clientId);
+  if (!d) return;
+  var box = document.getElementById('docs-souscription-corps');
+  if (!box) return;
+  box.innerHTML = '<div style="margin-bottom:10px;">Souscripteur <b>' + escHtml(d.nom) + '</b> enregistré. Les documents suivants sont prêts :</div>'
+    + '<div style="display:flex;flex-direction:column;gap:8px;">'
+    + '<button class="btn btn-primary" onclick="genererDocsSouscription(\'' + clientId + '\',\'tous\')">🖨️ Imprimer les deux documents</button>'
+    + '<button class="btn btn-secondary" onclick="genererDocsSouscription(\'' + clientId + '\',\'fiche\')">📄 Fiche de souscription</button>'
+    + '<button class="btn btn-secondary" onclick="genererDocsSouscription(\'' + clientId + '\',\'engagement\')">✍️ Engagement ferme et irrévocable d\'acquisition</button>'
+    + '</div>';
+  openModal('modal-docs-souscription');
+}
+
+/* ── Paramètres : textes des documents (Paramètres → Comptabilité) ── */
+function _cdcParamsCharger(p) {
+  var a = document.getElementById('param-doc-rappel-cgv'), b = document.getElementById('param-doc-engagement');
+  if (a) a.value = _rappelCgvTexte();
+  if (b) b.value = _cdcTxt('engagement_acquisition');
+}
+/* Ne mémorise une surcharge que si le texte diffère du modèle de départ. */
+function _cdcParamsLire() {
+  var cdc = Object.assign({}, (DATA.params && DATA.params.cdc) || {});
+  var a = document.getElementById('param-doc-rappel-cgv'), b = document.getElementById('param-doc-engagement');
+  var sans = function(v){ return String(v || '').replace(/\r/g, '').trim(); };
+  if (a) {
+    var defA = [_cdcTxt('conditions_souscription'), _cdcTxt('autres_conditions')].filter(Boolean).join('\n');
+    var vA = sans(a.value);
+    if (!vA || vA === sans(defA)) delete cdc.rappel_cgv; else cdc.rappel_cgv = vA;
+  }
+  if (b) {
+    var vB = sans(b.value);
+    if (!vB || vB === sans(CDC_DEFAULTS.engagement_acquisition)) delete cdc.engagement_acquisition; else cdc.engagement_acquisition = vB;
+  }
+  return cdc;
 }
 
 /* Lettre de relance graduée selon le retard */
@@ -108622,7 +109332,7 @@ function crecOpenRelance(id) {
     + '<div class="form-group"><label>Message SMS / WhatsApp</label><textarea class="form-control" id="crec-relance-msg" style="min-height:110px;">' + msg + '</textarea></div>'
     + '<div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap;">'
     + (tel ? '<a class="btn btn-secondary btn-sm" href="sms:' + tel + '">📱 SMS</a>'
-          + '<a class="btn btn-secondary btn-sm" target="_blank" href="https://wa.me/225' + tel.replace(/[\s+\-()]/g, '') + '?text=' + encodeURIComponent(msg) + '">💬 WhatsApp</a>' : '<span style="color:var(--rouge);font-size:12px;">Aucun téléphone enregistré.</span>')
+          + '<a class="btn btn-secondary btn-sm" target="_blank" href="https://wa.me/' + telWhatsApp(tel) + '?text=' + encodeURIComponent(msg) + '">💬 WhatsApp</a>' : '<span style="color:var(--rouge);font-size:12px;">Aucun téléphone enregistré.</span>')
     + '</div>';
   document.getElementById('crec-relance-body').innerHTML = body;
   document.getElementById('crec-relance-niv').value = String(niv);
