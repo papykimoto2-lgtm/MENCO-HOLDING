@@ -7577,6 +7577,10 @@ body.no-delete [onclick*="Supprimer"]{display:none !important;}
                 <div style="font-size:13px;color:var(--blanc-dim);margin-bottom:8px;">Force la déconnexion de tous les postes/onglets connectés (utile après un incident de cache local périmé — sync qui réinjecte d'anciennes données). Votre session actuelle n'est pas affectée.</div>
                 <button class="btn btn-danger btn-sm" onclick="deconnecterAutresPostes()">🔒 Déconnecter tous les autres postes</button>
               </div>
+              <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--bord);">
+                <div style="font-size:13px;color:var(--blanc-dim);margin-bottom:8px;">Ordonne à <b>chaque poste</b> de vider ses données locales (base du navigateur, file d'envoi, marques de suppression) puis de se recharger depuis la base, à sa prochaine synchronisation. À utiliser quand des postes gardent d'anciennes données qui réécrivent le serveur. <b>Les saisies d'un poste qui n'ont pas encore été envoyées au serveur seront perdues</b> : demandez d'abord à chacun de terminer et de synchroniser. À combiner avec « Déconnecter tous les autres postes ».</div>
+                <button class="btn btn-danger btn-sm" onclick="reinitialiserTousLesPostes()">🧹 Réinitialiser tous les postes</button>
+              </div>
             </div>
             <div class="card">
               <div class="form-section-title">👁 Journaux de sécurité</div>
@@ -28938,6 +28942,35 @@ async function deconnecterAutresPostes() {
      l'epoch posée, pour ne pas se déconnecter soi-même au prochain contrôle. */
   if (APP.currentUser) await startSession(APP.currentUser);
   toast('🔒 Tous les autres postes seront déconnectés dans les 60 secondes (prochaine synchronisation).', 'success');
+}
+
+/** Réinitialisation de TOUS les postes à distance (Paramétrage → Sécurité). Publie dans pi_params
+   (ligne « main ») l'ordre reinit_postes = {id, date, motif} que chaque poste applique UNE fois au
+   début de son prochain pull (voir _appliquerReinitPostes). L'ordre est écrit directement dans la
+   base : syncToSupabase recopie toujours la valeur DISTANTE de reinit_postes (un poste ne la tient
+   jamais), il ne pourrait donc pas la publier. Ce poste note l'ordre comme déjà appliqué : il ne se
+   réinitialise pas lui-même. */
+async function reinitialiserTousLesPostes() {
+  if (!hasRole('admin')) { toast('Réservé à l\'administrateur.', 'error'); return; }
+  if (!navigator.onLine || !SB.url || !SB.key) { toast('Connexion à la base requise pour émettre l\'ordre.', 'error'); return; }
+  var motif = prompt('Motif de la réinitialisation (conservé dans l\'ordre, visible dans la console des postes) :', 'Réinitialisation demandée par l\'administrateur');
+  if (motif === null) return;
+  if (!confirm('⚠️ Réinitialiser TOUS les autres postes ?\n\nÀ leur prochaine synchronisation, chaque poste videra ses données locales puis se rechargera depuis la base.\n\n• Les saisies non encore envoyées au serveur seront PERDUES.\n• Rien n\'est supprimé sur le serveur.\n• Votre poste n\'est pas réinitialisé.\n\nContinuer ?')) return;
+  var rows = await sbFetch('pi_params?id=eq.main&select=*', 'GET');
+  if (!rows || !rows.length) { toast('Paramètres introuvables sur le serveur — ordre non émis.', 'error'); return; }
+  var distant = _supaUnwrap('pi_params', rows[0]);
+  if (!distant) { toast('Paramètres illisibles — ordre non émis.', 'error'); return; }
+  var ordre = {
+    id: 'reinit_' + Date.now().toString(36),
+    date: new Date().toISOString(),
+    motif: (String(motif || '').trim().slice(0, 200)) || 'Réinitialisation demandée par l\'administrateur',
+    emis_par: (APP.currentUser && (APP.currentUser.nom || APP.currentUser.login)) || ''
+  };
+  distant.reinit_postes = ordre;
+  var res = await sbFetch('pi_params?id=eq.main', 'PATCH', { data: distant }, 'return=representation');
+  if (!Array.isArray(res) || !res.length) { toast('Ordre non enregistré par le serveur — réessayez.', 'error'); return; }
+  try { localStorage.setItem(REINIT_POSTES_KEY, ordre.id); } catch (e) {}
+  toast('🧹 Ordre émis : chaque poste se réinitialisera à sa prochaine synchronisation (environ une minute). Pensez à « Déconnecter tous les autres postes » pour recharger les onglets ouverts.', 'success', 9000);
 }
 
 /** Contrôle périodique (appelé depuis le tick de sync auto, ~30s) : si la
