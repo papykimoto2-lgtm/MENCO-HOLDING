@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.112 · 2026-08-31 — Session majeure : (1) Souscripteurs multi-lots sur un même programme avec échéancier/montant combiné unique (client.lot_ids, client.lot_id conservé comme lot principal pour compatibilité) ; (2) Surface relevée manuellement sur la fiche Lot et surface souscrite sur la fiche Souscripteur, comparées en direct à la surface au plan/aux lots rattachés ; (3) Nouveau module Budget : Compte d\'exploitation prévisionnel (Budget vs Réel comptable, mensualisé, par division), masque de saisie simplifié façon business-plan (24 rubriques dont 11 propres à l\'immobilier, lignes personnalisables), diagnostic de viabilité (résultat + trésorerie cumulée) ; (4) Cockpit étendu au Budget et au Parc Auto (file d\'actions + Pouls de santé) ; (5) Audit de synchronisation : 4 stores écrits/synchronisés mais jamais rechargés corrigés (declarations_versement_financier invisible sur tout autre poste, audit_log, cout_gestion_exercices, conflits_sync) ; (6) 4 sélecteurs de lots (souscription, lots supplémentaires, simulateur fiscal, livraison) désormais rafraîchis après création d\'un lot, localement et après synchro cloud ; (7) Correctif charge Supabase : pull de secours espacé de 60 s à ~6 min (Realtime reste le canal principal) suite à saturation du compute observée le 31/08 (527k requêtes/24h sur instance Nano) ; (8) Parc Auto : bouton "Actualiser les données" + badge "Hors ligne" cliquable avec diagnostic de la cause probable (projet en pause/clé invalide, jamais un vrai bug CORS).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.113 · 2026-10-08 — Synchronisation fiabilisée (suppressions jamais renvoyées au cloud, remise à zéro locale sans effet sur le cloud, réinitialisation des postes à distance, protection contre une base étrangère) ; sous-comptes de caisse ; filtres du Journal ; Session majeure : (1) Souscripteurs multi-lots sur un même programme avec échéancier/montant combiné unique (client.lot_ids, client.lot_id conservé comme lot principal pour compatibilité) ; (2) Surface relevée manuellement sur la fiche Lot et surface souscrite sur la fiche Souscripteur, comparées en direct à la surface au plan/aux lots rattachés ; (3) Nouveau module Budget : Compte d\'exploitation prévisionnel (Budget vs Réel comptable, mensualisé, par division), masque de saisie simplifié façon business-plan (24 rubriques dont 11 propres à l\'immobilier, lignes personnalisables), diagnostic de viabilité (résultat + trésorerie cumulée) ; (4) Cockpit étendu au Budget et au Parc Auto (file d\'actions + Pouls de santé) ; (5) Audit de synchronisation : 4 stores écrits/synchronisés mais jamais rechargés corrigés (declarations_versement_financier invisible sur tout autre poste, audit_log, cout_gestion_exercices, conflits_sync) ; (6) 4 sélecteurs de lots (souscription, lots supplémentaires, simulateur fiscal, livraison) désormais rafraîchis après création d\'un lot, localement et après synchro cloud ; (7) Correctif charge Supabase : pull de secours espacé de 60 s à ~6 min (Realtime reste le canal principal) suite à saturation du compute observée le 31/08 (527k requêtes/24h sur instance Nano) ; (8) Parc Auto : bouton "Actualiser les données" + badge "Hors ligne" cliquable avec diagnostic de la cause probable (projet en pause/clé invalide, jamais un vrai bug CORS).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -25373,12 +25373,50 @@ function saveIAConfig() {
    volontaire est respecté (voir getSBConfig). */
 var SB_URL_DEFAUT = '';
 var SB_KEY_DEFAUT = '';
+function _sbNormUrl(u) { return String(u || '').trim().replace(/\/+$/, '').toLowerCase(); }
+/* Cohérence poste / base. Les données locales (IndexedDB) et les réglages
+   mémorisés d'un poste doivent venir de la base de CETTE installation. On
+   retient la base d'origine (sb_origine) ; si le poste a été relié à une autre
+   base (réglage mémorisé ou origine différente), on propose de le
+   réinitialiser : effacement des données locales puis rechargement depuis la
+   bonne base. Tant que ce n'est pas fait, la synchronisation est coupée pour
+   ne rien mélanger. */
+function _sbVerifierCoherence() {
+  if (!SB_URL_DEFAUT) return;
+  var dep = _sbNormUrl(SB_URL_DEFAUT);
+  var stocke = _sbNormUrl(localStorage.getItem('sb_url'));
+  var origine = _sbNormUrl(localStorage.getItem('sb_origine'));
+  var etranger = (stocke && stocke !== dep) || (origine && origine !== dep);
+  if (!etranger) { if (!origine) localStorage.setItem('sb_origine', dep); return; }
+  if (confirm("Ce poste était relié à une AUTRE base de données que celle de cette installation.\n\n"
+    + "Pour protéger vos données, il doit être réinitialisé : les données enregistrées localement sur ce poste seront effacées, "
+    + "puis rechargées depuis la bonne base. Rien n'est supprimé sur le serveur.\n\nRéinitialiser maintenant ?")) {
+    _sbReinitialiserPoste();
+  } else {
+    window._sbBloque = true;
+    alert("Synchronisation désactivée sur ce poste tant qu'il n'est pas réinitialisé. Rechargez la page pour y revenir.");
+  }
+}
+function _sbReinitialiserPoste() {
+  try {
+    Object.keys(localStorage).forEach(function(k){
+      if (/^(sb_|sync_)/.test(k) || k === 'company_logo' || k === 'immosuite_tombstones') { try { localStorage.removeItem(k); } catch(e){} }
+    });
+  } catch(e){}
+  var fini = false, terminer = function(){ if (fini) return; fini = true; location.reload(); };
+  try {
+    var req = indexedDB.deleteDatabase(typeof DB_NAME !== 'undefined' ? DB_NAME : 'ImmoSuiteDB');
+    req.onsuccess = terminer; req.onerror = terminer; req.onblocked = terminer;
+  } catch(e) { terminer(); }
+  setTimeout(terminer, 2500);
+}
 (function _sbDefautsDepuisEcranConfig(){
   function lire(){
     var u=document.getElementById('cfg-url'), k=document.getElementById('cfg-key');
     var vu=u?String(u.value||'').trim():'', vk=k?String(k.value||'').trim():'';
     if(/^https?:\/\/[^ ]+\.supabase\.co\/?$/i.test(vu)) SB_URL_DEFAUT=vu;
     if(vk.length>20) SB_KEY_DEFAUT=vk;
+    try { _sbVerifierCoherence(); } catch(e) { console.warn('[Cohérence base]', e); }
   }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',lire);
   else lire();
@@ -25484,6 +25522,10 @@ function getSBConfig() {
      (ex. la clé collée par erreur dans le champ URL), on ignore les valeurs
      sauvegardées. */
   if (!/^https?:\/\/[^ ]+\.supabase\.co\/?$/i.test(u)) { u = ''; k = ''; }
+  /* [PROTECTION ENTREPRISES — portée de Zahara] Un poste ne doit JAMAIS rester relié à la base d'une
+     autre entreprise. Si l'adresse mémorisée localement diffère de celle de CETTE installation,
+     elle est ignorée : le projet du déploiement l'emporte. */
+  if (u && SB_URL_DEFAUT && _sbNormUrl(u) !== _sbNormUrl(SB_URL_DEFAUT)) { u = ''; k = ''; }
   /* Repli sur le projet du déploiement quand aucun réglage n'a été saisi : la
      synchro est active sans configuration poste par poste. Le mode local reste
      possible, mais seulement s'il a été CHOISI (« Continuer sans Supabase » ou
@@ -25494,6 +25536,8 @@ function getSBConfig() {
   }
   SB.url = u.replace(/\/+$/, '');
   SB.key = k;
+  /* Poste en attente de réinitialisation (données d'une autre base) : aucune synchro. */
+  if (window._sbBloque) { SB.url = ''; SB.key = ''; }
 }
 
 /* Récupère un utilisateur partagé depuis Supabase par identifiant (auth multi-appareils) */
@@ -25999,7 +26043,19 @@ function _signalerTombstoneKO() {
   if (entry) deleteFromSupabase(entry[0], id);
 }
 
+/* [INCIDENT 05/10 — porté de Zahara] Un enregistrement marqué supprimé (tombstone) ne doit
+   jamais repartir au cloud, quel que soit le chemin d'envoi : la réconciliation automatique
+   (toutes les ~30 min) et « Tout envoyer » renvoyaient tout enregistrement local absent du
+   cloud, sans regarder les suppressions. Une recréation volontaire lève le tombstone en amont
+   (dbPut → _untomb), elle passe donc. */
+function _envoiBloqueParTombstone(table, obj) {
+  if (!obj || obj.id === undefined || table === 'pi_suppressions' || typeof tombHas !== 'function') return false;
+  var e = SUPA_STORE_MAP.find(function(x){ return x[0] === table; });
+  return !!(e && tombHas(e[1], obj.id));
+}
+
 async function syncToSupabase(table, obj, opts) {
+  if (_envoiBloqueParTombstone(table, obj)) return true;   /* rien à envoyer : traité comme fait */
   if (table === 'pi_ecritures' && obj && obj.date && !_pulling && !obj._forceCloture
       && typeof exerciceEstClos === 'function' && exerciceEstClos(obj.date)) {
     console.warn('[VERROU CLOTURE] Sync cloud bloquée — exercice clos:', obj);
@@ -26111,6 +26167,11 @@ async function syncToSupabase(table, obj, opts) {
         var _oD = (_oRb && _oRb.date) || '', _rD = _rRb.date || '';
         if (!_oRb || (!_oD || _rD > _oD)) obj.reset_broadcast = _rRb;
       }
+      /* Signaux publiés uniquement côté serveur (remise à niveau des suppressions, réinitialisation
+         des postes) : jamais tenus par un poste, on recopie toujours la valeur distante pour que
+         l'upsert (colonne JSON entière) ne les efface pas. */
+      if (_remoteParams && _remoteParams.purge_tombstones) obj.purge_tombstones = _remoteParams.purge_tombstones;
+      if (_remoteParams && _remoteParams.reinit_postes) obj.reinit_postes = _remoteParams.reinit_postes;
     } catch(e) { /* offline/erreur réseau → on pousse tel quel, le pull dédié rattrapera au prochain cycle */ }
   }
 
@@ -26172,7 +26233,7 @@ async function syncToSupabase(table, obj, opts) {
    contrôle de conflit de syncToSupabase() ne s'applique de toute façon pas. */
 async function syncToSupabaseBatch(table, objs, chunkSize) {
   chunkSize = chunkSize || 300;
-  objs = (objs||[]).filter(function(o){ return o; });
+  objs = (objs||[]).filter(function(o){ return o && !_envoiBloqueParTombstone(table, o); });
   if (!objs.length) return true;
   if (table === 'pi_ecritures') {
     objs = objs.filter(function(obj){
@@ -27851,10 +27912,19 @@ async function _appliquerLignesPullTable(table, store, rows) {
   if (!DATA[store]) DATA[store] = [];
   var byId = {};
   DATA[store].forEach(function(x){ if (x && x.id !== undefined) byId[String(x.id)] = x; });
+  /* [INCIDENT 03/10 — porté de Zahara] Un tombstone LOCAL (localStorage, posé par une remise à
+     zéro locale ou par l'application d'un ordre diffusé) ne doit jamais effacer le cloud :
+     seul le registre PARTAGÉ (pi_suppressions, une suppression réellement voulue et propagée)
+     y est autorisé. */
+  var _tsPartages = {};
+  (DATA.suppressions_sync || []).forEach(function(t){ if (t && t.store === store && t.record_id !== undefined) _tsPartages[String(t.record_id)] = true; });
   for (var j = 0; j < rows.length; j++) {
     var r = _supaUnwrap(table, rows[j]);
     if (!r || r.id === undefined) continue;
-    if (typeof tombHas === 'function' && tombHas(store, r.id)) { try { if (typeof deleteFromSupabase === 'function') deleteFromSupabase(table, r.id); } catch(e){} continue; }
+    if (typeof tombHas === 'function' && tombHas(store, r.id)) {
+      if (_tsPartages[String(r.id)]) { try { if (typeof deleteFromSupabase === 'function') deleteFromSupabase(table, r.id); } catch(e){} }
+      continue;
+    }
     var ex = byId[String(r.id)];
     if (_remoteWins(r, ex)) {
       byId[String(r.id)] = r;
@@ -27976,6 +28046,64 @@ async function _syncUsersSeul(){
   return n;
 }
 
+/* ═══ RÉINITIALISATION DES POSTES À DISTANCE (incident du 05/10) ═══
+   Des postes ayant gardé dans leur navigateur des données d'une autre
+   entreprise (mélange de fin septembre) les réinjectaient dans la base.
+   Un ordre daté publié dans pi_params (reinit_postes = {id, date, motif})
+   fait vider UNE fois chaque poste (IndexedDB, file d'envoi, marques de
+   suppression) puis le recharge depuis la base — sans que personne ait à se
+   déplacer. Un navigateur vierge (jamais synchronisé) n'a rien à vider : il
+   note simplement l'ordre comme appliqué. Vérifié au début de chaque pull,
+   avant tout envoi. */
+var REINIT_POSTES_KEY = 'immosuite_reinit_applique';
+async function _appliquerReinitPostes() {
+  var rows = await sbFetch('pi_params?id=eq.main&select=*', 'GET');
+  var p = (rows && rows.length) ? _supaUnwrap('pi_params', rows[0]) : null;
+  var ordre = p && p.reinit_postes;
+  if (!ordre || !ordre.id) return false;
+  var lu = ''; try { lu = localStorage.getItem(REINIT_POSTES_KEY) || ''; } catch(e){}
+  if (lu === String(ordre.id)) return false;                     /* déjà appliqué ici */
+  try { localStorage.setItem(REINIT_POSTES_KEY, String(ordre.id)); } catch(e){}
+  if (!_syncStampGet('pull')) return false;                      /* poste vierge : rien à vider */
+  try { localStorage.removeItem(_SYNC_OUTBOX_KEY); } catch(e){}
+  try { toast('🧹 Réinitialisation de ce poste demandée par l\'administrateur — rechargement depuis la base…', 'info', 6000); } catch(e){}
+  console.warn('[Sync] Réinitialisation du poste à distance : ' + (ordre.motif || ordre.id));
+  _sbReinitialiserPoste();                                       /* vide IndexedDB + caches locaux, puis recharge */
+  return true;
+}
+
+/* ═══ REMISE À NIVEAU DES TOMBSTONES (incident du 03/10) ═══
+   Les marques de suppression d'un poste (cache localStorage + registre
+   suppressions_sync en IndexedDB) ne se purgent jamais : retirer une marque
+   du cloud ne suffit donc pas à faire réapparaître un enregistrement
+   restauré — chaque poste continuait de le cacher, voire de le re-supprimer.
+   Un signal daté publié dans pi_params (purge_tombstones = {id, date}) fait
+   vider ces marques locales UNE fois par poste ; la phase 0 du pull les
+   recharge aussitôt depuis pi_suppressions, qui redevient la seule référence. */
+var PURGE_TOMB_KEY = 'immosuite_purge_tomb_appliquee';
+async function _appliquerPurgeTombstones() {
+  var rows = await sbFetch('pi_params?id=eq.main&select=*', 'GET');
+  var p = (rows && rows.length) ? _supaUnwrap('pi_params', rows[0]) : null;
+  var ordre = p && p.purge_tombstones;
+  if (!ordre || !ordre.id) return false;
+  var lu = ''; try { lu = localStorage.getItem(PURGE_TOMB_KEY) || ''; } catch(e){}
+  if (lu === String(ordre.id)) return false;                     /* déjà appliqué ici */
+
+  try { if (typeof tombClear === 'function') tombClear(); } catch(e){}
+  var locaux = []; try { locaux = await dbGetAll('suppressions_sync'); } catch(e){}
+  for (var i = 0; i < locaux.length; i++) {
+    if (locaux[i] && locaux[i].id !== undefined) { try { await dbDelete('suppressions_sync', locaux[i].id); } catch(e){} }
+  }
+  DATA.suppressions_sync = [];
+  /* Ne pas renvoyer au cloud d'anciennes marques encore en attente d'envoi */
+  Object.keys(_dirtySync).forEach(function(k){ if (k.indexOf('suppressions_sync|') === 0) delete _dirtySync[k]; });
+  try { _outboxWrite(_outboxRead().filter(function(e){ return !e || e.table !== 'pi_suppressions'; })); } catch(e){}
+
+  try { localStorage.setItem(PURGE_TOMB_KEY, String(ordre.id)); } catch(e){}
+  console.log('[Sync] Remise à niveau des suppressions appliquée (' + locaux.length + ' marque(s) locale(s) retirée(s)).');
+  return true;
+}
+
 async function pullFromCloudSilent() {
   if (!navigator.onLine) return;
   getSBConfig();
@@ -27991,6 +28119,8 @@ async function pullFromCloudSilent() {
        re-supprimée par _appliquerSuppressionsSync() en fin de cycle :
        fenêtre de réapparition à l'écran, et risque de re-push si le poste
        la marquait « dirty » entre-temps. */
+    try { if (await _appliquerReinitPostes()) { _pulling = false; return; } } catch(e) { console.warn('[Sync] Réinitialisation à distance', e); }
+    try { await _appliquerPurgeTombstones(); } catch(e) { console.warn('[Sync] Remise à niveau des suppressions', e); }
     try {
       var supRows = await sbFetch('pi_suppressions?select=*', 'GET');
       if (supRows && supRows.length) {
@@ -27999,7 +28129,10 @@ async function pullFromCloudSilent() {
         for (var s0 = 0; s0 < supRows.length; s0++) {
           var ts0 = _supaUnwrap('pi_suppressions', supRows[s0]);
           if (!ts0 || !ts0.id || !ts0.store || !ts0.record_id) continue;
-          if (!supIds[ts0.id]) { DATA.suppressions_sync.push(ts0); try { await dbPut('suppressions_sync', ts0); } catch(e){} }
+          /* _pulling est un drapeau global qu'une autre tâche peut remettre à false pendant les
+             milliers d'await de cette boucle : tout le registre était alors republié. On le
+             réarme juste avant chaque écriture (dbPut le lit de façon synchrone). */
+          if (!supIds[ts0.id]) { DATA.suppressions_sync.push(ts0); try { _pulling = true; await dbPut('suppressions_sync', ts0); } catch(e){} }
           try { if (typeof tombAdd === 'function') tombAdd(ts0.store, ts0.record_id); } catch(e){}
         }
       }
@@ -47647,6 +47780,10 @@ async function _appliquerResetBroadcast() {
   var b = DATA.params && DATA.params.reset_broadcast;
   if (!b || !b.id || !Array.isArray(b.stores) || !b.stores.length) return 0;
   if (_resetBroadcastLu() === String(b.id)) return 0;          /* déjà appliqué ici */
+  /* [INCIDENT 03/10 — porté de Zahara] Ordre émis SANS nettoyage Supabase : les données restent
+     au cloud, la purge locale n'aurait aucun effet durable — et les tombstones qu'elle posait
+     faisaient effacer le cloud au pull suivant. On l'ignore (marqué comme lu). */
+  if (!b.cloud) { _resetBroadcastMarquer(b.id); return 0; }
 
   var limite = b.date || '';
   var total = 0, detail = [];
@@ -47747,6 +47884,10 @@ async function executerReset() {
       var all = await dbGetAll(store).catch(function(){ return []; });
       nb = all.length;
       for (var j=0; j<all.length; j++) {
+        /* [INCIDENT 03/10 — porté de Zahara] Remise à zéro LOCALE (Supabase conservé) : aucun
+           tombstone. Ils étaient poussés dans pi_suppressions puis appliqués par tous les
+           postes, qui effaçaient alors le cloud. Les données reviennent au prochain pull. */
+        if (!withCloud) { await dbDelete(store, all[j].id).catch(function(){}); continue; }
         try { if (typeof tombAdd==='function') tombAdd(store, all[j].id); } catch(e){}
         /* CORRECTIF : alimenter aussi le registre partagé/daté (suppressions_sync), pas seulement
            le cache local tombAdd() (non daté, jamais purgé). Sans ceci, un reset suivi d'une
