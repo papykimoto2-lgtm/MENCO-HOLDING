@@ -11,7 +11,7 @@
 /* ── Auto-mise à jour : supprime tout service worker / cache laissé par une ancienne
    version (ImmoSuite n'utilise pas de PWA). Garantit qu'on charge toujours la dernière
    version déployée sur Vercel, sur PC comme sur mobile. ── */
-window.IMMOSUITE_VERSION = 'v14.118 · 2026-10-08 — Versement : contrôle des comptes comptables AVANT enregistrement (plus de versement sans écriture) ; Attestation de solde : brouillon généré automatiquement au constat du solde, visible dans Souscripteur → Documents ; Attestation de solde (demande → validation DG/gérant → portail et WhatsApp) ; Réception & Livraison : onglet « À livrer (soldés) » (souscripteurs soldés sans livraison, bouton Livrer) ; Résiliation à taux libre et conditions de rupture paramétrables, fiche de souscription + engagement d\'acquisition, 2 téléphones (CI/international), choix du système de commissions ; Synchronisation fiabilisée (suppressions jamais renvoyées au cloud, remise à zéro locale sans effet sur le cloud, réinitialisation des postes à distance, protection contre une base étrangère) ; sous-comptes de caisse ; filtres du Journal ; Session majeure : (1) Souscripteurs multi-lots sur un même programme avec échéancier/montant combiné unique (client.lot_ids, client.lot_id conservé comme lot principal pour compatibilité) ; (2) Surface relevée manuellement sur la fiche Lot et surface souscrite sur la fiche Souscripteur, comparées en direct à la surface au plan/aux lots rattachés ; (3) Nouveau module Budget : Compte d\'exploitation prévisionnel (Budget vs Réel comptable, mensualisé, par division), masque de saisie simplifié façon business-plan (24 rubriques dont 11 propres à l\'immobilier, lignes personnalisables), diagnostic de viabilité (résultat + trésorerie cumulée) ; (4) Cockpit étendu au Budget et au Parc Auto (file d\'actions + Pouls de santé) ; (5) Audit de synchronisation : 4 stores écrits/synchronisés mais jamais rechargés corrigés (declarations_versement_financier invisible sur tout autre poste, audit_log, cout_gestion_exercices, conflits_sync) ; (6) 4 sélecteurs de lots (souscription, lots supplémentaires, simulateur fiscal, livraison) désormais rafraîchis après création d\'un lot, localement et après synchro cloud ; (7) Correctif charge Supabase : pull de secours espacé de 60 s à ~6 min (Realtime reste le canal principal) suite à saturation du compute observée le 31/08 (527k requêtes/24h sur instance Nano) ; (8) Parc Auto : bouton "Actualiser les données" + badge "Hors ligne" cliquable avec diagnostic de la cause probable (projet en pause/clé invalide, jamais un vrai bug CORS).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
+window.IMMOSUITE_VERSION = 'v14.119 · 2026-10-08 — Synchro : la liste du personnel (pointage, ordres de mission) est toujours reconstituée, même sur un poste dont la copie locale était vide ; Versement : contrôle des comptes comptables AVANT enregistrement (plus de versement sans écriture) ; Attestation de solde : brouillon généré automatiquement au constat du solde, visible dans Souscripteur → Documents ; Attestation de solde (demande → validation DG/gérant → portail et WhatsApp) ; Réception & Livraison : onglet « À livrer (soldés) » (souscripteurs soldés sans livraison, bouton Livrer) ; Résiliation à taux libre et conditions de rupture paramétrables, fiche de souscription + engagement d\'acquisition, 2 téléphones (CI/international), choix du système de commissions ; Synchronisation fiabilisée (suppressions jamais renvoyées au cloud, remise à zéro locale sans effet sur le cloud, réinitialisation des postes à distance, protection contre une base étrangère) ; sous-comptes de caisse ; filtres du Journal ; Session majeure : (1) Souscripteurs multi-lots sur un même programme avec échéancier/montant combiné unique (client.lot_ids, client.lot_id conservé comme lot principal pour compatibilité) ; (2) Surface relevée manuellement sur la fiche Lot et surface souscrite sur la fiche Souscripteur, comparées en direct à la surface au plan/aux lots rattachés ; (3) Nouveau module Budget : Compte d\'exploitation prévisionnel (Budget vs Réel comptable, mensualisé, par division), masque de saisie simplifié façon business-plan (24 rubriques dont 11 propres à l\'immobilier, lignes personnalisables), diagnostic de viabilité (résultat + trésorerie cumulée) ; (4) Cockpit étendu au Budget et au Parc Auto (file d\'actions + Pouls de santé) ; (5) Audit de synchronisation : 4 stores écrits/synchronisés mais jamais rechargés corrigés (declarations_versement_financier invisible sur tout autre poste, audit_log, cout_gestion_exercices, conflits_sync) ; (6) 4 sélecteurs de lots (souscription, lots supplémentaires, simulateur fiscal, livraison) désormais rafraîchis après création d\'un lot, localement et après synchro cloud ; (7) Correctif charge Supabase : pull de secours espacé de 60 s à ~6 min (Realtime reste le canal principal) suite à saturation du compute observée le 31/08 (527k requêtes/24h sur instance Nano) ; (8) Parc Auto : bouton "Actualiser les données" + badge "Hors ligne" cliquable avec diagnostic de la cause probable (projet en pause/clé invalide, jamais un vrai bug CORS).';   /* à incrémenter à CHAQUE livraison : sans cela, impossible de savoir quelle version tourne réellement en ligne */
 (function () {
   try {
     if ('serviceWorker' in navigator) {
@@ -27933,7 +27933,20 @@ async function _pullPlanComptableCloud() {
 var PULL_CURSEURS_KEY = 'immosuite_pull_curseurs';
 var PULL_INCR_INAPTES = {};        /* tables sans updated_at, réévaluées à chaque session */
 /* Toujours tirées en intégral : petites et structurantes. */
-var PULL_TOUJOURS_COMPLET = ['pi_suppressions','pi_params','pi_users','pi_custom_roles','pi_divisions'];
+/* pi_employes : une trentaine de lignes, mais source de toutes les listes de personnel (pointage, ordres de
+   mission, paie). Un poste dont la copie locale était vide ou incomplète ne la récupérait jamais en mode
+   incrémental (curseur déjà avancé) : listes de personnel vides chez l'assistante. */
+var PULL_TOUJOURS_COMPLET = ['pi_suppressions','pi_params','pi_users','pi_custom_roles','pi_divisions','pi_employes'];
+
+/* Curseur réellement utilisable : si la copie locale d'une table est VIDE, un curseur déjà avancé empêcherait
+   à jamais de la reconstituer (le serveur ne renverrait que les lignes plus récentes que le curseur). */
+function _pullCurseurEffectif(table) {
+  var cur = _pullCurseurs()[table] || '';
+  if (!cur) return '';
+  var store = null;
+  for (var i = 0; i < SUPA_STORE_MAP.length; i++) { if (SUPA_STORE_MAP[i][0] === table) { store = SUPA_STORE_MAP[i][1]; break; } }
+  return (store && (!DATA[store] || !DATA[store].length)) ? '' : cur;
+}
 
 function _pullCurseurs() {
   try { return JSON.parse(localStorage.getItem(PULL_CURSEURS_KEY) || '{}'); } catch(e) { return {}; }
@@ -27968,7 +27981,7 @@ async function pullReinitialiserCurseurs() {
 /* Récupère les lignes d'une table, en incrémental quand c'est possible. */
 async function _pullTable(table) {
   var complet = PULL_TOUJOURS_COMPLET.indexOf(table) !== -1 || PULL_INCR_INAPTES[table];
-  var curseur = complet ? null : (_pullCurseurs()[table] || null);
+  var curseur = complet ? null : (_pullCurseurEffectif(table) || null);
   if (curseur) {
     try {
       var rows = await sbFetch(table + '?updated_at=gt.' + encodeURIComponent(curseur) + '&select=*', 'GET');
@@ -28070,7 +28083,7 @@ async function _pullBatchViaRPC() {
        dédié dans demarrerSyncAuto). */
     if (['pi_sfc_liste','pi_sfc_criblages','pi_sfc_centif','pi_lbc_cappi','pi_lbc_conformx','pi_lbc_artci'].indexOf(table) !== -1) continue;
     var complet = PULL_TOUJOURS_COMPLET.indexOf(table) !== -1 || PULL_INCR_INAPTES[table];
-    curseurs[table] = complet ? '' : (_pullCurseurs()[table] || '');
+    curseurs[table] = complet ? '' : _pullCurseurEffectif(table);
     tablesConcernees.push([table, store]);
   }
   var body = JSON.stringify({ cursors: curseurs });
