@@ -384,7 +384,6 @@ const SEC_POL_KEY = 'menko_hub_secpol';
 const SEC_AUDIT_KEY = 'menko_hub_audit';
 const SEC_LOCK_KEY = 'menko_hub_lockout';
 const AUDIT_MAX = 500;
-const SB_AUDIT_TABLE = 'menko_hub_audit';
 
 function defaultSecPol(){ return { minPass:8, maxTry:5, lockMin:15, idleMin:30, complexite:false }; }
 function getSecPol(){
@@ -409,7 +408,7 @@ function logEvent(action, detail){
   arr.push(evt);
   if (arr.length > AUDIT_MAX) arr = arr.slice(arr.length - AUDIT_MAX);
   localStorage.setItem(SEC_AUDIT_KEY, JSON.stringify(arr));
-  if (sbCfg()) { sbXHR('POST', SB_AUDIT_TABLE, [evt], 'return=minimal').catch(()=>{}); }  // best-effort cloud
+  if (sbCfg()) { hubFn('audit', { actor:evt.actor, event:evt.action, detail:evt.detail }).catch(()=>{}); }  // best-effort cloud
 }
 function getAudit(){ try { return JSON.parse(localStorage.getItem(SEC_AUDIT_KEY)) || []; } catch(e){ return []; } }
 
@@ -645,7 +644,6 @@ async function importerSauvegarde(){
 //  Base locale = source hors-ligne. Cloud = partage multi-poste.
 // ============================================================
 const SB_CFG_KEY = 'menko_hub_sb';
-const SB_TABLE = 'menko_hub_users';
 /* [FIX connexion] Même correctif que côté Menko Agro : repli sur la config
    du projet Menco Holding si rien n'est enregistré localement, pour qu'un
    appareil qui n'a jamais visité Paramètres → Synchronisation fonctionne
@@ -679,41 +677,68 @@ function sbXHR(method, path, body, prefer){
     xhr.send(body ? JSON.stringify(body) : null);
   });
 }
-function _toCloud(u){
-  return { id:u.id, nom:u.nom||'', login:u.login||'', password_hash:u.password_hash||'', salt:u.salt||'',
-           role:u.role||'', actif:u.actif!==false, deleted:false, last_login:u.last_login||null,
-           created_at:u.createdAt||new Date().toISOString(), updated_at:u.updatedAt||new Date().toISOString() };
+/* ── Accès aux comptes du hub : UNIQUEMENT via l'Edge Function hub-sync ──
+   Les tables menko_hub_users / menko_hub_audit ne sont plus accessibles avec
+   la clé publique. Le mot de passe est vérifié côté serveur ; le hash ne
+   quitte jamais le serveur. Le hash gardé sur l'appareil (connexion hors
+   ligne) est recalculé localement après une connexion réussie. */
+const HUB_TOK_KEY = 'menko_hub_tok';
+function hubTok(){
+  try {
+    const t = sessionStorage.getItem(HUB_TOK_KEY); if (!t) return '';
+    const p = JSON.parse(atob(t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+    if (!p.exp || p.exp * 1000 < Date.now() + 60000) { sessionStorage.removeItem(HUB_TOK_KEY); return ''; }
+    return t;
+  } catch(e){ return ''; }
 }
-function _fromCloud(r){
-  return { id:r.id, nom:r.nom, login:r.login, password_hash:r.password_hash, salt:r.salt,
-           role:r.role, actif:r.actif!==false, last_login:r.last_login||null,
-           createdAt:r.created_at, updatedAt:r.updated_at, _deleted:!!r.deleted };
+function hubTokSet(t){ try { sessionStorage.setItem(HUB_TOK_KEY, t); } catch(e){} }
+function hubTokClear(){ try { sessionStorage.removeItem(HUB_TOK_KEY); } catch(e){} }
+// Résout { status, ...corps } ; ne rejette que si le réseau est indisponible.
+function hubFn(action, payload){
+  return new Promise((resolve, reject) => {
+    const cfg = sbCfg();
+    if (!cfg) return reject(new Error('Supabase non configuré'));
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', cfg.url.replace(/\/+$/,'') + '/functions/v1/hub-sync', true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.setRequestHeader('apikey', cfg.key);
+    xhr.setRequestHeader('Authorization', 'Bearer ' + (hubTok() || cfg.key));
+    xhr.timeout = 15000;
+    xhr.onload = () => { let b = {}; try { b = JSON.parse(xhr.responseText || '{}'); } catch(e){} b.status = xhr.status; resolve(b); };
+    xhr.onerror = () => reject(new Error('Réseau indisponible'));
+    xhr.ontimeout = () => reject(new Error('Délai dépassé'));
+    xhr.send(JSON.stringify(Object.assign({ action }, payload || {})));
+  });
 }
-async function sbUsersPush(user){
+function _hubErr(r){ return (r && r.error) ? r.error : ('HTTP ' + (r && r.status)); }
+// Enregistre/modifie un compte (administrateur connecté). `plain` = nouveau mot de passe en clair, s'il y en a un.
+async function sbUsersPush(user, plain){
   if (!sbCfg()) return;
+  if (!hubTok()) throw new Error('reconnectez-vous au hub pour synchroniser');
+  const r = await hubFn('upsert', { user:{ id:user.id, nom:user.nom, login:user.login, role:user.role, actif:user.actif!==false, password: plain || undefined } });
+  if (!r.ok) throw new Error(_hubErr(r));
   user.updatedAt = new Date().toISOString();
-  await sbXHR('POST', SB_TABLE, [_toCloud(user)], 'resolution=merge-duplicates,return=minimal');
 }
 async function sbUsersSoftDelete(id){
   if (!sbCfg()) return;
-  await sbXHR('PATCH', SB_TABLE + '?id=eq.' + encodeURIComponent(id),
-    { deleted:true, updated_at:new Date().toISOString() }, 'return=minimal');
+  if (!hubTok()) throw new Error('reconnectez-vous au hub pour synchroniser');
+  const r = await hubFn('delete', { id });
+  if (!r.ok) throw new Error(_hubErr(r));
 }
-// Pull cloud → merge local (updated_at le plus récent gagne ; tombstone = suppression locale)
+// Cloud → local (administrateur connecté). Les hash ne sont jamais reçus : un compte venu du cloud
+// n'a pas de hash local tant que son titulaire ne s'est pas connecté en ligne sur cet appareil.
 async function sbUsersPull(){
-  if (!sbCfg()) return false;
-  const rows = await sbXHR('GET', SB_TABLE + '?select=*', null);
+  if (!sbCfg() || !hubTok()) return false;
+  const r = await hubFn('list');
+  if (!r.ok) return false;
   const db = await openHoldDB();
   const locals = await getAllUsers(db);
   const map = {}; locals.forEach(u => map[u.id] = u);
-  for (const r of rows) {
-    const c = _fromCloud(r);
+  for (const c of (r.users || [])) {
     const l = map[c.id];
-    if (c._deleted) { if (l) await _deleteUserLocal(db, c.id); continue; }
-    if (!l || new Date(c.updatedAt||0) >= new Date(l.updatedAt||0)) {
-      delete c._deleted;
-      await putUser(db, c);
-    }
+    if (c.deleted) { if (l) await _deleteUserLocal(db, c.id); continue; }
+    if (l) { Object.assign(l, { nom:c.nom, login:c.login, role:c.role, actif:c.actif!==false, last_login:c.last_login||l.last_login||null, updatedAt:c.updated_at }); await putUser(db, l); }
+    else await putUser(db, { id:c.id, nom:c.nom, login:c.login, role:c.role, actif:c.actif!==false, password_hash:'', salt:'', last_login:c.last_login||null, createdAt:c.created_at, updatedAt:c.updated_at });
   }
   return true;
 }
@@ -725,14 +750,8 @@ function _deleteUserLocal(db, id){
     tx.onerror = () => res();
   });
 }
-// Push local non encore présents/plus récents → cloud (réconciliation montante)
-async function sbUsersPushAll(){
-  if (!sbCfg()) return;
-  const db = await openHoldDB();
-  const users = realUsers(await getAllUsers(db));
-  if (!users.length) return;
-  await sbXHR('POST', SB_TABLE, users.map(_toCloud), 'resolution=merge-duplicates,return=minimal');
-}
+// Plus de poussée en masse : le serveur ne reçoit jamais de hash.
+async function sbUsersPushAll(){ return; }
 function _sbMsg(m, ok){ const e = document.getElementById('sbMsg'); if (e){ e.textContent = m; e.style.color = ok ? 'var(--vert,#1a7f37)' : 'var(--dim)'; } }
 function sbRefreshStatut(){
   const b = document.getElementById('sbStatut'); if (!b) return;
@@ -753,7 +772,7 @@ function sbSaveCfg(){
 async function sbTest(){
   if (!sbCfg()) return _sbMsg('Configurez d\'abord URL + clé.', false);
   _sbMsg('Test en cours…', true);
-  try { await sbXHR('GET', SB_TABLE + '?select=id&limit=1', null); _sbMsg('✅ Connexion OK, table accessible.', true); }
+  try { const r = await hubFn('ping'); if (!r.ok) throw new Error(_hubErr(r)); _sbMsg('✅ Connexion OK, service des comptes joignable.', true); }
   catch(e){ _sbMsg('❌ ' + e.message, false); }
 }
 async function sbSyncNow(){
@@ -901,7 +920,7 @@ async function doSetup(){
   const hash = await hashPassword(p1, salt);
   const user = { id:'u_'+Date.now(), nom, login, password_hash:hash, salt, role:'admin', actif:true, createdAt:new Date().toISOString() };
   await putUser(db, user);
-  try { await sbUsersPush(user); } catch(e){}
+  try { const r = await hubFn('bootstrap', { user:{ id:user.id, nom, login, password:p1 } }); if (r && r.ok && r.token) hubTokSet(r.token); } catch(e){}
   localStorage.setItem(SESSION_KEY, JSON.stringify({ id:user.id, nom:user.nom, login:user.login, role:user.role }));
   logEvent('user_create', 'Compte administrateur initial "' + login + '"');
   enterApp(user);
@@ -915,7 +934,26 @@ async function doLogin(){
   const blocMin = loginBloque(login);
   if (blocMin > 0) return showErr('Compte temporairement bloqué. Réessayez dans ' + blocMin + ' min.');
 
-  try { await sbUsersPull(); } catch(e){}   // cloud d'abord (compte créé sur autre poste), best-effort
+  /* Vérification côté serveur (hub-sync). 401 / 429 sont définitifs ; si le service est injoignable ou
+     absent (hors ligne), on retombe sur la vérification locale du hash gardé sur cet appareil. */
+  let srv = null;
+  try { srv = await hubFn('login', { login, password: pass }); } catch(e){ srv = null; }
+  if (srv && srv.ok && srv.token && srv.user) {
+    hubTokSet(srv.token);
+    const dbS = await openHoldDB();
+    const allS = realUsers(await getAllUsers(dbS));
+    const uS = allS.find(x => x.id === srv.user.id) || allS.find(x => x.login.toLowerCase() === srv.user.login.toLowerCase()) || { createdAt: srv.user.created_at };
+    const saltS = generateSalt();
+    Object.assign(uS, { id:srv.user.id, nom:srv.user.nom, login:srv.user.login, role:srv.user.role, actif:true,
+      last_login:new Date().toISOString(), salt:saltS, password_hash:await hashPassword(pass, saltS), updatedAt:srv.user.updated_at });
+    await putUser(dbS, uS);
+    reinitEchecs(login);
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ id:uS.id, nom:uS.nom, login:uS.login, role:uS.role }));
+    logEvent('login_ok', 'Rôle ' + uS.role);
+    return enterApp(uS);
+  }
+  if (srv && srv.status === 429) return showErr('Trop de tentatives. Réessayez dans quelques minutes.');
+  if (srv && srv.status === 401) { enregistrerEchec(login); logEvent('login_fail', 'Identifiants refusés "' + login + '"'); return showErr('Identifiant ou mot de passe incorrect.'); }
   const db = await openHoldDB();
   const users = realUsers(await getAllUsers(db));
   const user = users.find(u => u.login.toLowerCase() === login.toLowerCase());
@@ -927,7 +965,7 @@ async function doLogin(){
 
   reinitEchecs(login);
   user.last_login = new Date().toISOString();
-  try { await putUser(db, user); await sbUsersPush(user); } catch(e){}
+  try { await putUser(db, user); } catch(e){}
   localStorage.setItem(SESSION_KEY, JSON.stringify({ id:user.id, nom:user.nom, login:user.login, role:user.role }));
   logEvent('login_ok', 'Rôle ' + user.role);
   enterApp(user);
@@ -935,6 +973,7 @@ async function doLogin(){
 
 function doLogout(){
   logEvent('logout', '');
+  hubTokClear();
   localStorage.removeItem(SESSION_KEY);
   location.reload();
 }
@@ -1088,7 +1127,7 @@ async function validerUtilisateurHub(id){
     }
     await putUser(db, user);
     logEvent(estNouveau ? 'user_create' : 'user_update', '"' + login + '" rôle=' + role + ' actif=' + actif + (pass ? ' (mdp changé)' : ''));
-    try { await sbUsersPush(user); } catch(e){ _modalErr('Enregistré en local. Sync cloud échouée : ' + e.message); }
+    try { await sbUsersPush(user, pass || undefined); } catch(e){ _modalErr('Enregistré en local. Sync cloud échouée : ' + e.message); }
     fermerModal();
     renderParametrage();
     if (currentSession().login && currentSession().login.toLowerCase() === login.toLowerCase()) {
@@ -1327,9 +1366,10 @@ async function initDash(){
     try { return enterApp(JSON.parse(session)); } catch(e){}
   }
   const db = await openHoldDB();
-  try { await sbUsersPull(); } catch(e){}   // récupère comptes créés ailleurs avant écran setup
   const users = realUsers(await getAllUsers(db));
-  if (users.length === 0) {
+  let serveurAComptes = false;
+  if (users.length === 0) { try { const pg = await hubFn('ping'); serveurAComptes = !!(pg && pg.ok && pg.has_users); } catch(e){} }
+  if (users.length === 0 && !serveurAComptes) {
     document.getElementById('login-title').textContent = 'Bienvenue';
     document.getElementById('login-sub').textContent = 'Première utilisation — créez le compte administrateur';
     document.getElementById('login-form').style.display = 'none';

@@ -29107,6 +29107,15 @@ async function _diagGet(cfg, table){
   if (!r.ok) throw new Error(table+' → HTTP '+r.status);
   return await r.json();
 }
+/* Les comptes du hub ne sont plus lisibles avec la clé publique : lecture via l'Edge Function hub-sync (jeton admin du hub). */
+async function _diagHubUsers(cfg){
+  var t=''; try { t=sessionStorage.getItem('menko_hub_tok')||''; } catch(e){}
+  if (!t) throw new Error('jeton du hub absent : connectez-vous au hub en administrateur dans cet onglet, puis revenez ici');
+  var r = await fetch(cfg.url.replace(/\/+$/,'') + '/functions/v1/hub-sync', { method:'POST', headers:{ 'Content-Type':'application/json', apikey:cfg.key, Authorization:'Bearer '+t }, body: JSON.stringify({ action:'list' }) });
+  var j = {}; try { j = await r.json(); } catch(e){}
+  if (!r.ok || !j.ok) throw new Error('hub-sync → ' + (j.error || r.status));
+  return j.users || [];
+}
 function _diagUnwrapHub(r){ return { id:r.id, login:r.login||'', nom:r.nom||'', role:r.role||'', actif:r.actif!==false, deleted:!!r.deleted }; }
 function _diagUnwrapPi(r){
   var d = (r && r.data && typeof r.data==='object') ? r.data : r;
@@ -29131,7 +29140,7 @@ async function lancerDiagHolding(){
     if (!piCfg && !hubCfg) { resEl.innerHTML = '<div class="alert alert-error">Aucune configuration cloud trouvée (ni pi_users, ni menko_hub_users). Configurez d\'abord Cloud / Sync.</div>'; return; }
 
     var hubRaw = [], piRaw = [], hubErr = null, piErr = null;
-    if (hubCfg) { try { hubRaw = await _diagGet(hubCfg, 'menko_hub_users'); } catch(e){ hubErr = e.message; } }
+    if (hubCfg) { try { hubRaw = await _diagHubUsers(hubCfg); } catch(e){ hubErr = e.message; } }
     else hubErr = 'Configuration menko_hub_sb introuvable (le hub n\'a peut-être jamais été configuré sur ce poste).';
     if (piCfg) { try { piRaw = await _diagGet(piCfg, 'pi_users'); } catch(e){ piErr = e.message; } }
     else piErr = 'Configuration Cloud / Sync (pi_users) non renseignée.';
