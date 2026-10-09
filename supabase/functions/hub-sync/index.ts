@@ -1,5 +1,5 @@
 // ═════════════════════════════════════════════════════════════════
-// Edge Function : hub-sync — MENKO HOLDING (BROUILLON, NON DÉPLOYÉ)
+// Edge Function : hub-sync — MENKO HOLDING
 //
 // Remplace l'accès direct (clé anon) du hub et de Menko Agro aux tables
 // menko_hub_users et menko_hub_audit. Ces tables seront fermées à anon et
@@ -28,7 +28,8 @@ const SUPABASE_URL = Deno.env.get("SB_URL") ?? Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const JWT_SECRET = Deno.env.get("SB_PROJECT_JWT_SECRET")!;
 const MAX_ATTEMPTS = 10, WINDOW_MIN = 15, TOKEN_TTL = 8 * 3600;
-const ROLES = ["admin", "gestionnaire", "immo", "agro", "digitech"];
+// Les rôles du hub sont personnalisables (ex. assistante, comptabilite, juriste) : on valide le format, pas une liste fermée.
+const ROLE_OK = /^[A-Za-z0-9_\-]{1,30}$/;
 
 const CORS = {
   "Access-Control-Allow-Origin": "https://erp-menko-holding.com",
@@ -150,7 +151,7 @@ Deno.serve(async (req) => {
     }
     case "upsert": {
       const u = b.user || {}; const role = clip(u.role, 30);
-      if (!ROLES.includes(role) || !clip(u.login, 80).trim() || !clip(u.nom, 120).trim()) return json({ ok: false, error: "champs" }, 400);
+      if (!ROLE_OK.test(role) || !clip(u.login, 80).trim() || !clip(u.nom, 120).trim()) return json({ ok: false, error: "champs" }, 400);
       const id = clip(u.id, 60) || crypto.randomUUID();
       const row: Record<string, unknown> = { id, nom: clip(u.nom, 120), login: clip(u.login, 80).trim(), role,
         actif: u.actif !== false, deleted: false, updated_at: new Date().toISOString() };
