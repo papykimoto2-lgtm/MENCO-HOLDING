@@ -7,12 +7,14 @@
 // Le hash et le sel ne sortent JAMAIS vers le navigateur.
 //
 // Actions (POST JSON { action, ... }) :
+//   ping            ()                           → { ok, has_users }
+//   bootstrap       { user:{id?,nom,login,password} } → premier admin seulement (403 si des comptes existent)
 //   login           { login, password }          → { ok, token, user }
 //   list            (jeton admin)                → { ok, users[] }   sans hash
 //   upsert          (jeton admin) { user:{id?,nom,login,role,actif,password?} }
 //   change_password (jeton valide) { old, new }
 //   delete          (jeton admin) { id }         → suppression douce
-//   audit           { actor, action, detail }    → journal (limité, taille bornée)
+//   audit           { actor, event, detail }     → journal (limité, taille bornée)
 //   audit_list      (jeton admin)                → { ok, rows[] }
 //
 // Secrets requis (mêmes que staff-login) : SB_URL, SERVICE_ROLE_KEY,
@@ -63,7 +65,15 @@ async function verify(token: string): Promise<Record<string, any> | null> {
 const clip = (v: unknown, n: number) => String(v ?? "").slice(0, n);
 const randSalt = () => toHex(crypto.getRandomValues(new Uint8Array(16)).buffer);
 const publicUser = (u: any) => ({ id: u.id, nom: u.nom, login: u.login, role: u.role, actif: u.actif !== false,
-  last_login: u.last_login, created_at: u.created_at, updated_at: u.updated_at });
+  last_login: u.last_login, created_at: u.created_at, updated_at: u.updated_at, deleted: !!u.deleted });
+
+// Le jeton est signé avec le secret du projet : il NE DOIT PAS être de rôle « authenticated » avec un
+// claim app_role, sinon PostgREST le traiterait comme du personnel ERP (accès à toutes les tables pi_*).
+// Rôle « anon » + claims propres au hub : inutilisable pour lire des données, utile seulement ici.
+const issue = async (u: any) => {
+  const now = Math.floor(Date.now() / 1000);
+  return sign({ role: "anon", aud: "authenticated", sub: u.id, iat: now, exp: now + TOKEN_TTL, hub: true, hub_role: u.role });
+};
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -92,17 +102,33 @@ Deno.serve(async (req) => {
       }
       if (!found) { await audit(login.toLowerCase(), "login_echec_srv", "échec"); return json({ ok: false, error: "identifiants" }, 401); }
       await db.from("menko_hub_users").update({ last_login: new Date().toISOString() }).eq("id", found.id);
-      const now = Math.floor(Date.now() / 1000);
-      const token = await sign({ role: "authenticated", aud: "authenticated", sub: found.id, iat: now, exp: now + TOKEN_TTL,
-        hub: true, hub_role: found.role, app_role: found.role });
+      const token = await issue(found);
       await audit(found.login, "login_ok_srv", "connexion");
       return json({ ok: true, token, user: publicUser(found) });
+    }
+    case "ping": {
+      const { count } = await db.from("menko_hub_users").select("id", { count: "exact", head: true }).eq("deleted", false);
+      return json({ ok: true, has_users: (count ?? 0) > 0 });
+    }
+    case "bootstrap": {
+      // Création du TOUT PREMIER administrateur : refusée dès qu'un compte existe.
+      const { count } = await db.from("menko_hub_users").select("id", { count: "exact", head: true }).eq("deleted", false);
+      if ((count ?? 0) > 0) return json({ ok: false, error: "deja_initialise" }, 403);
+      const u = b.user || {};
+      if (!clip(u.login, 80).trim() || !clip(u.nom, 120).trim() || String(u.password || "").length < 8) return json({ ok: false, error: "champs" }, 400);
+      const salt = randSalt();
+      const row = { id: clip(u.id, 60) || crypto.randomUUID(), nom: clip(u.nom, 120), login: clip(u.login, 80).trim(), role: "admin",
+        actif: true, deleted: false, salt, password_hash: await sha256Salt(String(u.password), salt) };
+      const { error } = await db.from("menko_hub_users").insert(row);
+      if (error) return json({ ok: false, error: "base" }, 500);
+      await audit(row.login, "user_create", "admin initial");
+      return json({ ok: true, token: await issue(row), user: publicUser(row) });
     }
     case "audit": {
       const since = new Date(Date.now() - 60000).toISOString();
       const { count } = await db.from("menko_hub_audit").select("id", { count: "exact", head: true }).gte("ts", since);
       if (!tk && (count ?? 0) > 60) return json({ ok: false, error: "limite" }, 429);
-      await audit(b.actor, b.action, b.detail);
+      await audit(b.actor, b.event, b.detail);
       return json({ ok: true });
     }
     case "change_password": {
@@ -119,7 +145,7 @@ Deno.serve(async (req) => {
   if (!isAdmin) return json({ ok: false, error: "interdit" }, 403);
   switch (b.action) {
     case "list": {
-      const { data } = await db.from("menko_hub_users").select("*").eq("deleted", false).order("nom");
+      const { data } = await db.from("menko_hub_users").select("*").order("nom");
       return json({ ok: true, users: (data ?? []).map(publicUser) });
     }
     case "upsert": {

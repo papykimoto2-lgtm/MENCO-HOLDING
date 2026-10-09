@@ -644,7 +644,6 @@ function _genSalt(){
    même localStorage — aucune configuration supplémentaire à faire côté
    Agro. */
 var HUB_SB_CFG_KEY = 'menko_hub_sb';
-var HUB_SB_TABLE = 'menko_hub_users';
 /* [FIX connexion] Sans config Supabase enregistrée dans localStorage
    (jamais visitée « Paramètres → Synchronisation » sur CET appareil),
    sbUsersPull() ne tentait aucun appel réseau — un utilisateur ouvrant
@@ -676,37 +675,60 @@ function hubSbXHR(method, path, body, prefer){
     xhr.send(body ? JSON.stringify(body) : null);
   });
 }
-function _hubToCloud(u){
-  return { id:u.id, nom:u.nom||'', login:u.login||'', password_hash:u.password_hash||'', salt:u.salt||'',
-           role:u.role||'', actif:u.actif!==false, deleted:false, last_login:u.last_login||null,
-           created_at:u.createdAt||new Date().toISOString(), updated_at:u.updatedAt||new Date().toISOString() };
+/* ── Accès aux comptes du hub : UNIQUEMENT via l'Edge Function hub-sync (même jeton de session que le hub) ── */
+var HUB_TOK_KEY = 'menko_hub_tok';
+function hubTok(){
+  try {
+    var t = sessionStorage.getItem(HUB_TOK_KEY); if (!t) return '';
+    var p = JSON.parse(atob(t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+    if (!p.exp || p.exp * 1000 < Date.now() + 60000) { sessionStorage.removeItem(HUB_TOK_KEY); return ''; }
+    return t;
+  } catch(e){ return ''; }
 }
-function _hubFromCloud(r){
-  return { id:r.id, nom:r.nom, login:r.login, password_hash:r.password_hash, salt:r.salt,
-           role:r.role, actif:r.actif!==false, last_login:r.last_login||null,
-           createdAt:r.created_at, updatedAt:r.updated_at, _deleted:!!r.deleted };
+function hubTokSet(t){ try { sessionStorage.setItem(HUB_TOK_KEY, t); } catch(e){} }
+function hubFn(action, payload){
+  return new Promise(function(resolve, reject){
+    var cfg = hubSbCfg();
+    if (!cfg) return reject(new Error('Supabase non configuré'));
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', cfg.url.replace(/\/+$/,'') + '/functions/v1/hub-sync', true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.setRequestHeader('apikey', cfg.key);
+    xhr.setRequestHeader('Authorization', 'Bearer ' + (hubTok() || cfg.key));
+    xhr.timeout = 15000;
+    xhr.onload = function(){ var b = {}; try { b = JSON.parse(xhr.responseText || '{}'); } catch(e){} b.status = xhr.status; resolve(b); };
+    xhr.onerror = function(){ reject(new Error('Réseau indisponible')); };
+    xhr.ontimeout = function(){ reject(new Error('Délai dépassé')); };
+    xhr.send(JSON.stringify(Object.assign({ action: action }, payload || {})));
+  });
 }
-async function sbUsersPush(user){
+function _hubErr(r){ return (r && r.error) ? r.error : ('HTTP ' + (r && r.status)); }
+async function sbUsersPush(user, plain){
   if (!hubSbCfg()) return;
+  if (!hubTok()) throw new Error('reconnectez-vous pour synchroniser');
+  var r = await hubFn('upsert', { user:{ id:user.id, nom:user.nom, login:user.login, role:user.role, actif:user.actif!==false, password: plain || undefined } });
+  if (!r.ok) throw new Error(_hubErr(r));
   user.updatedAt = new Date().toISOString();
-  await hubSbXHR('POST', HUB_SB_TABLE, [_hubToCloud(user)], 'resolution=merge-duplicates,return=minimal');
 }
 async function sbUsersSoftDelete(id){
   if (!hubSbCfg()) return;
-  await hubSbXHR('PATCH', HUB_SB_TABLE + '?id=eq.' + encodeURIComponent(id),
-    { deleted:true, updated_at:new Date().toISOString() }, 'return=minimal');
+  if (!hubTok()) throw new Error('reconnectez-vous pour synchroniser');
+  var r = await hubFn('delete', { id: id });
+  if (!r.ok) throw new Error(_hubErr(r));
 }
 async function sbUsersPull(){
-  if (!hubSbCfg()) return false;
-  var rows = await hubSbXHR('GET', HUB_SB_TABLE + '?select=*', null);
+  if (!hubSbCfg() || !hubTok()) return false;
+  var r = await hubFn('list');
+  if (!r.ok) return false;
   var db = await openHoldDB();
   var locals = await _holdUsers(db);
   var map = {}; locals.forEach(function(u){ map[u.id]=u; });
+  var rows = r.users || [];
   for (var i=0;i<rows.length;i++){
-    var c = _hubFromCloud(rows[i]);
-    var l = map[c.id];
-    if (c._deleted) { if (l) await _holdDeleteUserById(db, c.id); continue; }
-    if (!l || new Date(c.updatedAt||0) >= new Date(l.updatedAt||0)) { delete c._deleted; await _holdSaveUser(db, c); }
+    var c = rows[i], l = map[c.id];
+    if (c.deleted) { if (l) await _holdDeleteUserById(db, c.id); continue; }
+    if (l) { Object.assign(l, { nom:c.nom, login:c.login, role:c.role, actif:c.actif!==false, last_login:c.last_login||l.last_login||null, updatedAt:c.updated_at }); await _holdSaveUser(db, l); }
+    else await _holdSaveUser(db, { id:c.id, nom:c.nom, login:c.login, role:c.role, actif:c.actif!==false, password_hash:'', salt:'', last_login:c.last_login||null, createdAt:c.created_at, updatedAt:c.updated_at });
   }
   return true;
 }
@@ -728,7 +750,22 @@ async function _agroDoLogin(){
        (menko_hub_users) — best-effort, ne bloque pas si hors-ligne — AVANT
        de vérifier localement. Un compte créé sur un autre poste devient
        ainsi utilisable ici dès la première tentative de connexion. */
-    try { await sbUsersPull(); } catch(e){}
+    /* Vérification côté serveur (hub-sync) ; 401 / 429 définitifs, repli local seulement si le service est injoignable. */
+    var srv=null;
+    try { srv=await hubFn('login',{login:login,password:pass}); } catch(e){ srv=null; }
+    if(srv && srv.ok && srv.token && srv.user){
+      hubTokSet(srv.token);
+      var dbS=await openHoldDB(); var usS=await _holdUsers(dbS);
+      var uS=usS.find(function(x){return x.id===srv.user.id;})||usS.find(function(x){return (x.login||'').toLowerCase()===(srv.user.login||'').toLowerCase();})||{ createdAt:srv.user.created_at };
+      var saltS=_genSalt();
+      Object.assign(uS,{ id:srv.user.id, nom:srv.user.nom, login:srv.user.login, role:srv.user.role, actif:true, last_login:new Date().toISOString(), salt:saltS, password_hash:await hashPassword(pass,saltS), updatedAt:srv.user.updated_at });
+      await _holdSaveUser(dbS,uS);
+      sessionStorage.setItem('menko_session', JSON.stringify({ id:uS.id, nom:uS.nom, login:uS.login, role:uS.role }));
+      sessionStorage.setItem('menko_agro_unlocked', '1');
+      location.reload();
+      return;
+    }
+    if(srv && (srv.status===401||srv.status===429)){ _agroAccErr(srv.status===429?'Trop de tentatives. Réessayez dans quelques minutes.':'Identifiant ou mot de passe incorrect.'); if(btn){btn.disabled=false;btn.textContent='Se connecter';} return; }
     var db=await openHoldDB(); var users=await _holdUsers(db);
     var u=users.find(function(x){ return (x.login||'').toLowerCase()===login.toLowerCase(); });
     if(!u){ _agroAccErr('Identifiant ou mot de passe incorrect.'); if(btn){btn.disabled=false;btn.textContent='Se connecter';} return; }
@@ -736,7 +773,7 @@ async function _agroDoLogin(){
     var h=await hashPassword(pass,u.salt);
     if(h!==u.password_hash){ _agroAccErr('Identifiant ou mot de passe incorrect.'); if(btn){btn.disabled=false;btn.textContent='Se connecter';} return; }
     u.last_login = new Date().toISOString();
-    try { await _holdSaveUser(db, u); await sbUsersPush(u); } catch(e){}
+    try { await _holdSaveUser(db, u); } catch(e){}
     sessionStorage.setItem('menko_session', JSON.stringify({ id:u.id, nom:u.nom, login:u.login, role:u.role }));
     sessionStorage.setItem('menko_agro_unlocked', '1');
     location.reload();
@@ -754,9 +791,10 @@ function _agroAccessWindow(){
   document.body.appendChild(ov);
   var body=ov.querySelector('#agro-acc-body');
   openHoldDB().then(async function(db){
-    try { await sbUsersPull(); } catch(e){}
     var users = await _holdUsers(db);
-    if(!users.length){
+    var serveurAComptes=false;
+    if(!users.length){ try { var pg=await hubFn('ping'); serveurAComptes=!!(pg&&pg.ok&&pg.has_users); } catch(e){} }
+    if(!users.length && !serveurAComptes){
       body.innerHTML='<div style="font-size:13px;color:#444;line-height:1.6;">Aucun compte n\'existe encore. Créez le compte administrateur depuis le hub Menko Holding.</div>'
         +'<button onclick="location.href=\'index.html\'" style="width:100%;margin-top:14px;background:#1e3d2f;color:#fff;border:none;padding:11px;border-radius:8px;font-weight:700;cursor:pointer;">Aller au hub &#8594;</button>';
       return;
@@ -9131,7 +9169,7 @@ create trigger agro_state_touch_trg before insert or update on public.agro_state
                    (sbUsersPush → table menko_hub_users). Repli silencieux si hors
                    ligne ou cloud non configuré : le compte reste utilisable
                    localement, il se synchronisera à la prochaine occasion. */
-                if (compteHub) { try { await sbUsersPush(compteHub); } catch(e) { /* pas bloquant */ } }
+                if (compteHub) { try { await sbUsersPush(compteHub, pass || undefined); } catch(e) { /* pas bloquant */ } }
 
                 if (id) { Object.assign(data.utilisateurs.find(x => x.id === id), { nom, identifiant, role, actif }); }
                 else { data.utilisateurs.push({ id: data.nextId.utilisateur++, nom, identifiant, role, actif }); }
