@@ -9,6 +9,7 @@ async function preparer(page) {
   await page.evaluate(function () {
     DATA.parcelles = [{ id: 'p1', ref: 'PARC-1', localisation: 'Bingerville' }, { id: 'p2', ref: 'PARC-2', localisation: 'Bassam' }];
     DATA.users = [{ id: 'u1', nom: 'Resp Foncier', login: 'rf' }, { id: 'u2', nom: 'Géomètre', login: 'geo' }];
+    window.userPeutSurStore = function () { return true; };
     APP.currentUser = { id: 'u1', nom: 'Resp Foncier' };
     DATA.dossiers_fonciers = []; DATA.evenements_fonciers = [];
     window.__sync = 0; window.syncToSupabase = function () { window.__sync++; };

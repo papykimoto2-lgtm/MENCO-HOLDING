@@ -8,6 +8,7 @@ async function preparer(page) {
   return page.evaluate(async function () {
     DATA.parcelles = [{ id: 'p1', ref: 'PARC-1', localisation: 'Bingerville' }];
     DATA.users = [{ id: 'u1', nom: 'Resp Foncier', login: 'rf' }, { id: 'u2', nom: 'Autre agent', login: 'ag' }];
+    window.userPeutSurStore = function () { return true; };
     APP.currentUser = { id: 'u1', nom: 'Resp Foncier', role: 'foncier' };
     DATA.dossiers_fonciers = []; DATA.evenements_fonciers = []; DATA.intervenants_fonciers = []; DATA.missions_foncieres = [];
     window.__sync = 0; window.syncToSupabase = function () { window.__sync++; };
