@@ -141,3 +141,29 @@ du claim exigé, toute politique écrite le serait à l'aveugle.
 
 `rls_01_inspection.sql` est en lecture seule et peut être lancé dès
 maintenant, en production, sans risque.
+
+## Mise à jour du 13/10/2026 — phase A du plan de fermeture (code, sans toucher à la base)
+
+État de la base Menko mesuré ce jour : 165 tables `pi_*`, **165 ont la règle personnel** (`personnel_tout`),
+**162 gardent encore `*_open_rollback`** (accès total `anon` + `authenticated`), 3 ont une règle ouverte
+propre (`pi_bordereaux_caisse_all`, `pi_demandes_reappro_all`, `pi_incidents_all`) ; hors `pi_*`,
+`menko_hub_users` (ALL), `menko_hub_audit` (SELECT/INSERT) et `agro_state` (ALL) sont ouvertes à `anon`.
+
+Préalables du pilote (voir `rls_02_pilote.sql`) :
+
+1. **Realtime sous le jeton du personnel — fait dans le code.** `_rtAppliquerJeton()` appelle
+   `realtime.setAuth(sbAuth())` à la création du client, à chaque `staffLogin()` réussi et à `staffLogout()`.
+2. **Chargement initial, file d'envoi et pull attendent la session — fait dans le code.**
+   `syncAutorise()` attend `staff-login` (au plus 30 s, seulement si une connexion est en cours), puis :
+   repli sur la clé anon tant que `IMMO_SYNC_ANON_FALLBACK` vaut `true` (transition, comportement inchangé) ;
+   envoi **différé** (données conservées en file locale) quand il vaut `false`.
+   Le pull incrémental (`pull_incremental`) envoyait la clé anon en dur : il utilise désormais `sbAuth()`.
+3. **`staff-login` prouvé sur Menko — NON fait.** Reste à vérifier avec un vrai compte (compteur de
+   connexions serveur après la v7) avant de retirer une seule règle ouverte.
+
+Limite connue : le jeton dure 8 h et ne se renouvelle pas sans mot de passe. Un avertissement s'affiche
+10 minutes avant l'expiration ; après expiration l'application retombe sur la clé anon (badge de session
+dégradée). Avant fermeture de l'accès anonyme, prévoir un renouvellement ou une reconnexion guidée.
+
+Rien n'est retiré côté base tant que le point 3 n'est pas prouvé et que la recette sur copie n'est pas passée.
+Tests : `tests-caisse/rls-phase-a.test.js` (10 tests).
