@@ -29,3 +29,17 @@ Portail souscripteur, portail des intervenants, notifications, gestion documenta
 Conserver la convention du dépôt : tables `pi_dossiers_fonciers` et `pi_evenements_fonciers` au format `id / data jsonb / updated_at / scope_id`, **sans `organization_id`** (une base par client), **créées sans aucun accès `anon`** et avec les règles personnel / souscripteur / intervenant écrites avec la table. Journal : politique d'insertion seule, ni UPDATE ni DELETE. Puis ajouter les deux stores à `SUPA_STORE_MAP` et les retirer de `SANIX_STORES_LOCAL_UNIQUEMENT`.
 
 Tests : `tests-caisse/foncier-connect.test.js` (14 tests).
+
+## Phase 2 — intervenants et missions (13/10/2026, branche de travail)
+- Onglet **Foncier › Sécurisation du titre › Intervenants & missions**. Stores locaux `intervenants_fonciers` et `missions_foncieres` (DB locale v156), toujours sans table Supabase ni synchronisation.
+- **Répertoire** (§7.2) : nom, type, contact, moyen de contact obligatoire, référence professionnelle ; doublon refusé.
+- **Missions** (§7.4, §8.3) : dossier, intervenant actif, livrables attendus, échéance, responsable de validation (par défaut le responsable du dossier). Cycle de vie : brouillon, envoyée, acceptée, en cours, en attente d'informations, livrable soumis, en vérification, à corriger, validée, clôturée (+ annulée, avec motif, ajoutée au-delà du cahier). Seuls les passages prévus sont possibles.
+- **Acceptation** : la manière dont elle a été reçue est obligatoire ; sans contrat référencé, un avertissement rappelle qu'elle ne remplace pas un contrat (§7.4).
+- **Livrables** (§8.4) : chaque dépôt crée une version ; l'ancienne n'est jamais effacée. Refus : motif et éléments à corriger obligatoires, auteur, date, délai facultatif.
+- **Validation réservée au responsable désigné** (ou à un administrateur) ; « validée » exige que tous les livrables attendus soient validés.
+- Un livrable validé devient un **justificatif sourcé** (« document reçu du prestataire ») de l'étape liée, **sans terminer l'étape** (RM-07, RM-08).
+- **Vue intervenant** (§8.5) : `fcVueIntervenant()` ne renvoie que les missions envoyées de cet intervenant, avec le dossier (référence, parcelle), les étapes de son périmètre et ses livrables — ni observations internes, ni responsable, ni montants. Le futur portail externe devra s'y conformer ; la règle d'accès à écrire en base reprendra cette limite.
+- Journal : tous les événements de mission s'ajoutent au journal des dossiers (`mission_id`).
+- Tests : `tests-caisse/foncier-missions.test.js` (13 tests).
+
+Non réalisé : portail externe avec connexion, notifications, documents joints aux missions, tableaux de bord intervenants au-delà des indicateurs de l'onglet.
