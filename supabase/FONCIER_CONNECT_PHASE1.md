@@ -68,3 +68,13 @@ Non réalisé : portail externe avec connexion, notifications, documents joints 
 - **RM-11** : un délai administratif dépassé a ses propres règles, **jamais d'escalade**, et un libellé neutre (« ni un rejet ni une faute attribuée ») ; l'échéance interne dépassée est escaladée vers l'administrateur désigné (`fc_escalade_user_id`) ou les administrateurs.
 - Cycle automatique : au démarrage (25 s) puis toutes les 30 minutes tant que l'application est ouverte. Un cycle côté serveur (tâche planifiée) viendra avec la base de données : tant que personne n'ouvre l'application, aucune échéance n'est analysée.
 - Tests : `tests-caisse/foncier-notifications.test.js` (18 tests).
+
+## Référentiel de procédure (immatriculation d'une parcelle)
+
+Intégré dans `menko-immo.html` (constantes `FC_PROCEDURE_REF`, `FC_ACTEURS_REF`, `FC_BLOCS`, `FC_SITUATIONS`, `FC_CONTROLES_REF`, `FC_SOURCES_OFFICIELLES`, `FC_IDUFCI_NOTE`) :
+
+- ACD : 9 étapes officielles (30 étapes internes avec la création du titre avant signature) ; immatriculation au Livre foncier : 6 opérations.
+- 7 situations initiales, 9 contrôles essentiels (`fcEvaluerControle`, source obligatoire), références IDUFCI / n° dossier GUF (`fcDefinirReferences`), 6 blocs de suivi.
+- Tests : `tests-caisse/foncier-procedure.test.js` (15).
+
+**À valider avant usage commercial** : le contenu n'est pas vérifié par un juriste ou un géomètre-expert ; les liens de sources ne sont pas vérifiés ; l'intitulé de l'ACD est incohérent dans Menko (« Arrêté de Concession Définitive » vs « Attestation de Cession Définitive ») ; l'acronyme du ministère (MCLU) reste à confirmer. Les dossiers existants ne sont pas modifiés.

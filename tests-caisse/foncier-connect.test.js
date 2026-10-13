@@ -45,7 +45,7 @@ test('le workflow dépend de la procédure : toutes les étapes ne sont pas impo
   const r = await app.page.evaluate(function () {
     return ['acd', 'morcellement', 'mutation'].reduce(function (o, t) { var e = fcEtapesPour(t); o[t] = { n: e.length, acdSign: e.some(function (x) { return x.code === 'acd_signature'; }), titre: e.some(function (x) { return x.code === 'formalites_titre'; }) }; return o; }, {});
   });
-  assert.equal(r.acd.n, 28); assert.equal(r.acd.acdSign, true);
+  assert.equal(r.acd.n, 30); assert.equal(r.acd.acdSign, true);
   assert.equal(r.morcellement.n, 24); assert.equal(r.morcellement.acdSign, false); assert.equal(r.morcellement.titre, false);
   assert.equal(r.mutation.acdSign, false); assert.equal(r.mutation.titre, true);
 });
