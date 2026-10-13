@@ -57,3 +57,14 @@ Non réalisé : portail externe avec connexion, notifications, documents joints 
 
 ## Correctif transversal : droits et échecs d'écriture (phases 1 à 3)
 `dbPut()` refuse en silence (renvoie `false`) un profil sans droit sur le module. Les fonctions de Foncier Connect annonçaient alors « enregistré » alors que rien n'était écrit. Corrigé : contrôle du droit avant toute modification (`fcDroitEcriture`), échec d'écriture signalé (`fcDb`), toutes les fonctions de mutation protégées (`fcProtegerMutations`). Tests : `tests-caisse/foncier-droits.test.js` (4 tests).
+
+## Phase 4 — notifications, échéances, relances (13/10/2026, branche de travail)
+- Onglet **Foncier › Notifications** (badge de non lues). Store local `notifications_foncieres` (DB locale v158), sans table Supabase.
+- **Dérivées du journal** : l'événement métier est enregistré d'abord, les notifications ensuite (`fcNotifierSansRisque`). Un échec de notification ne peut ni annuler ni perdre l'opération (RM-10) ; `fcRattraperNotifications()` recrée, sans doublon, celles des événements récents qui n'en ont pas.
+- **Canaux** : *interne* (immédiat) ; *e-mail* via la configuration EmailJS existante (Paramètres) ; *SMS* et *WhatsApp* : **aucun fournisseur intégré**, la notification est marquée « canal non disponible », jamais « envoyée ». Un fournisseur se branche en renseignant `FC_FOURNISSEURS.sms` / `.whatsapp`. EmailJS non configuré : « canal non disponible », sans consommer de tentative.
+- **Destinataires** : le personnel reçoit dans ImmoSuite (e-mail aussi pour les cas urgents) ; l'intervenant et le souscripteur reçoivent par e-mail un texte limité aux données publiques (mission, échéance, titre public) — aucune donnée interne du dossier (testé).
+- **File** (§10.5) : identifiant, clé anti-doublon par destinataire et canal, 3 tentatives espacées (5 min, 30 min, 2 h), abandon avec message d'erreur, relance manuelle (« Relancer les envois en échec »), reprise des envois restés « en cours » plus de 10 minutes après un incident.
+- **Échéances et relances** (§10.4) : règles configurables par type (échéance interne, délai administratif, mission) : jours avant, le jour même, jours après, escalade. Une seule alerte par seuil franchi et par date d'échéance, la plus urgente seulement (pas de rafale après une absence) ; changer l'échéance remet le compteur à zéro.
+- **RM-11** : un délai administratif dépassé a ses propres règles, **jamais d'escalade**, et un libellé neutre (« ni un rejet ni une faute attribuée ») ; l'échéance interne dépassée est escaladée vers l'administrateur désigné (`fc_escalade_user_id`) ou les administrateurs.
+- Cycle automatique : au démarrage (25 s) puis toutes les 30 minutes tant que l'application est ouverte. Un cycle côté serveur (tâche planifiée) viendra avec la base de données : tant que personne n'ouvre l'application, aucune échéance n'est analysée.
+- Tests : `tests-caisse/foncier-notifications.test.js` (18 tests).
