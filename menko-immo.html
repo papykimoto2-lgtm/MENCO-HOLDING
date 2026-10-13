@@ -10084,6 +10084,7 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
               <button class="tab-btn" onclick="switchTab('foncier','titres')" title="ACD, TF provisoire et définitif"><i>📜</i>Titres Fonciers</button>
               <button class="tab-btn" onclick="switchTab('foncier','workflow')" title="Suivi des étapes administratives du titre"><i>🧭</i>Workflow titre</button>
               <button class="tab-btn" onclick="switchTab('foncier','dossiers')" title="Dossiers fonciers : étapes, responsables, justificatifs, historique"><i>📁</i>Dossiers fonciers</button>
+              <button class="tab-btn" onclick="switchTab('foncier','intervenants')" title="Répertoire des intervenants et missions confiées"><i>🤝</i>Intervenants &amp; missions</button>
             </div>
           </div>
           <div class="etape">
@@ -10614,6 +10615,7 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
         </div>
 
         <div class="tab-pane" id="tab-foncier-dossiers"><div id="fc-root"></div></div>
+        <div class="tab-pane" id="tab-foncier-intervenants"><div id="fi-root"></div></div>
 
         <div class="tab-pane" id="tab-foncier-fisc">
           <div class="card" style="border:1px solid var(--or);">
@@ -24739,6 +24741,8 @@ var DATA = {
   bordereaux_caisse: [],
   dossiers_fonciers: [],
   evenements_fonciers: [],
+  intervenants_fonciers: [],
+  missions_foncieres: [],
   /* v147 — Circuit budgétaire complet : budget prévisionnel annuel par
      division/compte, validé par le DG, décrémenté par les Demandes d'Achat
      validées, avec transferts de ligne à ligne */
@@ -24750,7 +24754,8 @@ var DATA = {
    INDEXEDDB
 ────────────────────────────────────────────────────── */
 var DB_NAME = 'ImmoSuiteDB';
-var DB_VERSION = 155; /* v155: stores 'dossiers_fonciers' et 'evenements_fonciers' — Foncier Connect phase 1 (locaux, sans table Supabase pour l'instant). Migration additive.
+var DB_VERSION = 156; /* v156: stores 'intervenants_fonciers' et 'missions_foncieres' — Foncier Connect phase 2 (locaux, sans table Supabase). Migration additive.
+                          v155: stores 'dossiers_fonciers' et 'evenements_fonciers' — Foncier Connect phase 1 (locaux, sans table Supabase pour l'instant). Migration additive.
                           v154: store 'bordereaux_caisse' — circuit de visas papier des pièces de caisse (visa final du Gérant Holding). Migration additive.
                           v153: store 'conventions_reglementees' — registre des conventions
                           réglementées intra-groupe (AUSCGIE art. 438+), pièce exigée par le
@@ -24908,7 +24913,7 @@ var ALL_STORES = [
   'demandes_reappro',
   /* v154 — Bordereaux de transmission des pièces de caisse au Gérant (visa final) */
   'bordereaux_caisse',
-  'dossiers_fonciers','evenements_fonciers',
+  'dossiers_fonciers','evenements_fonciers','intervenants_fonciers','missions_foncieres',
   /* v147 — Circuit budgétaire : DA + transferts */
   'fiches_engagement_depense', 'transferts_budgetaires',
   /* [FIX] Demandes de versement du portail souscripteur — n'était même pas
@@ -25335,7 +25340,7 @@ async function loadAllData() {
    bandeau discret pour un profil Admin uniquement — jamais pour les
    autres rôles, pour ne pas faire porter une dette technique à un
    utilisateur qui ne peut rien y faire. */
-var SANIX_STORES_LOCAL_UNIQUEMENT = ['conflits_sync','dossiers_fonciers','evenements_fonciers']; // écarts connus et voulus — jamais synchronisés au cloud par conception
+var SANIX_STORES_LOCAL_UNIQUEMENT = ['conflits_sync','dossiers_fonciers','evenements_fonciers','intervenants_fonciers','missions_foncieres']; // écarts connus et voulus — jamais synchronisés au cloud par conception
 function sanixAutoDiagnostic(){
   try{
     var mappes = {}; SUPA_STORE_MAP.forEach(function(p){ mappes[p[1]]=true; });
@@ -30555,6 +30560,7 @@ function switchTab(context, tab) {
   // Hook scan pointage
   if (context==='foncier' && tab==='fisc' && typeof fiscInit==='function') { fiscInit(); }
   if (context==='foncier' && tab==='dossiers' && typeof fcRender==='function') fcRender();
+  if (context==='foncier' && tab==='intervenants' && typeof fcRenderIntervenants==='function') fcRenderIntervenants();
   if (context==='recliv' && tab==='garsav' && typeof garInit==='function') { garInit(); }
   if (context==='conventions' && tab==='cautions' && typeof cauInit==='function') { cauInit(); }
   if (context==='paiements' && tab==='momo' && typeof momoInit==='function') { momoInit(); }
@@ -50495,7 +50501,7 @@ var STORE_MODULE = {
   af_operations:'Acquisition & Amenagement Foncier',
   af_agents:'Acquisition & Amenagement Foncier',
   af_relances:'Acquisition & Amenagement Foncier',
-  parcelles:'Foncier', terrains:'Foncier', dossiers_fonciers:'Foncier', evenements_fonciers:'Foncier',
+  parcelles:'Foncier', terrains:'Foncier', dossiers_fonciers:'Foncier', evenements_fonciers:'Foncier', intervenants_fonciers:'Foncier', missions_foncieres:'Foncier',
   /* [FIX] 'Conges' ne correspond à AUCUNE entrée de ALL_MODULES (le module
      réel s'appelle 'Conges RH') — userPeut() traite donc toute écriture sur
      conges_rh comme "non restreinte" quel que soit le droit configuré :
@@ -59389,6 +59395,301 @@ async function fcCorrigerUI(id, code) {
   var m = prompt('Motif de la correction (obligatoire) :'); if (!m) return;
   var v = prompt('Nouvelle date de fin (AAAA-MM-JJ) :'); if (v === null) return;
   fcMsg(await fcCorrigerEtape(id, code, { date_fin: v.trim() }, m), 'Correction enregistrée.'); fcRender();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FONCIER CONNECT — phase 2 : intervenants, missions, livrables
+   (cahier des charges §7 et §8)
+
+   Stores LOCAUX (intervenants_fonciers, missions_foncieres), comme la phase 1.
+   L'acceptation d'une mission dans ImmoSuite ne remplace pas un contrat (§7.4) :
+   le contrat est référencé à part et son absence est signalée.
+   La validation finale d'un livrable relève du responsable désigné (§8.3).
+   Le portail externe (connexion des intervenants) viendra avec la base de
+   données ; fcVueIntervenant() définit dès maintenant ce qu'il aura le droit
+   de voir (§8.5), et les tests figent cette limite.
+══════════════════════════════════════════════════════════════════════════ */
+var FC_TYPES_INTERVENANT = {
+  geometre: 'Géomètre', notaire: 'Notaire', avocat: 'Avocat', prestataire_technique: 'Prestataire technique', conseil_juridique: 'Conseil juridique',
+  intermediaire: 'Intermédiaire mandaté', promoteur_partenaire: 'Promoteur partenaire', organisme_public: 'Organisme public', autre: 'Autre acteur autorisé'
+};
+var FC_STATUTS_MISSION = {
+  brouillon: 'Brouillon', envoyee: 'Envoyée', acceptee: 'Acceptée', en_cours: 'En cours', attente_informations: "En attente d'informations",
+  livrable_soumis: 'Livrable soumis', en_verification: 'En vérification', a_corriger: 'À corriger', validee: 'Validée', cloturee: 'Clôturée', annulee: 'Annulée'
+};
+var FC_TRANSITIONS_MISSION = {
+  brouillon: ['envoyee', 'annulee'], envoyee: ['acceptee', 'annulee'], acceptee: ['en_cours', 'annulee'],
+  en_cours: ['attente_informations', 'livrable_soumis', 'annulee'], attente_informations: ['en_cours', 'annulee'],
+  livrable_soumis: ['en_verification'], en_verification: ['validee', 'a_corriger'], a_corriger: ['livrable_soumis', 'attente_informations'],
+  validee: ['cloturee'], cloturee: [], annulee: []
+};
+var FC_MISSIONS_ACTIVES = ['envoyee', 'acceptee', 'en_cours', 'attente_informations', 'livrable_soumis', 'en_verification', 'a_corriger'];
+
+function fcIntervenant(id) { return (DATA.intervenants_fonciers || []).find(function(i){ return i.id === id; }) || null; }
+function fcMission(id) { return (DATA.missions_foncieres || []).find(function(m){ return m.id === id; }) || null; }
+function fcNomIntervenant(id) { var i = fcIntervenant(id); return i ? i.nom_organisation : (id || '—'); }
+
+/* §7.2 : fiche intervenant */
+async function fcEnregistrerIntervenant(o) {
+  o = o || {};
+  if (!String(o.nom_organisation || '').trim()) return { ok: false, erreur: "Le nom de l'organisation est obligatoire." };
+  if (!FC_TYPES_INTERVENANT[o.type]) return { ok: false, erreur: "Type d'intervenant invalide." };
+  if (!String(o.email || '').trim() && !String(o.telephone || '').trim()) return { ok: false, erreur: 'Indiquez au moins un e-mail ou un téléphone professionnel.' };
+  var nom = String(o.nom_organisation).trim().toLowerCase();
+  var doublon = (DATA.intervenants_fonciers || []).find(function(i){ return i.id !== o.id && i.nom_organisation.trim().toLowerCase() === nom && i.type === o.type && i.statut_relation !== 'archive'; });
+  if (doublon) return { ok: false, erreur: 'Cet intervenant existe déjà : ' + doublon.nom_organisation + '.', doublon: doublon.id };
+  var a = fcActeur(), existant = o.id ? fcIntervenant(o.id) : null;
+  var i = existant || { id: uid(), created_at: fcAuj(), cree_par: a.nom };
+  ['nom_organisation', 'type', 'contact_nom', 'fonction', 'adresse', 'telephone', 'email', 'reference_professionnelle', 'zone', 'competences'].forEach(function(k){ i[k] = String(o[k] || '').trim(); });
+  i.statut_relation = o.statut_relation || i.statut_relation || 'actif';
+  if (!existant) { if (!DATA.intervenants_fonciers) DATA.intervenants_fonciers = []; DATA.intervenants_fonciers.push(i); }
+  i._modifie = new Date().toISOString();
+  await dbPut('intervenants_fonciers', i);
+  return { ok: true, intervenant: i };
+}
+
+function fcReferenceMission() {
+  var an = new Date().getFullYear(), max = 0, re = new RegExp('^MF-' + an + '-(\\d+)$');
+  (DATA.missions_foncieres || []).forEach(function(m){ var x = String(m.reference || '').match(re); if (x) max = Math.max(max, parseInt(x[1], 10)); });
+  return 'MF-' + an + '-' + String(max + 1).padStart(3, '0');
+}
+async function fcSauverMission(m) { m._modifie = new Date().toISOString(); await dbPut('missions_foncieres', m); }
+async function fcEvenementMission(m, type, description, extra) {
+  var d = fcDossier(m.dossier_id);
+  if (!d) return null;
+  return fcEvenement(d, m.etape_code || '', type, description, Object.assign({ mission_id: m.id }, extra || {}));
+}
+function fcPeutValiderMission(m) {
+  var a = fcActeur();
+  if (a.id && a.id === m.responsable_validation_id) return true;
+  try { return typeof hasRole === 'function' && hasRole('admin'); } catch (e) { return false; }
+}
+
+/* §7.4 : attribution d'une mission (brouillon) */
+async function fcCreerMission(o) {
+  o = o || {};
+  var d = fcDossier(o.dossier_id), i = fcIntervenant(o.intervenant_id);
+  if (!d) return { ok: false, erreur: 'Dossier introuvable.' };
+  if (d.statut === 'cloture' || d.statut === 'annule') return { ok: false, erreur: 'Dossier ' + d.statut + ' : aucune nouvelle mission.' };
+  if (!i) return { ok: false, erreur: 'Intervenant introuvable.' };
+  if (i.statut_relation !== 'actif') return { ok: false, erreur: "Cet intervenant n'est pas actif." };
+  if (!String(o.titre || '').trim()) return { ok: false, erreur: 'Le titre de la mission est obligatoire.' };
+  var livrables = (o.livrables || []).map(function(x){ return String(x || '').trim(); }).filter(Boolean);
+  if (!livrables.length) return { ok: false, erreur: 'Définissez au moins un livrable attendu.' };
+  if (!o.echeance) return { ok: false, erreur: "Fixez une échéance." };
+  if (o.etape_code && !fcEtape(d, o.etape_code)) return { ok: false, erreur: "L'étape indiquée n'existe pas dans ce dossier." };
+  var m = {
+    id: uid(), reference: fcReferenceMission(), dossier_id: d.id, etape_code: o.etape_code || '', intervenant_id: i.id,
+    titre: String(o.titre).trim(), description: String(o.description || '').trim(),
+    livrables: livrables.map(function(l){ return { id: uid(), libelle: l, versions: [] }; }),
+    echeance: o.echeance, statut: 'brouillon', responsable_validation_id: o.responsable_validation_id || d.responsable_id,
+    contrat_reference: String(o.contrat_reference || '').trim(), acceptation: null,
+    perimetre: { dossier_id: d.id, etapes: o.etape_code ? [o.etape_code] : [] }, created_at: fcAuj()
+  };
+  if (!m.responsable_validation_id) return { ok: false, erreur: 'Aucun responsable de validation.' };
+  if (!DATA.missions_foncieres) DATA.missions_foncieres = [];
+  DATA.missions_foncieres.push(m);
+  await fcSauverMission(m);
+  await fcEvenementMission(m, 'mission_creee', 'Mission ' + m.reference + ' créée pour ' + i.nom_organisation + ' : ' + m.titre, { nouveau: 'brouillon' });
+  return { ok: true, mission: m };
+}
+
+/* Cycle de vie (§8.3). Chaque règle est testée. */
+async function fcChangerStatutMission(missionId, statut, o) {
+  o = o || {};
+  var m = fcMission(missionId);
+  if (!m) return { ok: false, erreur: 'Mission introuvable.' };
+  if (!FC_STATUTS_MISSION[statut]) return { ok: false, erreur: 'Statut inconnu.' };
+  if ((FC_TRANSITIONS_MISSION[m.statut] || []).indexOf(statut) === -1) return { ok: false, erreur: 'Passage impossible : ' + FC_STATUTS_MISSION[m.statut] + ' → ' + FC_STATUTS_MISSION[statut] + '.' };
+  var motif = String(o.motif || '').trim();
+  if (statut === 'annulee' && !motif) return { ok: false, erreur: "Un motif est obligatoire pour annuler une mission." };
+  if (statut === 'envoyee') {
+    var i = fcIntervenant(m.intervenant_id);
+    if (!i || i.statut_relation !== 'actif') return { ok: false, erreur: "L'intervenant n'est plus actif." };
+    if (!m.livrables.length || !m.echeance) return { ok: false, erreur: 'Livrables et échéance sont requis avant envoi.' };
+  }
+  if (statut === 'acceptee') {
+    if (!String(o.reference || '').trim()) return { ok: false, erreur: "Indiquez comment l'acceptation a été reçue (e-mail, courrier, appel : référence ou date)." };
+    m.acceptation = { reference: String(o.reference).trim(), date: fcAuj(), enregistre_par: fcActeur().nom };
+  }
+  if (['en_verification', 'validee', 'a_corriger'].indexOf(statut) !== -1 && !fcPeutValiderMission(m)) return { ok: false, erreur: 'Seul le responsable désigné (' + fcNomUtilisateur(m.responsable_validation_id) + ') peut vérifier et valider.' };
+  if (statut === 'livrable_soumis' && !m.livrables.some(function(l){ var v = l.versions[l.versions.length - 1]; return v && v.statut === 'soumis'; })) return { ok: false, erreur: 'Aucun livrable soumis : déposez une version avant.' };
+  if (statut === 'validee' && !m.livrables.every(function(l){ var v = l.versions[l.versions.length - 1]; return v && v.statut === 'valide'; })) return { ok: false, erreur: 'Tous les livrables attendus doivent être validés.' };
+  var ancien = m.statut; m.statut = statut;
+  await fcSauverMission(m);
+  await fcEvenementMission(m, 'mission_statut', m.reference + ' : ' + FC_STATUTS_MISSION[ancien] + ' → ' + FC_STATUTS_MISSION[statut], { ancien: ancien, nouveau: statut, motif: motif, source: statut === 'acceptee' ? 'prestataire' : 'promoteur', source_ref: statut === 'acceptee' ? m.acceptation.reference : '' });
+  return { ok: true, mission: m, sans_contrat: statut === 'acceptee' && !m.contrat_reference };
+}
+
+/* Dépôt d'un livrable : une nouvelle version, l'ancienne n'est jamais effacée (§8.4). */
+async function fcSoumettreLivrable(missionId, livrableId, v) {
+  v = v || {};
+  var m = fcMission(missionId), l = m && m.livrables.find(function(x){ return x.id === livrableId; });
+  if (!m || !l) return { ok: false, erreur: 'Mission ou livrable introuvable.' };
+  if (['en_cours', 'a_corriger'].indexOf(m.statut) === -1) return { ok: false, erreur: 'Dépôt impossible : la mission est « ' + FC_STATUTS_MISSION[m.statut] + ' ».' };
+  if (!String(v.reference || '').trim() && !String(v.note || '').trim()) return { ok: false, erreur: 'Indiquez une référence de fichier ou une description.' };
+  var dernier = l.versions[l.versions.length - 1];
+  if (dernier && dernier.statut === 'soumis') return { ok: false, erreur: 'Une version est déjà en attente de vérification.' };
+  var ver = { numero: l.versions.length + 1, reference: String(v.reference || '').trim(), note: String(v.note || '').trim(), date: fcAuj(), depose_par: fcActeur().nom, statut: 'soumis', refus: null };
+  l.versions.push(ver);
+  await fcSauverMission(m);
+  await fcEvenementMission(m, 'livrable_depose', m.reference + ' — « ' + l.libelle + ' » : version ' + ver.numero + ' déposée', { source: 'prestataire', source_ref: ver.reference });
+  return { ok: true, version: ver };
+}
+async function fcValiderLivrable(missionId, livrableId) {
+  var m = fcMission(missionId), l = m && m.livrables.find(function(x){ return x.id === livrableId; });
+  if (!m || !l) return { ok: false, erreur: 'Mission ou livrable introuvable.' };
+  if (!fcPeutValiderMission(m)) return { ok: false, erreur: 'Seul le responsable désigné peut valider un livrable.' };
+  if (m.statut !== 'en_verification') return { ok: false, erreur: 'La mission doit être « En vérification ».' };
+  var v = l.versions[l.versions.length - 1];
+  if (!v || v.statut !== 'soumis') return { ok: false, erreur: 'Aucune version à valider.' };
+  v.statut = 'valide'; v.valide_par = fcActeur().nom; v.valide_le = new Date().toISOString();
+  await fcSauverMission(m);
+  await fcEvenementMission(m, 'livrable_valide', m.reference + ' — « ' + l.libelle + ' » : version ' + v.numero + ' validée');
+  /* Preuve de l'étape : le document reçu du prestataire devient un justificatif, sourcé, sans terminer l'étape. */
+  var d = fcDossier(m.dossier_id), e = m.etape_code ? fcEtape(d, m.etape_code) : null;
+  if (e) await fcAjouterJustificatif(d.id, e.code, { reference: m.reference + ' / ' + l.libelle + ' v' + v.numero + (v.reference ? ' (' + v.reference + ')' : ''), source: 'prestataire' });
+  return { ok: true };
+}
+/* §8.4 : un refus exige le motif, les éléments à corriger, l'auteur et la date ; délai facultatif. */
+async function fcRefuserLivrable(missionId, livrableId, r) {
+  r = r || {};
+  var m = fcMission(missionId), l = m && m.livrables.find(function(x){ return x.id === livrableId; });
+  if (!m || !l) return { ok: false, erreur: 'Mission ou livrable introuvable.' };
+  if (!fcPeutValiderMission(m)) return { ok: false, erreur: 'Seul le responsable désigné peut refuser un livrable.' };
+  if (m.statut !== 'en_verification') return { ok: false, erreur: 'La mission doit être « En vérification ».' };
+  if (!String(r.motif || '').trim()) return { ok: false, erreur: 'Le motif du refus est obligatoire.' };
+  if (!String(r.elements || '').trim()) return { ok: false, erreur: 'Indiquez les éléments à corriger.' };
+  var v = l.versions[l.versions.length - 1];
+  if (!v || v.statut !== 'soumis') return { ok: false, erreur: 'Aucune version à refuser.' };
+  var a = fcActeur();
+  v.statut = 'refuse'; v.refus = { motif: String(r.motif).trim(), elements: String(r.elements).trim(), delai: r.delai || '', par: a.nom, date: fcAuj() };
+  m.statut = 'a_corriger';
+  await fcSauverMission(m);
+  await fcEvenementMission(m, 'livrable_refuse', m.reference + ' — « ' + l.libelle + ' » : version ' + v.numero + ' refusée', { ancien: 'en_verification', nouveau: 'a_corriger', motif: v.refus.motif });
+  return { ok: true };
+}
+
+function fcMissionEnRetard(m, aujourdhui) {
+  return !!(m && FC_MISSIONS_ACTIVES.indexOf(m.statut) !== -1 && m.echeance && m.echeance < (aujourdhui || fcAuj()));
+}
+/* §12.3 */
+function fcSyntheseMissions(aujourdhui) {
+  var ms = DATA.missions_foncieres || [], r = { total: ms.length, attribuees: 0, acceptees: 0, en_cours: 0, livrables_attendus: 0, a_corriger: 0, terminees: 0, en_retard: 0 };
+  ms.forEach(function(m){
+    if (m.statut === 'annulee') { r.total--; return; }
+    if (m.statut === 'envoyee') r.attribuees++;
+    if (['acceptee'].indexOf(m.statut) !== -1) r.acceptees++;
+    if (['en_cours', 'attente_informations'].indexOf(m.statut) !== -1) { r.en_cours++; r.livrables_attendus += m.livrables.filter(function(l){ return !l.versions.length; }).length; }
+    if (m.statut === 'a_corriger') r.a_corriger++;
+    if (['validee', 'cloturee'].indexOf(m.statut) !== -1) r.terminees++;
+    if (fcMissionEnRetard(m, aujourdhui)) r.en_retard++;
+  });
+  return r;
+}
+
+/* §8.5 : ce qu'un intervenant a le droit de voir — ses missions seulement, sans données internes ni financières. */
+function fcVueIntervenant(intervenantId) {
+  var out = { intervenant_id: intervenantId, missions: [] };
+  (DATA.missions_foncieres || []).forEach(function(m){
+    if (m.intervenant_id !== intervenantId || m.statut === 'brouillon' || m.statut === 'annulee') return;
+    var d = fcDossier(m.dossier_id); if (!d) return;
+    var etapes = (d.etapes || []).filter(function(e){ return (m.perimetre.etapes || []).indexOf(e.code) !== -1; })
+      .map(function(e){ return { code: e.code, libelle: e.libelle, statut: e.statut, date_cible: e.date_cible }; });
+    out.missions.push({
+      reference: m.reference, titre: m.titre, description: m.description, statut: m.statut, echeance: m.echeance,
+      dossier: { reference: d.reference, parcelle: fcLibelleParcelle(d.parcelle_id) }, etapes: etapes,
+      livrables: m.livrables.map(function(l){ return { libelle: l.libelle, versions: l.versions.map(function(v){ return { numero: v.numero, statut: v.statut, date: v.date, refus: v.refus ? { motif: v.refus.motif, elements: v.refus.elements, delai: v.refus.delai } : null }; }) }; })
+    });
+  });
+  return out;
+}
+
+/* ─── Interface ─────────────────────────────────────────────────────────── */
+function fcRenderIntervenants() {
+  var host = document.getElementById('fi-root'); if (!host) return;
+  var s = fcSyntheseMissions(), is = (DATA.intervenants_fonciers || []), ds = (DATA.dossiers_fonciers || []).filter(function(d){ return ['cloture', 'annule'].indexOf(d.statut) === -1; });
+  var kpi = function(t, v, c) { return '<div class="kpi-card" style="border-top-color:' + (c || 'var(--or)') + ';"><div class="kpi-label">' + t + '</div><div class="kpi-value" style="font-size:20px;">' + v + '</div></div>'; };
+  var h = '<div class="card" style="border:1px solid var(--or);"><div class="card-title">🤝 Intervenants et missions</div>'
+    + '<div style="font-size:11px;color:var(--dim);margin-bottom:10px;">L\'acceptation d\'une mission dans ImmoSuite ne remplace pas la signature d\'un contrat lorsqu\'elle est nécessaire. La validation finale d\'un livrable revient au responsable désigné.</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;">'
+    + kpi('Missions', s.total) + kpi('Envoyées', s.attribuees) + kpi('En cours', s.en_cours, '#1565c0') + kpi('Livrables attendus', s.livrables_attendus) + kpi('À corriger', s.a_corriger, '#c0392b') + kpi('Terminées', s.terminees, '#2e7d4f') + kpi('En retard', s.en_retard, '#c0392b') + '</div></div>';
+  h += '<div class="card"><div class="card-title">👤 Nouvel intervenant</div><div class="filters-bar" style="align-items:end;flex-wrap:wrap;">'
+    + '<div class="form-group"><label>Organisation</label><input class="form-control" id="fi-n-nom"></div>'
+    + '<div class="form-group"><label>Type</label><select class="filter-select" id="fi-n-type">' + fcOptions(FC_TYPES_INTERVENANT, 'geometre') + '</select></div>'
+    + '<div class="form-group"><label>Contact</label><input class="form-control" id="fi-n-contact"></div>'
+    + '<div class="form-group"><label>Téléphone</label><input class="form-control" id="fi-n-tel"></div>'
+    + '<div class="form-group"><label>E-mail</label><input class="form-control" id="fi-n-email"></div>'
+    + '<div class="form-group"><label>Référence professionnelle</label><input class="form-control" id="fi-n-ref"></div>'
+    + '<button class="btn btn-primary btn-sm" onclick="fcIntervenantUI()">Enregistrer</button></div>';
+  h += is.length ? '<div class="table-wrap"><table><thead><tr><th>Organisation</th><th>Type</th><th>Contact</th><th>Référence</th><th>Relation</th></tr></thead><tbody>'
+    + is.map(function(i){ return '<tr><td><strong>' + escHtml(i.nom_organisation) + '</strong></td><td>' + escHtml(FC_TYPES_INTERVENANT[i.type] || i.type) + '</td><td>' + escHtml(i.contact_nom) + '<br><span style="font-size:11px;color:var(--dim);">' + escHtml(i.telephone) + ' ' + escHtml(i.email) + '</span></td><td>' + escHtml(i.reference_professionnelle || '—') + '</td><td>' + escHtml(i.statut_relation) + '</td></tr>'; }).join('') + '</tbody></table></div>' : '<div style="color:var(--dim);padding:8px;">Aucun intervenant enregistré.</div>';
+  h += '</div><div class="card"><div class="card-title">📌 Nouvelle mission</div><div class="filters-bar" style="align-items:end;flex-wrap:wrap;">'
+    + '<div class="form-group"><label>Dossier</label><select class="filter-select" id="fi-m-dossier">' + ds.map(function(d){ return '<option value="' + d.id + '">' + escHtml(d.reference + ' — ' + fcLibelleParcelle(d.parcelle_id)) + '</option>'; }).join('') + '</select></div>'
+    + '<div class="form-group"><label>Intervenant</label><select class="filter-select" id="fi-m-interv">' + is.filter(function(i){ return i.statut_relation === 'actif'; }).map(function(i){ return '<option value="' + i.id + '">' + escHtml(i.nom_organisation) + '</option>'; }).join('') + '</select></div>'
+    + '<div class="form-group"><label>Titre</label><input class="form-control" id="fi-m-titre"></div>'
+    + '<div class="form-group"><label>Livrables (séparés par « ; »)</label><input class="form-control" id="fi-m-livr" placeholder="Plan de bornage ; PV de bornage"></div>'
+    + '<div class="form-group"><label>Échéance</label><input type="date" class="form-control" id="fi-m-ech"></div>'
+    + '<div class="form-group"><label>Étape concernée</label><select class="filter-select" id="fi-m-etape"><option value="">— aucune —</option><option value="mission_technique">Attribution de la mission</option><option value="reception_livrables">Réception des livrables</option><option value="documents_techniques">Documents techniques</option></select></div>'
+    + '<div class="form-group"><label>Contrat (référence)</label><input class="form-control" id="fi-m-contrat"></div>'
+    + '<button class="btn btn-primary btn-sm" onclick="fcMissionUI()">Créer la mission</button></div>';
+  var ms = (DATA.missions_foncieres || []).slice().sort(function(a, b){ return (b.created_at || '').localeCompare(a.created_at || ''); });
+  h += ms.length ? '<div class="table-wrap"><table><thead><tr><th>Mission</th><th>Dossier</th><th>Intervenant</th><th>Statut</th><th>Échéance</th><th>Contrat</th><th></th></tr></thead><tbody>'
+    + ms.map(function(m){
+      var d = fcDossier(m.dossier_id), retard = fcMissionEnRetard(m);
+      return '<tr><td><strong>' + escHtml(m.reference) + '</strong><br>' + escHtml(m.titre) + '</td><td>' + escHtml(d ? d.reference : '—') + '</td><td>' + escHtml(fcNomIntervenant(m.intervenant_id)) + '</td><td>' + escHtml(FC_STATUTS_MISSION[m.statut]) + '</td>'
+        + '<td>' + escHtml(m.echeance) + (retard ? '<br><span style="color:#c0392b;font-size:11px;">En retard</span>' : '') + '</td><td>' + escHtml(m.contrat_reference || '—') + '</td>'
+        + '<td><button class="btn btn-secondary btn-sm" onclick="fcMissionDetail(\'' + m.id + '\')">Ouvrir</button></td></tr>';
+    }).join('') + '</tbody></table></div>' : '<div style="color:var(--dim);padding:8px;">Aucune mission.</div>';
+  h += '</div><div id="fi-detail"></div>';
+  host.innerHTML = h;
+  if (APP._fiSel && fcMission(APP._fiSel)) fcRenderMissionDetail(APP._fiSel);
+}
+async function fcIntervenantUI() {
+  var g = function(i){ return (document.getElementById(i) || {}).value || ''; };
+  var r = await fcEnregistrerIntervenant({ nom_organisation: g('fi-n-nom'), type: g('fi-n-type'), contact_nom: g('fi-n-contact'), telephone: g('fi-n-tel'), email: g('fi-n-email'), reference_professionnelle: g('fi-n-ref') });
+  if (fcMsg(r, 'Intervenant enregistré.')) fcRenderIntervenants();
+}
+async function fcMissionUI() {
+  var g = function(i){ return (document.getElementById(i) || {}).value || ''; };
+  var r = await fcCreerMission({ dossier_id: g('fi-m-dossier'), intervenant_id: g('fi-m-interv'), titre: g('fi-m-titre'), livrables: g('fi-m-livr').split(';'), echeance: g('fi-m-ech'), etape_code: g('fi-m-etape'), contrat_reference: g('fi-m-contrat') });
+  if (fcMsg(r, 'Mission créée (brouillon).')) { APP._fiSel = r.mission.id; fcRenderIntervenants(); }
+}
+function fcMissionDetail(id) { APP._fiSel = id; fcRenderMissionDetail(id); var el = document.getElementById('fi-detail'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth' }); }
+function fcRenderMissionDetail(id) {
+  var m = fcMission(id), host = document.getElementById('fi-detail'); if (!m || !host) return;
+  var suiv = (FC_TRANSITIONS_MISSION[m.statut] || []).map(function(s){ return '<button class="btn btn-secondary btn-sm" onclick="fcStatutMissionUI(\'' + m.id + '\',\'' + s + '\')">→ ' + escHtml(FC_STATUTS_MISSION[s]) + '</button>'; }).join(' ');
+  var h = '<div class="card" style="border:1px solid var(--or);"><div class="card-title">📌 ' + escHtml(m.reference) + ' — ' + escHtml(m.titre) + '</div>'
+    + '<div style="font-size:12px;color:var(--dim);margin-bottom:8px;">Intervenant : ' + escHtml(fcNomIntervenant(m.intervenant_id)) + ' · Validation : ' + escHtml(fcNomUtilisateur(m.responsable_validation_id)) + ' · Statut : <b>' + escHtml(FC_STATUTS_MISSION[m.statut]) + '</b>'
+    + (m.acceptation ? ' · Acceptation : ' + escHtml(m.acceptation.reference) : '') + (m.contrat_reference ? '' : ' · <span style="color:#B87333;">Aucun contrat référencé</span>') + '</div>'
+    + '<div style="margin-bottom:10px;">' + (suiv || '<i>Mission terminée.</i>') + '</div>'
+    + '<div class="table-wrap"><table><thead><tr><th>Livrable attendu</th><th>Versions</th><th></th></tr></thead><tbody>'
+    + m.livrables.map(function(l){
+      var der = l.versions[l.versions.length - 1];
+      return '<tr><td>' + escHtml(l.libelle) + '</td><td>' + (l.versions.length ? l.versions.map(function(v){ return '<div style="font-size:12px;">v' + v.numero + ' · ' + escHtml(v.date) + ' · <b>' + escHtml(v.statut) + '</b> ' + escHtml(v.reference || v.note) + (v.refus ? '<div style="color:#c0392b;">Refus : ' + escHtml(v.refus.motif) + ' — à corriger : ' + escHtml(v.refus.elements) + (v.refus.delai ? ' (avant le ' + escHtml(v.refus.delai) + ')' : '') + '</div>' : '') + '</div>'; }).join('') : '<span style="color:var(--dim);">Aucune version</span>') + '</td>'
+        + '<td><button class="btn btn-secondary btn-sm" onclick="fcDeposerUI(\'' + m.id + '\',\'' + l.id + '\')">Déposer</button>'
+        + (der && der.statut === 'soumis' && m.statut === 'en_verification' ? ' <button class="btn btn-primary btn-sm" onclick="fcValiderUI(\'' + m.id + '\',\'' + l.id + '\')">Valider</button> <button class="btn btn-secondary btn-sm" onclick="fcRefuserUI(\'' + m.id + '\',\'' + l.id + '\')">Refuser</button>' : '') + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+  var evs = (DATA.evenements_fonciers || []).filter(function(x){ return x.mission_id === m.id; }).sort(function(a, b){ return b.date.localeCompare(a.date); });
+  h += '<div class="card-title" style="margin-top:12px;">🕑 Historique de la mission</div><div style="max-height:200px;overflow:auto;font-size:12px;">' + evs.map(function(x){ return '<div style="padding:3px 0;border-bottom:1px solid var(--bord,#eee);"><b>' + escHtml(x.date.slice(0, 16).replace('T', ' ')) + '</b> · ' + escHtml(x.acteur || '—') + ' · ' + escHtml(x.description) + (x.motif ? ' <i>(' + escHtml(x.motif) + ')</i>' : '') + '</div>'; }).join('') + '</div></div>';
+  host.innerHTML = h;
+}
+async function fcStatutMissionUI(id, statut) {
+  var o = {};
+  if (statut === 'acceptee') { var r0 = prompt("Comment l'acceptation a-t-elle été reçue ? (e-mail, courrier, appel : référence ou date)"); if (r0 === null) return; o.reference = r0; }
+  if (statut === 'annulee') { var m0 = prompt("Motif d'annulation (obligatoire) :"); if (m0 === null) return; o.motif = m0; }
+  var r = await fcChangerStatutMission(id, statut, o);
+  fcMsg(r, 'Mission mise à jour.');
+  if (r.ok && r.sans_contrat) toast("Acceptée sans contrat référencé : l'acceptation dans ImmoSuite ne remplace pas un contrat.", 'warning');
+  fcRenderIntervenants();
+}
+async function fcDeposerUI(mid, lid) { var r = prompt('Référence du fichier ou description du livrable :'); if (r === null) return; fcMsg(await fcSoumettreLivrable(mid, lid, { reference: r }), 'Version déposée.'); fcRenderIntervenants(); }
+async function fcValiderUI(mid, lid) { fcMsg(await fcValiderLivrable(mid, lid), 'Livrable validé.'); fcRenderIntervenants(); }
+async function fcRefuserUI(mid, lid) {
+  var mo = prompt('Motif du refus (obligatoire) :'); if (!mo) return;
+  var el = prompt('Éléments à corriger (obligatoire) :'); if (!el) return;
+  var de = prompt('Délai de correction (AAAA-MM-JJ, facultatif) :') || '';
+  fcMsg(await fcRefuserLivrable(mid, lid, { motif: mo, elements: el, delai: de }), 'Livrable refusé.'); fcRenderIntervenants();
 }
 
 /* ══════ ENCAISSEMENT MOBILE MONEY — relevé → souscripteur → versement ══════ */
