@@ -43,3 +43,17 @@ Tests : `tests-caisse/foncier-connect.test.js` (14 tests).
 - Tests : `tests-caisse/foncier-missions.test.js` (13 tests).
 
 Non réalisé : portail externe avec connexion, notifications, documents joints aux missions, tableaux de bord intervenants au-delà des indicateurs de l'onglet.
+
+## Phase 3 — information du souscripteur (13/10/2026, branche de travail)
+- Onglet **Foncier › Sécurisation du titre › Souscripteurs** et bouton « Publier » sur les étapes publiables du détail d'un dossier. Stores locaux `publications_foncieres` et `demandes_fonciers` (DB locale v157), toujours sans table Supabase.
+- **Rien n'est publié automatiquement** ; le texte public est rédigé à part (jamais repris des observations, motifs ou justificatifs) et une étape « interne » n'est pas publiable (RM-05). Publier est réservé au responsable du dossier ou à un administrateur.
+- **Source obligatoire** de chaque information, affichée au souscripteur ; « décision officielle » seulement avec un document officiel contrôlé sur l'étape (RM-08).
+- **Aucune approbation affirmée sans preuve** (RM-07) : un texte évoquant approbation, accord, obtention, délivrance ou issue favorable est refusé tant que l'étape n'a pas une issue favorable établie par un document officiel (garde-fou lexical : à compléter par la relecture du responsable).
+- **Retrait** d'une publication : motif obligatoire, journalisé ; l'historique est conservé.
+- `fcVueSouscripteur(clientId)` : définition exacte de ce que le portail pourra lire — uniquement les dossiers des parcelles de ses lots, historique publié, progression, prochaine étape, demandes. Aucune donnée interne (testé avec des valeurs sentinelles).
+- **Progression** (§9.3) : étapes publiables seulement, pondérées par phase (`DATA.params.fc_poids_phases`, défaut C=2, D=2, E=1), expliquée en clair ; jamais présentée comme une probabilité d'obtention ni une garantie juridique.
+- **Demandes d'information** (§9.6) : référence `DI-AAAA-NNN`, uniquement sur son propre dossier ; statuts nouvelle, en cours, en attente du souscripteur, répondue, clôturée ; réponse par le responsable.
+- Tests : `tests-caisse/foncier-souscripteur.test.js` (11 tests).
+
+## Correctif transversal : droits et échecs d'écriture (phases 1 à 3)
+`dbPut()` refuse en silence (renvoie `false`) un profil sans droit sur le module. Les fonctions de Foncier Connect annonçaient alors « enregistré » alors que rien n'était écrit. Corrigé : contrôle du droit avant toute modification (`fcDroitEcriture`), échec d'écriture signalé (`fcDb`), toutes les fonctions de mutation protégées (`fcProtegerMutations`). Tests : `tests-caisse/foncier-droits.test.js` (4 tests).

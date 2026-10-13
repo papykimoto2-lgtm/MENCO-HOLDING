@@ -10085,6 +10085,7 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
               <button class="tab-btn" onclick="switchTab('foncier','workflow')" title="Suivi des étapes administratives du titre"><i>🧭</i>Workflow titre</button>
               <button class="tab-btn" onclick="switchTab('foncier','dossiers')" title="Dossiers fonciers : étapes, responsables, justificatifs, historique"><i>📁</i>Dossiers fonciers</button>
               <button class="tab-btn" onclick="switchTab('foncier','intervenants')" title="Répertoire des intervenants et missions confiées"><i>🤝</i>Intervenants &amp; missions</button>
+              <button class="tab-btn" onclick="switchTab('foncier','souscripteurs')" title="Information des souscripteurs : publications, aperçu, demandes"><i>👥</i>Souscripteurs</button>
             </div>
           </div>
           <div class="etape">
@@ -10616,6 +10617,7 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
 
         <div class="tab-pane" id="tab-foncier-dossiers"><div id="fc-root"></div></div>
         <div class="tab-pane" id="tab-foncier-intervenants"><div id="fi-root"></div></div>
+        <div class="tab-pane" id="tab-foncier-souscripteurs"><div id="fs-root"></div></div>
 
         <div class="tab-pane" id="tab-foncier-fisc">
           <div class="card" style="border:1px solid var(--or);">
@@ -24743,6 +24745,8 @@ var DATA = {
   evenements_fonciers: [],
   intervenants_fonciers: [],
   missions_foncieres: [],
+  publications_foncieres: [],
+  demandes_fonciers: [],
   /* v147 — Circuit budgétaire complet : budget prévisionnel annuel par
      division/compte, validé par le DG, décrémenté par les Demandes d'Achat
      validées, avec transferts de ligne à ligne */
@@ -24754,7 +24758,8 @@ var DATA = {
    INDEXEDDB
 ────────────────────────────────────────────────────── */
 var DB_NAME = 'ImmoSuiteDB';
-var DB_VERSION = 156; /* v156: stores 'intervenants_fonciers' et 'missions_foncieres' — Foncier Connect phase 2 (locaux, sans table Supabase). Migration additive.
+var DB_VERSION = 157; /* v157: stores 'publications_foncieres' et 'demandes_fonciers' — Foncier Connect phase 3, information du souscripteur (locaux, sans table Supabase). Migration additive.
+                          v156: stores 'intervenants_fonciers' et 'missions_foncieres' — Foncier Connect phase 2 (locaux, sans table Supabase). Migration additive.
                           v155: stores 'dossiers_fonciers' et 'evenements_fonciers' — Foncier Connect phase 1 (locaux, sans table Supabase pour l'instant). Migration additive.
                           v154: store 'bordereaux_caisse' — circuit de visas papier des pièces de caisse (visa final du Gérant Holding). Migration additive.
                           v153: store 'conventions_reglementees' — registre des conventions
@@ -24913,7 +24918,7 @@ var ALL_STORES = [
   'demandes_reappro',
   /* v154 — Bordereaux de transmission des pièces de caisse au Gérant (visa final) */
   'bordereaux_caisse',
-  'dossiers_fonciers','evenements_fonciers','intervenants_fonciers','missions_foncieres',
+  'dossiers_fonciers','evenements_fonciers','intervenants_fonciers','missions_foncieres','publications_foncieres','demandes_fonciers',
   /* v147 — Circuit budgétaire : DA + transferts */
   'fiches_engagement_depense', 'transferts_budgetaires',
   /* [FIX] Demandes de versement du portail souscripteur — n'était même pas
@@ -25340,7 +25345,7 @@ async function loadAllData() {
    bandeau discret pour un profil Admin uniquement — jamais pour les
    autres rôles, pour ne pas faire porter une dette technique à un
    utilisateur qui ne peut rien y faire. */
-var SANIX_STORES_LOCAL_UNIQUEMENT = ['conflits_sync','dossiers_fonciers','evenements_fonciers','intervenants_fonciers','missions_foncieres']; // écarts connus et voulus — jamais synchronisés au cloud par conception
+var SANIX_STORES_LOCAL_UNIQUEMENT = ['conflits_sync','dossiers_fonciers','evenements_fonciers','intervenants_fonciers','missions_foncieres','publications_foncieres','demandes_fonciers']; // écarts connus et voulus — jamais synchronisés au cloud par conception
 function sanixAutoDiagnostic(){
   try{
     var mappes = {}; SUPA_STORE_MAP.forEach(function(p){ mappes[p[1]]=true; });
@@ -30561,6 +30566,7 @@ function switchTab(context, tab) {
   if (context==='foncier' && tab==='fisc' && typeof fiscInit==='function') { fiscInit(); }
   if (context==='foncier' && tab==='dossiers' && typeof fcRender==='function') fcRender();
   if (context==='foncier' && tab==='intervenants' && typeof fcRenderIntervenants==='function') fcRenderIntervenants();
+  if (context==='foncier' && tab==='souscripteurs' && typeof fcRenderSouscripteurs==='function') fcRenderSouscripteurs();
   if (context==='recliv' && tab==='garsav' && typeof garInit==='function') { garInit(); }
   if (context==='conventions' && tab==='cautions' && typeof cauInit==='function') { cauInit(); }
   if (context==='paiements' && tab==='momo' && typeof momoInit==='function') { momoInit(); }
@@ -50501,7 +50507,7 @@ var STORE_MODULE = {
   af_operations:'Acquisition & Amenagement Foncier',
   af_agents:'Acquisition & Amenagement Foncier',
   af_relances:'Acquisition & Amenagement Foncier',
-  parcelles:'Foncier', terrains:'Foncier', dossiers_fonciers:'Foncier', evenements_fonciers:'Foncier', intervenants_fonciers:'Foncier', missions_foncieres:'Foncier',
+  parcelles:'Foncier', terrains:'Foncier', dossiers_fonciers:'Foncier', evenements_fonciers:'Foncier', intervenants_fonciers:'Foncier', missions_foncieres:'Foncier', publications_foncieres:'Foncier', demandes_fonciers:'Foncier',
   /* [FIX] 'Conges' ne correspond à AUCUNE entrée de ALL_MODULES (le module
      réel s'appelle 'Conges RH') — userPeut() traite donc toute écriture sur
      conges_rh comme "non restreinte" quel que soit le droit configuré :
@@ -59105,6 +59111,30 @@ var FC_ETAPES_REF = [
 ];
 var FC_PHASES = { A: 'Ouverture et diagnostic', B: 'Préparation technique', C: 'Dépôt et instruction', D: 'Formalités foncières', E: 'Contrôle et clôture' };
 
+/* Droits et écriture locale : dbPut() refuse EN SILENCE (il renvoie false) un profil sans droit sur le module ; on le vérifie avant toute
+   modification, et on signale clairement un échec d'écriture au lieu d'annoncer « enregistré » à tort. */
+function fcDroitEcriture() {
+  try {
+    if (!APP.currentUser || typeof STORE_MODULE === 'undefined' || !STORE_MODULE.dossiers_fonciers || typeof userPeutSurStore !== 'function') return true;
+    return !!(userPeutSurStore('dossiers_fonciers', 'c') && userPeutSurStore('dossiers_fonciers', 'm'));
+  } catch (e) { return true; }
+}
+async function fcDb(store, obj) {
+  var r = await dbPut(store, obj);
+  if (r === false) throw new Error('écriture locale refusée ou stockage indisponible (' + store + ')');
+  return r;
+}
+function fcProtegerMutations(noms) {
+  noms.forEach(function(nom){
+    var f = window[nom]; if (typeof f !== 'function' || f.__protegee) return;
+    var g = async function() {
+      if (!fcDroitEcriture()) return { ok: false, erreur: 'Votre profil ne permet pas de modifier le module Foncier.' };
+      try { return await f.apply(this, arguments); }
+      catch (e) { console.error('[Foncier Connect] ' + nom, e); return { ok: false, erreur: 'Enregistrement impossible : ' + ((e && e.message) || e) }; }
+    };
+    g.__protegee = true; window[nom] = g;
+  });
+}
 function fcActeur() {
   var u = (typeof APP !== 'undefined' && APP.currentUser) || {};
   return { id: u.id || '', nom: u.nom || u.login || '' };
@@ -59146,10 +59176,10 @@ async function fcEvenement(d, code, type, description, extra) {
   if (extra) Object.keys(extra).forEach(function(k){ e[k] = extra[k]; });
   if (!DATA.evenements_fonciers) DATA.evenements_fonciers = [];
   DATA.evenements_fonciers.push(e);
-  await dbPut('evenements_fonciers', e);
+  await fcDb('evenements_fonciers', e);
   return e;
 }
-async function fcSauver(d) { d._modifie = new Date().toISOString(); await dbPut('dossiers_fonciers', d); }
+async function fcSauver(d) { d._modifie = new Date().toISOString(); await fcDb('dossiers_fonciers', d); }
 
 /* Ouverture d'un dossier (§6.2). Retourne { ok, dossier } ou { ok:false, erreur }. */
 async function fcOuvrirDossier(o) {
@@ -59360,9 +59390,13 @@ function fcRenderDetail(id) {
       + '<td>' + e.justificatifs.length + ' <button class="btn btn-secondary btn-sm" onclick="fcJustifUI(\'' + d.id + '\',\'' + e.code + '\')">+</button>'
       + e.justificatifs.map(function(j){ return '<div style="font-size:11px;color:var(--dim);">' + escHtml(j.reference || j.note) + ' · ' + escHtml(FC_SOURCES[j.source] || j.source) + '</div>'; }).join('') + '</td>'
       + '<td style="font-size:11px;">' + escHtml(e.visibilite) + '</td>'
-      + '<td>' + (figee ? '<button class="btn btn-secondary btn-sm" onclick="fcCorrigerUI(\'' + d.id + '\',\'' + e.code + '\')">Corriger</button>' : '<button class="btn btn-secondary btn-sm" onclick="fcEcheanceUI(\'' + d.id + '\',\'' + e.code + '\')">Échéance</button>') + '</td></tr>';
+      + '<td>' + (figee ? '<button class="btn btn-secondary btn-sm" onclick="fcCorrigerUI(\'' + d.id + '\',\'' + e.code + '\')">Corriger</button>' : '<button class="btn btn-secondary btn-sm" onclick="fcEcheanceUI(\'' + d.id + '\',\'' + e.code + '\')">Échéance</button>') + (e.visibilite === 'souscripteur' ? ' <button class="btn btn-secondary btn-sm" title="Publier une information au souscripteur" onclick="fcPublierUI(\'' + d.id + '\',\'' + e.code + '\')">Publier</button>' : '') + '</td></tr>';
   });
   h += '</tbody></table></div>';
+  var pubs = (DATA.publications_foncieres || []).filter(function(x){ return x.dossier_id === d.id; }).sort(function(a, b){ return b.publie_le.localeCompare(a.publie_le); });
+  h += '<div class="card-title" style="margin-top:14px;">📣 Informations publiées au souscripteur</div>' + (pubs.length ? pubs.map(function(x){
+    return '<div style="padding:5px 0;border-bottom:1px solid var(--bord,#eee);font-size:12px;' + (x.retire ? 'opacity:.55;' : '') + '"><b>' + escHtml(x.publie_le.slice(0, 10)) + '</b> · ' + escHtml(x.libelle_public) + ' <i>(' + escHtml(FC_LIBELLES_SOURCE[x.source]) + ')</i>'
+      + (x.retire ? ' — <b>retirée</b> : ' + escHtml(x.retire_motif) : ' <button class="btn btn-secondary btn-sm" onclick="fcRetirerUI(\'' + x.id + '\')">Retirer</button>') + '</div>'; }).join('') : '<div style="color:var(--dim);font-size:12px;">Rien n\'est publié : le souscripteur ne voit encore aucune information.</div>');
   var evs = (DATA.evenements_fonciers || []).filter(function(x){ return x.dossier_id === d.id; }).sort(function(a, b){ return b.date.localeCompare(a.date); });
   h += '<div class="card-title" style="margin-top:14px;">🕑 Historique (ajout seul)</div><div style="max-height:260px;overflow:auto;font-size:12px;">'
     + (evs.length ? evs.map(function(x){ return '<div style="padding:4px 0;border-bottom:1px solid var(--bord,#eee);"><b>' + escHtml(x.date.slice(0, 16).replace('T', ' ')) + '</b> · ' + escHtml(x.acteur || '—') + ' · ' + escHtml(x.description) + (x.motif ? ' <i>(motif : ' + escHtml(x.motif) + ')</i>' : '') + '</div>'; }).join('') : '<div style="color:var(--dim);">Aucun événement.</div>')
@@ -59387,9 +59421,10 @@ async function fcJustifUI(id, code) {
   fcMsg(await fcAjouterJustificatif(id, code, { reference: ref, source: cles[c - 1] }), 'Justificatif ajouté.'); fcRender();
 }
 async function fcEcheanceUI(id, code) {
+  if (!fcDroitEcriture()) { toast('Votre profil ne permet pas de modifier le module Foncier.', 'error'); return; }
   var d = fcDossier(id), e = fcEtape(d, code), v = prompt('Échéance (AAAA-MM-JJ) :', e.date_cible || ''); if (v === null) return;
-  e.date_cible = v.trim(); await fcSauver(d);
-  await fcEvenement(d, code, 'echeance', e.libelle + ' : échéance fixée au ' + (e.date_cible || '—')); fcRender();
+  try { e.date_cible = v.trim(); await fcSauver(d);
+  await fcEvenement(d, code, 'echeance', e.libelle + ' : échéance fixée au ' + (e.date_cible || '—')); fcRender(); } catch (er) { toast('Enregistrement impossible : ' + (er.message || er), 'error'); }
 }
 async function fcCorrigerUI(id, code) {
   var m = prompt('Motif de la correction (obligatoire) :'); if (!m) return;
@@ -59444,7 +59479,7 @@ async function fcEnregistrerIntervenant(o) {
   i.statut_relation = o.statut_relation || i.statut_relation || 'actif';
   if (!existant) { if (!DATA.intervenants_fonciers) DATA.intervenants_fonciers = []; DATA.intervenants_fonciers.push(i); }
   i._modifie = new Date().toISOString();
-  await dbPut('intervenants_fonciers', i);
+  await fcDb('intervenants_fonciers', i);
   return { ok: true, intervenant: i };
 }
 
@@ -59453,7 +59488,7 @@ function fcReferenceMission() {
   (DATA.missions_foncieres || []).forEach(function(m){ var x = String(m.reference || '').match(re); if (x) max = Math.max(max, parseInt(x[1], 10)); });
   return 'MF-' + an + '-' + String(max + 1).padStart(3, '0');
 }
-async function fcSauverMission(m) { m._modifie = new Date().toISOString(); await dbPut('missions_foncieres', m); }
+async function fcSauverMission(m) { m._modifie = new Date().toISOString(); await fcDb('missions_foncieres', m); }
 async function fcEvenementMission(m, type, description, extra) {
   var d = fcDossier(m.dossier_id);
   if (!d) return null;
@@ -59691,6 +59726,220 @@ async function fcRefuserUI(mid, lid) {
   var de = prompt('Délai de correction (AAAA-MM-JJ, facultatif) :') || '';
   fcMsg(await fcRefuserLivrable(mid, lid, { motif: mo, elements: el, delai: de }), 'Livrable refusé.'); fcRenderIntervenants();
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FONCIER CONNECT — phase 3 : information du souscripteur
+   (cahier des charges §9, RM-05, RM-07, RM-08)
+
+   Principe : le souscripteur ne voit QUE ce que le responsable a publié, avec
+   la source de chaque information. Rien n'est publié automatiquement, rien
+   n'est copié depuis les champs internes (observations, motifs, justificatifs),
+   et une tâche « terminée » n'est jamais présentée comme une approbation.
+   fcVueSouscripteur() est la définition exacte de ce que le futur portail
+   pourra lire ; les tests figent ses limites. Stores locaux, sans Supabase.
+══════════════════════════════════════════════════════════════════════════ */
+var FC_LIBELLES_SOURCE = {
+  promoteur: 'Information enregistrée par le promoteur',
+  prestataire: 'Document reçu du prestataire',
+  administration_declaree: "Information obtenue auprès d'une administration (non confirmée par un document)",
+  administration_confirmee: 'Décision officielle enregistrée (document reçu et contrôlé)'
+};
+var FC_STATUTS_DEMANDE = { nouvelle: 'Nouvelle', en_cours: 'En cours', attente_souscripteur: 'En attente du souscripteur', repondue: 'Répondue', cloturee: 'Clôturée' };
+/* Poids des phases dans le pourcentage affiché : paramétrables (DATA.params.fc_poids_phases), explicables (§9.3). */
+var FC_POIDS_PHASES_DEFAUT = { C: 2, D: 2, E: 1 };
+var FC_MOTS_APPROBATION = /approuv|accord[ée]|obten|d[ée]livr|favorable|valid[ée] par l'administration|titre\s+(est\s+)?[ée]tabli/i;
+
+function fcClient(id) { return (DATA.clients || []).find(function(c){ return c.id === id; }) || null; }
+function fcPeutGererDossier(d) {
+  var a = fcActeur();
+  if (a.id && a.id === d.responsable_id) return true;
+  try { return typeof hasRole === 'function' && hasRole('admin'); } catch (e) { return false; }
+}
+/* RM-05 : les dossiers d'un souscripteur = ceux des parcelles de ses lots. */
+function fcDossiersDuSouscripteur(c) {
+  if (!c) return [];
+  var lotIds = (typeof _lotIdsDeClient === 'function') ? _lotIdsDeClient(c) : (c.lot_id ? [c.lot_id] : []);
+  var parcelles = {};
+  lotIds.forEach(function(id){ var l = (DATA.lots || []).find(function(x){ return x.id === id; }); if (l && l.parcelle_id) parcelles[l.parcelle_id] = true; });
+  return (DATA.dossiers_fonciers || []).filter(function(d){ return parcelles[d.parcelle_id] && d.statut !== 'annule'; });
+}
+function fcDossierAppartientAuSouscripteur(clientId, dossierId) {
+  return fcDossiersDuSouscripteur(fcClient(clientId)).some(function(d){ return d.id === dossierId; });
+}
+
+/* §9.4, §9.7 : publier une information. Le texte public est rédigé à part, jamais repris des champs internes. */
+async function fcPublierInformation(dossierId, code, p) {
+  p = p || {};
+  var d = fcDossier(dossierId), e = fcEtape(d, code);
+  if (!d || !e) return { ok: false, erreur: 'Dossier ou étape introuvable.' };
+  if (!fcPeutGererDossier(d)) return { ok: false, erreur: 'Seul le responsable du dossier (ou un administrateur) peut publier au souscripteur.' };
+  if (e.visibilite !== 'souscripteur') return { ok: false, erreur: 'Cette étape est « ' + e.visibilite + ' » : elle n\'est pas publiable au souscripteur (modifiez sa visibilité par une correction motivée).' };
+  var libelle = String(p.libelle || '').trim(), desc = String(p.description || '').trim();
+  if (!libelle) return { ok: false, erreur: 'Le titre public est obligatoire.' };
+  if (!FC_LIBELLES_SOURCE[p.source]) return { ok: false, erreur: 'La source de l\'information est obligatoire.' };
+  if (p.source === 'administration_confirmee' && !e.justificatifs.some(function(j){ return j.source === 'administration_confirmee'; }))
+    return { ok: false, erreur: 'Source « décision officielle » : aucun document officiel contrôlé n\'est enregistré sur cette étape.' };
+  /* RM-07 : ne jamais affirmer une approbation qui n'est pas établie. */
+  if (FC_MOTS_APPROBATION.test(libelle + ' ' + desc) && e.issue !== 'favorable')
+    return { ok: false, erreur: 'Ce texte évoque une approbation ou une obtention, alors qu\'aucune issue favorable n\'est établie par un document officiel sur cette étape. Reformulez (ex. « dossier déposé », « en cours d\'instruction »).' };
+  var a = fcActeur(), pub = {
+    id: uid(), dossier_id: d.id, etape_code: code, libelle_public: libelle, description_publique: desc, source: p.source, source_ref: String(p.source_ref || '').trim(),
+    verifie_par: a.nom, verifie_le: new Date().toISOString(), publie_par: a.nom, publie_le: new Date().toISOString(), retire: false, retire_par: '', retire_le: '', retire_motif: ''
+  };
+  if (!DATA.publications_foncieres) DATA.publications_foncieres = [];
+  DATA.publications_foncieres.push(pub);
+  await fcDb('publications_foncieres', pub);
+  await fcEvenement(d, code, 'publication', 'Information publiée au souscripteur : ' + libelle, { nouveau: libelle, source: p.source, source_ref: pub.source_ref });
+  return { ok: true, publication: pub };
+}
+async function fcRetirerPublication(pubId, motif) {
+  var pub = (DATA.publications_foncieres || []).find(function(x){ return x.id === pubId; }), d = pub && fcDossier(pub.dossier_id);
+  if (!pub || !d) return { ok: false, erreur: 'Publication introuvable.' };
+  if (!fcPeutGererDossier(d)) return { ok: false, erreur: 'Seul le responsable du dossier (ou un administrateur) peut retirer une publication.' };
+  if (pub.retire) return { ok: false, erreur: 'Déjà retirée.' };
+  if (!String(motif || '').trim()) return { ok: false, erreur: 'Le motif du retrait est obligatoire.' };
+  var a = fcActeur();
+  pub.retire = true; pub.retire_par = a.nom; pub.retire_le = new Date().toISOString(); pub.retire_motif = String(motif).trim();
+  await fcDb('publications_foncieres', pub);
+  await fcEvenement(d, pub.etape_code, 'publication_retiree', 'Publication retirée : ' + pub.libelle_public, { motif: pub.retire_motif });
+  return { ok: true };
+}
+
+/* §9.3 : progression des étapes publiables, par phase, pondérée, explicable ; jamais une probabilité d'obtention. */
+function fcProgressionSouscripteur(d) {
+  var poids = Object.assign({}, FC_POIDS_PHASES_DEFAUT, (DATA.params && DATA.params.fc_poids_phases) || {});
+  var visibles = (d.etapes || []).filter(function(e){ return e.visibilite === 'souscripteur' && e.statut !== 'annule'; });
+  var parPhase = {}, totalPoids = 0, fait = 0;
+  visibles.forEach(function(e){
+    var w = poids[e.phase] != null ? poids[e.phase] : 1;
+    var p = parPhase[e.phase] || (parPhase[e.phase] = { libelle: FC_PHASES[e.phase], etapes: 0, terminees: 0 });
+    p.etapes++; totalPoids += w; if (e.statut === 'termine') { p.terminees++; fait += w; }
+  });
+  return {
+    pourcentage: totalPoids ? Math.round(fait / totalPoids * 100) : 0, par_phase: parPhase,
+    explication: 'Avancement des démarches suivies pour vous (étapes terminées sur étapes suivies, pondérées par phase). Ce pourcentage mesure l\'avancement des démarches : ce n\'est ni une probabilité d\'obtention d\'un document, ni une garantie juridique.'
+  };
+}
+function fcStatutSynthetique(d, visibles) {
+  if (d.statut === 'cloture') return 'Dossier clôturé';
+  if (visibles.some(function(e){ return e.statut === 'attente_administration' || e.statut === 'attente_decision'; })) return "En attente d'une réponse de l'administration";
+  if (visibles.some(function(e){ return e.statut === 'en_cours' || e.statut === 'termine'; })) return 'Démarches en cours';
+  return 'Démarches à venir';
+}
+
+/* ─ Ce que le souscripteur a le droit de voir (RM-05) ─ */
+function fcVueSouscripteur(clientId) {
+  var c = fcClient(clientId), out = { client_id: clientId, dossiers: [], demandes: [], contact: { societe: (DATA.params && DATA.params.societe) || '', telephone: (DATA.params && (DATA.params.tel || DATA.params.telephone)) || '', email: (DATA.params && DATA.params.email) || '' } };
+  if (!c) return out;
+  fcDossiersDuSouscripteur(c).forEach(function(d){
+    var visibles = d.etapes.filter(function(e){ return e.visibilite === 'souscripteur'; });
+    var pubs = (DATA.publications_foncieres || []).filter(function(x){ return x.dossier_id === d.id && !x.retire; }).sort(function(a, b){ return b.publie_le.localeCompare(a.publie_le); });
+    var prochaine = visibles.filter(function(e){ return FC_STATUTS_FINAUX.indexOf(e.statut) === -1; }).sort(function(a, b){ return a.ordre - b.ordre; })[0];
+    var prog = (DATA.programmes || []).find(function(p){ return p.id === d.programme_id; });
+    out.dossiers.push({
+      reference: d.reference, programme: prog ? prog.nom : '', parcelle: fcLibelleParcelle(d.parcelle_id), statut: fcStatutSynthetique(d, visibles),
+      progression: fcProgressionSouscripteur(d), derniere_mise_a_jour: pubs.length ? pubs[0].publie_le.slice(0, 10) : '',
+      prochaine_etape: prochaine ? { libelle: prochaine.libelle, date_indicative: prochaine.date_cible || '' } : null,
+      historique: pubs.map(function(x){ return { date: x.publie_le.slice(0, 10), titre: x.libelle_public, description: x.description_publique, source: FC_LIBELLES_SOURCE[x.source], reference_source: x.source_ref }; }),
+      documents: []
+    });
+  });
+  (DATA.demandes_fonciers || []).filter(function(x){ return x.client_id === clientId; }).forEach(function(x){
+    out.demandes.push({ reference: x.reference, date: x.date, sujet: x.sujet, statut: FC_STATUTS_DEMANDE[x.statut], messages: x.messages.map(function(m){ return { date: m.date, de: m.de, texte: m.texte }; }) });
+  });
+  return out;
+}
+
+/* §9.6 : demandes d'information */
+function fcReferenceDemande() {
+  var an = new Date().getFullYear(), max = 0, re = new RegExp('^DI-' + an + '-(\\d+)$');
+  (DATA.demandes_fonciers || []).forEach(function(m){ var x = String(m.reference || '').match(re); if (x) max = Math.max(max, parseInt(x[1], 10)); });
+  return 'DI-' + an + '-' + String(max + 1).padStart(3, '0');
+}
+async function fcCreerDemande(clientId, dossierId, sujet, message) {
+  var c = fcClient(clientId), d = fcDossier(dossierId);
+  if (!c || !d) return { ok: false, erreur: 'Souscripteur ou dossier introuvable.' };
+  if (!fcDossierAppartientAuSouscripteur(clientId, dossierId)) return { ok: false, erreur: 'Ce dossier n\'est pas rattaché à ce souscripteur.' };
+  if (!String(sujet || '').trim() || !String(message || '').trim()) return { ok: false, erreur: 'Le sujet et le message sont obligatoires.' };
+  var x = { id: uid(), reference: fcReferenceDemande(), client_id: clientId, dossier_id: dossierId, date: fcAuj(), sujet: String(sujet).trim(), statut: 'nouvelle', responsable_id: d.responsable_id,
+            messages: [{ date: new Date().toISOString(), de: 'souscripteur', auteur: c.nom || '', texte: String(message).trim() }] };
+  if (!DATA.demandes_fonciers) DATA.demandes_fonciers = [];
+  DATA.demandes_fonciers.push(x);
+  await fcDb('demandes_fonciers', x);
+  await fcEvenement(d, '', 'demande_souscripteur', 'Demande d\'information ' + x.reference + ' : ' + x.sujet, { nouveau: 'nouvelle', source: 'souscripteur' });
+  return { ok: true, demande: x };
+}
+async function fcRepondreDemande(demandeId, texte, statut) {
+  var x = (DATA.demandes_fonciers || []).find(function(y){ return y.id === demandeId; }), d = x && fcDossier(x.dossier_id);
+  if (!x || !d) return { ok: false, erreur: 'Demande introuvable.' };
+  if (!fcPeutGererDossier(d)) return { ok: false, erreur: 'Seul le responsable du dossier (ou un administrateur) peut répondre.' };
+  if (x.statut === 'cloturee') return { ok: false, erreur: 'Demande clôturée.' };
+  if (!String(texte || '').trim()) return { ok: false, erreur: 'La réponse est vide.' };
+  var suivant = statut || 'repondue';
+  if (!FC_STATUTS_DEMANDE[suivant] || suivant === 'nouvelle') return { ok: false, erreur: 'Statut invalide.' };
+  x.messages.push({ date: new Date().toISOString(), de: 'promoteur', auteur: fcActeur().nom, texte: String(texte).trim() });
+  var ancien = x.statut; x.statut = suivant;
+  await fcDb('demandes_fonciers', x);
+  await fcEvenement(d, '', 'demande_reponse', 'Réponse à ' + x.reference, { ancien: ancien, nouveau: suivant });
+  return { ok: true };
+}
+async function fcChangerStatutDemande(demandeId, statut) {
+  var x = (DATA.demandes_fonciers || []).find(function(y){ return y.id === demandeId; }), d = x && fcDossier(x.dossier_id);
+  if (!x || !d) return { ok: false, erreur: 'Demande introuvable.' };
+  if (!fcPeutGererDossier(d)) return { ok: false, erreur: 'Seul le responsable du dossier (ou un administrateur) peut traiter la demande.' };
+  if (!FC_STATUTS_DEMANDE[statut] || statut === 'nouvelle') return { ok: false, erreur: 'Statut invalide.' };
+  var ancien = x.statut; x.statut = statut; await fcDb('demandes_fonciers', x);
+  await fcEvenement(d, '', 'demande_statut', x.reference + ' : ' + FC_STATUTS_DEMANDE[ancien] + ' → ' + FC_STATUTS_DEMANDE[statut], { ancien: ancien, nouveau: statut });
+  return { ok: true };
+}
+
+/* ─── Interface : aperçu exact de ce que verrait le souscripteur + traitement des demandes ─── */
+function fcRenderSouscripteurs() {
+  var host = document.getElementById('fs-root'); if (!host) return;
+  var clients = (DATA.clients || []).filter(function(c){ return fcDossiersDuSouscripteur(c).length; });
+  var sel = APP._fsClient && clients.some(function(c){ return c.id === APP._fsClient; }) ? APP._fsClient : (clients[0] && clients[0].id) || '';
+  APP._fsClient = sel;
+  var h = '<div class="card" style="border:1px solid var(--or);"><div class="card-title">👥 Information des souscripteurs</div>'
+    + '<div style="font-size:11px;color:var(--dim);margin-bottom:10px;">Le souscripteur ne voit que les informations que vous publiez, avec leur source. Aucun commentaire interne n\'est jamais publié. Un pourcentage mesure l\'avancement des démarches : ce n\'est pas une promesse d\'obtention.</div>';
+  if (!clients.length) { host.innerHTML = h + '<div style="color:var(--dim);padding:8px;">Aucun souscripteur n\'est rattaché à une parcelle qui a un dossier foncier.</div></div>'; return; }
+  h += '<div class="filters-bar" style="align-items:end;"><div class="form-group"><label>Aperçu pour le souscripteur</label><select class="filter-select" onchange="APP._fsClient=this.value;fcRenderSouscripteurs()">'
+    + clients.map(function(c){ return '<option value="' + c.id + '"' + (c.id === sel ? ' selected' : '') + '>' + escHtml(c.nom || c.id) + '</option>'; }).join('') + '</select></div></div></div>';
+  var v = fcVueSouscripteur(sel);
+  v.dossiers.forEach(function(d){
+    h += '<div class="card"><div class="card-title">🏠 ' + escHtml(d.programme || d.parcelle) + ' — ' + escHtml(d.statut) + '</div>'
+      + '<div style="background:var(--card2,#f5f1ea);border-radius:8px;overflow:hidden;height:14px;margin:6px 0;"><div style="width:' + d.progression.pourcentage + '%;background:var(--or);height:100%;"></div></div>'
+      + '<div style="font-size:13px;"><b>' + d.progression.pourcentage + ' %</b> des démarches suivies terminées · Dernière mise à jour : ' + escHtml(d.derniere_mise_a_jour || '—')
+      + (d.prochaine_etape ? ' · Prochaine étape : ' + escHtml(d.prochaine_etape.libelle) + (d.prochaine_etape.date_indicative ? ' (date indicative : ' + escHtml(d.prochaine_etape.date_indicative) + ')' : '') : '') + '</div>'
+      + '<div style="font-size:11px;color:var(--dim);margin:4px 0 8px;">' + escHtml(d.progression.explication) + '</div>'
+      + (d.historique.length ? d.historique.map(function(x){ return '<div style="padding:5px 0;border-bottom:1px solid var(--bord,#eee);font-size:12px;"><b>' + escHtml(x.date) + '</b> · ' + escHtml(x.titre) + (x.description ? ' — ' + escHtml(x.description) : '') + '<div style="font-size:11px;color:var(--dim);">Source : ' + escHtml(x.source) + (x.reference_source ? ' (' + escHtml(x.reference_source) + ')' : '') + '</div></div>'; }).join('') : '<div style="color:var(--dim);font-size:12px;">Aucune information publiée pour l\'instant.</div>') + '</div>';
+  });
+  h += '<div class="card"><div class="card-title">✉️ Demandes d\'information</div>';
+  var tous = (DATA.demandes_fonciers || []).slice().sort(function(a, b){ return b.date.localeCompare(a.date); });
+  h += tous.length ? '<div class="table-wrap"><table><thead><tr><th>Référence</th><th>Souscripteur</th><th>Sujet</th><th>Statut</th><th></th></tr></thead><tbody>' + tous.map(function(x){
+    return '<tr><td>' + escHtml(x.reference) + '</td><td>' + escHtml((fcClient(x.client_id) || {}).nom || '—') + '</td><td>' + escHtml(x.sujet) + '<div style="font-size:11px;color:var(--dim);">' + x.messages.map(function(m){ return escHtml(m.de) + ' : ' + escHtml(m.texte); }).join('<br>') + '</div></td><td>' + escHtml(FC_STATUTS_DEMANDE[x.statut]) + '</td>'
+      + '<td><button class="btn btn-secondary btn-sm" onclick="fcRepondreUI(\'' + x.id + '\')">Répondre</button></td></tr>'; }).join('') + '</tbody></table></div>' : '<div style="color:var(--dim);padding:8px;">Aucune demande.</div>';
+  host.innerHTML = h + '</div>';
+}
+async function fcRepondreUI(id) {
+  var t = prompt('Votre réponse au souscripteur :'); if (!t) return;
+  fcMsg(await fcRepondreDemande(id, t), 'Réponse enregistrée.'); fcRenderSouscripteurs();
+}
+async function fcPublierUI(dossierId, code) {
+  var libelle = prompt('Titre public (ce que verra le souscripteur) :'); if (!libelle) return;
+  var desc = prompt('Description publique (facultatif, ne reprenez aucun commentaire interne) :') || '';
+  var cles = Object.keys(FC_LIBELLES_SOURCE), txt = cles.map(function(k, i){ return (i + 1) + '. ' + FC_LIBELLES_SOURCE[k]; }).join('\n');
+  var c = parseInt(prompt('Source de cette information :\n' + txt + '\n\nNuméro :'), 10);
+  if (!c || !cles[c - 1]) { toast('Source obligatoire.', 'error'); return; }
+  var ref = prompt('Référence de la source (facultatif) :') || '';
+  fcMsg(await fcPublierInformation(dossierId, code, { libelle: libelle, description: desc, source: cles[c - 1], source_ref: ref }), 'Information publiée au souscripteur.');
+  fcRender();
+}
+async function fcRetirerUI(pubId) {
+  var m = prompt('Motif du retrait (obligatoire) :'); if (!m) return;
+  fcMsg(await fcRetirerPublication(pubId, m), 'Publication retirée.'); fcRender();
+}
+fcProtegerMutations(['fcOuvrirDossier', 'fcChangerStatutEtape', 'fcAjouterJustificatif', 'fcDefinirIssue', 'fcCorrigerEtape', 'fcEnregistrerIntervenant', 'fcCreerMission',
+  'fcChangerStatutMission', 'fcSoumettreLivrable', 'fcValiderLivrable', 'fcRefuserLivrable', 'fcPublierInformation', 'fcRetirerPublication', 'fcCreerDemande', 'fcRepondreDemande', 'fcChangerStatutDemande']);
 
 /* ══════ ENCAISSEMENT MOBILE MONEY — relevé → souscripteur → versement ══════ */
 var MOMO_LINES = [];
