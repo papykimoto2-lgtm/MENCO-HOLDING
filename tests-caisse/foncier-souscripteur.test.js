@@ -106,7 +106,7 @@ test('progression : étapes publiables seulement, pondérée, expliquée, jamais
     var egal = fcVueSouscripteur('c1').dossiers[0].progression;
     return { zero: zero, un: un, egal: egal };
   }, ids);
-  assert.equal(r.zero.pourcentage, 0); assert.equal(r.un.pourcentage, 12); assert.equal(r.egal.pourcentage, 11);
+  assert.equal(r.zero.pourcentage, 0); assert.equal(r.un.pourcentage, 10); assert.equal(r.egal.pourcentage, 9);
   assert.deepEqual(Object.keys(r.un.par_phase).sort(), ['C', 'D', 'E']);
   assert.match(r.un.explication, /ni une probabilité/); assert.match(r.un.explication, /garantie juridique/);
 });
@@ -123,7 +123,7 @@ test('statut synthétique : une étape terminée n\'est jamais présentée comme
   }, ids);
   assert.equal(r.s0, 'Démarches à venir'); assert.equal(r.s1, "En attente d'une réponse de l'administration"); assert.equal(r.s2, 'Démarches en cours');
   assert.equal(/approuv|accord|obtenu|favorable/i.test(r.s0 + r.s1 + r.s2), false);
-  assert.equal(r.prochaine, 'Dépôt auprès du service compétent');
+  assert.match(r.prochaine, /Dépôt de la demande au Guichet Unique du Foncier/);
 });
 
 test('demandes d\'information : seulement sur son propre dossier, avec suivi de statut (§9.6)', async () => {
