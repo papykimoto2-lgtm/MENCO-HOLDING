@@ -78,3 +78,16 @@ Intégré dans `menko-immo.html` (constantes `FC_PROCEDURE_REF`, `FC_ACTEURS_REF
 - Tests : `tests-caisse/foncier-procedure.test.js` (15).
 
 **À valider avant usage commercial** : le contenu n'est pas vérifié par un juriste ou un géomètre-expert ; les liens de sources ne sont pas vérifiés ; l'intitulé de l'ACD est incohérent dans Menko (« Arrêté de Concession Définitive » vs « Attestation de Cession Définitive ») ; l'acronyme du ministère (MCLU) reste à confirmer. Les dossiers existants ne sont pas modifiés.
+
+## Pièces jointes par étape
+
+Store local `pieces_foncieres` (DB v159), **jamais synchronisé** (pièces d'identité, titres) : à créer fermé, sans accès anonyme, avec stockage privé (bucket non public, URL signées) lors de la phase base de données.
+
+- **Promoteur** : joint un PDF/JPG/PNG/WebP (5 Mo max, 20 pièces par étape) à n'importe quelle étape ; interne par défaut, visible du souscripteur seulement si l'étape lui est publiée ; une source facultative crée aussi un justificatif sourcé.
+- **Souscripteur** : dépose une pièce uniquement là où le responsable a ouvert un dépôt (« Demander une pièce »), sur ses propres dossiers. La pièce est « à vérifier » ; le responsable l'accepte ou la refuse (motif obligatoire, communiqué).
+- Une pièce retirée est masquée et conservée avec son motif. Tout est journalisé ; notifications au responsable (dépôt) et au souscripteur (demande, décision).
+- `fcDeposerPieceSouscripteur(clientId, …)` est l'API que l'espace souscripteur réel appellera. Aujourd'hui, le dépôt se simule depuis l'onglet « Information souscripteurs » (aperçu) : un vrai dépôt par le client exige le portail authentifié et le stockage privé.
+
+## Onglets « Sécurisation du titre »
+
+Ordre de marche en avant : 2.1 Situation des titres → 2.2 Dossiers fonciers → 2.3 Intervenants & missions → 2.4 Jalons du titre (ex-Workflow titre) → 2.5 Information souscripteurs. « Notifications » (transversal) passe en Vue d'ensemble. Passerelles dossier ↔ jalons ; intitulé unique « Arrêté de Concession Définitive ».
