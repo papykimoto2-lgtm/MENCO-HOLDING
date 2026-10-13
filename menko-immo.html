@@ -10083,6 +10083,7 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
             <div class="etape-btns">
               <button class="tab-btn" onclick="switchTab('foncier','titres')" title="ACD, TF provisoire et définitif"><i>📜</i>Titres Fonciers</button>
               <button class="tab-btn" onclick="switchTab('foncier','workflow')" title="Suivi des étapes administratives du titre"><i>🧭</i>Workflow titre</button>
+              <button class="tab-btn" onclick="switchTab('foncier','dossiers')" title="Dossiers fonciers : étapes, responsables, justificatifs, historique"><i>📁</i>Dossiers fonciers</button>
             </div>
           </div>
           <div class="etape">
@@ -10611,6 +10612,8 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
             <div id="tfw-portfolio"></div>
           </div>
         </div>
+
+        <div class="tab-pane" id="tab-foncier-dossiers"><div id="fc-root"></div></div>
 
         <div class="tab-pane" id="tab-foncier-fisc">
           <div class="card" style="border:1px solid var(--or);">
@@ -24734,6 +24737,8 @@ var DATA = {
   /* v148 — Demandes de réapprovisionnement de fonds des caisses de division */
   demandes_reappro: [],
   bordereaux_caisse: [],
+  dossiers_fonciers: [],
+  evenements_fonciers: [],
   /* v147 — Circuit budgétaire complet : budget prévisionnel annuel par
      division/compte, validé par le DG, décrémenté par les Demandes d'Achat
      validées, avec transferts de ligne à ligne */
@@ -24745,7 +24750,8 @@ var DATA = {
    INDEXEDDB
 ────────────────────────────────────────────────────── */
 var DB_NAME = 'ImmoSuiteDB';
-var DB_VERSION = 154; /* v154: store 'bordereaux_caisse' — circuit de visas papier des pièces de caisse (visa final du Gérant Holding). Migration additive.
+var DB_VERSION = 155; /* v155: stores 'dossiers_fonciers' et 'evenements_fonciers' — Foncier Connect phase 1 (locaux, sans table Supabase pour l'instant). Migration additive.
+                          v154: store 'bordereaux_caisse' — circuit de visas papier des pièces de caisse (visa final du Gérant Holding). Migration additive.
                           v153: store 'conventions_reglementees' — registre des conventions
                           réglementées intra-groupe (AUSCGIE art. 438+), pièce exigée par le
                           commissaire aux comptes ; n'existait pas du tout auparavant.
@@ -24902,6 +24908,7 @@ var ALL_STORES = [
   'demandes_reappro',
   /* v154 — Bordereaux de transmission des pièces de caisse au Gérant (visa final) */
   'bordereaux_caisse',
+  'dossiers_fonciers','evenements_fonciers',
   /* v147 — Circuit budgétaire : DA + transferts */
   'fiches_engagement_depense', 'transferts_budgetaires',
   /* [FIX] Demandes de versement du portail souscripteur — n'était même pas
@@ -25328,7 +25335,7 @@ async function loadAllData() {
    bandeau discret pour un profil Admin uniquement — jamais pour les
    autres rôles, pour ne pas faire porter une dette technique à un
    utilisateur qui ne peut rien y faire. */
-var SANIX_STORES_LOCAL_UNIQUEMENT = ['conflits_sync']; // écarts connus et voulus — jamais synchronisés au cloud par conception
+var SANIX_STORES_LOCAL_UNIQUEMENT = ['conflits_sync','dossiers_fonciers','evenements_fonciers']; // écarts connus et voulus — jamais synchronisés au cloud par conception
 function sanixAutoDiagnostic(){
   try{
     var mappes = {}; SUPA_STORE_MAP.forEach(function(p){ mappes[p[1]]=true; });
@@ -30547,6 +30554,7 @@ function goTo(page) {
 function switchTab(context, tab) {
   // Hook scan pointage
   if (context==='foncier' && tab==='fisc' && typeof fiscInit==='function') { fiscInit(); }
+  if (context==='foncier' && tab==='dossiers' && typeof fcRender==='function') fcRender();
   if (context==='recliv' && tab==='garsav' && typeof garInit==='function') { garInit(); }
   if (context==='conventions' && tab==='cautions' && typeof cauInit==='function') { cauInit(); }
   if (context==='paiements' && tab==='momo' && typeof momoInit==='function') { momoInit(); }
@@ -50487,7 +50495,7 @@ var STORE_MODULE = {
   af_operations:'Acquisition & Amenagement Foncier',
   af_agents:'Acquisition & Amenagement Foncier',
   af_relances:'Acquisition & Amenagement Foncier',
-  parcelles:'Foncier', terrains:'Foncier',
+  parcelles:'Foncier', terrains:'Foncier', dossiers_fonciers:'Foncier', evenements_fonciers:'Foncier',
   /* [FIX] 'Conges' ne correspond à AUCUNE entrée de ALL_MODULES (le module
      réel s'appelle 'Conges RH') — userPeut() traite donc toute écriture sur
      conges_rh comme "non restreinte" quel que soit le droit configuré :
@@ -59023,6 +59031,365 @@ function tfwRenderPortfolio(){
     +'</tbody></table></div>';
 }
 function tfwOpen(id){ var sel=document.getElementById('tfw-parc'); if(sel){ sel.value=id; tfwSelect(); } }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FONCIER CONNECT — phase 1 : dossiers fonciers, workflow, journal
+   (cahier des charges du 13/10/2026, §5-6, §14, §20)
+
+   Principe : ImmoSuite organise le SUIVI et la COORDINATION des procédures
+   foncières. Il ne délivre aucun acte et ne remplace aucun système officiel.
+   « Terminé » ne veut JAMAIS dire « accordé par l'administration » : l'issue
+   d'une étape (favorable / défavorable) est une donnée distincte, qui exige
+   un justificatif dont la source est une administration.
+
+   Stockage : deux stores LOCAUX (dossiers_fonciers, evenements_fonciers),
+   déclarés dans SANIX_STORES_LOCAL_UNIQUEMENT. Aucune table Supabase n'est
+   créée à ce stade : la phase « base de données » viendra après audit et
+   fermeture de l'accès anonyme (voir supabase/RLS_PHASE1.md). Le journal est
+   en ajout seul : aucune fonction ne modifie ni ne supprime un événement.
+══════════════════════════════════════════════════════════════════════════ */
+var FC_PROCEDURES = {
+  acd: "Demande d'ACD", regularisation: "Régularisation d'un dossier foncier", avec_acd: 'Dossier comportant déjà un ACD',
+  titre_foncier: 'Formalités relatives au titre foncier', mutation: 'Mutation immobilière', morcellement: 'Morcellement',
+  fusion: 'Fusion de parcelles', autre: 'Autre procédure'
+};
+var FC_STATUTS = {
+  a_preparer: 'À préparer', a_venir: 'À venir', en_cours: 'En cours', attente_intervenant: "En attente d'un intervenant",
+  attente_document: "En attente d'un document", attente_administration: "En attente d'une administration",
+  attente_decision: "En attente d'une décision", bloque: 'Bloqué', rejete: 'Rejeté', termine: 'Terminé', annule: 'Annulé'
+};
+var FC_STATUTS_ACTIFS = ['en_cours', 'attente_intervenant', 'attente_document', 'attente_administration', 'attente_decision'];
+var FC_STATUTS_FINAUX = ['termine', 'rejete', 'annule'];
+var FC_SOURCES = {
+  promoteur: 'Information enregistrée par le promoteur',
+  prestataire: 'Document reçu du prestataire',
+  administration_declaree: "Information obtenue auprès d'une administration (déclarée, non confirmée)",
+  administration_confirmee: "Document officiel reçu et contrôlé"
+};
+/* [code, libellé, phase, justificatif requis, visibilité par défaut, procédures concernées ('*' = toutes)] */
+var FC_ETAPES_REF = [
+  ['creation_dossier', 'Création du dossier', 'A', 0, 'interne', '*'],
+  ['completude_documents', 'Vérification de la complétude documentaire', 'A', 0, 'interne', '*'],
+  ['identification_procedure', 'Identification de la procédure applicable', 'A', 0, 'interne', '*'],
+  ['verification_references', 'Vérification des références de la parcelle', 'A', 0, 'interne', '*'],
+  ['anomalies', 'Identification des anomalies éventuelles', 'A', 0, 'interne', '*'],
+  ['mission_technique', 'Attribution de la mission au professionnel concerné', 'B', 0, 'intervenant', 'acd,regularisation,morcellement,fusion,mutation,autre'],
+  ['documents_techniques', 'Préparation des documents techniques', 'B', 0, 'intervenant', 'acd,regularisation,morcellement,fusion,mutation,autre'],
+  ['reception_livrables', 'Réception des livrables', 'B', 1, 'intervenant', 'acd,regularisation,morcellement,fusion,mutation,autre'],
+  ['controle_pieces', 'Contrôle des pièces par le promoteur', 'B', 0, 'interne', 'acd,regularisation,morcellement,fusion,mutation,autre'],
+  ['validation_technique', 'Validation interne du dossier technique', 'B', 0, 'interne', 'acd,regularisation,morcellement,fusion,mutation,autre'],
+  ['preparation_dossier_admin', 'Préparation du dossier administratif', 'C', 0, 'interne', '*'],
+  ['depot', 'Dépôt auprès du service compétent', 'C', 1, 'souscripteur', '*'],
+  ['recepisse', 'Enregistrement du récépissé', 'C', 1, 'souscripteur', '*'],
+  ['suivi_instruction', "Suivi de l'instruction", 'C', 0, 'souscripteur', '*'],
+  ['observations_complements', 'Observations ou demandes de complément', 'C', 0, 'interne', '*'],
+  ['preparation_complements', 'Préparation des pièces complémentaires', 'C', 0, 'interne', '*'],
+  ['transmission_complements', 'Transmission des compléments', 'C', 1, 'souscripteur', '*'],
+  ['reponse', 'Enregistrement de la réponse disponible', 'C', 1, 'souscripteur', '*'],
+  ['formalites_titre', 'Formalités relatives au titre foncier', 'D', 0, 'souscripteur', 'acd,regularisation,avec_acd,titre_foncier,mutation'],
+  ['references_justificatifs', 'Enregistrement des références et justificatifs', 'D', 1, 'interne', 'acd,regularisation,avec_acd,titre_foncier,mutation'],
+  ['acd_signature', "Établissement et signature de l'ACD", 'D', 1, 'souscripteur', 'acd,regularisation'],
+  ['enregistrement_publicite', "Enregistrement et publicité foncière", 'D', 1, 'souscripteur', 'acd,regularisation,avec_acd,titre_foncier,mutation'],
+  ['verification_documents', 'Vérification des documents obtenus', 'E', 0, 'interne', '*'],
+  ['concordance_references', 'Contrôle de la concordance des références', 'E', 0, 'interne', '*'],
+  ['documents_finaux', 'Enregistrement des documents finaux', 'E', 1, 'interne', '*'],
+  ['maj_statut_foncier', 'Mise à jour du statut foncier', 'E', 0, 'interne', '*'],
+  ['publication_souscripteur', 'Publication des informations autorisées au souscripteur', 'E', 0, 'souscripteur', '*'],
+  ['cloture', 'Clôture du dossier', 'E', 0, 'interne', '*']
+];
+var FC_PHASES = { A: 'Ouverture et diagnostic', B: 'Préparation technique', C: 'Dépôt et instruction', D: 'Formalités foncières', E: 'Contrôle et clôture' };
+
+function fcActeur() {
+  var u = (typeof APP !== 'undefined' && APP.currentUser) || {};
+  return { id: u.id || '', nom: u.nom || u.login || '' };
+}
+function fcAuj() { return (typeof today === 'function') ? today() : new Date().toISOString().slice(0, 10); }
+function fcDossier(id) { return (DATA.dossiers_fonciers || []).find(function(d){ return d.id === id; }) || null; }
+function fcEtape(d, code) { return d ? (d.etapes || []).find(function(e){ return e.code === code; }) || null : null; }
+function fcNomUtilisateur(id) {
+  var u = (DATA.users || []).find(function(x){ return x.id === id; });
+  return u ? (u.nom || u.login || id) : (id || '—');
+}
+function fcLibelleParcelle(id) {
+  var p = (DATA.parcelles || []).find(function(x){ return x.id === id; });
+  return p ? ((p.ref || p.id) + (p.localisation ? ' — ' + p.localisation : '')) : (id || '—');
+}
+
+/* RM-01 : référence interne unique */
+function fcReferenceSuivante() {
+  var an = new Date().getFullYear(), max = 0, re = new RegExp('^DF-' + an + '-(\\d+)$');
+  (DATA.dossiers_fonciers || []).forEach(function(d){ var m = String(d.reference || '').match(re); if (m) max = Math.max(max, parseInt(m[1], 10)); });
+  return 'DF-' + an + '-' + String(max + 1).padStart(3, '0');
+}
+function fcEtapesPour(type) {
+  var ordre = 0;
+  return FC_ETAPES_REF.filter(function(s){ return s[5] === '*' || s[5].split(',').indexOf(type) !== -1; }).map(function(s){
+    ordre++;
+    return { code: s[0], libelle: s[1], phase: s[2], ordre: ordre, statut: ordre === 1 ? 'a_preparer' : 'a_venir', responsable_id: '', date_debut: '', date_cible: '',
+             date_fin: '', justificatif_requis: !!s[3], justificatifs: [], motif: '', observations: '', visibilite: s[4], valide_par: '', valide_le: '', issue: '' };
+  });
+}
+
+/* Journal en ajout seul (RM-02, RM-09, §14) : jamais modifié, jamais supprimé. */
+async function fcEvenement(d, code, type, description, extra) {
+  var a = fcActeur(), e = {
+    id: uid(), dossier_id: d.id, etape_code: code || '', type: type, description: description || '',
+    ancien: '', nouveau: '', source: '', source_ref: '', motif: '', acteur: a.nom, acteur_id: a.id,
+    date: new Date().toISOString()
+  };
+  if (extra) Object.keys(extra).forEach(function(k){ e[k] = extra[k]; });
+  if (!DATA.evenements_fonciers) DATA.evenements_fonciers = [];
+  DATA.evenements_fonciers.push(e);
+  await dbPut('evenements_fonciers', e);
+  return e;
+}
+async function fcSauver(d) { d._modifie = new Date().toISOString(); await dbPut('dossiers_fonciers', d); }
+
+/* Ouverture d'un dossier (§6.2). Retourne { ok, dossier } ou { ok:false, erreur }. */
+async function fcOuvrirDossier(o) {
+  o = o || {};
+  if (!o.parcelle_id || !(DATA.parcelles || []).some(function(p){ return p.id === o.parcelle_id; })) return { ok: false, erreur: 'Parcelle introuvable.' };
+  if (!FC_PROCEDURES[o.type]) return { ok: false, erreur: 'Type de procédure invalide.' };
+  if (!o.responsable_id) return { ok: false, erreur: 'Un responsable est obligatoire pour ouvrir un dossier.' };
+  var doublon = (DATA.dossiers_fonciers || []).find(function(d){ return d.parcelle_id === o.parcelle_id && d.type_procedure === o.type && ['cloture', 'annule'].indexOf(d.statut) === -1; });
+  if (doublon && !o.forcer) return { ok: false, erreur: 'Un dossier « ' + FC_PROCEDURES[o.type] + ' » est déjà ouvert sur cette parcelle (' + doublon.reference + ').', doublon: doublon.id };
+  var parc = (DATA.parcelles || []).find(function(p){ return p.id === o.parcelle_id; });
+  var d = {
+    id: uid(), reference: fcReferenceSuivante(), parcelle_id: o.parcelle_id, programme_id: (parc && parc.programme_id) || '',
+    type_procedure: o.type, statut: 'ouvert', priorite: o.priorite || 'normale', responsable_id: o.responsable_id,
+    date_ouverture: fcAuj(), date_cible: o.date_cible || '', date_cloture: '', observations: o.observations || '',
+    etapes: fcEtapesPour(o.type), created_at: fcAuj()
+  };
+  d.etapes.forEach(function(e){ e.responsable_id = d.responsable_id; });
+  if (!DATA.dossiers_fonciers) DATA.dossiers_fonciers = [];
+  DATA.dossiers_fonciers.push(d);
+  await fcSauver(d);
+  await fcEvenement(d, '', 'ouverture', 'Dossier ouvert : ' + FC_PROCEDURES[o.type], { nouveau: d.reference, source: 'promoteur' });
+  return { ok: true, dossier: d };
+}
+
+function fcRecalculerStatut(d) {
+  var cl = fcEtape(d, 'cloture');
+  if (cl && cl.statut === 'termine') { d.statut = 'cloture'; if (!d.date_cloture) d.date_cloture = fcAuj(); return; }
+  d.date_cloture = '';
+  if (d.etapes.some(function(e){ return e.statut === 'bloque'; })) d.statut = 'bloque';
+  else if (d.etapes.some(function(e){ return FC_STATUTS_ACTIFS.indexOf(e.statut) !== -1 || e.statut === 'termine'; })) d.statut = 'en_cours';
+  else d.statut = 'ouvert';
+}
+
+/* Changement de statut d'une étape. Règles : RM-03 (justificatif), RM-04 (responsable), RM-09 (étape terminée), §6.4 (motifs). */
+async function fcChangerStatutEtape(dossierId, code, statut, o) {
+  o = o || {};
+  var d = fcDossier(dossierId), e = fcEtape(d, code);
+  if (!d || !e) return { ok: false, erreur: 'Dossier ou étape introuvable.' };
+  if (!FC_STATUTS[statut]) return { ok: false, erreur: 'Statut inconnu.' };
+  if (d.statut === 'cloture' && code !== 'cloture') return { ok: false, erreur: 'Dossier clôturé : utilisez une correction motivée.' };
+  if (FC_STATUTS_FINAUX.indexOf(e.statut) !== -1) return { ok: false, erreur: 'Étape ' + FC_STATUTS[e.statut].toLowerCase() + ' : utilisez une correction motivée (l\'historique est conservé).' };
+  if (e.statut === statut) return { ok: true, dossier: d };
+  var motif = String(o.motif || '').trim();
+  if (['rejete', 'annule', 'bloque'].indexOf(statut) !== -1 && !motif) return { ok: false, erreur: 'Un motif est obligatoire pour le statut « ' + FC_STATUTS[statut] + ' ».' };
+  if (FC_STATUTS_ACTIFS.indexOf(statut) !== -1 && !(e.responsable_id || d.responsable_id)) return { ok: false, erreur: 'Aucun responsable n\'est affecté à cette étape.' };
+  var derogation = false;
+  if (code === 'cloture' && statut === 'termine') {
+    var restantes = d.etapes.filter(function(x){ return x.code !== 'cloture' && FC_STATUTS_FINAUX.indexOf(x.statut) === -1; });
+    if (restantes.length) {
+      if (!o.derogation) return { ok: false, erreur: 'Clôture impossible : ' + restantes.length + ' étape(s) non terminée(s) ou non écartée(s).', etapes_restantes: true };
+      if (!motif) return { ok: false, erreur: 'Une clôture avec étapes restantes exige un motif.' };
+      derogation = true;
+    }
+  }
+  if (statut === 'termine' && e.justificatif_requis && !e.justificatifs.length) {
+    if (!o.derogation) return { ok: false, erreur: 'Cette étape exige un justificatif avant d\'être terminée.', justificatif_manquant: true };
+    if (!motif) return { ok: false, erreur: 'Une dérogation exige un motif.' };
+    derogation = true;
+  }
+  var ancien = e.statut, a = fcActeur();
+  e.statut = statut;
+  e.motif = ['rejete', 'annule', 'bloque'].indexOf(statut) !== -1 ? motif : (statut === 'termine' ? e.motif : '');
+  if (!e.date_debut && FC_STATUTS_ACTIFS.indexOf(statut) !== -1) e.date_debut = fcAuj();
+  if (statut === 'termine') { e.date_fin = fcAuj(); e.valide_par = a.nom; e.valide_le = new Date().toISOString(); }
+  fcRecalculerStatut(d);
+  await fcSauver(d);
+  await fcEvenement(d, code, derogation ? 'derogation' : 'changement_statut',
+    e.libelle + ' : ' + FC_STATUTS[ancien] + ' → ' + FC_STATUTS[statut] + (derogation ? ' (dérogation sans justificatif)' : ''),
+    { ancien: ancien, nouveau: statut, motif: motif, source: o.source || 'promoteur' });
+  return { ok: true, dossier: d, derogation: derogation };
+}
+
+/* Justificatif : la SOURCE est obligatoire (RM-08). */
+async function fcAjouterJustificatif(dossierId, code, j) {
+  j = j || {};
+  var d = fcDossier(dossierId), e = fcEtape(d, code);
+  if (!d || !e) return { ok: false, erreur: 'Dossier ou étape introuvable.' };
+  if (!FC_SOURCES[j.source]) return { ok: false, erreur: 'La source du justificatif est obligatoire.' };
+  if (!String(j.reference || '').trim() && !String(j.note || '').trim()) return { ok: false, erreur: 'Indiquez une référence ou une description.' };
+  var a = fcActeur(), item = { id: uid(), reference: String(j.reference || '').trim(), date: j.date || fcAuj(), source: j.source, note: String(j.note || '').trim(), ajoute_par: a.nom, ajoute_le: new Date().toISOString() };
+  e.justificatifs.push(item);
+  await fcSauver(d);
+  await fcEvenement(d, code, 'justificatif', 'Justificatif ajouté à « ' + e.libelle + ' » : ' + (item.reference || item.note), { source: j.source, source_ref: item.reference });
+  return { ok: true, justificatif: item };
+}
+
+/* RM-07 : l'issue administrative n'est jamais déduite d'un « terminé ». Elle exige un justificatif d'origine administrative. */
+async function fcDefinirIssue(dossierId, code, issue) {
+  var d = fcDossier(dossierId), e = fcEtape(d, code);
+  if (!d || !e) return { ok: false, erreur: 'Dossier ou étape introuvable.' };
+  if (['favorable', 'defavorable', ''].indexOf(issue) === -1) return { ok: false, erreur: 'Issue inconnue.' };
+  if (issue && !e.justificatifs.some(function(j){ return j.source === 'administration_confirmee'; }))
+    return { ok: false, erreur: 'Une issue administrative exige un document officiel reçu et contrôlé (source « ' + FC_SOURCES.administration_confirmee + ' »).' };
+  var ancien = e.issue; e.issue = issue;
+  await fcSauver(d);
+  await fcEvenement(d, code, 'issue_administrative', e.libelle + ' : issue ' + (issue || 'effacée'), { ancien: ancien || '', nouveau: issue, source: 'administration_confirmee' });
+  return { ok: true };
+}
+
+/* RM-09 : correction d'une étape terminée = motif obligatoire, valeurs précédentes conservées. */
+async function fcCorrigerEtape(dossierId, code, champs, motif) {
+  var d = fcDossier(dossierId), e = fcEtape(d, code);
+  if (!d || !e) return { ok: false, erreur: 'Dossier ou étape introuvable.' };
+  if (!String(motif || '').trim()) return { ok: false, erreur: 'Le motif de la correction est obligatoire.' };
+  var autorises = ['date_cible', 'date_fin', 'responsable_id', 'observations', 'visibilite'], touche = 0;
+  for (var k in (champs || {})) {
+    if (autorises.indexOf(k) === -1) return { ok: false, erreur: 'Champ non modifiable : ' + k };
+  }
+  for (var k2 in (champs || {})) {
+    if (String(e[k2] || '') === String(champs[k2] || '')) continue;
+    var ancien = e[k2]; e[k2] = champs[k2]; touche++;
+    await fcEvenement(d, code, 'correction', e.libelle + ' : ' + k2 + ' corrigé', { ancien: String(ancien || ''), nouveau: String(champs[k2] || ''), motif: String(motif).trim() });
+  }
+  if (touche) await fcSauver(d);
+  return { ok: true, modifications: touche };
+}
+
+/* Retard (RM-11) : un dépassement n'est pas un rejet, et un délai administratif n'est pas un retard interne. */
+function fcEtatEcheance(e, aujourdhui) {
+  var t = aujourdhui || fcAuj();
+  if (!e || !e.date_cible || FC_STATUTS_FINAUX.indexOf(e.statut) !== -1) return '';
+  if (e.date_cible >= t) return '';
+  return e.statut === 'attente_administration' || e.statut === 'attente_decision' ? 'delai_administratif_depasse' : 'retard_interne';
+}
+function fcProchaineEtape(d) {
+  return (d.etapes || []).filter(function(e){ return FC_STATUTS_FINAUX.indexOf(e.statut) === -1; }).sort(function(a, b){ return a.ordre - b.ordre; })[0] || null;
+}
+/* Tableau de bord du promoteur (§12.1). Les attentes ne sont pas imputées à un tiers sans donnée : on compte des statuts déclarés. */
+function fcSynthese(aujourdhui) {
+  var ds = DATA.dossiers_fonciers || [], r = { total: ds.length, en_cours: 0, clotures: 0, bloques: 0, incomplets: 0, attente_prestataire: 0, attente_administration: 0, retard_interne: 0, delai_administratif_depasse: 0, sans_responsable: 0 };
+  ds.forEach(function(d){
+    if (d.statut === 'annule') { r.total--; return; }
+    if (d.statut === 'cloture') { r.clotures++; return; }
+    r.en_cours++;
+    if (d.statut === 'bloque') r.bloques++;
+    var etapes = d.etapes || [];
+    if (etapes.some(function(e){ return e.statut === 'attente_document'; })) r.incomplets++;
+    if (etapes.some(function(e){ return e.statut === 'attente_intervenant'; })) r.attente_prestataire++;
+    if (etapes.some(function(e){ return e.statut === 'attente_administration' || e.statut === 'attente_decision'; })) r.attente_administration++;
+    if (etapes.some(function(e){ return fcEtatEcheance(e, aujourdhui) === 'retard_interne'; })) r.retard_interne++;
+    if (etapes.some(function(e){ return fcEtatEcheance(e, aujourdhui) === 'delai_administratif_depasse'; })) r.delai_administratif_depasse++;
+    if (!d.responsable_id) r.sans_responsable++;
+  });
+  return r;
+}
+
+/* ─── Interface ─────────────────────────────────────────────────────────── */
+function fcOptions(map, sel) { return Object.keys(map).map(function(k){ return '<option value="' + k + '"' + (k === sel ? ' selected' : '') + '>' + escHtml(map[k]) + '</option>'; }).join(''); }
+function fcBadgeStatut(s) {
+  var c = { termine: '#2e7d4f', bloque: '#c0392b', rejete: '#c0392b', annule: '#888', en_cours: '#1565c0', a_preparer: '#B87333', a_venir: '#888' }[s] || '#6a5acd';
+  return '<span style="background:' + c + '22;color:' + c + ';border:1px solid ' + c + '55;padding:2px 8px;border-radius:10px;font-size:11px;white-space:nowrap;">' + escHtml(FC_STATUTS[s] || s) + '</span>';
+}
+function fcMsg(r, ok) { if (typeof toast === 'function') toast(r.ok ? (ok || 'Enregistré.') : r.erreur, r.ok ? 'success' : 'error'); return r.ok; }
+function fcRender() {
+  var host = document.getElementById('fc-root'); if (!host) return;
+  var s = fcSynthese(), users = (DATA.users || []).filter(function(u){ return u.statut !== 'inactif'; });
+  var kpi = function(t, v, c) { return '<div class="kpi-card" style="border-top-color:' + (c || 'var(--or)') + ';"><div class="kpi-label">' + t + '</div><div class="kpi-value" style="font-size:20px;">' + v + '</div></div>'; };
+  var h = '<div class="card" style="border:1px solid var(--or);"><div class="card-title">📁 Dossiers fonciers — coordination des démarches</div>'
+    + '<div style="font-size:11px;color:var(--dim);margin-bottom:10px;">ImmoSuite suit et coordonne les démarches enregistrées. Il ne délivre aucun acte : « Terminé » ne signifie pas « accordé par l\'administration ».</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;">'
+    + kpi('Dossiers', s.total) + kpi('En cours', s.en_cours, '#1565c0') + kpi('Clôturés', s.clotures, '#2e7d4f') + kpi('Bloqués', s.bloques, '#c0392b')
+    + kpi('Documents manquants', s.incomplets) + kpi('Chez un prestataire', s.attente_prestataire) + kpi('Chez une administration', s.attente_administration)
+    + kpi('Retard interne', s.retard_interne, '#c0392b') + kpi('Délai administratif dépassé', s.delai_administratif_depasse) + '</div></div>';
+  h += '<div class="card"><div class="card-title">➕ Ouvrir un dossier</div><div class="filters-bar" style="align-items:end;flex-wrap:wrap;">'
+    + '<div class="form-group"><label>Parcelle</label><select class="filter-select" id="fc-n-parcelle">' + (DATA.parcelles || []).map(function(p){ return '<option value="' + p.id + '">' + escHtml(fcLibelleParcelle(p.id)) + '</option>'; }).join('') + '</select></div>'
+    + '<div class="form-group"><label>Procédure</label><select class="filter-select" id="fc-n-type">' + fcOptions(FC_PROCEDURES, 'acd') + '</select></div>'
+    + '<div class="form-group"><label>Responsable</label><select class="filter-select" id="fc-n-resp"><option value="">— choisir —</option>' + users.map(function(u){ return '<option value="' + u.id + '">' + escHtml(u.nom || u.login) + '</option>'; }).join('') + '</select></div>'
+    + '<div class="form-group"><label>Priorité</label><select class="filter-select" id="fc-n-prio"><option value="normale">Normale</option><option value="haute">Haute</option><option value="basse">Basse</option></select></div>'
+    + '<div class="form-group"><label>Échéance</label><input type="date" class="form-control" id="fc-n-cible"></div>'
+    + '<button class="btn btn-primary btn-sm" onclick="fcOuvrirUI()">Ouvrir le dossier</button></div></div>';
+  var ds = (DATA.dossiers_fonciers || []).slice().sort(function(a, b){ return (b.created_at || '').localeCompare(a.created_at || ''); });
+  h += '<div class="card"><div class="card-title">📋 Dossiers</div>';
+  if (!ds.length) h += '<div style="color:var(--dim);padding:10px;">Aucun dossier. Ouvrez-en un à partir d\'une parcelle.</div>';
+  else h += '<div class="table-wrap"><table><thead><tr><th>Référence</th><th>Parcelle</th><th>Procédure</th><th>Statut</th><th>Étape courante</th><th>Responsable</th><th>Échéance</th><th></th></tr></thead><tbody>'
+    + ds.map(function(d){
+      var e = fcProchaineEtape(d), et = e ? fcEtatEcheance(e) : '';
+      return '<tr><td><strong>' + escHtml(d.reference) + '</strong></td><td>' + escHtml(fcLibelleParcelle(d.parcelle_id)) + '</td><td>' + escHtml(FC_PROCEDURES[d.type_procedure] || d.type_procedure) + '</td><td>' + escHtml(d.statut) + '</td>'
+        + '<td>' + (e ? escHtml(e.libelle) + '<br>' + fcBadgeStatut(e.statut) : '—') + '</td><td>' + escHtml(fcNomUtilisateur((e && e.responsable_id) || d.responsable_id)) + '</td>'
+        + '<td>' + escHtml((e && e.date_cible) || d.date_cible || '—') + (et ? '<br><span style="color:#c0392b;font-size:11px;">' + (et === 'retard_interne' ? 'Retard interne' : 'Délai administratif dépassé') + '</span>' : '') + '</td>'
+        + '<td><button class="btn btn-secondary btn-sm" onclick="fcOuvrirDetail(\'' + d.id + '\')">Ouvrir</button></td></tr>';
+    }).join('') + '</tbody></table></div>';
+  h += '</div><div id="fc-detail"></div>';
+  host.innerHTML = h;
+  if (APP._fcSel && fcDossier(APP._fcSel)) fcRenderDetail(APP._fcSel);
+}
+async function fcOuvrirUI() {
+  var g = function(i){ return (document.getElementById(i) || {}).value || ''; };
+  var r = await fcOuvrirDossier({ parcelle_id: g('fc-n-parcelle'), type: g('fc-n-type'), responsable_id: g('fc-n-resp'), priorite: g('fc-n-prio'), date_cible: g('fc-n-cible') });
+  if (!r.ok && r.doublon && confirm(r.erreur + '\n\nOuvrir quand même un second dossier ?')) r = await fcOuvrirDossier({ parcelle_id: g('fc-n-parcelle'), type: g('fc-n-type'), responsable_id: g('fc-n-resp'), priorite: g('fc-n-prio'), date_cible: g('fc-n-cible'), forcer: true });
+  if (fcMsg(r, 'Dossier ouvert.')) { APP._fcSel = r.dossier.id; fcRender(); }
+}
+function fcOuvrirDetail(id) { APP._fcSel = id; fcRenderDetail(id); var el = document.getElementById('fc-detail'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth' }); }
+function fcRenderDetail(id) {
+  var d = fcDossier(id), host = document.getElementById('fc-detail'); if (!d || !host) return;
+  var users = (DATA.users || []).filter(function(u){ return u.statut !== 'inactif'; });
+  var h = '<div class="card" style="border:1px solid var(--or);"><div class="card-title">📂 ' + escHtml(d.reference) + ' — ' + escHtml(FC_PROCEDURES[d.type_procedure] || '') + '</div>'
+    + '<div style="font-size:12px;color:var(--dim);margin-bottom:8px;">Parcelle : ' + escHtml(fcLibelleParcelle(d.parcelle_id)) + ' · Responsable : ' + escHtml(fcNomUtilisateur(d.responsable_id)) + ' · Statut : ' + escHtml(d.statut) + '</div>';
+  var phase = '';
+  h += '<div class="table-wrap"><table><thead><tr><th>#</th><th>Étape</th><th>Statut</th><th>Responsable</th><th>Échéance</th><th>Justificatifs</th><th>Visibilité</th><th></th></tr></thead><tbody>';
+  d.etapes.forEach(function(e){
+    if (e.phase !== phase) { phase = e.phase; h += '<tr><td colspan="8" style="background:var(--card2,#f5f1ea);font-weight:700;font-size:12px;">Phase ' + phase + ' — ' + escHtml(FC_PHASES[phase]) + '</td></tr>'; }
+    var figee = FC_STATUTS_FINAUX.indexOf(e.statut) !== -1, et = fcEtatEcheance(e);
+    h += '<tr><td>' + e.ordre + '</td><td>' + escHtml(e.libelle) + (e.justificatif_requis ? ' <span title="Justificatif requis" style="color:#B87333;">📎</span>' : '')
+      + (e.issue ? '<br><span style="font-size:11px;color:#2e7d4f;">Issue officielle enregistrée : ' + escHtml(e.issue) + '</span>' : '') + (e.motif ? '<br><span style="font-size:11px;color:#c0392b;">Motif : ' + escHtml(e.motif) + '</span>' : '') + '</td>'
+      + '<td>' + (figee ? fcBadgeStatut(e.statut) : '<select class="filter-select" onchange="fcStatutUI(\'' + d.id + '\',\'' + e.code + '\',this)">' + Object.keys(FC_STATUTS).map(function(k){ return '<option value="' + k + '"' + (k === e.statut ? ' selected' : '') + '>' + escHtml(FC_STATUTS[k]) + '</option>'; }).join('') + '</select>') + '</td>'
+      + '<td>' + escHtml(fcNomUtilisateur(e.responsable_id || d.responsable_id)) + '</td>'
+      + '<td>' + escHtml(e.date_cible || '—') + (et ? '<br><span style="color:#c0392b;font-size:11px;">' + (et === 'retard_interne' ? 'Retard interne' : 'Délai administratif dépassé') + '</span>' : '') + '</td>'
+      + '<td>' + e.justificatifs.length + ' <button class="btn btn-secondary btn-sm" onclick="fcJustifUI(\'' + d.id + '\',\'' + e.code + '\')">+</button>'
+      + e.justificatifs.map(function(j){ return '<div style="font-size:11px;color:var(--dim);">' + escHtml(j.reference || j.note) + ' · ' + escHtml(FC_SOURCES[j.source] || j.source) + '</div>'; }).join('') + '</td>'
+      + '<td style="font-size:11px;">' + escHtml(e.visibilite) + '</td>'
+      + '<td>' + (figee ? '<button class="btn btn-secondary btn-sm" onclick="fcCorrigerUI(\'' + d.id + '\',\'' + e.code + '\')">Corriger</button>' : '<button class="btn btn-secondary btn-sm" onclick="fcEcheanceUI(\'' + d.id + '\',\'' + e.code + '\')">Échéance</button>') + '</td></tr>';
+  });
+  h += '</tbody></table></div>';
+  var evs = (DATA.evenements_fonciers || []).filter(function(x){ return x.dossier_id === d.id; }).sort(function(a, b){ return b.date.localeCompare(a.date); });
+  h += '<div class="card-title" style="margin-top:14px;">🕑 Historique (ajout seul)</div><div style="max-height:260px;overflow:auto;font-size:12px;">'
+    + (evs.length ? evs.map(function(x){ return '<div style="padding:4px 0;border-bottom:1px solid var(--bord,#eee);"><b>' + escHtml(x.date.slice(0, 16).replace('T', ' ')) + '</b> · ' + escHtml(x.acteur || '—') + ' · ' + escHtml(x.description) + (x.motif ? ' <i>(motif : ' + escHtml(x.motif) + ')</i>' : '') + '</div>'; }).join('') : '<div style="color:var(--dim);">Aucun événement.</div>')
+    + '</div></div>';
+  host.innerHTML = h;
+}
+async function fcStatutUI(id, code, sel) {
+  var statut = sel.value, motif = '';
+  if (['rejete', 'annule', 'bloque'].indexOf(statut) !== -1) { motif = prompt('Motif obligatoire pour « ' + FC_STATUTS[statut] + ' » :') || ''; }
+  var r = await fcChangerStatutEtape(id, code, statut, { motif: motif });
+  if (!r.ok && r.justificatif_manquant && confirm(r.erreur + '\n\nTerminer quand même par dérogation (motif obligatoire, journalisée) ?')) {
+    var m = prompt('Motif de la dérogation :') || '';
+    r = await fcChangerStatutEtape(id, code, statut, { motif: m, derogation: true });
+  }
+  fcMsg(r, 'Étape mise à jour.'); fcRender();
+}
+async function fcJustifUI(id, code) {
+  var ref = prompt('Référence ou description du justificatif :'); if (ref === null) return;
+  var cles = Object.keys(FC_SOURCES), txt = cles.map(function(k, i){ return (i + 1) + '. ' + FC_SOURCES[k]; }).join('\n');
+  var c = parseInt(prompt('Source du justificatif :\n' + txt + '\n\nNuméro :'), 10);
+  if (!c || !cles[c - 1]) { toast('Source obligatoire.', 'error'); return; }
+  fcMsg(await fcAjouterJustificatif(id, code, { reference: ref, source: cles[c - 1] }), 'Justificatif ajouté.'); fcRender();
+}
+async function fcEcheanceUI(id, code) {
+  var d = fcDossier(id), e = fcEtape(d, code), v = prompt('Échéance (AAAA-MM-JJ) :', e.date_cible || ''); if (v === null) return;
+  e.date_cible = v.trim(); await fcSauver(d);
+  await fcEvenement(d, code, 'echeance', e.libelle + ' : échéance fixée au ' + (e.date_cible || '—')); fcRender();
+}
+async function fcCorrigerUI(id, code) {
+  var m = prompt('Motif de la correction (obligatoire) :'); if (!m) return;
+  var v = prompt('Nouvelle date de fin (AAAA-MM-JJ) :'); if (v === null) return;
+  fcMsg(await fcCorrigerEtape(id, code, { date_fin: v.trim() }, m), 'Correction enregistrée.'); fcRender();
+}
 
 /* ══════ ENCAISSEMENT MOBILE MONEY — relevé → souscripteur → versement ══════ */
 var MOMO_LINES = [];
