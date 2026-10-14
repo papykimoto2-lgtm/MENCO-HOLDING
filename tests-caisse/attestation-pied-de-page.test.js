@@ -12,7 +12,7 @@ async function html(page, params, opts) {
     DATA.params = a.params; var c = { id: 'c1', nom: 'BENDE', prenoms: 'X', dossier: 'D-1' };
     var h = attSoldeHtml(c, Object.assign({ numero: 'ATS-2026-001', date: '2026-10-14' }, a.opts || {}));
     var d = new DOMParser().parseFromString(h, 'text/html'), pied = d.querySelector('.pied');
-    return { present: !!pied, lignes: pied ? [].slice.call(pied.children).map(function (x) { return x.textContent; }) : [], dernier: d.body.lastElementChild && d.body.lastElementChild.className, css: /\.pied\{/.test(h) && /@media print\{.*\.pied\{position:fixed/.test(h) };
+    return { present: !!pied, lignes: pied ? [].slice.call(pied.children).map(function (x) { return x.textContent; }) : [], dernier: d.body.lastElementChild && d.body.lastElementChild.className, css: /\.pied\{/.test(h) && /@media print\{.*\.pied\{position:absolute/.test(h) };
   }, { params: params, opts: opts });
 }
 
