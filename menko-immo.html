@@ -10071,6 +10071,8 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
             <div class="etape-btns">
               <button class="tab-btn active" onclick="switchTab('foncier','dashboard');renderFoncierDashboard()" title="Récapitulatif du portefeuille — répartition, valeur, alertes"><i>📊</i>Tableau de bord</button>
               <button class="tab-btn" onclick="switchTab('foncier','notifications')" title="Alertes, échéances et notifications"><i>🔔</i>Notifications <span id="fn-badge" style="display:none;background:#dc3545;color:#fff;border-radius:10px;padding:0 6px;font-size:10px;"></span></button>
+              <button class="tab-btn" onclick="switchTab('foncier','pilotage')" title="Tableaux de bord : promoteur, responsable, intervenants, direction"><i>🎯</i>Pilotage foncier</button>
+              <button class="tab-btn" onclick="switchTab('foncier','documents')" title="Gestion documentaire : classement, versions, expiration, recherche"><i>🗂️</i>Documents</button>
             </div>
           </div>
           <div class="etape">
@@ -10620,6 +10622,8 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
         <div class="tab-pane" id="tab-foncier-intervenants"><div id="fi-root"></div></div>
         <div class="tab-pane" id="tab-foncier-souscripteurs"><div id="fs-root"></div></div>
         <div class="tab-pane" id="tab-foncier-notifications"><div id="fn-root"></div></div>
+        <div class="tab-pane" id="tab-foncier-pilotage"><div id="fp-root"></div></div>
+        <div class="tab-pane" id="tab-foncier-documents"><div id="fd-root"></div></div>
 
         <div class="tab-pane" id="tab-foncier-fisc">
           <div class="card" style="border:1px solid var(--or);">
@@ -30574,6 +30578,8 @@ function switchTab(context, tab) {
   if (context==='foncier' && tab==='intervenants' && typeof fcRenderIntervenants==='function') fcRenderIntervenants();
   if (context==='foncier' && tab==='souscripteurs' && typeof fcRenderSouscripteurs==='function') fcRenderSouscripteurs();
   if (context==='foncier' && tab==='notifications' && typeof fcRenderNotifications==='function') fcRenderNotifications();
+  if (context==='foncier' && tab==='pilotage' && typeof fcRenderPilotage==='function') fcRenderPilotage();
+  if (context==='foncier' && tab==='documents' && typeof fcRenderDocuments==='function') fcRenderDocuments();
   if (context==='recliv' && tab==='garsav' && typeof garInit==='function') { garInit(); }
   if (context==='conventions' && tab==='cautions' && typeof cauInit==='function') { cauInit(); }
   if (context==='paiements' && tab==='momo' && typeof momoInit==='function') { momoInit(); }
@@ -60569,13 +60575,14 @@ function fcValiderFichier(f) {
   if (!f || !f.contenu || !f.nom) return 'Aucun fichier fourni.';
   if (!FC_PIECES_TYPES[f.type]) return 'Format non accepté (PDF, JPG, PNG ou WebP uniquement).';
   if (String(f.contenu).indexOf('data:' + f.type) !== 0) return 'Le contenu du fichier ne correspond pas à son format.';
+  if (typeof fcSignatureFichierOk === 'function' && !fcSignatureFichierOk(f.type, f.contenu)) return 'Le fichier ne correspond pas au format annoncé (signature invalide).';
   var taille = Math.max(Number(f.taille) || 0, Math.floor(String(f.contenu).length * 3 / 4));
   if (taille > FC_PIECES_MAX_OCTETS) return 'Fichier trop volumineux (5 Mo maximum).';
   return '';
 }
 function fcPiece(id) { return (DATA.pieces_foncieres || []).find(function(p){ return p.id === id; }) || null; }
 function fcPiecesEtape(dossierId, code, inclureRetirees) {
-  return (DATA.pieces_foncieres || []).filter(function(p){ return p.dossier_id === dossierId && p.etape_code === code && (inclureRetirees || !p.retire); })
+  return (DATA.pieces_foncieres || []).filter(function(p){ return p.dossier_id === dossierId && p.etape_code === code && (inclureRetirees || (!p.retire && !p.remplacee_par)); })
     .sort(function(a, b){ return a.depose_le.localeCompare(b.depose_le); });
 }
 function fcDossierOuvert(d) { return d && ['cloture', 'annule'].indexOf(d.statut) === -1; }
@@ -60597,6 +60604,8 @@ async function fcAjouterPiece(dossierId, code, f, o) {
   var p = { id: uid(), dossier_id: d.id, etape_code: code, nom: m.nom, type: m.type, taille: m.taille, contenu: m.contenu, note: String(o.note || '').trim(),
             depose_par: { role: 'promoteur', id: a.id, nom: a.nom }, client_id: '', visibilite: visibilite, source: o.source || '', statut: 'jointe',
             depose_le: new Date().toISOString(), retire: false, retire_motif: '' };
+  var meta = await fcMetaDoc(p, o, fcOrganisationPromoteur()); if (meta.erreur) return { ok: false, erreur: meta.erreur };
+  Object.assign(p, meta);
   if (!DATA.pieces_foncieres) DATA.pieces_foncieres = [];
   DATA.pieces_foncieres.push(p);
   await fcDb('pieces_foncieres', p, { forceRole: true });
@@ -60642,6 +60651,8 @@ async function fcDeposerPieceSouscripteur(clientId, dossierId, code, f, note) {
   var p = { id: uid(), dossier_id: d.id, etape_code: code, nom: m.nom, type: m.type, taille: m.taille, contenu: m.contenu, note: String(note || '').trim().slice(0, 500),
             depose_par: { role: 'souscripteur', id: c.id, nom: c.nom || '' }, client_id: c.id, visibilite: 'souscripteur', source: '', statut: 'a_verifier',
             depose_le: new Date().toISOString(), retire: false, retire_motif: '', decision_motif: '' };
+  var meta = await fcMetaDoc(p, { categorie: (e.depot_souscripteur && e.depot_souscripteur.categorie) || 'autre' }, c.nom || ''); if (meta.erreur) return { ok: false, erreur: meta.erreur };
+  Object.assign(p, meta);
   if (!DATA.pieces_foncieres) DATA.pieces_foncieres = [];
   DATA.pieces_foncieres.push(p);
   await fcDb('pieces_foncieres', p, { forceRole: true });
@@ -60696,12 +60707,12 @@ function fcPiecesVueSouscripteur(clientId, d) {
 
 /* ── Interface ── */
 function fcTailleLisible(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + ' Mo' : Math.max(1, Math.round(n / 1024)) + ' Ko'; }
-function fcLienPiece(p) { return '<a href="' + p.contenu + '" download="' + escHtml(p.nom) + '" style="font-size:12px;">⬇ ' + escHtml(p.nom) + '</a> <span style="font-size:11px;color:var(--dim);">' + fcTailleLisible(p.taille) + '</span>'; }
+function fcLienPiece(p) { return '<a href="#" onclick="fcTelechargerPieceUI(\'' + p.id + '\');return false;" style="font-size:12px;">⬇ ' + escHtml(p.nom) + '</a> <span style="font-size:11px;color:var(--dim);">v' + (p.version || 1) + ' · ' + fcTailleLisible(p.taille) + (p.categorie ? ' · ' + escHtml(FC_CATEGORIES_DOC[p.categorie] || '') : '') + (p.confidentialite === 'restreinte' ? ' · 🔒' : '') + '</span>'; }
 function fcPiecesUI(dossierId, code) { APP._fcPiecesSel = { d: dossierId, c: code }; fcRenderDetail(dossierId); var el = document.getElementById('fc-pieces'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth' }); }
 function fcPanneauPieces(d) {
   var s = APP._fcPiecesSel; if (!s || s.d !== d.id) return '';
   var e = fcEtape(d, s.c); if (!e) return '';
-  var liste = fcPiecesEtape(d.id, s.c, true);
+  var liste = fcPiecesEtape(d.id, s.c, true).filter(fcPieceLisible);
   var h = '<div class="card" id="fc-pieces" style="border:1px solid var(--or);"><div class="card-title">📎 Pièces jointes — ' + escHtml(e.libelle) + '</div>';
   h += liste.length ? liste.map(function(p){
     return '<div style="padding:6px 0;border-bottom:1px solid var(--bord,#eee);font-size:12px;' + (p.retire ? 'opacity:.55;' : '') + '">' + (p.retire ? escHtml(p.nom) : fcLienPiece(p))
@@ -60715,6 +60726,9 @@ function fcPanneauPieces(d) {
   }).join('') : '<div style="color:var(--dim);font-size:12px;">Aucune pièce sur cette étape.</div>';
   h += '<div class="filters-bar" style="align-items:end;margin-top:10px;"><div class="form-group"><label>Fichier (PDF, JPG, PNG — 5 Mo max)</label><input type="file" id="fc-piece-fichier" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*"></div>'
     + '<div class="form-group"><label>Visibilité</label><select class="filter-select" id="fc-piece-visi"><option value="interne">Interne</option>' + (e.visibilite === 'souscripteur' ? '<option value="souscripteur">Visible du souscripteur</option>' : '') + '</select></div>'
+    + '<div class="form-group"><label>Catégorie</label><select class="filter-select" id="fc-piece-cat">' + fcOptions(FC_CATEGORIES_DOC, 'autre') + '</select></div>'
+    + '<div class="form-group"><label>Confidentialité</label><select class="filter-select" id="fc-piece-conf">' + fcOptions(FC_CONFIDENTIALITES, 'normale') + '</select></div>'
+    + '<div class="form-group"><label>Expire le</label><input type="date" class="form-control" id="fc-piece-exp"></div>'
     + '<div class="form-group"><label>Source (si justificatif)</label><select class="filter-select" id="fc-piece-source"><option value="">— simple pièce —</option>' + Object.keys(FC_SOURCES).map(function(k){ return '<option value="' + k + '">' + escHtml(FC_SOURCES[k]) + '</option>'; }).join('') + '</select></div>'
     + '<button class="btn btn-primary btn-sm" onclick="fcJoindrePieceUI(\'' + d.id + '\',\'' + e.code + '\')">Joindre</button></div>';
   h += '<div style="margin-top:6px;font-size:12px;">' + (e.depot_souscripteur && e.depot_souscripteur.ouvert
@@ -60725,7 +60739,7 @@ function fcPanneauPieces(d) {
 async function fcJoindrePieceUI(dossierId, code) {
   var inp = document.getElementById('fc-piece-fichier'); if (!inp || !inp.files[0]) { alert('Choisissez un fichier.'); return; }
   var f; try { f = await fcLireFichier(inp.files[0]); } catch (e) { alert(e.message); return; }
-  var r = await fcAjouterPiece(dossierId, code, f, { visibilite: document.getElementById('fc-piece-visi').value, source: document.getElementById('fc-piece-source').value });
+  var r = await fcAjouterPiece(dossierId, code, f, { visibilite: document.getElementById('fc-piece-visi').value, source: document.getElementById('fc-piece-source').value, categorie: document.getElementById('fc-piece-cat').value, confidentialite: document.getElementById('fc-piece-conf').value, expire_le: document.getElementById('fc-piece-exp').value });
   fcMsg(r, 'Pièce jointe.'); fcRenderDetail(dossierId);
 }
 async function fcDemanderPieceUI(dossierId, code) {
@@ -60737,9 +60751,9 @@ async function fcDecisionPieceUI(id, decision) {
   var motif = ''; if (decision === 'refusee') { motif = prompt('Motif du refus (communiqué au souscripteur) :'); if (!motif) return; }
   var p = fcPiece(id); fcMsg(await fcDecisionPiece(id, decision, motif), 'Décision enregistrée.'); if (p) fcRenderDetail(p.dossier_id);
 }
-async function fcRetirerPieceUI(id) {
-  var m = prompt('Motif du retrait (obligatoire, conservé au journal) :'); if (!m) return;
-  var p = fcPiece(id); fcMsg(await fcRetirerPiece(id, m), 'Pièce retirée.'); if (p) fcRenderDetail(p.dossier_id);
+async function fcRetirerPieceUI(id, ged) {
+  var m = prompt('Motif de l\'archivage (obligatoire, conservé au journal) :'); if (!m) return;
+  var p = fcPiece(id); fcMsg(await fcRetirerPiece(id, m), 'Document archivé.'); if (ged) fcRenderDocuments(); else if (p) fcRenderDetail(p.dossier_id);
 }
 async function fcDeposerPieceApercuUI(clientId, dossierId, code, inputId) {
   var inp = document.getElementById(inputId); if (!inp || !inp.files[0]) { alert('Choisissez un fichier.'); return; }
@@ -60747,6 +60761,484 @@ async function fcDeposerPieceApercuUI(clientId, dossierId, code, inputId) {
   fcMsg(await fcDeposerPieceSouscripteur(clientId, dossierId, code, f, ''), 'Pièce déposée.'); fcRenderSouscripteurs();
 }
 fcProtegerMutations(['fcAjouterPiece', 'fcDemanderPiece', 'fcFermerDepot', 'fcDecisionPiece', 'fcRetirerPiece']);
+
+/* ═══ Gestion documentaire (cahier §11) — au-dessus des pièces jointes ═══
+   Catégories, versions, date d'expiration, confidentialité, archivage logique, empreinte SHA-256,
+   journal des consultations/téléchargements, recherche. Stockage local (aucune analyse antivirus disponible : contrôle de
+   taille, de format et de signature du fichier uniquement). L'empreinte détecte une altération ; elle ne prouve pas l'authenticité du document. */
+var FC_CATEGORIES_DOC = {
+  identite: "Pièce d'identité", titre_foncier: 'Titre foncier / ACD / attestation', plan_cadastral: 'Plan / pièce cadastrale', acte: 'Acte juridique (vente, mutation…)',
+  courrier_administratif: 'Courrier administratif', rapport_prestataire: 'Rapport / livrable de prestataire', recu_paiement: 'Reçu de paiement / frais', autre: 'Autre'
+};
+var FC_CONFIDENTIALITES = { normale: 'Normale', restreinte: 'Restreinte (responsable et administrateur)' };
+
+function fcSignatureFichierOk(type, contenu) {
+  try {
+    var b64 = (String(contenu).split(',')[1] || '').slice(0, 32); b64 = b64.slice(0, b64.length - (b64.length % 4));
+    var t = atob(b64);
+    if (type === 'application/pdf') return t.indexOf('%PDF') === 0;
+    if (type === 'image/png') return t.charCodeAt(0) === 0x89 && t.slice(1, 4) === 'PNG';
+    if (type === 'image/jpeg') return t.charCodeAt(0) === 0xFF && t.charCodeAt(1) === 0xD8 && t.charCodeAt(2) === 0xFF;
+    if (type === 'image/webp') return t.slice(0, 4) === 'RIFF' && t.slice(8, 12) === 'WEBP';
+  } catch (e) { return false; }
+  return false;
+}
+async function fcEmpreinte(contenu) {
+  try {
+    if (!(window.crypto && crypto.subtle)) return '';
+    var bin = atob(String(contenu).split(',')[1] || ''), u = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    var h = new Uint8Array(await crypto.subtle.digest('SHA-256', u));
+    return Array.prototype.map.call(h, function(x){ return ('0' + x.toString(16)).slice(-2); }).join('');
+  } catch (e) { return ''; }
+}
+/* Métadonnées documentaires ajoutées à toute pièce (§11.3). Retourne { erreur } si une valeur est invalide. */
+async function fcMetaDoc(p, o, organisation) {
+  o = o || {};
+  var cat = o.categorie || 'autre';
+  if (!FC_CATEGORIES_DOC[cat]) return { erreur: 'Catégorie documentaire inconnue.' };
+  var conf = o.confidentialite || 'normale';
+  if (!FC_CONFIDENTIALITES[conf]) return { erreur: 'Niveau de confidentialité inconnu.' };
+  if (conf === 'restreinte' && p.visibilite === 'souscripteur' && !p.client_id) return { erreur: 'Une pièce restreinte ne peut pas être visible du souscripteur.' };
+  if (o.expire_le && !/^\d{4}-\d{2}-\d{2}$/.test(o.expire_le)) return { erreur: "Date d'expiration invalide (AAAA-MM-JJ)." };
+  return { categorie: cat, confidentialite: conf, expire_le: o.expire_le || '', organisation: organisation || '', version: 1, document_id: p.id, remplacee_par: '',
+           empreinte: await fcEmpreinte(p.contenu), integrite: '' };
+}
+function fcOrganisationPromoteur() { return (DATA.params && (DATA.params.societe || DATA.params.nom_societe)) || 'Promoteur'; }
+function fcPieceLisible(p) {
+  if (!p || p.confidentialite !== 'restreinte') return true;
+  var d = fcDossier(p.dossier_id), a = fcActeur();
+  return !!(d && fcPeutGererDossier(d)) || (a.id && p.depose_par && p.depose_par.id === a.id);
+}
+function fcVersionsDocument(documentId) {
+  return (DATA.pieces_foncieres || []).filter(function(p){ return (p.document_id || p.id) === documentId; }).sort(function(a, b){ return (a.version || 1) - (b.version || 1); });
+}
+
+/* Nouvelle version d'un document : l'ancienne reste consultable (jamais écrasée). */
+async function fcNouvelleVersion(pieceId, f, o) {
+  o = o || {};
+  var p = fcPiece(pieceId), d = p && fcDossier(p.dossier_id);
+  if (!p || !d) return { ok: false, erreur: 'Document introuvable.' };
+  if (!fcPeutGererDossier(d)) return { ok: false, erreur: 'Seul le responsable du dossier (ou un administrateur) peut déposer une nouvelle version.' };
+  if (!fcDossierOuvert(d)) return { ok: false, erreur: 'Dossier ' + d.statut + '.' };
+  if (p.remplacee_par || p.retire) return { ok: false, erreur: 'Cette version n\'est plus la version courante.' };
+  if (!fcPieceLisible(p)) return { ok: false, erreur: "Vous n'avez pas accès à ce document." };
+  var err = fcValiderFichier(f); if (err) return { ok: false, erreur: err };
+  var a = fcActeur(), m = fcMetaPiece(f);
+  var n = { id: uid(), dossier_id: p.dossier_id, etape_code: p.etape_code, nom: m.nom, type: m.type, taille: m.taille, contenu: m.contenu, note: String(o.note || '').trim(),
+            depose_par: { role: 'promoteur', id: a.id, nom: a.nom }, client_id: p.client_id || '', visibilite: p.visibilite, source: '', statut: p.client_id ? 'a_verifier' : 'jointe',
+            depose_le: new Date().toISOString(), retire: false, retire_motif: '', decision_motif: '' };
+  var meta = await fcMetaDoc(n, { categorie: p.categorie, confidentialite: p.confidentialite, expire_le: o.expire_le !== undefined ? o.expire_le : p.expire_le }, p.organisation || fcOrganisationPromoteur());
+  if (meta.erreur) return { ok: false, erreur: meta.erreur };
+  Object.assign(n, meta, { document_id: p.document_id || p.id, version: (p.version || 1) + 1 });
+  p.remplacee_par = n.id;
+  DATA.pieces_foncieres.push(n);
+  await fcDb('pieces_foncieres', n, { forceRole: true });
+  await fcDb('pieces_foncieres', p, { forceRole: true });
+  await fcEvenement(d, p.etape_code, 'piece_version', 'Nouvelle version (v' + n.version + ') de « ' + p.nom + ' » : ' + n.nom, { source_ref: n.id });
+  return { ok: true, piece: n };
+}
+async function fcRestaurerPiece(pieceId) {
+  var p = fcPiece(pieceId), d = p && fcDossier(p.dossier_id);
+  if (!p || !d) return { ok: false, erreur: 'Document introuvable.' };
+  if (!fcPeutGererDossier(d)) return { ok: false, erreur: 'Seul le responsable du dossier (ou un administrateur) peut restaurer un document.' };
+  if (!p.retire) return { ok: false, erreur: "Ce document n'est pas archivé." };
+  p.retire = false; p.retire_motif = '';
+  await fcDb('pieces_foncieres', p, { forceRole: true });
+  await fcEvenement(d, p.etape_code, 'piece_restauree', 'Document « ' + p.nom + ' » restauré', { source_ref: p.id });
+  return { ok: true };
+}
+/* Contrôle d'intégrité : recalcule l'empreinte et la compare à celle enregistrée au dépôt. */
+async function fcVerifierIntegrite(pieceId) {
+  var p = fcPiece(pieceId), d = p && fcDossier(p.dossier_id);
+  if (!p || !d) return { ok: false, erreur: 'Document introuvable.' };
+  if (!p.empreinte) return { ok: true, conforme: null, message: "Aucune empreinte n'a été calculée pour ce document." };
+  var h = await fcEmpreinte(p.contenu), conforme = h === p.empreinte;
+  p.integrite = conforme ? 'conforme' : 'alteree'; p.integrite_verifiee_le = new Date().toISOString();
+  await fcDb('pieces_foncieres', p, { forceRole: true });
+  if (!conforme) await fcEvenement(d, p.etape_code, 'piece_integrite', 'ALERTE : le contenu de « ' + p.nom + ' » ne correspond plus à son empreinte d\'origine', { source_ref: p.id });
+  return { ok: true, conforme: conforme };
+}
+/* Accès contrôlé : seul un utilisateur autorisé obtient le contenu, et l'accès est journalisé. */
+async function fcAccederPiece(pieceId, action) {
+  var p = fcPiece(pieceId), d = p && fcDossier(p.dossier_id);
+  if (!p || !d) return { ok: false, erreur: 'Document introuvable.' };
+  if (!fcPieceLisible(p)) return { ok: false, erreur: "Ce document est à accès restreint : vous n'y avez pas accès." };
+  var telechargement = action === 'telechargement';
+  await fcEvenement(d, p.etape_code, telechargement ? 'piece_telechargee' : 'piece_consultee', (telechargement ? 'Téléchargement' : 'Consultation') + ' de « ' + p.nom + ' » (v' + (p.version || 1) + ')' + (p.confidentialite === 'restreinte' ? ' [restreint]' : ''), { source_ref: p.id });
+  return { ok: true, piece: p };
+}
+function fcPieceExpiration(p, aujourdhui) {
+  if (!p || !p.expire_le) return '';
+  var t = aujourdhui || fcAuj(); if (p.expire_le < t) return 'expiree';
+  var lim = new Date(t); lim.setDate(lim.getDate() + 30);
+  return p.expire_le <= lim.toISOString().slice(0, 10) ? 'bientot' : '';
+}
+function fcPiecesExpirantes(jours, aujourdhui) {
+  var t = aujourdhui || fcAuj(), lim = new Date(t); lim.setDate(lim.getDate() + (jours == null ? 30 : jours)); var l = lim.toISOString().slice(0, 10);
+  return (DATA.pieces_foncieres || []).filter(function(p){ return p.expire_le && p.expire_le <= l && !p.retire && !p.remplacee_par && fcPieceLisible(p); });
+}
+/* Recherche documentaire (§11.2) : respecte la confidentialité ; par défaut, versions courantes non archivées. */
+function fcRechercherDocuments(c) {
+  c = c || {}; var q = String(c.q || '').trim().toLowerCase(), t = c.aujourdhui || fcAuj();
+  return (DATA.pieces_foncieres || []).filter(function(p){
+    if (!fcPieceLisible(p)) return false;
+    if (!c.archives && p.retire) return false;
+    if (c.archives === 'seules' && !p.retire) return false;
+    if (!c.toutes_versions && p.remplacee_par) return false;
+    if (c.dossier_id && p.dossier_id !== c.dossier_id) return false;
+    if (c.categorie && p.categorie !== c.categorie) return false;
+    if (c.confidentialite && p.confidentialite !== c.confidentialite) return false;
+    if (c.statut && p.statut !== c.statut) return false;
+    if (c.expirant && !fcPieceExpiration(p, t)) return false;
+    if (!q) return true;
+    var d = fcDossier(p.dossier_id), e = d && fcEtape(d, p.etape_code);
+    var champs = [p.nom, p.note, FC_CATEGORIES_DOC[p.categorie], d && d.reference, d && fcLibelleParcelle(d.parcelle_id), e && e.libelle, p.organisation, p.depose_par && p.depose_par.nom].join(' ').toLowerCase();
+    return q.split(/\s+/).every(function(m){ return champs.indexOf(m) !== -1; });
+  }).sort(function(a, b){ return b.depose_le.localeCompare(a.depose_le); });
+}
+function fcCsvEchapper(v) { v = String(v == null ? '' : v); return /[";\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+function fcCsv(lignes) { return '﻿' + lignes.map(function(l){ return l.map(fcCsvEchapper).join(';'); }).join('\r\n'); }
+function fcTelechargerTexte(nom, texte, type) {
+  var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([texte], { type: type || 'text/csv;charset=utf-8' })); a.download = nom; document.body.appendChild(a); a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+function fcRegistreCsv(c) {
+  var l = [['Document', 'Version', 'Catégorie', 'Dossier', 'Parcelle', 'Étape', 'Déposé par', 'Organisation', 'Date de dépôt', 'Confidentialité', 'Statut de contrôle', 'Expiration', 'Archivé', 'Empreinte SHA-256']];
+  fcRechercherDocuments(c).forEach(function(p){
+    var d = fcDossier(p.dossier_id), e = d && fcEtape(d, p.etape_code);
+    l.push([p.nom, 'v' + (p.version || 1), FC_CATEGORIES_DOC[p.categorie] || '', d ? d.reference : '', d ? fcLibelleParcelle(d.parcelle_id) : '', e ? e.libelle : '', p.depose_par && p.depose_par.nom, p.organisation, p.depose_le.slice(0, 10),
+            FC_CONFIDENTIALITES[p.confidentialite] || '', FC_STATUTS_PIECE[p.statut] || '', p.expire_le, p.retire ? 'oui' : 'non', p.empreinte]);
+  });
+  return fcCsv(l);
+}
+
+/* ── Interface « Documents » ── */
+function fcFiltresDocs() {
+  var g = function(i){ var el = document.getElementById(i); return el ? el.value : ''; }, ch = function(i){ var el = document.getElementById(i); return !!(el && el.checked); };
+  return { q: g('fd-q'), categorie: g('fd-cat'), dossier_id: g('fd-dos'), confidentialite: g('fd-conf'), expirant: ch('fd-exp'), archives: ch('fd-arch') ? 'seules' : false, toutes_versions: ch('fd-vers') };
+}
+function fcRenderDocuments() {
+  var host = document.getElementById('fd-root'); if (!host) return;
+  var f = APP._fdFiltres || {}, ds = DATA.dossiers_fonciers || [];
+  var liste = fcRechercherDocuments(f), t = fcAuj();
+  var expirent = fcPiecesExpirantes(30).length, aControler = (DATA.pieces_foncieres || []).filter(function(p){ return p.statut === 'a_verifier' && !p.retire && fcPieceLisible(p); }).length;
+  var h = '<div class="card" style="border:1px solid var(--or);"><div class="card-title">🗂️ Gestion documentaire</div>'
+    + '<div style="font-size:11px;color:var(--dim);margin-bottom:10px;">Toutes les pièces des dossiers fonciers, classées par dossier, parcelle et catégorie. Les fichiers restent sur cet appareil (aucune synchronisation). L\'empreinte détecte une modification du fichier ; elle ne prouve pas l\'authenticité du document administratif. Aucune analyse antivirus n\'est disponible : seuls la taille, le format et la signature du fichier sont contrôlés.</div>'
+    + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;"><span class="badge" style="padding:4px 10px;border:1px solid var(--bord);border-radius:10px;font-size:12px;">📄 ' + liste.length + ' document(s) affiché(s)</span>'
+    + '<span style="padding:4px 10px;border:1px solid ' + (aControler ? '#B87333' : 'var(--bord)') + ';border-radius:10px;font-size:12px;">⚠ ' + aControler + ' à contrôler</span>'
+    + '<span style="padding:4px 10px;border:1px solid ' + (expirent ? '#c0392b' : 'var(--bord)') + ';border-radius:10px;font-size:12px;">⏳ ' + expirent + ' expirant sous 30 jours ou expiré(s)</span></div>'
+    + '<div class="filters-bar" style="align-items:end;flex-wrap:wrap;"><div class="form-group"><label>Recherche</label><input class="form-control" id="fd-q" placeholder="nom, dossier, parcelle, étape…" value="' + escHtml(f.q || '') + '" onkeydown="if(event.key===\'Enter\')fcAppliquerFiltresDocs()"></div>'
+    + '<div class="form-group"><label>Catégorie</label><select class="filter-select" id="fd-cat"><option value="">Toutes</option>' + fcOptions(FC_CATEGORIES_DOC, f.categorie) + '</select></div>'
+    + '<div class="form-group"><label>Dossier</label><select class="filter-select" id="fd-dos"><option value="">Tous</option>' + ds.map(function(d){ return '<option value="' + d.id + '"' + (d.id === f.dossier_id ? ' selected' : '') + '>' + escHtml(d.reference + ' — ' + fcLibelleParcelle(d.parcelle_id)) + '</option>'; }).join('') + '</select></div>'
+    + '<div class="form-group"><label>Confidentialité</label><select class="filter-select" id="fd-conf"><option value="">Toutes</option>' + fcOptions(FC_CONFIDENTIALITES, f.confidentialite) + '</select></div>'
+    + '<label style="font-size:12px;"><input type="checkbox" id="fd-exp"' + (f.expirant ? ' checked' : '') + '> Expirant</label> <label style="font-size:12px;"><input type="checkbox" id="fd-arch"' + (f.archives ? ' checked' : '') + '> Archives</label> <label style="font-size:12px;"><input type="checkbox" id="fd-vers"' + (f.toutes_versions ? ' checked' : '') + '> Toutes les versions</label>'
+    + '<button class="btn btn-primary btn-sm" onclick="fcAppliquerFiltresDocs()">Filtrer</button> <button class="btn btn-secondary btn-sm" onclick="fcExporterRegistreUI()">⬇ Export Excel (CSV)</button></div></div>';
+  h += '<div class="card"><div class="card-title">📋 Documents</div>';
+  h += liste.length ? '<div class="table-wrap"><table><thead><tr><th>Document</th><th>Catégorie</th><th>Dossier / étape</th><th>Déposé par</th><th>Confidentialité</th><th>Contrôle</th><th>Expiration</th><th></th></tr></thead><tbody>'
+    + liste.map(function(p){
+      var d = fcDossier(p.dossier_id), e = d && fcEtape(d, p.etape_code), ex = fcPieceExpiration(p, t), nv = fcVersionsDocument(p.document_id || p.id).length;
+      return '<tr style="' + (p.retire ? 'opacity:.6;' : '') + '"><td><b>' + escHtml(p.nom) + '</b> <span style="font-size:11px;color:var(--dim);">v' + (p.version || 1) + (nv > 1 ? ' / ' + nv : '') + ' · ' + fcTailleLisible(p.taille) + '</span>'
+        + (p.empreinte ? '<div style="font-size:10px;color:var(--dim);" title="' + escHtml(p.empreinte) + '">SHA-256 ' + escHtml(p.empreinte.slice(0, 12)) + '… ' + (p.integrite === 'alteree' ? '<b style="color:#c0392b;">ALTÉRÉ</b>' : (p.integrite === 'conforme' ? '✓ intègre' : '')) + '</div>' : '<div style="font-size:10px;color:var(--dim);">empreinte non calculée</div>') + '</td>'
+        + '<td>' + escHtml(FC_CATEGORIES_DOC[p.categorie] || '—') + '</td><td>' + escHtml(d ? d.reference : '—') + '<div style="font-size:11px;color:var(--dim);">' + escHtml(d ? fcLibelleParcelle(d.parcelle_id) : '') + ' · ' + escHtml(e ? e.libelle : '') + '</div></td>'
+        + '<td>' + escHtml((p.depose_par && p.depose_par.nom) || '—') + '<div style="font-size:11px;color:var(--dim);">' + escHtml(p.organisation || '') + ' · ' + escHtml(p.depose_le.slice(0, 10)) + '</div></td>'
+        + '<td>' + (p.confidentialite === 'restreinte' ? '🔒 Restreinte' : 'Normale') + '</td><td>' + escHtml(FC_STATUTS_PIECE[p.statut] || '') + '</td>'
+        + '<td>' + (p.expire_le ? escHtml(p.expire_le) + (ex === 'expiree' ? '<br><b style="color:#c0392b;font-size:11px;">Expiré</b>' : (ex === 'bientot' ? '<br><span style="color:#B87333;font-size:11px;">Bientôt</span>' : '')) : '—') + '</td>'
+        + '<td style="white-space:nowrap;"><button class="btn btn-secondary btn-sm" title="Aperçu" onclick="fcPrevisualiserUI(\'' + p.id + '\')">👁</button> <button class="btn btn-secondary btn-sm" title="Télécharger" onclick="fcTelechargerPieceUI(\'' + p.id + '\')">⬇</button> <button class="btn btn-secondary btn-sm" title="Vérifier l\'intégrité" onclick="fcIntegriteUI(\'' + p.id + '\')">🔍</button>'
+        + (p.retire ? ' <button class="btn btn-secondary btn-sm" onclick="fcRestaurerPieceUI(\'' + p.id + '\')">Restaurer</button>'
+           : (p.remplacee_par ? '' : ' <button class="btn btn-secondary btn-sm" onclick="fcVersionUI(\'' + p.id + '\')">+ version</button> <button class="btn btn-secondary btn-sm" onclick="fcRetirerPieceUI(\'' + p.id + '\',true)">Archiver</button>')) + '</td></tr>'; }).join('')
+    + '</tbody></table></div>' : '<div style="color:var(--dim);padding:10px;">Aucun document ne correspond. Joignez une pièce depuis un dossier (bouton 📎 d\'une étape) ou déposez-la ci-dessous.</div>';
+  h += '</div>' + fcFormulaireDepot();
+  host.innerHTML = h + '<input type="file" id="fd-version-input" style="display:none" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*" onchange="fcVersionChoisie(this)">';
+}
+function fcAppliquerFiltresDocs() { APP._fdFiltres = fcFiltresDocs(); fcRenderDocuments(); }
+function fcFormulaireDepot() {
+  var ds = (DATA.dossiers_fonciers || []).filter(fcDossierOuvert);
+  if (!ds.length) return '';
+  var sel = APP._fdDepotDossier && ds.some(function(d){ return d.id === APP._fdDepotDossier; }) ? APP._fdDepotDossier : ds[0].id, d = fcDossier(sel);
+  return '<div class="card"><div class="card-title">➕ Déposer un document</div><div class="filters-bar" style="align-items:end;flex-wrap:wrap;">'
+    + '<div class="form-group"><label>Dossier</label><select class="filter-select" id="fd-n-dos" onchange="APP._fdDepotDossier=this.value;fcRenderDocuments()">' + ds.map(function(x){ return '<option value="' + x.id + '"' + (x.id === sel ? ' selected' : '') + '>' + escHtml(x.reference + ' — ' + fcLibelleParcelle(x.parcelle_id)) + '</option>'; }).join('') + '</select></div>'
+    + '<div class="form-group"><label>Étape</label><select class="filter-select" id="fd-n-etape">' + d.etapes.map(function(e){ return '<option value="' + e.code + '">' + e.ordre + '. ' + escHtml(e.libelle) + '</option>'; }).join('') + '</select></div>'
+    + '<div class="form-group"><label>Catégorie</label><select class="filter-select" id="fd-n-cat">' + fcOptions(FC_CATEGORIES_DOC, 'autre') + '</select></div>'
+    + '<div class="form-group"><label>Confidentialité</label><select class="filter-select" id="fd-n-conf">' + fcOptions(FC_CONFIDENTIALITES, 'normale') + '</select></div>'
+    + '<div class="form-group"><label>Expire le</label><input type="date" class="form-control" id="fd-n-exp"></div>'
+    + '<div class="form-group"><label>Fichier (5 Mo max)</label><input type="file" id="fd-n-fichier" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*"></div>'
+    + '<button class="btn btn-primary btn-sm" onclick="fcDeposerDocumentUI()">Déposer</button></div></div>';
+}
+async function fcDeposerDocumentUI() {
+  var g = function(i){ var el = document.getElementById(i); return el ? el.value : ''; }, inp = document.getElementById('fd-n-fichier');
+  if (!inp || !inp.files[0]) { alert('Choisissez un fichier.'); return; }
+  var f; try { f = await fcLireFichier(inp.files[0]); } catch (e) { alert(e.message); return; }
+  fcMsg(await fcAjouterPiece(g('fd-n-dos'), g('fd-n-etape'), f, { visibilite: 'interne', categorie: g('fd-n-cat'), confidentialite: g('fd-n-conf'), expire_le: g('fd-n-exp') }), 'Document déposé.');
+  fcRenderDocuments();
+}
+async function fcTelechargerPieceUI(id) {
+  var r = await fcAccederPiece(id, 'telechargement'); if (!fcMsg(r, 'Téléchargement journalisé.')) return;
+  var a = document.createElement('a'); a.href = r.piece.contenu; a.download = r.piece.nom; document.body.appendChild(a); a.click(); a.remove();
+}
+async function fcPrevisualiserUI(id) {
+  var r = await fcAccederPiece(id, 'consultation'); if (!r.ok) { fcMsg(r); return; }
+  var b = await (await fetch(r.piece.contenu)).blob(), url = URL.createObjectURL(b);
+  var ov = document.createElement('div'); ov.id = 'fd-apercu'; ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:99999;display:flex;flex-direction:column;padding:16px;';
+  ov.innerHTML = '<div style="color:#fff;margin-bottom:8px;display:flex;justify-content:space-between;"><b>' + escHtml(r.piece.nom) + '</b><button class="btn btn-secondary btn-sm" id="fd-apercu-x">Fermer</button></div>'
+    + (r.piece.type === 'application/pdf' ? '<iframe src="' + url + '" style="flex:1;background:#fff;border:0;"></iframe>' : '<div style="flex:1;overflow:auto;text-align:center;"><img alt="Aperçu du document" src="' + url + '" style="max-width:100%;"></div>');
+  document.body.appendChild(ov); document.getElementById('fd-apercu-x').onclick = function(){ URL.revokeObjectURL(url); ov.remove(); };
+}
+async function fcIntegriteUI(id) {
+  var r = await fcVerifierIntegrite(id); if (!r.ok) { fcMsg(r); return; }
+  if (typeof toast === 'function') toast(r.conforme === null ? r.message : (r.conforme ? 'Intègre : le fichier correspond à l\'empreinte du dépôt.' : 'ALTÉRÉ : le fichier ne correspond plus à l\'empreinte du dépôt.'), r.conforme === false ? 'error' : 'success');
+  fcRenderDocuments();
+}
+function fcVersionUI(id) { APP._fdVersionPour = id; var i = document.getElementById('fd-version-input'); if (i) { i.value = ''; i.click(); } }
+async function fcVersionChoisie(inp) {
+  if (!inp.files[0] || !APP._fdVersionPour) return;
+  var f; try { f = await fcLireFichier(inp.files[0]); } catch (e) { alert(e.message); return; }
+  fcMsg(await fcNouvelleVersion(APP._fdVersionPour, f, {}), 'Nouvelle version enregistrée.'); APP._fdVersionPour = null; fcRenderDocuments();
+}
+async function fcRestaurerPieceUI(id) { fcMsg(await fcRestaurerPiece(id), 'Document restauré.'); fcRenderDocuments(); }
+function fcExporterRegistreUI() { if (!fcPeutExporter()) { fcMsg({ ok: false, erreur: "Votre profil ne permet pas d'exporter les données foncières." }); return; } fcTelechargerTexte('documents-fonciers-' + fcAuj() + '.csv', fcRegistreCsv(fcFiltresDocs())); }
+function fcPeutExporter() {
+  try {
+    var mod = typeof STORE_MODULE !== 'undefined' && STORE_MODULE.dossiers_fonciers; if (!APP.currentUser || !mod) return true;
+    var r = getAllRoles()[APP.currentUser.role]; return !!r && !(r.permissions && r.permissions[Array.isArray(mod) ? mod[0] : mod] === false);
+  } catch (e) { return true; }
+}
+fcProtegerMutations(['fcNouvelleVersion', 'fcRestaurerPiece']);
+
+
+
+/* ═══ Tableaux de bord et reporting (cahier §12) ═══
+   Règle : on distingue ce qui est MESURÉ (journal horodaté) de ce qui est insuffisant pour conclure ; un retard n'est jamais
+   attribué à une administration ou à un prestataire sans donnée. Le seuil de fiabilité d'une moyenne est de 3 observations. */
+var FC_SEUIL_MESURE = 3;
+function fcJours(a, b) { return (new Date(b) - new Date(a)) / 86400000; }
+function fcAjouterJours(date, n) { var d = new Date(date); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); }
+function fcMoyenne(valeurs) {
+  var n = valeurs.length, somme = valeurs.reduce(function(s, v){ return s + v; }, 0);
+  return { n: n, moyenne: n ? Math.round(somme / n * 10) / 10 : null, fiable: n >= FC_SEUIL_MESURE };
+}
+function fcEtapesActives(d) { return (d.etapes || []).filter(function(e){ return FC_STATUTS_FINAUX.indexOf(e.statut) === -1; }); }
+function fcResponsableEtape(d, e) { return e.responsable_id || d.responsable_id; }
+function fcDossiersActifs() { return (DATA.dossiers_fonciers || []).filter(function(d){ return d.statut !== 'annule'; }); }
+function fcDernierEvenement(dossierId) {
+  var evs = (DATA.evenements_fonciers || []).filter(function(e){ return e.dossier_id === dossierId; });
+  return evs.length ? evs.map(function(e){ return e.date; }).sort().pop() : '';
+}
+
+/* Durées mesurées à partir du journal : pour chaque étape, temps passé dans chaque état entre deux changements de statut. */
+var FC_CATEGORIE_ETAT = { en_cours: 'interne', attente_intervenant: 'prestataire', attente_document: 'document', attente_administration: 'administration', attente_decision: 'administration', bloque: 'blocage' };
+function fcDureesEtapes() {
+  var par = {}, res = [];
+  (DATA.evenements_fonciers || []).filter(function(e){ return e.type === 'changement_statut' && e.etape_code && e.nouveau; }).forEach(function(e){ (par[e.dossier_id + '|' + e.etape_code] = par[e.dossier_id + '|' + e.etape_code] || []).push(e); });
+  Object.keys(par).forEach(function(k){
+    var evs = par[k].sort(function(a, b){ return a.date.localeCompare(b.date); }), cat = { interne: 0, prestataire: 0, document: 0, administration: 0, blocage: 0 }, debut = null, etat = null, mesure = false, fin = null;
+    evs.forEach(function(e){
+      if (etat && FC_CATEGORIE_ETAT[etat]) { cat[FC_CATEGORIE_ETAT[etat]] += fcJours(debut, e.date); mesure = true; }
+      etat = e.nouveau; debut = e.date; if (e.nouveau === 'termine') fin = e.date;
+    });
+    res.push({ dossier_id: k.split('|')[0], etape_code: k.split('|')[1], termine: !!fin && etat === 'termine', fin: fin, mesure: mesure, categories: cat });
+  });
+  return res;
+}
+
+/* §12.1 — promoteur */
+function fcIndicateursPromoteur(aujourdhui) {
+  var t = aujourdhui || fcAuj(), r = fcSynthese(t), ds = fcDossiersActifs().filter(function(d){ return d.statut !== 'cloture'; });
+  var missions = (DATA.missions_foncieres || []).filter(function(m){ return ['brouillon', 'validee', 'cloturee', 'annulee'].indexOf(m.statut) === -1; });
+  r.missions_en_retard = missions.filter(function(m){ return typeof fcMissionEnRetard === 'function' ? fcMissionEnRetard(m) : (m.echeance && m.echeance < t); }).length;
+  r.documents_a_controler = (DATA.pieces_foncieres || []).filter(function(p){ return p.statut === 'a_verifier' && !p.retire && !p.remplacee_par; }).length
+    + (DATA.missions_foncieres || []).filter(function(m){ return ['livrable_soumis', 'en_verification'].indexOf(m.statut) !== -1; }).length;
+  var limite = fcAjouterJours(t, -30), clients = {};
+  ds.forEach(function(d){
+    var derniere = (DATA.publications_foncieres || []).filter(function(x){ return x.dossier_id === d.id && !x.retire; }).map(function(x){ return x.publie_le.slice(0, 10); }).sort().pop() || '';
+    if (derniere && derniere >= limite) return;
+    (DATA.clients || []).forEach(function(c){ if (fcDossiersDuSouscripteur(c).some(function(x){ return x.id === d.id; })) clients[c.id] = true; });
+  });
+  r.souscripteurs_a_informer = Object.keys(clients).length;
+  r.documents_expirants = fcPiecesExpirantes(30, t).length;
+  return r;
+}
+
+/* §12.2 — responsable : listes d'éléments, pas seulement des compteurs */
+function fcIndicateursResponsable(userId, aujourdhui) {
+  var t = aujourdhui || fcAuj(), sem = fcAjouterJours(t, 7), r = { jour: [], retard: [], prochaines: [], complements: [], recus: [], sans_maj: [], anomalies: [], a_valider: [] };
+  var item = function(d, libelle, date, detail) { return { dossier: d.reference, dossier_id: d.id, libelle: libelle, date: date || '', detail: detail || '' }; };
+  fcDossiersActifs().forEach(function(d){
+    var mien = d.responsable_id === userId;
+    if (d.statut !== 'cloture') {
+      fcEtapesActives(d).forEach(function(e){
+        if (fcResponsableEtape(d, e) !== userId || !e.date_cible) return;
+        var et = fcEtatEcheance(e, t);
+        if (e.date_cible === t) r.jour.push(item(d, e.libelle, e.date_cible));
+        else if (et) r.retard.push(item(d, e.libelle, e.date_cible, et === 'retard_interne' ? 'Retard interne' : 'Délai administratif dépassé'));
+        else if (e.date_cible <= sem) r.prochaines.push(item(d, e.libelle, e.date_cible));
+      });
+      var der = fcDernierEvenement(d.id);
+      if (mien && der && der.slice(0, 10) < fcAjouterJours(t, -14)) r.sans_maj.push(item(d, 'Aucune mise à jour depuis 14 jours', der.slice(0, 10)));
+      (d.controles || []).forEach(function(c){ if (mien && c.statut === 'anomalie') r.anomalies.push(item(d, 'Contrôle « ' + c.code + ' » en anomalie', '', c.note || '')); });
+    }
+    if (mien) (DATA.pieces_foncieres || []).forEach(function(p){
+      if (p.dossier_id !== d.id || p.retire || p.remplacee_par || !fcPieceLisible(p)) return;
+      if (p.depose_le.slice(0, 10) >= fcAjouterJours(t, -7)) r.recus.push(item(d, p.nom, p.depose_le.slice(0, 10), (p.depose_par && p.depose_par.nom) || ''));
+      if (fcPieceExpiration(p, t) === 'expiree') r.anomalies.push(item(d, 'Document expiré : ' + p.nom, p.expire_le));
+      if (p.integrite === 'alteree') r.anomalies.push(item(d, 'Document altéré : ' + p.nom, ''));
+    });
+  });
+  (DATA.demandes_fonciers || []).forEach(function(x){ var d = fcDossier(x.dossier_id); if (d && x.statut !== 'cloturee' && x.responsable_id === userId) r.complements.push(item(d, x.sujet, x.date, x.reference)); });
+  (DATA.missions_foncieres || []).forEach(function(m){ var d = fcDossier(m.dossier_id); if (d && m.responsable_validation_id === userId && ['livrable_soumis', 'en_verification'].indexOf(m.statut) !== -1) r.a_valider.push(item(d, m.titre, m.echeance, m.reference)); });
+  return r;
+}
+
+/* §12.3 — intervenants */
+function fcIndicateursIntervenants(aujourdhui) {
+  var t = aujourdhui || fcAuj();
+  return (DATA.intervenants_fonciers || []).map(function(i){
+    var ms = (DATA.missions_foncieres || []).filter(function(m){ return m.intervenant_id === i.id && m.statut !== 'brouillon'; });
+    var actives = ms.filter(function(m){ return ['validee', 'cloturee', 'annulee'].indexOf(m.statut) === -1; });
+    return { id: i.id, nom: i.nom_organisation, attribuees: ms.length, acceptees: ms.filter(function(m){ return !!m.acceptation || ['acceptee', 'en_cours', 'livrable_soumis', 'en_verification', 'a_corriger', 'validee', 'cloturee'].indexOf(m.statut) !== -1; }).length,
+      livrables_attendus: actives.reduce(function(s, m){ return s + (m.livrables || []).filter(function(l){ return !(l.versions || []).length; }).length; }, 0),
+      en_cours: ms.filter(function(m){ return m.statut === 'en_cours'; }).length, corrections: ms.filter(function(m){ return m.statut === 'a_corriger'; }).length,
+      terminees: ms.filter(function(m){ return m.statut === 'validee' || m.statut === 'cloturee'; }).length,
+      depassees: actives.filter(function(m){ return m.echeance && m.echeance < t; }).length };
+  });
+}
+
+/* §12.4 — direction */
+function fcIndicateursDirection(aujourdhui) {
+  var t = aujourdhui || fcAuj(), ds = fcDossiersActifs(), r = {};
+  r.par_procedure = {}; ds.forEach(function(d){ var k = FC_PROCEDURES[d.type_procedure] || d.type_procedure; var x = r.par_procedure[k] = r.par_procedure[k] || { total: 0, en_cours: 0 }; x.total++; if (d.statut !== 'cloture') x.en_cours++; });
+  var durees = fcDureesEtapes(), terminees = durees.filter(function(x){ return x.termine && x.mesure; });
+  r.duree_moyenne_etape_interne = fcMoyenne(terminees.map(function(x){ return x.categories.interne; }));
+  r.etapes_non_mesurees = durees.filter(function(x){ return x.termine && !x.mesure; }).length;
+  r.blocages_par_cause = {};
+  (DATA.evenements_fonciers || []).filter(function(e){ return e.type === 'changement_statut' && e.nouveau === 'bloque'; }).forEach(function(e){ var k = String(e.motif || '').trim() || 'Motif non précisé'; r.blocages_par_cause[k] = (r.blocages_par_cause[k] || 0) + 1; });
+  /* Respect des échéances : étapes terminées avec une date cible, comparées à la date de fin journalisée. Aucune attribution de cause. */
+  var finParEtape = {}; durees.forEach(function(x){ if (x.termine) finParEtape[x.dossier_id + '|' + x.etape_code] = x.fin.slice(0, 10); });
+  var aTemps = 0, enRetard = 0;
+  ds.forEach(function(d){ d.etapes.forEach(function(e){ var fin = finParEtape[d.id + '|' + e.code]; if (!fin || !e.date_cible || e.statut !== 'termine') return; if (fin <= e.date_cible) aTemps++; else enRetard++; }); });
+  r.respect_echeances = { a_temps: aTemps, en_retard: enRetard, n: aTemps + enRetard, fiable: aTemps + enRetard >= FC_SEUIL_MESURE, pourcentage: aTemps + enRetard ? Math.round(aTemps / (aTemps + enRetard) * 100) : null };
+  var livres = 0, livresRetard = 0;
+  (DATA.missions_foncieres || []).forEach(function(m){
+    var ev = (DATA.evenements_fonciers || []).filter(function(e){ return e.mission_id === m.id && e.type === 'livrable_depose'; }).map(function(e){ return e.date.slice(0, 10); }).sort()[0];
+    if (!ev || !m.echeance) return; livres++; if (ev > m.echeance) livresRetard++;
+  });
+  r.livrables_delais = { n: livres, en_retard: livresRetard, fiable: livres >= FC_SEUIL_MESURE, pourcentage: livres ? Math.round((livres - livresRetard) / livres * 100) : null };
+  r.volume_par_intervenant = (DATA.intervenants_fonciers || []).map(function(i){ var ms = (DATA.missions_foncieres || []).filter(function(m){ return m.intervenant_id === i.id && m.statut !== 'brouillon'; }); return { nom: i.nom_organisation, missions: ms.length, actives: ms.filter(function(m){ return ['validee', 'cloturee', 'annulee'].indexOf(m.statut) === -1; }).length }; }).filter(function(x){ return x.missions; });
+  r.mensuel = []; var base = new Date(t + 'T00:00:00Z');
+  for (var k = 11; k >= 0; k--) {
+    var dm = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() - k, 1)), mois = dm.toISOString().slice(0, 7), fin = new Date(Date.UTC(dm.getUTCFullYear(), dm.getUTCMonth() + 1, 0)).toISOString().slice(0, 10);
+    r.mensuel.push({ mois: mois, ouverts: ds.filter(function(d){ return (d.date_ouverture || '').slice(0, 7) === mois; }).length, clotures: ds.filter(function(d){ return (d.date_cloture || '').slice(0, 7) === mois; }).length,
+      portefeuille: ds.filter(function(d){ return (d.date_ouverture || '9999') <= fin && (!d.date_cloture || d.date_cloture > fin); }).length });
+  }
+  /* Ouverture → clôture, avec les périodes d'attente mesurées distinguées du reste. */
+  var clos = ds.filter(function(d){ return d.statut === 'cloture' && d.date_ouverture && d.date_cloture; }), totaux = [], att = [], reste = [];
+  clos.forEach(function(d){
+    var total = fcJours(d.date_ouverture, d.date_cloture), a = 0;
+    durees.filter(function(x){ return x.dossier_id === d.id; }).forEach(function(x){ a += x.categories.prestataire + x.categories.document + x.categories.administration; });
+    totaux.push(total); att.push(Math.min(a, total)); reste.push(Math.max(total - Math.min(a, total), 0));
+  });
+  r.delai_ouverture_cloture = { total: fcMoyenne(totaux), attentes_mesurees: fcMoyenne(att), hors_attentes_mesurees: fcMoyenne(reste),
+    note: "« Hors attentes mesurées » = durée totale moins les attentes déclarées au journal ; ce n'est pas une durée de travail interne mesurée." };
+  return r;
+}
+
+/* ── Exports ── */
+function fcLignesPilotage(vue, userId, aujourdhui) {
+  var L = [];
+  if (vue === 'promoteur') { var p = fcIndicateursPromoteur(aujourdhui); L.push(['Indicateur', 'Valeur']); [['Dossiers', p.total], ['En cours', p.en_cours], ['Clôturés', p.clotures], ['Bloqués', p.bloques], ['Incomplets (documents manquants)', p.incomplets], ['En attente d\'un prestataire', p.attente_prestataire], ['En attente d\'une administration', p.attente_administration], ['Retard interne', p.retard_interne], ['Délai administratif dépassé', p.delai_administratif_depasse], ['Missions en retard', p.missions_en_retard], ['Documents à contrôler', p.documents_a_controler], ['Souscripteurs à informer', p.souscripteurs_a_informer], ['Documents expirant sous 30 jours', p.documents_expirants]].forEach(function(x){ L.push(x); }); }
+  else if (vue === 'responsable') { var r = fcIndicateursResponsable(userId, aujourdhui); L.push(['Rubrique', 'Dossier', 'Élément', 'Date', 'Détail']); [['jour', 'Tâche du jour'], ['retard', 'Tâche en retard'], ['prochaines', 'Échéance à venir'], ['complements', 'Demande de complément'], ['recus', 'Document récent'], ['sans_maj', 'Sans mise à jour'], ['anomalies', 'Anomalie documentaire'], ['a_valider', 'À valider']].forEach(function(k){ r[k[0]].forEach(function(i){ L.push([k[1], i.dossier, i.libelle, i.date, i.detail]); }); }); }
+  else if (vue === 'intervenants') { L.push(['Intervenant', 'Attribuées', 'Acceptées', 'Livrables attendus', 'En cours', 'À corriger', 'Terminées', 'Échéances dépassées']); fcIndicateursIntervenants(aujourdhui).forEach(function(i){ L.push([i.nom, i.attribuees, i.acceptees, i.livrables_attendus, i.en_cours, i.corrections, i.terminees, i.depassees]); }); }
+  else if (vue === 'direction') {
+    var d = fcIndicateursDirection(aujourdhui); L.push(['Indicateur', 'Valeur', 'Observations', 'Fiabilité']);
+    Object.keys(d.par_procedure).forEach(function(k){ L.push(['Procédure : ' + k, d.par_procedure[k].total, d.par_procedure[k].en_cours + ' en cours', 'mesuré']); });
+    L.push(['Durée moyenne d\'une étape interne (jours)', d.duree_moyenne_etape_interne.moyenne == null ? '' : d.duree_moyenne_etape_interne.moyenne, d.duree_moyenne_etape_interne.n + ' étape(s) mesurée(s)', d.duree_moyenne_etape_interne.fiable ? 'mesuré' : 'données insuffisantes']);
+    Object.keys(d.blocages_par_cause).forEach(function(k){ L.push(['Blocages : ' + k, d.blocages_par_cause[k], 'motif déclaré', 'mesuré']); });
+    L.push(['Étapes terminées dans les délais (%)', d.respect_echeances.pourcentage == null ? '' : d.respect_echeances.pourcentage, d.respect_echeances.n + ' étape(s) avec échéance', d.respect_echeances.fiable ? 'mesuré' : 'données insuffisantes']);
+    L.push(['Livrables remis dans les délais (%)', d.livrables_delais.pourcentage == null ? '' : d.livrables_delais.pourcentage, d.livrables_delais.n + ' mission(s)', d.livrables_delais.fiable ? 'mesuré' : 'données insuffisantes']);
+    d.volume_par_intervenant.forEach(function(v){ L.push(['Missions : ' + v.nom, v.missions, v.actives + ' active(s)', 'mesuré']); });
+    d.mensuel.forEach(function(m){ L.push(['Mois ' + m.mois, m.portefeuille, m.ouverts + ' ouvert(s), ' + m.clotures + ' clôturé(s)', 'mesuré']); });
+    var dl = d.delai_ouverture_cloture; ['total', 'attentes_mesurees', 'hors_attentes_mesurees'].forEach(function(k){ L.push(['Ouverture → clôture : ' + k.replace(/_/g, ' ') + ' (jours)', dl[k].moyenne == null ? '' : dl[k].moyenne, dl[k].n + ' dossier(s) clos', dl[k].fiable ? 'mesuré' : 'données insuffisantes']); });
+  }
+  else if (vue === 'retards') {
+    var t = aujourdhui || fcAuj(); L.push(['Dossier', 'Parcelle', 'Étape', 'Responsable', 'Échéance', 'Statut', 'Nature']);
+    fcDossiersActifs().filter(function(d){ return d.statut !== 'cloture'; }).forEach(function(d){ d.etapes.forEach(function(e){ var et = fcEtatEcheance(e, t); if (et) L.push([d.reference, fcLibelleParcelle(d.parcelle_id), e.libelle, fcNomUtilisateur(fcResponsableEtape(d, e)), e.date_cible, FC_STATUTS[e.statut], et === 'retard_interne' ? 'Retard interne' : 'Délai administratif dépassé (déclaré)']); }); });
+    (DATA.missions_foncieres || []).forEach(function(m){ var d = fcDossier(m.dossier_id); if (d && typeof fcMissionEnRetard === 'function' && fcMissionEnRetard(m)) L.push([d.reference, fcLibelleParcelle(d.parcelle_id), 'Mission ' + m.reference + ' — ' + m.titre, (fcIntervenant(m.intervenant_id) || {}).nom_organisation || '', m.echeance, FC_STATUTS_MISSION[m.statut], 'Mission en retard']); });
+  }
+  return L;
+}
+function fcHistoriqueDossierLignes(dossierId) {
+  var d = fcDossier(dossierId), L = [['Date', 'Type', 'Étape', 'Description', 'Acteur', 'Source', 'Motif']];
+  if (!d) return L;
+  (DATA.evenements_fonciers || []).filter(function(e){ return e.dossier_id === dossierId; }).sort(function(a, b){ return a.date.localeCompare(b.date); }).forEach(function(e){ L.push([e.date.replace('T', ' ').slice(0, 16), e.type, e.etape_code, e.description, e.acteur, e.source, e.motif]); });
+  return L;
+}
+function fcHtmlTableau(titre, lignes) {
+  return '<h2 style="font-family:Arial;">' + escHtml(titre) + '</h2><p style="font-family:Arial;font-size:11px;color:#555;">Édité le ' + escHtml(fcAuj()) + ' — ImmoSuite. Suivi de coordination : ne vaut pas acte officiel.</p><table style="border-collapse:collapse;font-family:Arial;font-size:11px;width:100%;">'
+    + lignes.map(function(l, i){ return '<tr>' + l.map(function(c){ return '<' + (i ? 'td' : 'th') + ' style="border:1px solid #bbb;padding:4px 6px;text-align:left;' + (i ? '' : 'background:#eee;') + '">' + escHtml(c == null ? '' : c) + '</' + (i ? 'td' : 'th') + '>'; }).join('') + '</tr>'; }).join('') + '</table>';
+}
+
+/* ── Interface ── */
+function fcKpi(lib, val, coul, aide) { return '<div style="border:1px solid var(--bord,#ddd);border-radius:10px;padding:10px;text-align:center;" title="' + escHtml(aide || '') + '"><div style="font-size:22px;font-weight:700;color:' + (coul || 'var(--or)') + ';">' + escHtml(val == null ? '—' : String(val)) + '</div><div style="font-size:11px;color:var(--dim);">' + escHtml(lib) + '</div></div>'; }
+function fcMesureHtml(m, unite) {
+  if (m.moyenne == null) return '<span style="color:var(--dim);">Données insuffisantes (aucune mesure)</span>';
+  return '<b>' + m.moyenne + ' ' + (unite || 'j') + '</b> <span style="font-size:11px;color:' + (m.fiable ? '#2e7d4f' : '#B87333') + ';">' + (m.fiable ? 'mesuré' : 'indicatif') + ' sur ' + m.n + ' observation(s)' + (m.fiable ? '' : ' — moins de ' + FC_SEUIL_MESURE + ', ne pas en conclure') + '</span>';
+}
+function fcPeutVoirDirection() { try { var r = APP.currentUser && APP.currentUser.role; return !APP.currentUser || r === 'admin' || r === 'dg' || r === 'direction' || r === 'manager'; } catch (e) { return false; } }
+function fcRenderPilotage() {
+  var host = document.getElementById('fp-root'); if (!host) return;
+  var vue = APP._fpVue || 'promoteur', moi = fcActeur(), uid = APP._fpUser || moi.id, t = fcAuj();
+  if (vue === 'direction' && !fcPeutVoirDirection()) vue = APP._fpVue = 'promoteur';
+  var onglets = [['promoteur', '🏢 Promoteur'], ['responsable', '🧑‍💼 Responsable foncier'], ['intervenants', '🤝 Intervenants']].concat(fcPeutVoirDirection() ? [['direction', '📈 Direction']] : []);
+  var h = '<div class="card" style="border:1px solid var(--or);"><div class="card-title">🎯 Pilotage foncier</div><div style="font-size:11px;color:var(--dim);margin-bottom:8px;">Les durées sont calculées à partir du journal horodaté. Une valeur reposant sur moins de ' + FC_SEUIL_MESURE + ' observations est signalée comme indicative. Un retard n\'est jamais attribué à une administration ou à un prestataire sans donnée suffisante.</div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">' + onglets.map(function(o){ return '<button class="btn ' + (o[0] === vue ? 'btn-primary' : 'btn-secondary') + ' btn-sm" onclick="APP._fpVue=\'' + o[0] + '\';fcRenderPilotage()">' + o[1] + '</button>'; }).join('') + '</div>';
+  if (vue === 'promoteur') {
+    var p = fcIndicateursPromoteur(t);
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;">'
+      + fcKpi('Dossiers', p.total) + fcKpi('En cours', p.en_cours, '#1565c0') + fcKpi('Clôturés', p.clotures, '#2e7d4f') + fcKpi('Bloqués', p.bloques, '#c0392b') + fcKpi('Incomplets', p.incomplets, '#B87333', 'Au moins une étape en attente d\'un document')
+      + fcKpi('Chez un prestataire', p.attente_prestataire) + fcKpi('Chez une administration', p.attente_administration, '#6a5acd', 'Statut déclaré : aucune imputation de retard') + fcKpi('Retard interne', p.retard_interne, '#c0392b') + fcKpi('Délai administratif dépassé', p.delai_administratif_depasse)
+      + fcKpi('Missions en retard', p.missions_en_retard, '#c0392b') + fcKpi('Documents à contrôler', p.documents_a_controler, '#B87333') + fcKpi('Souscripteurs à informer', p.souscripteurs_a_informer, '#1565c0', 'Dossiers ouverts sans information publiée depuis 30 jours') + fcKpi('Documents expirant (30 j)', p.documents_expirants, '#c0392b') + '</div>';
+  } else if (vue === 'responsable') {
+    var users = (DATA.users || []).filter(function(u){ return u.statut !== 'inactif'; }), r = fcIndicateursResponsable(uid, t);
+    h += '<div class="filters-bar" style="align-items:end;"><div class="form-group"><label>Responsable</label><select class="filter-select" onchange="APP._fpUser=this.value;fcRenderPilotage()">' + users.map(function(u){ return '<option value="' + u.id + '"' + (u.id === uid ? ' selected' : '') + '>' + escHtml(u.nom || u.login) + '</option>'; }).join('') + '</select></div></div>';
+    [['jour', "📅 Tâches du jour"], ['retard', '⏰ Tâches en retard'], ['prochaines', '🗓️ Prochaines échéances (7 jours)'], ['complements', '✉️ Demandes de complément'], ['a_valider', '✅ À valider'], ['recus', '📥 Documents reçus (7 jours)'], ['sans_maj', '💤 Dossiers sans mise à jour'], ['anomalies', '⚠️ Anomalies documentaires']].forEach(function(k){
+      h += '<div style="margin:8px 0;"><div style="font-weight:700;font-size:13px;">' + k[1] + ' <span style="color:var(--or);">(' + r[k[0]].length + ')</span></div>'
+        + (r[k[0]].length ? r[k[0]].map(function(i){ return '<div style="font-size:12px;padding:3px 0;border-bottom:1px solid var(--bord,#eee);"><a href="#" onclick="fcAllerDossier(\'' + i.dossier_id + '\');return false;">' + escHtml(i.dossier) + '</a> · ' + escHtml(i.libelle) + (i.date ? ' · <i>' + escHtml(i.date) + '</i>' : '') + (i.detail ? ' · ' + escHtml(i.detail) : '') + '</div>'; }).join('') : '<div style="font-size:12px;color:var(--dim);">Rien à signaler.</div>') + '</div>';
+    });
+  } else if (vue === 'intervenants') {
+    var iv = fcIndicateursIntervenants(t);
+    h += iv.length ? '<div class="table-wrap"><table><thead><tr><th>Intervenant</th><th>Attribuées</th><th>Acceptées</th><th>Livrables attendus</th><th>En cours</th><th>À corriger</th><th>Terminées</th><th>Échéances dépassées</th></tr></thead><tbody>'
+      + iv.map(function(i){ return '<tr><td>' + escHtml(i.nom) + '</td><td>' + i.attribuees + '</td><td>' + i.acceptees + '</td><td>' + i.livrables_attendus + '</td><td>' + i.en_cours + '</td><td>' + i.corrections + '</td><td>' + i.terminees + '</td><td style="' + (i.depassees ? 'color:#c0392b;font-weight:700;' : '') + '">' + i.depassees + '</td></tr>'; }).join('') + '</tbody></table></div>' : '<div style="color:var(--dim);">Aucun intervenant n\'a de mission.</div>';
+  } else {
+    var d = fcIndicateursDirection(t), max = Math.max.apply(null, d.mensuel.map(function(m){ return Math.max(m.portefeuille, 1); }));
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;">'
+      + '<div class="card"><div class="card-title">Répartition par procédure</div>' + (Object.keys(d.par_procedure).map(function(k){ return '<div style="font-size:12px;">' + escHtml(k) + ' : <b>' + d.par_procedure[k].total + '</b> (' + d.par_procedure[k].en_cours + ' en cours)</div>'; }).join('') || '<div style="color:var(--dim);">Aucun dossier.</div>') + '</div>'
+      + '<div class="card"><div class="card-title">Durée moyenne d\'une étape interne</div>' + fcMesureHtml(d.duree_moyenne_etape_interne) + '<div style="font-size:11px;color:var(--dim);margin-top:4px;">Temps passé « en cours » entre deux changements de statut journalisés. ' + d.etapes_non_mesurees + ' étape(s) terminée(s) sans suivi horodaté ne sont pas comptées.</div></div>'
+      + '<div class="card"><div class="card-title">Blocages par cause déclarée</div>' + (Object.keys(d.blocages_par_cause).map(function(k){ return '<div style="font-size:12px;">' + escHtml(k) + ' : <b>' + d.blocages_par_cause[k] + '</b></div>'; }).join('') || '<div style="color:var(--dim);">Aucun blocage enregistré.</div>') + '</div>'
+      + '<div class="card"><div class="card-title">Respect des échéances</div><div style="font-size:12px;">Étapes terminées dans les délais : ' + (d.respect_echeances.pourcentage == null ? '—' : '<b>' + d.respect_echeances.pourcentage + ' %</b>') + ' <span style="color:' + (d.respect_echeances.fiable ? '#2e7d4f' : '#B87333') + ';">(' + d.respect_echeances.n + ' mesure(s)' + (d.respect_echeances.fiable ? '' : ', indicatif') + ')</span></div>'
+      + '<div style="font-size:12px;margin-top:4px;">Livrables remis dans les délais : ' + (d.livrables_delais.pourcentage == null ? '—' : '<b>' + d.livrables_delais.pourcentage + ' %</b>') + ' <span style="color:' + (d.livrables_delais.fiable ? '#2e7d4f' : '#B87333') + ';">(' + d.livrables_delais.n + ' mission(s)' + (d.livrables_delais.fiable ? '' : ', indicatif') + ')</span></div></div>'
+      + '<div class="card"><div class="card-title">Volume par intervenant</div>' + (d.volume_par_intervenant.map(function(v){ return '<div style="font-size:12px;">' + escHtml(v.nom) + ' : <b>' + v.missions + '</b> mission(s), ' + v.actives + ' active(s)</div>'; }).join('') || '<div style="color:var(--dim);">Aucune mission.</div>') + '</div>'
+      + '<div class="card"><div class="card-title">Délai d\'ouverture à clôture</div><div style="font-size:12px;">Total : ' + fcMesureHtml(d.delai_ouverture_cloture.total) + '</div><div style="font-size:12px;">dont attentes mesurées : ' + fcMesureHtml(d.delai_ouverture_cloture.attentes_mesurees) + '</div><div style="font-size:12px;">hors attentes mesurées : ' + fcMesureHtml(d.delai_ouverture_cloture.hors_attentes_mesurees) + '</div><div style="font-size:11px;color:var(--dim);margin-top:4px;">' + escHtml(d.delai_ouverture_cloture.note) + '</div></div></div>'
+      + '<div class="card"><div class="card-title">Évolution mensuelle du portefeuille (12 mois)</div>' + d.mensuel.map(function(m){ return '<div style="display:flex;align-items:center;gap:8px;font-size:11px;"><span style="width:60px;">' + m.mois + '</span><div style="background:var(--or);height:10px;width:' + Math.round(m.portefeuille / max * 60) + '%;min-width:2px;border-radius:5px;"></div><span>' + m.portefeuille + ' en portefeuille · +' + m.ouverts + ' / −' + m.clotures + '</span></div>'; }).join('') + '</div>';
+  }
+  var dossiers = DATA.dossiers_fonciers || [];
+  h += '<div style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap;align-items:end;"><button class="btn btn-secondary btn-sm" onclick="fcExporterPilotageUI(\'' + vue + '\',\'csv\')">⬇ Excel (CSV)</button> <button class="btn btn-secondary btn-sm" onclick="fcExporterPilotageUI(\'' + vue + '\',\'pdf\')">🖨 PDF / impression</button> '
+    + '<button class="btn btn-secondary btn-sm" onclick="fcExporterPilotageUI(\'retards\',\'csv\')">⬇ Rapport des retards</button> <button class="btn btn-secondary btn-sm" onclick="fcExporterPilotageUI(\'retards\',\'pdf\')">🖨 Retards (PDF)</button>'
+    + (dossiers.length ? ' <select class="filter-select" id="fp-dossier">' + dossiers.map(function(d){ return '<option value="' + d.id + '">' + escHtml(d.reference) + '</option>'; }).join('') + '</select> <button class="btn btn-secondary btn-sm" onclick="fcExporterHistoriqueUI(\'csv\')">⬇ Historique du dossier</button> <button class="btn btn-secondary btn-sm" onclick="fcExporterHistoriqueUI(\'pdf\')">🖨 Historique (PDF)</button>' : '') + '</div></div>';
+  host.innerHTML = h;
+}
+var FC_TITRES_PILOTAGE = { promoteur: 'Tableau de bord du promoteur', responsable: 'Tableau de bord du responsable foncier', intervenants: 'Tableau de bord des intervenants', direction: 'Tableau de bord de direction', retards: 'Rapport des retards' };
+function fcExporterPilotageUI(vue, format) {
+  if (!fcPeutExporter()) { fcMsg({ ok: false, erreur: "Votre profil ne permet pas d'exporter les données foncières." }); return; }
+  if (vue === 'direction' && !fcPeutVoirDirection()) { fcMsg({ ok: false, erreur: 'Réservé à la direction.' }); return; }
+  var l = fcLignesPilotage(vue, APP._fpUser || fcActeur().id, fcAuj());
+  if (format === 'pdf') openPrintPreview(fcHtmlTableau(FC_TITRES_PILOTAGE[vue], l), FC_TITRES_PILOTAGE[vue], true); else fcTelechargerTexte('foncier-' + vue + '-' + fcAuj() + '.csv', fcCsv(l));
+}
+function fcExporterHistoriqueUI(format) {
+  if (!fcPeutExporter()) { fcMsg({ ok: false, erreur: "Votre profil ne permet pas d'exporter les données foncières." }); return; }
+  var id = (document.getElementById('fp-dossier') || {}).value, d = fcDossier(id); if (!d) return;
+  var l = fcHistoriqueDossierLignes(id);
+  if (format === 'pdf') openPrintPreview(fcHtmlTableau('Historique du dossier ' + d.reference, l), 'Historique ' + d.reference, true); else fcTelechargerTexte('historique-' + d.reference + '.csv', fcCsv(l));
+}
 
 /* Cycle automatique : au démarrage puis toutes les 30 minutes tant que l'application est ouverte. */
 setTimeout(function(){ if (typeof fcCycleNotifications === 'function' && APP.currentUser) fcCycleNotifications(); }, 25000);

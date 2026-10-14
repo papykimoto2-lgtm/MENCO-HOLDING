@@ -91,3 +91,13 @@ Store local `pieces_foncieres` (DB v159), **jamais synchronisé** (pièces d'ide
 ## Onglets « Sécurisation du titre »
 
 Ordre de marche en avant : 2.1 Situation des titres → 2.2 Dossiers fonciers → 2.3 Intervenants & missions → 2.4 Jalons du titre (ex-Workflow titre) → 2.5 Information souscripteurs. « Notifications » (transversal) passe en Vue d'ensemble. Passerelles dossier ↔ jalons ; intitulé unique « Arrêté de Concession Définitive ».
+
+## Gestion documentaire (cahier §11) et pilotage (cahier §12)
+
+DB v159 inchangée : la gestion documentaire étend `pieces_foncieres` (local, jamais synchronisé).
+
+**Documents** (onglet « Documents », Vue d'ensemble) : catégorie, version (l'ancienne reste conservée), date d'expiration (alerte à 30 jours), confidentialité (normale / restreinte : responsable et administrateur seulement, jamais visible du souscripteur), archivage logique avec motif et restauration, empreinte SHA-256 et contrôle d'intégrité, recherche (nom, dossier, parcelle, étape, catégorie, organisation), export CSV. Consultations et téléchargements sont journalisés ; un accès refusé n'est pas journalisé comme un accès. Contrôles à l'envoi : taille (5 Mo), format et signature du fichier. **Pas d'analyse antivirus** (non disponible côté navigateur). L'empreinte détecte une altération, elle ne prouve pas l'authenticité.
+
+**Pilotage** (onglet « Pilotage foncier ») : tableau promoteur (13 indicateurs), responsable (listes cliquables : jour, retard, 7 jours, compléments, à valider, documents reçus, sans mise à jour, anomalies), intervenants, direction (réservée admin/dg/direction/manager : procédures, durée d'étape interne, blocages par cause déclarée, respect des échéances, volume par intervenant, évolution sur 12 mois, délai ouverture → clôture avec attentes distinguées). Les durées sont **mesurées au journal horodaté** ; moins de 3 observations = « indicatif » ; aucun retard n'est imputé à une administration ou à un prestataire. Exports CSV (Excel) et PDF/impression : tableaux, rapport des retards, historique d'un dossier ; refusés si le profil ne peut pas consulter le module.
+
+Limites connues : le suivi horodaté n'existe que pour les changements de statut faits à partir de cette version (les dossiers antérieurs, sans journal, apparaissent « non mesurés ») ; les rapports périodiques automatiques (envoi planifié) ne sont pas faits ; les exports ne couvrent pas encore un filtre par projet ou par période.
