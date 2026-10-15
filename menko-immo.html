@@ -30025,7 +30025,12 @@ async function doLogin() {
   // ── Recherche de l'utilisateur (version la plus récente prioritaire) ──
   /* Comparaison insensible à la casse — voir la note sur `u` ci-dessus. */
   var user = DATA.users.find(function(x){ return x.login && x.login.toLowerCase() === u.toLowerCase(); });
-  var cloudUser = await fetchUserFromCloud(u);
+  /* [Perf connexion] sbFetch n'a aucun délai maximal : sur un réseau mobile lent, la connexion restait suspendue tant que le cloud ne répondait pas.
+     Quand le compte existe déjà en local, on n'attend le cloud (vérification « plus récent gagne ») que 4 s ; passé ce délai, on poursuit avec la version locale. */
+  var cloudUser = null;
+  try {
+    cloudUser = user ? await Promise.race([fetchUserFromCloud(u), new Promise(function(r){ setTimeout(function(){ r(null); }, window.__LOGIN_CLOUD_TIMEOUT_MS || 4000); })]) : await fetchUserFromCloud(u);
+  } catch (eCloud) { cloudUser = null; }
   if (cloudUser) {
     /* Ne remplacer la version locale que si le cloud est réellement plus récent.
        Sinon un changement de mot de passe fait hors-ligne (poussé en attente
@@ -30161,6 +30166,9 @@ async function doLogin() {
      bloquerait toute lecture/écriture Supabase après connexion.
      Échec non bloquant : si Supabase ou l'Edge Function n'est pas joignable,
      la session locale reste pleinement fonctionnelle (mode dégradé). */
+  /* [Perf connexion] L'Edge Function staff-login (réseau, démarrage à froid, jusqu'à 3 essais) bloquait l'ouverture de l'application plusieurs secondes.
+     Elle tourne désormais en arrière-plan : _staffLoginEnCours fait déjà attendre les circuits de synchronisation, qui démarrent dès qu'elle se termine. */
+  (async function(){
   try {
     if (typeof staffLogin === 'function' && SB.url && SB.key) {
       /* [Fix instabilité accès] Une seule tentative auparavant — un simple
@@ -30186,6 +30194,7 @@ async function doLogin() {
   }
   window._staffLoginEnCours = false; _staffLoginTermine();   /* [RLS phase A] libère les circuits en attente */
   _majBadgeStaffSession();
+  })();
   /* Auto-guérison : si staffLogin a échoué au login (Edge Function temporairement
      indisponible), on retente en silence toutes les 2 minutes tant que la
      session locale reste ouverte — dès que ça repasse, le badge disparaît sans
