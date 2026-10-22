@@ -134148,6 +134148,11 @@ async function caisseRecalculerSiCloturee(mvt) {
   if (theo === avant) { if (apres && !mvt.valide_apres_cloture) { mvt.valide_apres_cloture = true; mvt._baseModifie = mvt._modifie || null; await dbPut('caisse_mouvements', mvt); await caisseSyncEtAlerter('pi_caisse_mouvements', mvt); } return; }
   var reel = (sess.fond_cloture_reel !== null && sess.fond_cloture_reel !== undefined) ? (parseFloat(sess.fond_cloture_reel) || 0) : null;
   var dejaCompte = reel === null || Math.abs(reel - theo) <= Math.abs(reel - avant);
+  /* [FIX INC-0018 2026-10-22] Le comptage réel égale le solde « si tout est validé » figé à la clôture et le bon figurait
+     parmi ceux en attente : le tiroir contenait déjà tous ces bons. L'heuristique de distance, évaluée validation par
+     validation sur un solde partiel, les rattachait à tort à la session suivante → double décompte (−33 600 F chez Agro). */
+  var siValide = (sess.fond_cloture_si_valide !== null && sess.fond_cloture_si_valide !== undefined) ? parseFloat(sess.fond_cloture_si_valide) : NaN;
+  if (!dejaCompte && reel !== null && reel === siValide && (sess.mvts_attente_a_la_cloture || []).indexOf(mvt.id) >= 0) dejaCompte = true;
   if (apres) mvt.valide_apres_cloture = true;
   if (!dejaCompte) {
     var cible = caisseGetSessionOuverte(mvt.caisse_id);
