@@ -136468,6 +136468,16 @@ var REAPPRO_STATUTS = {
   annulee:   { lib:'⊘ Annulée',                   couleur:'var(--blanc-dim)' }
 };
 var REAPPRO_RETARD_JOURS = 7;
+/* « Servie » = bons de virement créés ; les fonds ne sont effectifs qu'une fois ces bons validés (comme tout mouvement de caisse).
+   Renvoie 'effectif', 'attente' (au moins un bon non validé) ou 'rejete' (un bon rejeté) ; null si non applicable. */
+function reapEtatFonds(d) {
+  if (!d || d.statut !== 'servie') return null;
+  var ids = [d.mouvement_id, d.mouvement_source_id].filter(Boolean);
+  var mv = ids.map(function(id){ return (DATA.caisse_mouvements || []).find(function(m){ return m.id === id; }); }).filter(Boolean);
+  if (!mv.length) return null;
+  if (mv.some(function(m){ return m.rejete; })) return 'rejete';
+  return mv.every(function(m){ return !m.requiert_validation || m.valide === true; }) ? 'effectif' : 'attente';
+}
 
 function reapGenererNumero() {
   var annee = new Date().getFullYear();
@@ -136920,6 +136930,9 @@ function reapDetailHtml(d, caisse) {
     var src = d.caisse_source_id ? (DATA.caisses||[]).find(function(c){ return c.id === d.caisse_source_id; }) : null;
     var prov = src ? 'depuis ' + escHtml(src.nom || '') : (d.provenance_externe ? 'hors caisse : ' + escHtml(d.provenance_externe) : '<span style="color:var(--rouge);">⚠️ provenance non tracée</span>');
     ligne('Servie', escHtml(d.servi_par || '—') + ' le ' + dateShort(d.servi_le) + ' — ' + prov);
+    var ef = reapEtatFonds(d);
+    if (ef === 'attente') ligne('Fonds', '<span style="color:var(--or);">⏳ bons de virement non encore validés : les soldes des caisses ne sont pas impactés</span>');
+    if (ef === 'rejete') ligne('Fonds', '<span style="color:var(--rouge);">⚠️ un bon de virement a été rejeté : fonds non versés</span>');
   }
   return '<div style="font-size:11px;display:grid;gap:3px;padding:4px 0;">' + l.join('') + '</div>';
 }
@@ -136934,7 +136947,7 @@ function reapLigneHtml(d) {
     + '<td>' + escHtml(caisse ? (caisse.nom || '') : 'caisse supprimée') + '<div style="font-size:10px;color:var(--blanc-dim);">' + escHtml(d.division_id ? _nomDivision(d.division_id) : '') + '</div></td>'
     + '<td style="text-align:right;white-space:nowrap;">' + montant + '</td>'
     + '<td style="font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escHtml(d.motif || '') + '">' + escHtml(d.motif || '') + '</td>'
-    + '<td><span class="badge" style="color:' + st.couleur + ';">' + st.lib + '</span>' + age + '</td>'
+    + '<td><span class="badge" style="color:' + st.couleur + ';">' + st.lib + '</span>' + age + (function(){ var ef = reapEtatFonds(d); return ef === 'attente' ? '<div style="font-size:10px;color:var(--or);font-weight:700;">⏳ bons à valider — fonds non encore effectifs</div>' : ef === 'rejete' ? '<div style="font-size:10px;color:var(--rouge);font-weight:700;">⚠️ bon rejeté — fonds non versés</div>' : ''; })() + '</td>'
     + '<td style="white-space:nowrap;">' + reapActionsHtml(d) + '</td></tr>'
     + (ouvert ? '<tr data-reap-detail="' + d.id + '"><td colspan="6" style="background:var(--card2);">' + reapDetailHtml(d, caisse) + '</td></tr>' : '');
 }
