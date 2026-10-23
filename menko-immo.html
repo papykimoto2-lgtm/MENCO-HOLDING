@@ -26747,6 +26747,25 @@ function _supaRow(table, obj) {
 }
 function _supaUnwrap(table, row) { return (table === 'pi_users') ? row : (row && row.data ? row.data : row); }
 
+/* ── Documents « allégés » (scans) ───────────────────────────────────────────
+   Les scans (base64, plusieurs Mo chacun) ne descendent plus sur tous les postes : la synchro ne transporte que la
+   FICHE du document (nom, souscripteur, date, taille…), marquée _sans_contenu. Le fichier se télécharge à
+   l'ouverture (docAssurerContenu) puis reste sur le poste. Le poste qui a téléversé le scan garde son fichier. */
+function _docAllege(o) { return !!(o && o._sans_contenu && !o.blob); }
+async function docAssurerContenu(doc) {
+  if (!doc) return null;
+  if (doc.blob) return doc;
+  if (!SB.url || !SB.key || !navigator.onLine) return null;
+  var rows = null;
+  try { rows = await sbFetch('pi_documents?id=eq.' + encodeURIComponent(doc.id) + '&select=blob:data->>blob', 'GET'); } catch (e) { rows = null; }
+  var b = rows && rows[0] && rows[0].blob;
+  if (!b) return null;
+  doc.blob = b; delete doc._sans_contenu;
+  try { await dbPut('documents', doc, { forceRole: true }); } catch (e) {}
+  try { delete _dirtySync['documents|' + String(doc.id)]; } catch (e) {}   /* contenu simplement mis en cache : rien à renvoyer au cloud */
+  return doc;
+}
+
 /* Le distant remplace-t-il le local ? Strictement plus récent uniquement.
    À timestamps égaux (ou absents des deux côtés), le LOCAL est conservé :
    écraser « à égalité » était un vecteur de réinjection de vieilles lignes
@@ -26991,6 +27010,10 @@ function _envoiBloqueParTombstone(table, obj) {
 
 async function syncToSupabase(table, obj, opts) {
   if (_envoiBloqueParTombstone(table, obj)) return true;   /* rien à envoyer : traité comme fait */
+  if (table === 'pi_documents' && _docAllege(obj)) {
+    /* Une fiche allégée écraserait le fichier complet du cloud : on récupère d'abord le contenu, sinon on n'envoie rien. */
+    if (!(await docAssurerContenu(obj))) { console.warn('[Sync] Document non envoyé : fichier indisponible sur ce poste', obj && obj.id); return false; }
+  }
   if (table === 'pi_ecritures' && obj && obj.date && !_pulling && !obj._forceCloture
       && typeof exerciceEstClos === 'function' && exerciceEstClos(obj.date)) {
     console.warn('[VERROU CLOTURE] Sync cloud bloquée — exercice clos:', obj);
@@ -27209,7 +27232,7 @@ async function syncToSupabase(table, obj, opts) {
    contrôle de conflit de syncToSupabase() ne s'applique de toute façon pas. */
 async function syncToSupabaseBatch(table, objs, chunkSize) {
   chunkSize = chunkSize || 300;
-  objs = (objs||[]).filter(function(o){ return o && !_envoiBloqueParTombstone(table, o); });
+  objs = (objs||[]).filter(function(o){ return o && !_envoiBloqueParTombstone(table, o) && !(table === 'pi_documents' && _docAllege(o)); });   /* une fiche allégée n'est jamais renvoyée en lot */
   if (!objs.length) return true;
   if (table === 'pi_ecritures') {
     objs = objs.filter(function(obj){
@@ -28883,6 +28906,17 @@ async function pullReinitialiserCurseurs() {
 }
 /* Récupère les lignes d'une table, en incrémental quand c'est possible. */
 async function _pullTable(table) {
+  if (table === 'pi_documents' && SB.url) {
+    try {
+      var _curD = (PULL_TOUJOURS_COMPLET.indexOf(table) !== -1 || PULL_INCR_INAPTES[table]) ? null : (_pullCurseurEffectif(table) || null);
+      var _rD = await fetch(SB.url.replace(/\/+$/,'') + '/rest/v1/rpc/pull_documents_meta', {
+        method: 'POST',
+        headers: { 'apikey': SB.key, 'Authorization': 'Bearer ' + sbAuth(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cursor_ts: _curD })
+      });
+      if (_rD.ok) { var _rowsD = await _rD.json(); if (Array.isArray(_rowsD)) return { rows: _rowsD, incremental: !!_curD }; }
+    } catch (eD) { /* fonction absente ou réseau : ancien mode ci-dessous */ }
+  }
   var complet = PULL_TOUJOURS_COMPLET.indexOf(table) !== -1 || PULL_INCR_INAPTES[table];
   var curseur = complet ? null : (_pullCurseurEffectif(table) || null);
   if (curseur) {
@@ -28918,6 +28952,11 @@ async function _appliquerLignesPullTable(table, store, rows) {
      y est autorisé. */
   var _tsPartages = {};
   (DATA.suppressions_sync || []).forEach(function(t){ if (t && t.store === store && t.record_id !== undefined) _tsPartages[String(t.record_id)] = true; });
+  var _docsLocaux = null;
+  if (store === 'documents' && rows.some(function(x){ var d0 = _supaUnwrap(table, x); return d0 && d0._sans_contenu; })) {
+    _docsLocaux = {};
+    try { ((await dbGetAll('documents')) || []).forEach(function(d1){ if (d1 && d1.id !== undefined) _docsLocaux[String(d1.id)] = d1; }); } catch(e){}
+  }
   for (var j = 0; j < rows.length; j++) {
     var r = _supaUnwrap(table, rows[j]);
     if (!r || r.id === undefined) continue;
@@ -28926,6 +28965,8 @@ async function _appliquerLignesPullTable(table, store, rows) {
       continue;
     }
     var ex = byId[String(r.id)];
+    if (_docsLocaux && _docsLocaux[String(r.id)]) ex = _docsLocaux[String(r.id)];   /* documents : la copie de référence est celle d'IndexedDB (DATA ne porte pas les fichiers) */
+    if (store === 'documents' && r._sans_contenu && ex && ex.blob) { r.blob = ex.blob; delete r._sans_contenu; }   /* fiche allégée : on garde le fichier déjà présent sur ce poste */
     if (_remoteWins(r, ex)) {
       byId[String(r.id)] = r;
       try { await dbPut(store, r); } catch(e) {}
@@ -28989,6 +29030,7 @@ async function _pullBatchViaRPC() {
     curseurs[table] = complet ? '' : _pullCurseurEffectif(table);
     tablesConcernees.push([table, store]);
   }
+  curseurs['_docs_legers'] = 'oui';   /* demande les fiches des documents sans leur contenu (voir docAssurerContenu) */
   var body = JSON.stringify({ cursors: curseurs });
   var url = SB.url.replace(/\/+$/,'') + '/rest/v1/rpc/pull_incremental';
   var resp = await fetch(url, {
@@ -29336,6 +29378,10 @@ async function flushSyncOutbox() {
         }
       }
 
+      /* Fiche de document allégée en file : on ne l'envoie qu'avec son fichier (sinon elle l'effacerait côté cloud). */
+      if (e.op !== 'delete' && e.table === 'pi_documents' && _docAllege(e.obj)) {
+        if (!(await docAssurerContenu(e.obj))) { _quarAdd(e, 'Document allégé : fichier indisponible sur ce poste, envoi évité'); q.splice(i,1); _outboxWrite(q); continue; }
+      }
       var ok = false;
       window._lastSupaError = '';
       try {
@@ -87470,23 +87516,39 @@ async function apercuDocument(docId) {
   var docs = await dbGetAll('documents');
   var doc = docs.find(function(d){ return d.id === docId; });
   if (!doc) return;
-  if (doc.type && doc.type.startsWith('image/')) {
-    var win = window.open('', '', 'width=800,height=700');
+  var isImg = !!(doc.type && doc.type.startsWith('image/'));
+  var win = null;
+  if (!doc.blob) {
+    /* Fiche allégée : on ouvre la fenêtre tout de suite (anti pop-up), puis on télécharge le fichier. */
+    win = window.open('', '', isImg ? 'width=800,height=700' : 'width=900,height=700');
+    if (win) win.document.write('<html><body style="font-family:sans-serif;padding:24px;color:#333;">Téléchargement du document…</body></html>');
+    doc = await docAssurerContenu(doc);
+    if (!doc) { if (win) win.close(); toast('Document indisponible sur ce poste : une connexion est nécessaire pour le télécharger.', 'error'); return; }
+  }
+  win = win || window.open('', '', isImg ? 'width=800,height=700' : 'width=900,height=700');
+  if (!win) { toast('Fenêtre bloquée par le navigateur.', 'error'); return; }
+  win.document.open();
+  if (isImg) {
     win.document.write('<html><head><title>'+doc.name+'</title></head><body style="margin:0;background:#111;display:flex;align-items:center;justify-content:center;min-height:100vh;">'
       +'<img src="'+doc.blob+'" style="max-width:100%;max-height:100vh;object-fit:contain;" alt="'+doc.name+'">'
       +'</body></html>');
   } else {
-    var win = window.open('', '', 'width=900,height=700');
     win.document.write('<html><head><title>'+doc.name+'</title></head><body style="margin:0;">'
       +'<iframe src="'+doc.blob+'" width="100%" height="100%" style="border:none;position:absolute;top:0;left:0;width:100%;height:100%;"></iframe>'
       +'</body></html>');
   }
+  win.document.close();
 }
 
 async function telechargerDocument(docId) {
   var docs = await dbGetAll('documents');
   var doc = docs.find(function(d){ return d.id === docId; });
   if (!doc) return;
+  if (!doc.blob) {
+    toast('Téléchargement de ' + doc.name + '…', 'info');
+    doc = await docAssurerContenu(doc);
+    if (!doc) { toast('Document indisponible sur ce poste : une connexion est nécessaire pour le télécharger.', 'error'); return; }
+  }
   var a = document.createElement('a');
   a.href = doc.blob;
   a.download = doc.name;
@@ -87828,6 +87890,7 @@ async function gedFiltrer() {
 async function gedApercu(store, id) {
   var rec = await _gedGetRecord(store, id);
   if (!rec) return;
+  if (store === 'documents' && !rec.blob) { rec = await docAssurerContenu(rec); if (!rec) { toast('Document indisponible sur ce poste : une connexion est nécessaire pour le télécharger.', 'error'); return; } }
   var blob = rec[_gedBlobField(rec)];
   var mime = rec.type || rec.mime || '';
   var name = rec.name || rec.nom || rec.titre || 'document';
@@ -87842,6 +87905,7 @@ async function gedApercu(store, id) {
 async function gedTelecharger(store, id) {
   var rec = await _gedGetRecord(store, id);
   if (!rec) return;
+  if (store === 'documents' && !rec.blob) { rec = await docAssurerContenu(rec); if (!rec) { toast('Document indisponible sur ce poste : une connexion est nécessaire pour le télécharger.', 'error'); return; } }
   var a = document.createElement('a');
   a.href = rec[_gedBlobField(rec)];
   a.download = rec.name || rec.nom || rec.titre || 'document';
@@ -112151,8 +112215,9 @@ function afRenderStageDocs(stage){
   }).join('');
 }
 
-function afDownloadDoc(id){
+async function afDownloadDoc(id){
   var d = _afDocCache.find(function(x){ return x.id===id; });
+  if (d && !d.blob) d = await docAssurerContenu(d);
   if(!d||!d.blob){ toast('Fichier introuvable.','error'); return; }
   var a=document.createElement('a'); a.href=d.blob; a.download=d.name||'document'; a.click();
 }
@@ -116860,7 +116925,8 @@ function attSoldePiecesDonnees(c, kind){
   });
   return { S:S, lignes:lignes, anomalies:anomalies };
 }
-function attSoldePiecesHtml(c, kind){
+function attSoldePiecesHtml(c, kind, docs){
+  docs = docs || [];
   var D = attSoldePiecesDonnees(c, kind), S = D.S, E = escHtml, a = c[attChamp(kind)] || {};
   var prog = (DATA.programmes||[]).find(function(x){ return x.id===c.programme_id; }) || {};
   var nom = ((c.prenoms||'') + ' ' + (c.nom||'')).trim();
@@ -116891,14 +116957,28 @@ function attSoldePiecesHtml(c, kind){
     + '<h3 style="font-size:14px;margin-top:16px;">3. Synthèse des contrôles</h3>'
     + '<p style="font-size:13px;">' + (S.solde ? '✅ Le souscripteur est soldé : les versements retenus couvrent le prix.' : '⛔ Le souscripteur n\'est pas soldé : l\'attestation serait rejetée à la validation.') + '<br>'
     + (D.anomalies ? '⚠️ <b>' + D.anomalies + ' versement(s) à vérifier</b> (lignes surlignées) avant de valider.' : '✅ Aucune anomalie relevée sur les pièces.') + '</p>'
+    + '<h3 style="font-size:14px;margin-top:16px;">4. Documents scannés du souscripteur (' + docs.length + ')</h3>'
+    + (docs.length
+      ? '<table style="border-collapse:collapse;width:100%;"><thead><tr><th '+th+'>Document</th><th '+th+'>Description</th><th '+th+'>Date</th><th '+th+'>Taille</th><th '+th+'>Portail</th><th '+th+'></th></tr></thead><tbody>'
+        + docs.map(function(d){
+            return '<tr><td '+td+'>' + E(d.name||'—') + '</td><td '+td+'>' + E(d.description||'—') + '</td><td '+td+'>' + E(d.upload_date ? dateShort(d.upload_date) : '—') + '</td>'
+              + '<td '+td+'>' + E(d.size ? (d.size/1048576 >= 1 ? (d.size/1048576).toFixed(1) + ' Mo' : Math.max(1, Math.round(d.size/1024)) + ' Ko') : '—') + '</td>'
+              + '<td '+td+'>' + (d.visible_portail ? 'visible' : 'interne') + '</td>'
+              + '<td '+td+'><button style="padding:4px 10px;cursor:pointer;" onclick="if(window.opener&&window.opener.apercuDocument){window.opener.apercuDocument(\'' + E(d.id) + '\');}else{alert(\'Fenêtre principale fermée : rouvrez les pièces depuis les Validations.\');}">👁 Ouvrir</button></td></tr>';
+          }).join('')
+        + '</tbody></table><p style="font-size:11px;color:#777;margin:6px 0 0;">Le fichier se télécharge à l\'ouverture (quelques secondes) s\'il n\'est pas déjà sur ce poste.</p>'
+      : '<p style="color:#b00;font-size:13px;">⚠️ Aucun document scanné enregistré pour ce souscripteur.</p>')
     + '<p style="font-size:11px;color:#777;">Édité le ' + E(dateShort(today())) + ' par ' + E((APP.currentUser&&APP.currentUser.nom)||'—') + '. Les versements annulés ne sont pas retenus.</p>'
     + '</body></html>';
 }
-function attSoldePieces(clientId, kind){
+async function attSoldePieces(clientId, kind){
   var c = (DATA.clients||[]).find(function(x){return x.id===clientId;}); if(!c) return;
-  var w = window.open('','_blank','width=1000,height=800'); if(!w){ toast('Fenêtre bloquée par le navigateur.','error'); return; }
-  w.document.write(attSoldePiecesHtml(c, kind)); w.document.close();
   APP._attPiecesVues = APP._attPiecesVues || {}; APP._attPiecesVues[clientId + '|' + kind] = true;
+  var w = window.open('','_blank','width=1000,height=800'); if(!w){ toast('Fenêtre bloquée par le navigateur.','error'); return; }
+  var docs = [];
+  try { docs = ((await dbGetAll('documents'))||[]).filter(function(d){ return d && d.entity_type==='client' && d.entity_id===clientId; })
+    .sort(function(x,y){ return String(y.upload_date||'').localeCompare(String(x.upload_date||'')); }); } catch(e){}
+  w.document.write(attSoldePiecesHtml(c, kind, docs)); w.document.close();
 }
 function attSoldeImprimer(clientId, kind){
   var c = (DATA.clients||[]).find(function(x){return x.id===clientId;}), a = c && c[attChamp(kind)]; if(!a || a.statut!=='valide'){ toast('Attestation non validée.','error'); return; }
@@ -137416,6 +137496,7 @@ async function cvVoirScan(id) {
   var b = (DATA.bordereaux_caisse || []).find(function(x){ return x.id === id; }); if (!b) return;
   var all = []; try { all = await dbGetAll('documents'); } catch(e){}
   var d = (all || []).find(function(x){ return x.id === b.scan_doc_id; }) || (all || []).find(function(x){ return x.entity_type === 'bordereau_caisse' && x.entity_id === id; });
+  if (d && !d.blob) d = await docAssurerContenu(d);
   if (!d || !d.blob) { toast('Scan introuvable sur ce poste (synchronisation en cours ?).', 'error'); return; }
   try {
     var blob = await (await fetch(d.blob)).blob();
@@ -138117,11 +138198,11 @@ function cbRenderDocs(){
       +'<span>'+_cbIcon(d.type)+'</span>'
       +'<div style="flex:1;min-width:0;"><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+escHtml(d.name)+'</div>'
       +'<div style="font-size:10px;color:var(--blanc-dim);">'+_cbSize(d.size)+(d._pending?' · à enregistrer':(' · '+(d.upload_date||'')))+'</div></div>'
-      +(d.blob?'<button type="button" class="btn btn-secondary btn-sm" onclick="cbDownload(\''+d.id+'\')">⬇</button>':'')
+      +((d.blob||d._sans_contenu)?'<button type="button" class="btn btn-secondary btn-sm" onclick="cbDownload(\''+d.id+'\')">⬇</button>':'')
       +'<button type="button" class="btn btn-danger btn-sm" onclick="cbRemoveDoc(\''+d.id+'\')">🗑</button></div>';
   }).join('');
 }
-function cbDownload(id){ var d=_cbDocs.find(function(x){return x.id===id;}); if(d&&d.blob){ var a=document.createElement('a'); a.href=d.blob; a.download=d.name||'document'; a.click(); } }
+function cbDownload(id){ var d=_cbDocs.find(function(x){return x.id===id;}); if(d&&d.blob){ var a=document.createElement('a'); a.href=d.blob; a.download=d.name||'document'; a.click(); } else if(d&&!d._pending){ telechargerDocument(d.id); } }
 function cbRemoveDoc(id){
   var d=_cbDocs.find(function(x){return x.id===id;});
   if(d&&!d._pending) _cbDocsToDelete.push(id);
@@ -138159,8 +138240,9 @@ async function caisseViewDocs(mvtId){
       +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:'+(isImg?'8px':'0')+';">'
       +'<span>'+_cbIcon(d.type)+'</span><div style="flex:1;font-weight:600;">'+escHtml(d.name)+'</div>'
       +'<span style="font-size:10px;color:var(--blanc-dim);">'+_cbSize(d.size)+'</span>'
-      +'<a class="btn btn-secondary btn-sm" href="'+d.blob+'" download="'+escHtml(d.name)+'">⬇</a></div>'
-      +(isImg?'<img alt="Document (image)" src="'+d.blob+'" style="max-width:100%;border-radius:6px;">':'')
+      +(d.blob ? '<a class="btn btn-secondary btn-sm" href="'+d.blob+'" download="'+escHtml(d.name)+'">⬇</a></div>'
+               : '<button type="button" class="btn btn-secondary btn-sm" onclick="telechargerDocument(\''+d.id+'\')">⬇</button></div>')
+      +(isImg&&d.blob?'<img alt="Document (image)" src="'+d.blob+'" style="max-width:100%;border-radius:6px;">':'')
       +'</div>';
   }).join('');
 }

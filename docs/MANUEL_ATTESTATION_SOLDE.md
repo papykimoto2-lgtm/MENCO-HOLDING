@@ -106,6 +106,7 @@ La **date de solde** est la date du versement qui fait atteindre le prix concern
 2. Cliquer sur **🔎 Pièces** : l'ERP affiche les **pièces justificatives** de l'attestation :
    - le souscripteur, le contrat (prix, total versé retenu, reste à payer, date de solde) ;
    - chaque **versement retenu** avec son n° de reçu, sa date, son objet, son mode, sa référence (chèque, virement…), le **bon de caisse** pour un paiement en espèces (validé, en attente ou rejeté) et la présence de l'**écriture comptable** ;
+   - les **documents scannés** du souscripteur (contrat, pièce d'identité…) : bouton **👁 Ouvrir** sur chaque ligne. Le fichier se télécharge à l'ouverture (quelques secondes) s'il n'est pas déjà sur le poste ; il faut donc une connexion ;
    - une **synthèse** : souscripteur soldé ou non, nombre de versements à vérifier (lignes surlignées : espèces sans bon de caisse ou bon non validé, référence absente, écriture introuvable, reçu absent).
 3. **Valider** ou **Rejeter** (avec motif en cas de rejet). Si les pièces n'ont pas été consultées, l'ERP demande une confirmation avant de valider.
 4. À la validation, l'ERP **re-vérifie le solde**. Si le souscripteur n'est plus soldé, l'attestation est rejetée automatiquement avec la mention « non soldé à la date de validation ».
