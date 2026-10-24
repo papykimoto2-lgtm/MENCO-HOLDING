@@ -101,10 +101,16 @@ L'ERP génère des écritures sans saisie. Le comptable les **contrôle**, il ne
 | **Mouvement de caisse** | Écriture au moment de la ventilation (CAI-07 du manuel Caisse) | Caisse |
 | **Résiliation** | D Client lots — C Dette de remboursement et/ou Produit de retenue | Opérations diverses |
 | **Immobilisation** | D Compte d'immobilisation — C 481 (à crédit) ou 512 (au comptant) | Opérations diverses |
+| **Paie** | Une écriture par salarié (mode détail) ou globale : D charges de personnel et charges patronales — C net à payer (compte individuel 421XXX du salarié, avec son tiers), CNPS, ITS, FDFP. Le **règlement** débite ces mêmes comptes individuels (le compte du salarié se solde) | Paie |
+| **Dotation aux amortissements** | D 681 — C compte d'amortissement (28x), au 31/12 | Opérations diverses |
+| **Cession foncière** | D compte acquéreur (tiers = la cession) — C produit de cession ; sortie de stock ; encaissement initial ; chaque versement ultérieur a son écriture | Ventes, banque, caisse |
 
 **Contrôles**
 
-- Une opération supprimée ou modifiée à la source **régénère** son écriture (même identifiant).
+- Une opération supprimée ou modifiée à la source **régénère** son écriture (même identifiant) — **sauf si l'écriture est visée ou dans un exercice clos** : l'opération est alors refusée avec un message (paie, cession, versement, dotation). On contre-passe l'écriture, puis on ressaisit.
+- **Paie** : un mois dont une écriture est visée ne se régénère ni ne se décomptabilise (sinon la paie serait comptée deux fois en changeant de mode).
+- **Cession foncière** : modifier le prix, l'encaissement, la date ou les lots met à jour les écritures de la cession ; la supprimer retire **toutes** ses écritures (vente, sortie de stock, encaissement, recouvrements). L'encaissement initial = total encaissé − versements déjà enregistrés. Un versement d'acquéreur sur un exercice clos est refusé.
+- **Dotations** : un seul moteur de calcul pour les biens du promoteur et les immobilisations de la société — prorata temporis au mois de mise en service, bien amorti en totalité (la dernière annuité solde le reliquat), dégressif au barème CGI (1,5 / 2 / 2,5) avec bascule au linéaire. Dotation déjà visée et identique : rien n'est refait ; visée et différente : l'ERP la signale (à contre-passer) ; contre-passée : une écriture de **révision** est créée (suffixe `_r2`).
 - Une écriture automatique à une date d'**exercice clos** est refusée : corriger la date à la source.
 - Les frais de souscription ne réduisent pas le solde dû par le souscripteur : ils sont comptabilisés en produit.
 

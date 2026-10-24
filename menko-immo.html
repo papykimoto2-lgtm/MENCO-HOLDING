@@ -37102,6 +37102,19 @@ function vrsEcritureVerrouillee(versementId, nouvelleDate) {
   return '';
 }
 
+/* Garde commune des opérations sources (paie, cessions, dotations…) : peut-on modifier ou supprimer
+   ces écritures ? Une pièce visée, ou d'un exercice clos, ne bouge plus (contre-passation seule).
+   Retourne le motif, ou '' si tout est libre. `dateNouvelle` : date que prendrait la nouvelle écriture. */
+function ecrsVerrouillees(list, dateNouvelle) {
+  list = (list || []).filter(Boolean);
+  var visees = list.filter(function(e){ return ecrEstValidee(e); });
+  if (visees.length) return visees.length + ' écriture(s) visée(s) (ex. ' + (visees[0].ref || visees[0].piece || visees[0].id) + ')';
+  var clos = list.filter(function(e){ return e.date && exerciceEstClos(e.date); });
+  if (clos.length) return clos.length + ' écriture(s) dans l\'exercice ' + new Date(clos[0].date).getFullYear() + ' clôturé';
+  if (dateNouvelle && exerciceEstClos(dateNouvelle)) return 'la date ' + dateShort(dateNouvelle) + ' tombe dans l\'exercice ' + new Date(dateNouvelle).getFullYear() + ' clôturé';
+  return '';
+}
+
 async function savePaiement() {
   var cid = document.getElementById('v-client').value;
   var montant = parseFloat(document.getElementById('v-montant').value);
@@ -41925,6 +41938,7 @@ function ecrSupprimerLigne(i) {
 function ecrTiersListe() {
   var out = [];
   (DATA.clients || []).forEach(function(c){ if (c && c.id) out.push({ id: c.id, label: (((c.nom || '') + ' ' + (c.prenoms || '')).trim() || c.id) + (c.dossier ? ' [' + c.dossier + ']' : '') }); });
+  (DATA.cessions_foncieres || []).forEach(function(c){ if (c && c.id) out.push({ id: c.id, label: (c.acquereur || c.id) + ' [' + (c.dossier || 'cession') + ']' }); });
   (DATA.fournisseurs || []).forEach(function(f){ if (f && f.id) out.push({ id: f.id, label: (f.raison_sociale || f.nom || f.id) + ' [fournisseur]' }); });
   (DATA.tiers_comptables || []).forEach(function(t){ if (t && t.id) out.push({ id: t.id, label: (t.nom || t.libelle || t.code || t.id) + (t.code ? ' [' + t.code + ']' : '') }); });
   return out;
@@ -42241,6 +42255,7 @@ function _ecrIndexTiers() {
 function ecrClientIdDe(e) {
   if (!e) return '';
   if (e.client_id) return e.client_id;
+  if (e.cession_id) return e.cession_id;   /* cession foncière : un tiers par cession (vente, encaissements, recouvrements) */
   var id = String(e.id || ''), ix = _ecrIndexTiers(), r;
   if (id.indexOf('ecr_vrs_') === 0) return ix.vrs[id.slice(8)] || '';
   if (id.indexOf('ecr_vente_terrain_') === 0) return ix.lot[id.slice(18)] || '';
@@ -58665,7 +58680,7 @@ function _paieLignes(agg, C){
      ligne), agg.emp est absent — comportement inchangé, compte générique. */
   var compteNetIndividuel = (agg.emp && typeof _compteAuxiliaireEmploye === 'function') ? _compteAuxiliaireEmploye(agg.emp) : null;
   var compteNet = compteNetIndividuel || C.net;
-  if(agg.net>0) l.push({compte:compteNet,sens:'C',montant:Math.round(agg.net),libelle:'Net à payer'+(agg.emp?' — '+agg.emp.nom+(agg.emp.prenoms?' '+agg.emp.prenoms:''):'')});
+  if(agg.net>0) l.push({compte:compteNet,sens:'C',montant:Math.round(agg.net),libelle:'Net à payer'+(agg.emp?' — '+agg.emp.nom+(agg.emp.prenoms?' '+agg.emp.prenoms:''):''),tiers_id:agg.emp?agg.emp.id:undefined});
   var itsSal=(agg.itsSal!=null)?agg.itsSal:Math.max(0,(agg.its||0)-(agg.cmuSal||0));
   var patCnps=agg.cnpsPatSocial||0, patIts=agg.itsPat||0, patFdfp=agg.fdfp||0, patCmu=agg.cmuPat||0;
   /* Repli : si la ventilation patronale est absente (anciens agrégats), le
@@ -58733,6 +58748,10 @@ async function comptabiliserPaie(moisKey, opts){
     }
   }
 
+  /* Pièces de paie visées ou d'un exercice clos : on ne régénère pas en place (les anciennes ne
+     pourraient pas être supprimées et les nouvelles s'ajouteraient → paie comptée deux fois). */
+  var _verrPaie = ecrsVerrouillees(dept ? existantes.filter(function(e){ return e._paie_dept === deptTag; }) : existantes, date);
+  if (_verrPaie) return {ok:false, msg:'La paie de '+moisKey+' ne peut pas être régénérée : '+_verrPaie+'. Contre-passez les écritures concernées (Comptabilité › Journal), puis comptabilisez à nouveau.'};
   var toDel = dept
     ? existantes.filter(function(e){ return e._paie_dept === deptTag; }).map(function(e){return e.id;})
     : existantes.map(function(e){return e.id;}); /* run global : remplace tout, y compris d'anciens runs par département */
@@ -58773,14 +58792,26 @@ async function comptabiliserPaie(moisKey, opts){
   }
   if(regl){
     var a=_sumAgg(list);
-    var net=Math.round(a.net);
+    var net=Math.round(a.net), rlNets=[];
+    /* Mode détail : chaque salarié a son compte auxiliaire (421XXX) crédité du net à payer ; le
+       règlement doit donc le DÉBITER (sinon le compte individuel ne se solde jamais et le compte
+       générique de rémunérations dues reste débiteur). */
+    if(mode==='detail'){
+      net=0;
+      list.forEach(function(x){
+        var m=Math.round(x.net); if(!(m>0)) return;
+        var cptE=(typeof _compteAuxiliaireEmploye==='function' ? _compteAuxiliaireEmploye(x.emp) : null)||C.net;
+        rlNets.push({compte:cptE,sens:'D',montant:m,libelle:'Règlement net — '+x.emp.nom+(x.emp.prenoms?' '+x.emp.prenoms:''),tiers_id:x.emp.id}); net+=m;
+      });
+    }
     var _patCnps=a.cnpsPatSocial||0,_patIts=a.itsPat||0,_patFdfp=a.fdfp||0,_patCmu=a.cmuPat||0;
     var _patReste=Math.round((a.patronal||0)-(_patCnps+_patIts+_patFdfp+_patCmu));
     var cnps=Math.round((a.cnpsSal||0)+_patCnps+(a.cmuSal||0)+_patCmu+(_patReste>0?_patReste:0));
     var itsSal=(a.itsSal!=null)?a.itsSal:Math.max(0,(a.its||0)-(a.cmuSal||0));
     var its=Math.round(itsSal+_patIts+(_patReste<0?_patReste:0));
     var fdfp=Math.round(_patFdfp), rl=[];
-    if(net>0) rl.push({compte:C.net,sens:'D',montant:net,libelle:'Reglement net salaires'});
+    if(rlNets.length) rlNets.forEach(function(x){ rl.push(x); });
+    else if(net>0) rl.push({compte:C.net,sens:'D',montant:net,libelle:'Reglement net salaires'});
     if(cnps>0) rl.push({compte:C.cnps,sens:'D',montant:cnps,libelle:'Reversement CNPS + CMU'});
     if(its>0) rl.push({compte:C.its,sens:'D',montant:its,libelle:'Reversement ITS'});
     if(fdfp>0) rl.push({compte:C.fdfp,sens:'D',montant:fdfp,libelle:'Reversement FDFP'});
@@ -58795,7 +58826,10 @@ async function comptabiliserPaie(moisKey, opts){
   return {ok:true, count:created, nb:list.length};
 }
 async function decomptabiliserPaie(moisKey){
-  var ids=(DATA.ecritures||[]).filter(function(e){return e._paie_mois===moisKey;}).map(function(e){return e.id;});
+  var _ecrsPaie=(DATA.ecritures||[]).filter(function(e){return e._paie_mois===moisKey;});
+  var _verrD=ecrsVerrouillees(_ecrsPaie);
+  if(_verrD){ toast('🔒 Paie '+moisKey+' non décomptabilisable : '+_verrD+'. Contre-passez les écritures.','error',8000); return 0; }
+  var ids=_ecrsPaie.map(function(e){return e.id;});
   for(var i=0;i<ids.length;i++){ try{ await deleteRecord('ecritures', ids[i], {skipIntegrity:true}); }catch(e){} }
   if(typeof buildBalance==='function') buildBalance();
   if(typeof buildBilan==='function') buildBilan();
@@ -58863,7 +58897,7 @@ async function decomptabiliserPaieUI(){
   if(!confirm('Supprimer les '+n+' ecriture(s) de paie de '+moisKey+' ?')) return;
   var d=await decomptabiliserPaie(moisKey);
   paieComptaStatut(moisKey);
-  toast(d+' ecriture(s) de paie supprimee(s).','info');
+  if(d>0) toast(d+' ecriture(s) de paie supprimee(s).','info');
 }
 
 /* ── TAB 2 : Récapitulatif annuel (matrice employés × mois) ───────── */
@@ -75914,36 +75948,18 @@ function exportTiersEcheancesCSV() {
 window.exportTiersEcheancesCSV = exportTiersEcheancesCSV;
 
 function immoSocCalc(im, year) {
-  var dateAcq = new Date(im.date_acquisition);
-  var anneeAcq = dateAcq.getFullYear();
+  var bien = _amortAdapterImmo(im);                       /* même moteur que les biens du promoteur */
   var y = parseInt(year) || new Date().getFullYear();
-  var base = (parseFloat(im.valeur_acquisition)||0) - (parseFloat(im.valeur_residuelle)||0);
-  var duree = parseInt(im.duree_ans) || 5;
-  var methode = im.methode || 'lineaire';
+  var anneeAcq = new Date(bien.date_debut).getFullYear();
+  var base = bien.valeur_origine - bien.valeur_residuelle;
+  var duree = parseInt(bien.duree) || 5;
+  var dotationAnnuelle = calcAnnuite(bien, y);
+  var cumulAmort = calcAmortCumul(bien, y);
   var anneesEcoulees = Math.max(0, Math.min(duree, y - anneeAcq + 1));
-  var dotationAnnuelle, cumulAmort;
-  if (methode === 'degressif') {
-    var coeff = duree <= 4 ? 1.5 : (duree <= 6 ? 2 : 2.5); /* barème CGI CI usuel */
-    var vnc = base, cumul = 0, dotAnnee = 0;
-    for (var yy = anneeAcq; yy <= y && yy < anneeAcq + duree; yy++) {
-      var resteAns = duree - (yy - anneeAcq);
-      var tauxDeg = Math.min(1, (1/duree) * coeff);
-      var tauxLin = 1/resteAns;
-      var taux = Math.max(tauxDeg, tauxLin); /* bascule au linéaire quand plus favorable */
-      var dot = Math.round(vnc * taux);
-      if (yy === y) dotAnnee = dot;
-      cumul += dot; vnc -= dot;
-    }
-    dotationAnnuelle = dotAnnee; cumulAmort = Math.min(base, cumul);
-  } else {
-    dotationAnnuelle = duree > 0 ? Math.round(base / duree) : 0;
-    cumulAmort = Math.min(base, dotationAnnuelle * anneesEcoulees);
-  }
-  var vncFinale = (parseFloat(im.valeur_acquisition)||0) - cumulAmort;
-  var estAmortiPourAnnee = anneeAcq <= y && (y - anneeAcq) < duree;
+  var vncFinale = bien.valeur_origine - cumulAmort;
   var dejaGenere = (im.dotations_generees||[]).indexOf(y) !== -1;
   return { dotationAnnuelle:dotationAnnuelle, cumulAmort:cumulAmort, vnc:Math.max(0,vncFinale), anneesEcoulees:anneesEcoulees,
-    duree:duree, base:base, methode:methode, estAmortiPourAnnee:estAmortiPourAnnee, dejaGenere:dejaGenere, anneeAcq:anneeAcq };
+    duree:duree, base:base, methode:bien.methode, estAmortiPourAnnee:dotationAnnuelle > 0, dejaGenere:dejaGenere, anneeAcq:anneeAcq };
 }
 
 function renderImmoSociete() {
@@ -76103,6 +76119,7 @@ async function genererDotationsAnnuelles() {
   });
   if (!list.length) { toast('Aucune dotation à générer pour ' + year + '.', 'info'); return; }
   if (!confirm(list.length + ' immobilisation(s) à doter pour ' + year + '. Générer les écritures ?')) return;
+  var refusesDot = 0;
   for (var i = 0; i < list.length; i++) {
     var im = list[i];
     var c = immoSocCalc(im, year);
@@ -76123,14 +76140,19 @@ async function genererDotationsAnnuelles() {
     };
     var idxEc = DATA.ecritures.findIndex(function(e){ return e.id === ec.id; });
     if (idxEc >= 0) DATA.ecritures[idxEc] = ec; else DATA.ecritures.push(ec);
-    await dbPut('ecritures', ec);
+    var _okDot = await dbPut('ecritures', ec);
+    if (_okDot === false) {   /* pièce visée ou exercice clos : ni marquée « générée », ni envoyée au cloud */
+      var _iR = DATA.ecritures.findIndex(function(e){ return e.id === ec.id && e._rejete; });
+      if (_iR >= 0) DATA.ecritures.splice(_iR, 1);
+      refusesDot++; continue;
+    }
     if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ec);
     im.dotations_generees = im.dotations_generees || []; if (im.dotations_generees.indexOf(year)===-1) im.dotations_generees.push(year);
     im.ecritures_dotation_ids = im.ecritures_dotation_ids || []; if (im.ecritures_dotation_ids.indexOf(ec.id)===-1) im.ecritures_dotation_ids.push(ec.id);
     await dbPut('immobilisations', im);
     if (typeof syncToSupabase === 'function') syncToSupabase('pi_immobilisations', im);
   }
-  toast(list.length + ' dotation(s) générée(s) pour ' + year + '.', 'success');
+  toast((list.length - refusesDot) + ' dotation(s) générée(s) pour ' + year + '.' + (refusesDot ? ' · ⛔ ' + refusesDot + ' refusée(s) (pièce visée ou exercice clos).' : ''), refusesDot ? 'warning' : 'success');
   renderImmoSociete();
   if (typeof buildBalance === 'function') buildBalance();
   if (typeof buildCompteResultat === 'function') buildCompteResultat();
@@ -76314,7 +76336,9 @@ function exporterFEC(annee, divisionId) {
       if (aux) {
         var t = (DATA.tiers_comptables||[]).find(function(x){ return x.id === tid || x.code === tid; })
              || (DATA.clients||[]).find(function(x){ return x.id === tid; })
+             || (DATA.cessions_foncieres||[]).find(function(x){ return x.id === tid; })
              || (DATA.fournisseurs||[]).find(function(x){ return x.id === tid; });
+        if (t && !t.nom && t.acquereur) t = { dossier: t.dossier, nom: t.acquereur };
         if (t) { aux = t.code || t.dossier || aux; auxLib = String((((t.nom || '') + ' ' + (t.prenoms || '')).trim()) || t.raison_sociale || t.libelle || '').replace(/[|\r\n]/g,' '); }
       }
       /* EcritureLet : la lettre de LA ligne — pas celle de l'écriture (la ligne
@@ -77955,38 +77979,39 @@ function _amortTousBiens(){
   return (DATA.biens_amort||[]).map(function(b){ return Object.assign({_source:'biens_amort'}, b); })
     .concat((DATA.immobilisations||[]).map(_amortAdapterImmo));
 }
-function calcAnnuite(bien, annee) {
-  var val = bien.valeur_origine||0;
-  var res = bien.valeur_residuelle||0;
-  var dur = parseInt(bien.duree)||25;
-  var base = val - res;
-  var taux = 1/dur;
-  var anneeDebut = parseInt((bien.date_debut||'2024-01-01').slice(0,4));
-
-  if (bien.methode === 'degressif') {
-    var coeff = dur <= 10 ? 2 : dur <= 20 ? 1.75 : 1.5;
-    taux = taux * coeff;
-    // Valeur nette au début de l'exercice
-    var vnc = base;
-    for (var a = anneeDebut; a < annee; a++) {
-      var dot = Math.min(vnc, Math.round(vnc * taux));
-      vnc -= dot;
+/* ═══ MOTEUR D'AMORTISSEMENT UNIQUE (SYSCOHADA révisé) ═══
+   Prorata temporis au mois de mise en service ; le bien est amorti en totalité (la dernière
+   annuité solde le reliquat, y compris la fraction de l'année de fin et les arrondis). Dégressif au
+   barème CGI usuel (1,5 jusqu'à 4 ans, 2 de 5 à 6 ans, 2,5 au-delà) avec bascule au linéaire sur la
+   durée restante. Un seul calcul sert les deux registres (biens du promoteur et immobilisations de la
+   société) : avant, deux formules différentes écrivaient la MÊME écriture de dotation. */
+function _amortPlan(bien) {
+  var plan = {};
+  var val = parseFloat(bien.valeur_origine) || 0, res = parseFloat(bien.valeur_residuelle) || 0;
+  var dur = parseInt(bien.duree) || 25, base = val - res;
+  if (!(base > 0) || !(dur > 0)) return plan;
+  var dd = String(bien.date_debut || '2024-01-01');
+  var anneeDebut = parseInt(dd.slice(0, 4)), moisDebut = parseInt(dd.slice(5, 7)) || 1;
+  var partielle = (13 - moisDebut) / 12, cumul = 0;
+  var degressif = bien.methode === 'degressif';
+  var taux = (degressif ? (dur <= 4 ? 1.5 : (dur <= 6 ? 2 : 2.5)) : 1) / dur;
+  var annuite = Math.round(base / dur);
+  for (var k = 0; k <= dur + 1 && cumul < base; k++) {
+    var vnc = base - cumul, dot;
+    if (degressif) {
+      var restant = dur - (k === 0 ? 0 : (partielle + (k - 1)));      /* durée restante au début de l'exercice */
+      if (k === 0) dot = Math.round(vnc * taux * partielle);
+      else if (restant <= 1) dot = vnc;
+      else dot = Math.max(Math.round(vnc * taux), Math.round(vnc / restant));
+    } else {
+      dot = k === 0 ? Math.round(annuite * partielle) : (k < dur ? annuite : vnc);
     }
-    return Math.min(vnc, Math.round(vnc * taux));
-  } else {
-    // Linéaire
-    var annuiteBase = Math.round(base / dur);
-    // Prorata première année
-    if (annee === anneeDebut) {
-      var moisDebut = parseInt((bien.date_debut||'2024-01-01').slice(5,7))||1;
-      return Math.round(annuiteBase * (13 - moisDebut) / 12);
-    }
-    // Dernière année
-    var finAmort = anneeDebut + dur;
-    if (annee >= finAmort) return 0;
-    return annuiteBase;
+    dot = Math.min(vnc, Math.max(0, dot));
+    plan[anneeDebut + k] = dot; cumul += dot;
   }
+  return plan;
 }
+function calcAnnuite(bien, annee) { return _amortPlan(bien)[annee] || 0; }
 
 function calcAmortCumul(bien, annee) {
   var anneeDebut = parseInt((bien.date_debut||'2024-01-01').slice(0,4));
@@ -78082,7 +78107,7 @@ async function saveBienAmort() {
      caisse (cf. genererEcritureCaisseMouvement). */
   var _okEcr = await dbPut('ecritures', ecr);
   if (_okEcr === false) {
-    var _i = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; });
+    var _i = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id && e._rejete; });
     if (_i >= 0) DATA.ecritures.splice(_i, 1);
     toast('❌ Bien enregistré, mais écriture comptable refusée (exercice clos à cette date) — corrigez la date d\'acquisition.', 'error');
     switchAmortTab('biens');
@@ -78371,7 +78396,7 @@ async function comptabiliserDotations() {
     toast('🔒 Exercice ' + annee + ' clôturé — dotations bloquées.', 'error'); return;
   }
 
-  var count=0, refuses=0;
+  var count=0, refuses=0, divergentes=[];
   var date31dec=annee+'-12-31';
   for(var i=0;i<biens.length;i++){
     var b=biens[i];
@@ -78382,6 +78407,19 @@ async function comptabiliserDotations() {
        (genererDotationsAnnuelles pour un véhicule) — upsert sûr, jamais
        de double écriture même si les deux boutons sont utilisés. */
     var ecrId = b._source==='immobilisations' ? ('ecr_immosoc_dot_'+b.id+'_'+annee) : ('ecr_681_'+b.id+'_'+annee);
+    /* Dotation déjà visée : identique → rien à faire ; différente et non contre-passée → à contre-passer ;
+       contre-passée → nouvelle écriture « révision » (l'id d'origine reste occupé par la pièce visée). */
+    var _id0 = ecrId, _rev = 1, _skip = false;
+    for (;;) {
+      var _ex = (DATA.ecritures||[]).find(function(e){ return e.id === ecrId; });
+      if (!_ex || !ecrEstValidee(_ex)) break;
+      if (!_ex.contrepassee_par) {
+        if (Math.round(_ex.montant) === Math.round(dot)) { _skip = true; } else { divergentes.push(b.designation + ' (' + fmtF(_ex.montant) + ' → ' + fmtF(dot) + ')'); _skip = true; }
+        break;
+      }
+      _rev++; ecrId = _id0 + '_r' + _rev;
+    }
+    if (_skip) continue;
     var ecr={
       id:ecrId,
       ref:'DAP-'+annee+'-'+(b.dossier||b.id.slice(-6).toUpperCase()),
@@ -78402,7 +78440,7 @@ async function comptabiliserDotations() {
     if (idxDot >= 0) DATA.ecritures[idxDot] = ecr; else DATA.ecritures.push(ecr);
     var _ok = await dbPut('ecritures',ecr);
     if (_ok === false) {
-      var _idx2 = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; });
+      var _idx2 = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id && e._rejete; });   /* seulement l'objet refusé : dbPut a remis la pièce persistée en mémoire */
       if (_idx2 >= 0) DATA.ecritures.splice(_idx2, 1);
       refuses++;
       continue;
@@ -78422,7 +78460,8 @@ async function comptabiliserDotations() {
     }
     count++;
   }
-  toast('✅ '+count+' dotation(s) comptabilisée(s) — Débit 681 / Crédit 281 pour '+annee+'.'+(refuses?' · ⛔ '+refuses+' refusée(s) (exercice clos).':''), refuses?'warning':'success');
+  toast('✅ '+count+' dotation(s) comptabilisée(s) — Débit 681 / Crédit 281 pour '+annee+'.'+(refuses?' · ⛔ '+refuses+' refusée(s) (pièce visée ou exercice clos).':'')
+    +(divergentes.length?' · ⚠️ Dotation visée différente du calcul actuel, à contre-passer puis regénérer : '+divergentes.join(' ; ')+'.':''), (refuses||divergentes.length)?'warning':'success');
   buildDotations();
   buildAmortBiens();
   if (typeof renderImmoSociete === 'function') renderImmoSociete();
@@ -118580,19 +118619,36 @@ function cesCoutStockPrevu() {
   return (op && op.cout_revient_unitaire) ? Math.round(op.cout_revient_unitaire * nbLots) : 0;
 }
 
+/* Écritures d'une cession : vente (D tiers / C produit), sortie de stock, encaissement initial.
+   IDEMPOTENT : id déterministe (ou l'id déjà mémorisé sur la cession), donc une modification de la
+   cession METTRA À JOUR ses écritures au lieu de les laisser périmées. Le garde-fou de visa / d'exercice
+   clos est appliqué en amont par cesVerrouEcritures() ; ici une pièce visée n'est jamais touchée. */
+function cesVerrouEcritures(c, dateNouvelle) {
+  return ecrsVerrouillees((DATA.ecritures || []).filter(function(e){ return e.cession_id === c.id; }), dateNouvelle);
+}
 async function cesGenererEcriture(c) {
   if (!DATA.ecritures) DATA.ecritures = [];
   var an=(c.date||today()).slice(0,4);
   var cptTiers = (typeof crecCompte === 'function') ? crecCompte() : requireCompteDefaut('client_foncier');
   var cptProduit = requireCompteDefaut('cession_produit');
   var _divCes = (c.source_key && c.source_key.indexOf('parcelle:') === 0) ? _resolveDivisionEcriture('parcelle', c.source_key.slice(9)) : '';   /* [Cloisonnement] */
+  var trouve = function(id){ return (DATA.ecritures||[]).find(function(e){ return e.id === id; }); };
+  var poser = async function(id, exist, obj) {
+    if (exist && ecrEstValidee(exist)) return exist;                 /* pièce visée : intacte */
+    var e = Object.assign({}, exist || {}, obj, { id: id });
+    var i = DATA.ecritures.findIndex(function(x){ return x.id === id; });
+    if (i >= 0) DATA.ecritures[i] = e; else DATA.ecritures.push(e);
+    await dbPut('ecritures', e);
+    if (typeof syncToSupabase==='function') syncToSupabase('pi_ecritures', e);
+    return e;
+  };
   /* 1. Vente : tiers (débit) / produit cession (crédit) — comptes configurables (Paramètres → Comptabilité) */
-  var evente={ id:uid(), ref:'CESS-'+an+'-'+prochainNumeroRef('ecritures','CESS',an,4), date:c.date||today(), piece:'CESSION',
+  var idV = c.ecriture_vente_id || ('ecr_ces_vente_' + c.id), exV = trouve(idV);
+  var evente = await poser(idV, exV, { ref:(exV && exV.ref) || ('CESS-'+an+'-'+prochainNumeroRef('ecritures','CESS',an,4)), date:c.date||today(), piece:'CESSION',
     type:'produit', libelle:'Cession foncière — '+(c.designation||'')+' à '+(c.acquereur||''),
     compte:cptProduit, compte_debit:cptTiers, compte_credit:cptProduit, montant:c.prix_cession||0,
-    mode:'cession', programme_id:'', division:_divCes, notes:'Cession part entreprise — '+cesSourceRef(c.source_key), source:'cession_fonciere', cession_id:c.id, created_at:today() };
-  DATA.ecritures.push(evente); await dbPut('ecritures', evente);
-  if (typeof syncToSupabase==='function') syncToSupabase('pi_ecritures', evente);
+    mode:'cession', programme_id:'', division:_divCes, notes:'Cession part entreprise — '+cesSourceRef(c.source_key), source:'cession_fonciere', cession_id:c.id,
+    created_at:(exV && exV.created_at) || today() });
   c.ecriture_vente_id=evente.id;
   /* 1bis. Sortie de stock de la part entreprise valorisée à la production (331) :
      Débit 712 (Variation de stocks en cours) / Crédit 331 — en face du produit 701,
@@ -118602,28 +118658,33 @@ async function cesGenererEcriture(c) {
     var opStk = pStk && pStk.operation_id ? (DATA.af_operations||[]).find(function(x){ return x.id === pStk.operation_id; }) : null;
     if (opStk && opStk.cout_revient_unitaire > 0) {
       var montantSortie = Math.round(opStk.cout_revient_unitaire * (c.nb_lots || 1));
-      var _cdStkS = (DATA.params && DATA.params.comptes_defaut) || {};
       var _cptVarS = requireCompteDefaut('stock_lots_variation');
       var _cptStkS = requireCompteDefaut('stock_lots_compte');
-      var esortie = { id:uid(), ref:'STK-SORT-'+an+'-'+prochainNumeroRef('ecritures','STK-SORT',an,4), date:c.date||today(), piece:'CESSION',
+      var idS = c.ecriture_stock_id || ('ecr_ces_stock_' + c.id), exS = trouve(idS);
+      var esortie = await poser(idS, exS, { ref:(exS && exS.ref) || ('STK-SORT-'+an+'-'+prochainNumeroRef('ecritures','STK-SORT',an,4)), date:c.date||today(), piece:'CESSION',
         type:'produit', libelle:'Sortie de stock — '+(c.nb_lots||1)+' lot(s) part entreprise — '+(c.designation||''),
         compte:_cptVarS, compte_debit:_cptVarS, compte_credit:_cptStkS, montant:montantSortie,
-        mode:'stock', programme_id:'', division:_divCes, notes:'Coût de revient sorti en face de la cession '+evente.ref, source:'cession_fonciere', cession_id:c.id, created_at:today() };
-      DATA.ecritures.push(esortie); await dbPut('ecritures', esortie);
-      if (typeof syncToSupabase==='function') syncToSupabase('pi_ecritures', esortie);
+        mode:'stock', programme_id:'', division:_divCes, notes:'Coût de revient sorti en face de la cession '+evente.ref, source:'cession_fonciere', cession_id:c.id,
+        created_at:(exS && exS.created_at) || today() });
       c.ecriture_stock_id = esortie.id;
     }
   }
-  /* 2. Encaissement : 521/571 (débit) / 4111 (crédit) */
-  if ((c.montant_encaisse||0)>0) {
+  /* 2. Encaissement initial : 521/571 (débit) / 4111 (crédit). Les versements ultérieurs ont leurs propres
+        écritures (recouvrement) : l'encaissement initial = total encaissé − somme des versements enregistrés. */
+  var verses = (c.paiements || []).reduce(function(t, p){ return t + (parseFloat(p.montant) || 0); }, 0);
+  var encInit = Math.max(0, (c.montant_encaisse || 0) - verses);
+  var idE = c.ecriture_enc_id || ('ecr_ces_enc_' + c.id), exE = trouve(idE);
+  if (encInit > 0) {
     var compteTreso=(c.mode==='especes')?_compteCaisseSouscripteurs():'521';
-    var eenc={ id:uid(), ref:'ENC-CESS-'+an+'-'+prochainNumeroRef('ecritures','ENC-CESS',an,4), date:c.date||today(), piece:'CESSION',
+    var eenc = await poser(idE, exE, { ref:(exE && exE.ref) || ('ENC-CESS-'+an+'-'+prochainNumeroRef('ecritures','ENC-CESS',an,4)), date:c.date||today(), piece:'CESSION',
       type:'tresorerie', libelle:'Encaissement cession — '+(c.acquereur||''),
-      compte:compteTreso, compte_debit:compteTreso, compte_credit:cptTiers, montant:c.montant_encaisse||0,
-      mode:c.mode||'virement', programme_id:'', division:_divCes, notes:'Encaissement cession foncière', source:'cession_fonciere', cession_id:c.id, created_at:today() };
-    DATA.ecritures.push(eenc); await dbPut('ecritures', eenc);
-    if (typeof syncToSupabase==='function') syncToSupabase('pi_ecritures', eenc);
+      compte:compteTreso, compte_debit:compteTreso, compte_credit:cptTiers, montant:encInit,
+      mode:c.mode||'virement', programme_id:'', division:_divCes, notes:'Encaissement cession foncière', source:'cession_fonciere', cession_id:c.id,
+      created_at:(exE && exE.created_at) || today() });
     c.ecriture_enc_id=eenc.id;
+  } else if (exE && !ecrEstValidee(exE)) {
+    await deleteRecord('ecritures', exE.id, { skipIntegrity: true });
+    c.ecriture_enc_id = null;
   }
 }
 
@@ -118676,10 +118737,15 @@ async function cesDelete() {
      retenue) que la suppression effacerait, laissant en plus les écritures
      de résiliation orphelines (aucune cession à référencer). */
   if (c && c.resiliation) { alert('Impossible : cette cession a une résiliation enregistrée le '+dateShort(c.resiliation.date)+'.\nLa suppression effacerait cet historique. La fiche doit être conservée telle quelle.'); return; }
+  var _verrDelCes = c ? cesVerrouEcritures(c) : '';
+  if (_verrDelCes) { toast('🔒 Suppression impossible : ' + _verrDelCes + '. Contre-passez les écritures de cette cession pour l\'annuler.', 'error', 9000); return; }
   if (!confirm('Supprimer cette cession ? Les écritures liées seront retirées.')) return;
-  if (c) {
-    if (c.ecriture_vente_id && typeof deleteRecord==='function') await deleteRecord('ecritures', c.ecriture_vente_id);
-    if (c.ecriture_enc_id && typeof deleteRecord==='function') await deleteRecord('ecritures', c.ecriture_enc_id);
+  if (c && typeof deleteRecord==='function') {
+    /* TOUTES les écritures de la cession : vente, sortie de stock (qui restait orpheline),
+       encaissement initial et recouvrements. */
+    var _ecrsCes = (DATA.ecritures||[]).filter(function(e){ return e.cession_id === c.id; }).map(function(e){ return e.id; });
+    [c.ecriture_vente_id, c.ecriture_stock_id, c.ecriture_enc_id].forEach(function(id){ if (id && _ecrsCes.indexOf(id) === -1) _ecrsCes.push(id); });
+    for (var _ie = 0; _ie < _ecrsCes.length; _ie++) await deleteRecord('ecritures', _ecrsCes[_ie], { skipIntegrity: true });
   }
   if (typeof deleteRecord==='function') await deleteRecord('cessions_foncieres', _cesId);
   else { DATA.cessions_foncieres=DATA.cessions_foncieres.filter(function(x){return x.id!==_cesId;}); await dbDelete('cessions_foncieres',_cesId); }
@@ -119263,6 +119329,16 @@ async function cesSave() {
 
   var c = _cesId ? DATA.cessions_foncieres.find(function(x){return x.id===_cesId;}) : null;
   var isNew=false;
+  /* Les écritures de la cession suivent ses montants et sa date. Si elles sont visées ou dans un exercice clos,
+     la modification financière est refusée AVANT tout changement (sinon fiche et comptabilité divergent). */
+  var _changeFin = false;
+  if (c && c.ecriture_vente_id) {
+    var _nvDate = _cesGet('ces-date')||today();
+    _changeFin = (parseFloat(_cesGet('ces-prix'))||0) !== (c.prix_cession||0) || (parseFloat(_cesGet('ces-encaisse'))||0) !== (c.montant_encaisse||0)
+      || _nvDate !== c.date || (parseInt(_cesGet('ces-nblots'))||0) !== (c.nb_lots||0) || src !== c.source_key;
+    var _verrCes = _changeFin ? cesVerrouEcritures(c, _nvDate) : '';
+    if (_verrCes) { toast('🔒 Cession non modifiable (prix, encaissement, date ou lots) : ' + _verrCes + '. Contre-passez les écritures concernées (Comptabilité › Journal).', 'error', 9000); return; }
+  }
   if (!c) { c={ id:'ces_'+uid(), created_at:today() }; isNew=true; }
   if (!c.dossier) c.dossier = cesGenererRefDossier();
   c.source_key=src; var parts=src.split(':'); c.source_type=parts[0]; c.source_id=parts[1];
@@ -119284,7 +119360,7 @@ async function cesSave() {
   if (isNew) DATA.cessions_foncieres.push(c);
   await dbPut('cessions_foncieres', c);
   if (typeof syncToSupabase==='function') syncToSupabase('pi_cessions_foncieres', c);
-  if (!c.ecriture_vente_id) await cesGenererEcriture(c);
+  if (!c.ecriture_vente_id || _changeFin) { await cesGenererEcriture(c); await dbPut('cessions_foncieres', c); if (typeof syncToSupabase==='function') syncToSupabase('pi_cessions_foncieres', c); }
   await cesGenererCommissions(c);
 
   if (c.source_type==='parcelle') {
@@ -119706,6 +119782,11 @@ async function crecSavePaiement() {
     var p = (c.paiements || []).find(function (x) { return x.id === _crecEditPaiementId; });
     if (!p) { toast('Versement introuvable', 'error'); return; }
     var ancienMontant = parseFloat(p.montant) || 0;
+    var _ecrP = p.ecriture_id ? (DATA.ecritures || []).find(function (x) { return x.id === p.ecriture_id; }) : null;
+    var _dateP = (document.getElementById('crecp-date') || {}).value || p.date;
+    var _modifFin = montant !== ancienMontant || _dateP !== p.date || ((document.getElementById('crecp-mode') || {}).value || p.mode) !== p.mode;
+    var _verrP = (_ecrP && _modifFin) ? ecrsVerrouillees([_ecrP], _dateP) : '';
+    if (_verrP) { toast('🔒 Versement non modifiable : ' + _verrP + '. Contre-passez l\'écriture, puis saisissez le versement correct.', 'error', 9000); return; }
     var resteHorsCe = crecReste(c) + ancienMontant;
     if (montant > resteHorsCe + 1) { if (!confirm('Le montant dépasse le reste dû (' + fmtF(resteHorsCe) + ' F). Continuer ?')) return; }
 
@@ -119750,6 +119831,8 @@ async function crecSavePaiement() {
   }
 
   /* ── Mode ajout d'un nouveau versement (comportement original) ── */
+  var _dateNv = (document.getElementById('crecp-date') || {}).value || today();
+  if (exerciceEstClos(_dateNv)) { toast('🔒 Exercice ' + new Date(_dateNv).getFullYear() + ' clôturé : choisissez une date de versement sur un exercice ouvert.', 'error', 8000); return; }
   var reste = crecReste(c);
   if (montant > reste + 1) { if (!confirm('Le montant dépasse le reste dû (' + fmtF(reste) + ' F). Continuer ?')) return; }
   var p2 = {
@@ -119853,6 +119936,7 @@ async function crecValiderDeclaration(declId) {
     if (!confirm('Le montant déclaré (' + fmtF(d.montant) + ' F) dépasse le reste dû (' + fmtF(reste) + ' F). Valider quand même ?')) return;
   } else if (!confirm('Confirmer l\'encaissement de ' + fmtF(d.montant) + ' F pour ' + (c.acquereur || '') + ' et générer l\'écriture comptable ?')) return;
 
+  if (exerciceEstClos(d.date || today())) { toast('🔒 Exercice ' + new Date(d.date || today()).getFullYear() + ' clôturé : la date du versement déclaré tombe sur un exercice verrouillé.', 'error', 8000); return; }
   var p = {
     id: uid(), date: d.date || today(), montant: d.montant,
     mode: d.mode || 'virement', ref: d.ref || '',
@@ -119902,8 +119986,11 @@ async function crecRejeterDeclaration(declId) {
 }
 async function crecDeletePaiement(cid, pid) {
   var c = (DATA.cessions_foncieres || []).find(function (x) { return x.id === cid; });
-  if (!c || !confirm('Supprimer ce versement et son écriture ?')) return;
+  if (!c) return;
   var p = (c.paiements || []).find(function (x) { return x.id === pid; });
+  var _verrDP = (p && p.ecriture_id) ? ecrsVerrouillees([(DATA.ecritures || []).find(function (x) { return x.id === p.ecriture_id; })]) : '';
+  if (_verrDP) { toast('🔒 Suppression impossible : ' + _verrDP + '. Contre-passez l\'écriture du versement.', 'error', 9000); return; }
+  if (!confirm('Supprimer ce versement et son écriture ?')) return;
   if (p) {
     c.montant_encaisse = Math.max(0, crecVerse(c) - (p.montant || 0));
     if (p.ecriture_id && typeof deleteRecord === 'function') await deleteRecord('ecritures', p.ecriture_id);
@@ -140342,7 +140429,7 @@ async function genererEcritureCaisseMouvement(mvt, compteContrepartie, viaAuto) 
   if (idx >= 0) DATA.ecritures[idx] = ecr; else DATA.ecritures.push(ecr);
   var _okEcr = await dbPut('ecritures', ecr);
   if (_okEcr === false) {
-    var _i2 = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; });
+    var _i2 = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id && e._rejete; });
     if (_i2 >= 0) DATA.ecritures.splice(_i2, 1);
     try { toast('❌ Écriture refusée — le mouvement reste à ventiler.', 'error'); } catch(e){}
     return null;
@@ -141640,7 +141727,7 @@ async function genererEcritureEcartCaisse(session, motif){
      comptabilisé nulle part. */
   var _okEcart = await dbPut('ecritures', ecr);
   if (_okEcart === false) {
-    var _iE = DATA.ecritures.findIndex(function(e){ return e.id===ecr.id; });
+    var _iE = DATA.ecritures.findIndex(function(e){ return e.id===ecr.id && e._rejete; });
     if (_iE >= 0) DATA.ecritures.splice(_iE, 1);
     try { toast('❌ Écriture d\'écart refusée — l\'écart reste à régulariser.', 'error'); } catch(e){}
     return null;

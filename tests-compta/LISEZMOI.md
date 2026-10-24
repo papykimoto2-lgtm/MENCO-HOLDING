@@ -10,6 +10,7 @@ et **garde le vrai `dbPut` / IndexedDB** : les verrous de visa et d'exercice clo
 | `cloture.test.js` | À-nouveaux par tiers, résultat sur 121/131, pièces de clôture visées, Bilan N+1 équilibré et sans double comptage ; clôture refusée (brouillard, déséquilibre, déjà close) ; réouverture dans l'ordre inverse |
 | `verrous.test.js` | Visa d'une écriture automatique jamais écrasé ; exercice clos : écriture conservée en mémoire ; versement non modifiable / non supprimable si écriture visée ou exercice clos ; dévalidation tracée ; contre-passation sur exercice clos, une seule fois |
 | `lettrage-fec.test.js` | Aucun lettrage entre souscripteurs différents ; tiers porté par les écritures de versement et de vente ; lettre portée par la ligne ; FEC (pièce, journal, tiers auxiliaire, lettre par ligne) |
+| `operations.test.js` | Paie (règlement du compte individuel du salarié avec son tiers ; mois visé ou clos non régénérable ni décomptabilisable) ; amortissements (moteur unique, prorata, amortissement complet, révision d'une dotation visée) ; cessions foncières (écritures idempotentes et mises à jour, encaissement initial, suppression complète, versement sur exercice clos refusé) |
 | `saisie.test.js` | Colonne « Tiers » sur compte de tiers ; confirmation si tiers absent ; modification qui conserve référence, tiers, source ; écriture lettrée non modifiable |
 
 Lancer : `npm run test:compta` (ou `npm test` pour caisse + comptabilité).
