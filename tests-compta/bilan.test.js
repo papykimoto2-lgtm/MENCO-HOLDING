@@ -77,3 +77,20 @@ test('Bilan : l\'état imprimé reprend exactement le calcul de l\'écran', asyn
     assert.ok(r.html.indexOf(new Intl.NumberFormat('fr-FR').format(1500000).replace(/ /g, ' ')) !== -1 || /1.500.000|1 500 000|1500000/.test(r.html));
   } finally { await app.fermer(); }
 });
+
+test('Bilan d\'ouverture déséquilibré : l\'écart porté par le compte de liaison 890 est montré, pas absorbé par le résultat', async () => {
+  const app = await ouvrirApp();
+  try {
+    const r = await app.page.evaluate(function () {
+      DATA.ecritures = [E('bo1','2025-01-01','512','890',1000), E('v','2025-02-01','4111','701',300)];
+      annee(2025); buildBilan();
+      const B = calcBilan(2025, ''), R = _calcResultat('2025');
+      return { liaison: B.liaison, resultat: B.resultat, eq: B.equilibre, isCR: R.isComptab, html: document.getElementById('bilan-box').textContent };
+    });
+    assert.equal(r.liaison, 1000);
+    assert.equal(r.resultat, 300);
+    assert.equal(r.eq, true);
+    assert.equal(r.isCR, 0);   /* 890 n'est jamais pris pour l'impôt sur le résultat (89) */
+    assert.match(r.html, /compte de liaison 890/);
+  } finally { await app.fermer(); }
+});

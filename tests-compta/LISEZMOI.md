@@ -5,8 +5,8 @@ et **garde le vrai `dbPut` / IndexedDB** : les verrous de visa et d'exercice clo
 
 | Fichier | Règles couvertes |
 |---|---|
-| `bilan.test.js` | Bilan équilibré par construction (ventes/charges, TVA récupérable 4452, amortissements 28, virement interne 585, classe 8, reprises 79, résultat 131 déjà porté, avances clients) ; signe du résultat ; non-compensation des tiers ; état imprimé = écran |
-| `resultat.test.js` | Compte de résultat en soldes nets (vente contre-passée, charge extournée) ; résultat = celui du Bilan, comptes hors rubriques compris ; tableau de bord net |
+| `bilan.test.js` | Bilan équilibré par construction (ventes/charges, TVA récupérable 4452, amortissements 28, virement interne 585, classe 8, reprises 79, résultat 131 déjà porté, avances clients) ; compte de liaison 890 montré comme écart de reprise ; signe du résultat ; non-compensation des tiers ; état imprimé = écran |
+| `resultat.test.js` | Compte de résultat en soldes nets (vente contre-passée, charge extournée, production stockée) ; résultat = celui du Bilan, comptes hors rubriques compris ; tableau de bord net ; référentiels : plan d'origine (64 personnel, 693) et SYSCOHADA révisé (66, 64, 67, 83/84, 89) |
 | `cloture.test.js` | À-nouveaux par tiers, résultat sur 121/131, pièces de clôture visées, Bilan N+1 équilibré et sans double comptage ; clôture refusée (brouillard, déséquilibre, déjà close) ; réouverture dans l'ordre inverse |
 | `verrous.test.js` | Visa d'une écriture automatique jamais écrasé ; exercice clos : écriture conservée en mémoire ; versement non modifiable / non supprimable si écriture visée ou exercice clos ; dévalidation tracée ; contre-passation sur exercice clos, une seule fois |
 | `lettrage-fec.test.js` | Aucun lettrage entre souscripteurs différents ; tiers porté par les écritures de versement et de vente ; lettre portée par la ligne ; FEC (pièce, journal, tiers auxiliaire, lettre par ligne) |

@@ -45631,6 +45631,11 @@ function genererEtatsDGI() {
 }
 
 function genererLiasseFiscale() {
+  /* La liasse est bâtie sur la numérotation SYSCOHADA révisé (22 terrains, 23 bâtiments, 66 personnel…).
+     Avec le plan d'origine (numérotation de type PCG), certaines rubriques seraient mal classées :
+     on le dit avant d'éditer un document destiné à l'administration fiscale. */
+  if (typeof referentielCompta === 'function' && referentielCompta() === 'pcg'
+      && !confirm('⚠️ Votre plan comptable suit la numérotation du plan d\'origine (de type plan comptable français), pas le SYSCOHADA révisé sur lequel la liasse est bâtie.\n\nLes rubriques de la liasse (immobilisations, charges de personnel, impôts…) peuvent être mal classées.\n\nÀ faire valider par votre expert-comptable avant tout dépôt. Générer quand même ?')) return;
   var annee = parseInt(((document.getElementById('filter-annee-compta') || {}).value) || new Date().getFullYear(), 10);
   var divF = (typeof _comptaDivisionFilter === 'function') ? _comptaDivisionFilter() : '';
   var N = _lfCalc2(annee, divF), P = _lfCalc2(annee - 1, divF);
@@ -45927,7 +45932,7 @@ function calcBilan(year, divF) {
   });
   var B = { year: an, soldes: soldes,
     immoBrut: 0, amort: 0, stocks: 0, creances: 0, tresoActif: 0,
-    capitaux: 0, resultat: 0, dettesFin: 0, fournisseurs: 0, fiscal: 0, personnel: 0, diverses: 0, tresoPassif: 0 };
+    capitaux: 0, resultat: 0, liaison: 0, dettesFin: 0, fournisseurs: 0, fiscal: 0, personnel: 0, diverses: 0, tresoPassif: 0 };
   Object.keys(postes).forEach(function(k){
     var s = postes[k];
     if (!s) return;
@@ -45946,12 +45951,14 @@ function calcBilan(year, divF) {
       else B.diverses -= s;
     } else if (cl === '5') {
       if (p2 === '59' || s > 0) B.tresoActif += s; else B.tresoPassif -= s;
+    } else if (c === '890') {
+      B.liaison -= s;   /* compte technique des à-nouveaux / du bilan d'ouverture : ce n'est pas un résultat */
     } else if (cl === '6' || cl === '7' || cl === '8') {
       B.resultat -= s;
     }
   });
   B.totalActif = B.immoBrut + B.amort + B.stocks + B.creances + B.tresoActif;
-  B.totalPassif = B.capitaux + B.resultat + B.dettesFin + B.fournisseurs + B.fiscal + B.personnel + B.diverses + B.tresoPassif;
+  B.totalPassif = B.capitaux + B.resultat + B.liaison + B.dettesFin + B.fournisseurs + B.fiscal + B.personnel + B.diverses + B.tresoPassif;
   B.ecart = Math.round((B.totalActif - B.totalPassif) * 100) / 100;
   B.equilibre = Math.abs(B.ecart) < 1;
   return B;
@@ -46011,6 +46018,7 @@ function buildBilan() {
     + bilanRow('Dettes envers le personnel', B.personnel, 'var(--blanc)', D(['42'], soldes))
     + bilanRow('Avances clients, associés et dettes diverses', B.diverses, 'var(--blanc)', D(['41','45','46','47','48'], soldes))
     + bilanRow('Découverts bancaires et trésorerie passive', B.tresoPassif, 'var(--blanc)')
+    + (B.liaison ? bilanRow('Écart de reprise — compte de liaison 890 (à régulariser)', B.liaison, 'var(--rouge)') : '')
     + '<tr style="font-weight:700;border-top:2px solid var(--or);"><td>TOTAL PASSIF</td><td style="text-align:right;color:var(--or);font-size:15px;">' + sg(B.totalPassif) + '</td></tr>'
     + '</tbody></table></div>'
     + '</div>'
@@ -47938,6 +47946,30 @@ function dashFinanceCore(pmin) {
   };
 }
 
+/* ═══ RÉFÉRENTIEL DU PLAN COMPTABLE ═══
+   Cible : SYSCOHADA révisé. Le plan fourni d'origine suit une numérotation de classes 6-7 de type
+   plan comptable français (64 personnel, 66 financier, 67 HAO, 693 IS) ; les comptes déjà utilisés
+   (pièces visées, exercices clos, FEC remis) ne sont JAMAIS renumérotés. Les états choisissent donc
+   leurs rubriques selon le référentiel du plan : paramètre `referentiel_comptable`
+   ('syscohada' | 'pcg') ou, à défaut, détection sur le libellé du compte 661 (rémunérations du
+   personnel en SYSCOHADA, intérêts en plan d'origine). */
+function referentielCompta() {
+  var p = DATA.params || {};
+  if (p.referentiel_comptable === 'syscohada' || p.referentiel_comptable === 'pcg') return p.referentiel_comptable;
+  var lib = function(c){ var x = (APP.planComptable || []).find(function(a){ return a && a.code === c && !a._horsPlan; }); return x ? String(x.label || '') : ''; };
+  return /r[ée]mun[ée]ration|personnel|salaire/i.test(lib('661')) ? 'syscohada' : 'pcg';
+}
+function referentielMapCR() {
+  if (referentielCompta() === 'syscohada') return {
+    ventes: ['70'], stock: ['73'], autresProd: ['71','72','74','75'], prodFin: ['77'], reprises: ['78','79'], prodHAO: ['82','84','86','88'],
+    achats: ['60'], transports: ['61'], servExt: ['62','63'], impots: ['64'], personnel: ['66'], autresCh: ['65'],
+    chargesFin: ['67','69'], chargesHAO: ['81','83','85'], dotations: ['68'], participation: ['87'], is: ['89'] };
+  return {
+    ventes: ['70'], stock: ['71','72'], autresProd: ['73','74','75'], prodFin: ['76'], reprises: ['78','79'], prodHAO: ['77'],
+    achats: ['60'], transports: ['61'], servExt: ['62'], impots: ['63'], personnel: ['64'], autresCh: ['65'],
+    chargesFin: ['66'], chargesHAO: ['67'], dotations: ['68'], participation: ['691'], is: ['693'] };
+}
+
 function _calcResultat(year) {
   var divFCR = _comptaDivisionFilter();
   var ec = DATA.ecritures.filter(function(e){ return e.date && e.date.startsWith(year) && (!divFCR || e.division === divFCR); });
@@ -47945,42 +47977,38 @@ function _calcResultat(year) {
      Les anciens totaux bruts (débits seuls / crédits seuls) ignoraient toute
      contre-passation, tout avoir et tout rabais : une vente annulée restait
      au chiffre d'affaires. */
-  function deb(pfx){ var t=0; ec.forEach(function(e){ ecrLignes(e).forEach(function(l){ if (pfx.some(function(p){ return (l.compte||'').indexOf(p)===0; })) t += (l.sens==='D' ? 1 : -1) * (parseFloat(l.montant)||0); }); }); return t; }
+  function deb(pfx){ var t=0; ec.forEach(function(e){ ecrLignes(e).forEach(function(l){ if (l.compte !== '890' && pfx.some(function(p){ return (l.compte||'').indexOf(p)===0; })) t += (l.sens==='D' ? 1 : -1) * (parseFloat(l.montant)||0); }); }); return t; }
   function cre(pfx){ return 0 - deb(pfx); }
-  // Produits (crédits classe 7) — buckets exclusifs
-  var ventes      = cre(['70']);
-  /* Production stockée (71-72) = solde net crédit − débit, et non le seul crédit :
-     l'entrée en stock (crédit 712, ex. génération de lots part entreprise) augmente
-     ce produit, mais la sortie de stock (débit 712, ex. sortie à la cession) doit le
-     réduire d'autant — sinon la valeur du terrain cédé serait comptée deux fois
-     (une fois via 712 à l'entrée, une fois via 701 à la vente, sans jamais déduire
-     le stock consommé). */
-  var prodStockee = cre(['71','72']) - deb(['71','72']);
-  var autresProd  = cre(['73','74','75']);
-  var prodFin     = cre(['76']);
-  var prodHAO     = cre(['77']);
-  var reprises    = cre(['78','79']);
-  // Charges (débits classe 6) — buckets exclusifs
-  var achats      = deb(['60']);
-  var transports  = deb(['61']);
-  var servExt     = deb(['62']);
-  var impots      = deb(['63']);
-  var personnel   = deb(['64']);
-  var autresCh    = deb(['65']);
-  var chargesFin  = deb(['66']);
-  var chargesHAO  = deb(['67']);
-  var dotations   = deb(['68']);
-  var participation = deb(['691']);
-  var isComptab   = deb(['693']);
-  var tauxIS      = ((DATA.params && DATA.params.taux_is) || 25) / 100;
-  /* Comptes de gestion hors des rubriques ci-dessus (ex. 69x autres que 691/693,
-     numérotation SYSCOHADA révisé, classe 8) : rangés en « autres » / HAO pour que
-     le résultat net égale TOUJOURS celui du Bilan (−(classes 6+7+8)). */
-  var _rub6 = achats + transports + servExt + impots + personnel + autresCh + chargesFin + chargesHAO + dotations + participation + isComptab;
-  var _rub7 = ventes + prodStockee + autresProd + prodFin + prodHAO + reprises;
-  autresCh   += (deb(['6']) - _rub6);
-  autresProd += (cre(['7']) - _rub7);
-  var _res8 = cre(['8']);
+  /* Rubriques par préfixes de comptes, selon le référentiel du plan (voir referentielCompta). */
+  var map = referentielMapCR();
+  var tauxIS = ((DATA.params && DATA.params.taux_is) || 25) / 100;
+  var _acc = { '6': 0, '7': 0, '8': 0 };      /* net (crédit − débit) déjà rangé par classe */
+  function chg(k){ var v = deb(map[k]); _acc[map[k][0].charAt(0)] -= v; return v; }
+  function prd(k){ var v = cre(map[k]); _acc[map[k][0].charAt(0)] += v; return v; }
+  var ventes      = prd('ventes');
+  /* Production stockée : solde net (crédit − débit) — l'entrée en stock augmente le produit,
+     la sortie de stock le réduit d'autant (sinon le terrain cédé serait compté deux fois). */
+  var prodStockee = prd('stock');
+  var autresProd  = prd('autresProd');
+  var prodFin     = prd('prodFin');
+  var prodHAO     = prd('prodHAO');
+  var reprises    = prd('reprises');
+  var achats      = chg('achats');
+  var transports  = chg('transports');
+  var servExt     = chg('servExt');
+  var impots      = chg('impots');
+  var personnel   = chg('personnel');
+  var autresCh    = chg('autresCh');
+  var chargesFin  = chg('chargesFin');
+  var chargesHAO  = chg('chargesHAO');
+  var dotations   = chg('dotations');
+  var participation = chg('participation');
+  var isComptab   = chg('is');
+  /* Comptes de gestion hors des rubriques ci-dessus : rangés en « autres » / HAO pour que le
+     résultat net égale TOUJOURS celui du Bilan (−(classes 6 + 7 + 8)), quel que soit le plan. */
+  autresCh   += -(cre(['6']) - _acc['6']);
+  autresProd += (cre(['7']) - _acc['7']);
+  var _res8 = cre(['8']) - _acc['8'];
   if (_res8 >= 0) prodHAO += _res8; else chargesHAO += -_res8;
   // Soldes intermédiaires
   var production  = ventes + prodStockee;
@@ -48000,7 +48028,7 @@ function _calcResultat(year) {
     achats:achats, transports:transports, servExt:servExt, impots:impots, personnel:personnel, autresCh:autresCh,
     chargesFin:chargesFin, chargesHAO:chargesHAO, dotations:dotations, participation:participation, is:is, isComptab:isComptab, isEstime:isEstime, tauxIS:tauxIS,
     production:production, va:va, ebe:ebe, rExploit:rExploit, rFin:rFin, rHAO:rHAO, rAvantIS:rAvantIS, rNet:rNet,
-    totalProduits:totalProduits, totalCharges:totalCharges };
+    totalProduits:totalProduits, totalCharges:totalCharges, map:map, referentiel:referentielCompta() };
 }
 
 /* Mouvements débit/crédit par compte sur l'exercice — sert au détail par
@@ -48025,17 +48053,13 @@ function buildCompteResultat() {
   if (!box) return;
   var year = document.getElementById('filter-annee-compta').value || String(new Date().getFullYear());
   var R = _calcResultat(year);
-  var M = _crMvtMap(year);
-  /* Production stockée/immobilisée (71-72) : la rubrique se calcule en net
-     (crédit − débit, cf. _calcResultat) — le détail par compte doit donc
-     utiliser ce même net par compte, sinon le sous-total du détail ne
-     correspondrait pas au montant affiché sur la ligne de synthèse. */
-  var netProdStockee = {};
-  Object.keys(M.C).concat(Object.keys(M.D)).forEach(function(k){
-    if (k.indexOf('71') === 0 || k.indexOf('72') === 0) {
-      netProdStockee[k] = (M.C[k]||0) - (M.D[k]||0);
-    }
+  /* Détail par compte en soldes NETS, comme les rubriques (une contre-passation réduit le compte). */
+  var G = _crMvtMap(year), netCh = {}, netPr = {};
+  Object.keys(G.C).concat(Object.keys(G.D)).forEach(function(k){
+    var d = G.D[k] || 0, c = G.C[k] || 0;
+    netCh[k] = d - c; netPr[k] = c - d;
   });
+  var map = R.map, P = function(k){ return '(' + map[k].join(', ') + ')'; };
 
   function crRow(label, val, bold, color, detailHTML) {
     if (detailHTML) {
@@ -48056,27 +48080,27 @@ function buildCompteResultat() {
   box.innerHTML = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">'
     + '<div><div class="form-section-title" style="color:var(--rouge);">CHARGES \u2014 Classe 6</div>'
     + '<table style="width:100%;font-size:13px;"><tbody>'
-    + crRow('Achats (60)', R.achats, false, 'var(--rouge)', _rubriqueDetailHTML(['60'], M.D))
-    + crRow('Transports (61)', R.transports, false, 'var(--rouge)', _rubriqueDetailHTML(['61'], M.D))
-    + crRow('Services ext\u00e9rieurs (62)', R.servExt, false, 'var(--rouge)', _rubriqueDetailHTML(['62'], M.D))
-    + crRow('Imp\u00f4ts &amp; taxes (63)', R.impots, false, 'var(--rouge)', _rubriqueDetailHTML(['63'], M.D))
-    + crRow('Charges de personnel (64)', R.personnel, false, 'var(--rouge)', _rubriqueDetailHTML(['64'], M.D))
-    + crRow('Autres charges (65)', R.autresCh, false, 'var(--rouge)', _rubriqueDetailHTML(['65'], M.D))
-    + crRow('Charges financi\u00e8res (66)', R.chargesFin, false, 'var(--rouge)', _rubriqueDetailHTML(['66'], M.D))
-    + crRow('Charges HAO (67)', R.chargesHAO, false, 'var(--rouge)', _rubriqueDetailHTML(['67'], M.D))
-    + crRow('Dotations amortissements (68)', R.dotations, false, 'var(--rouge)', _rubriqueDetailHTML(['68'], M.D))
-    + crRow('Participation des travailleurs (691)', R.participation, false, 'var(--rouge)', _rubriqueDetailHTML(['691'], M.D))
-    + crRow('Imp\u00f4t sur les soci\u00e9t\u00e9s' + (R.isEstime ? ' (estim\u00e9 ' + Math.round(R.tauxIS*100) + '%)' : ' (693)'), R.is, false, 'var(--rouge)')
+    + crRow('Achats ' + P('achats'), R.achats, false, 'var(--rouge)', _rubriqueDetailHTML(map.achats, netCh))
+    + crRow('Transports ' + P('transports'), R.transports, false, 'var(--rouge)', _rubriqueDetailHTML(map.transports, netCh))
+    + crRow('Services ext\u00e9rieurs ' + P('servExt'), R.servExt, false, 'var(--rouge)', _rubriqueDetailHTML(map.servExt, netCh))
+    + crRow('Imp\u00f4ts &amp; taxes ' + P('impots'), R.impots, false, 'var(--rouge)', _rubriqueDetailHTML(map.impots, netCh))
+    + crRow('Charges de personnel ' + P('personnel'), R.personnel, false, 'var(--rouge)', _rubriqueDetailHTML(map.personnel, netCh))
+    + crRow('Autres charges ' + P('autresCh'), R.autresCh, false, 'var(--rouge)', _rubriqueDetailHTML(map.autresCh, netCh))
+    + crRow('Charges financi\u00e8res ' + P('chargesFin'), R.chargesFin, false, 'var(--rouge)', _rubriqueDetailHTML(map.chargesFin, netCh))
+    + crRow('Charges HAO ' + P('chargesHAO'), R.chargesHAO, false, 'var(--rouge)', _rubriqueDetailHTML(map.chargesHAO, netCh))
+    + crRow('Dotations amortissements ' + P('dotations'), R.dotations, false, 'var(--rouge)', _rubriqueDetailHTML(map.dotations, netCh))
+    + crRow('Participation des travailleurs ' + P('participation'), R.participation, false, 'var(--rouge)', _rubriqueDetailHTML(map.participation, netCh))
+    + crRow('Imp\u00f4t sur les soci\u00e9t\u00e9s' + (R.isEstime ? ' (estim\u00e9 ' + Math.round(R.tauxIS*100) + '%)' : ' ' + P('is')), R.is, false, 'var(--rouge)')
     + '<tr style="font-weight:700;border-top:2px solid var(--rouge);"><td>TOTAL CHARGES</td><td style="text-align:right;color:var(--rouge);font-size:15px;">' + fmtF(R.totalCharges) + '</td></tr>'
     + '</tbody></table></div>'
     + '<div><div class="form-section-title" style="color:var(--vert);">PRODUITS \u2014 Classe 7</div>'
     + '<table style="width:100%;font-size:13px;"><tbody>'
-    + crRow('Ventes lots / logements / travaux (70)', R.ventes, false, 'var(--vert)', _rubriqueDetailHTML(['70'], M.C))
-    + crRow('Production stock\u00e9e / immobilis\u00e9e (71-72)', R.prodStockee, false, 'var(--vert)', _rubriqueDetailHTML(['71','72'], netProdStockee))
-    + crRow('Autres produits d\'exploitation (73-75)', R.autresProd, false, 'var(--vert)', _rubriqueDetailHTML(['73','74','75'], M.C))
-    + crRow('Reprises (78)', R.reprises, false, 'var(--vert)', _rubriqueDetailHTML(['78'], M.C))
-    + crRow('Produits financiers (76)', R.prodFin, false, 'var(--vert)', _rubriqueDetailHTML(['76'], M.C))
-    + crRow('Produits HAO (77)', R.prodHAO, false, 'var(--vert)', _rubriqueDetailHTML(['77'], M.C))
+    + crRow('Ventes lots / logements / travaux ' + P('ventes'), R.ventes, false, 'var(--vert)', _rubriqueDetailHTML(map.ventes, netPr))
+    + crRow('Production stock\u00e9e / variation de stocks ' + P('stock'), R.prodStockee, false, 'var(--vert)', _rubriqueDetailHTML(map.stock, netPr))
+    + crRow('Autres produits d\'exploitation ' + P('autresProd'), R.autresProd, false, 'var(--vert)', _rubriqueDetailHTML(map.autresProd, netPr))
+    + crRow('Reprises ' + P('reprises'), R.reprises, false, 'var(--vert)', _rubriqueDetailHTML(map.reprises, netPr))
+    + crRow('Produits financiers ' + P('prodFin'), R.prodFin, false, 'var(--vert)', _rubriqueDetailHTML(map.prodFin, netPr))
+    + crRow('Produits HAO ' + P('prodHAO'), R.prodHAO, false, 'var(--vert)', _rubriqueDetailHTML(map.prodHAO, netPr))
     + '<tr style="font-weight:700;border-top:2px solid var(--vert);"><td>TOTAL PRODUITS</td><td style="text-align:right;color:var(--vert);font-size:15px;">' + fmtF(R.totalProduits) + '</td></tr>'
     + '</tbody></table>'
     + '<div class="form-section-title" style="margin-top:20px;color:var(--or);">SOLDES INTERM\u00c9DIAIRES DE GESTION</div>'
@@ -76559,6 +76583,7 @@ async function cloturerExercice(annee, divisionId) {
       if (!l.compte) return;
       var m = (parseFloat(l.montant)||0) * (l.sens === 'D' ? 1 : -1);
       var cl = String(l.compte).charAt(0);
+      if (l.compte === '890') return;   /* compte technique de liaison : jamais un compte de gestion à solder */
       if (cl === '6' || cl === '7' || cl === '8') soldesCptGestion[l.compte] = (soldesCptGestion[l.compte]||0) + m;
       else if ('12345'.indexOf(cl) !== -1) {
         var tid = (typeof _lettRacine === 'function' && _lettRacine(l.compte)) ? ecrTiersLigne(e, l) : '';
@@ -97717,6 +97742,7 @@ function etatBilan() {
     + r('Dettes envers le personnel', B.personnel)
     + r('Avances clients, associés et dettes diverses', B.diverses)
     + r('Découverts bancaires et trésorerie passive', B.tresoPassif)
+    + (B.liaison ? r('Écart de reprise — compte de liaison 890 (à régulariser)', B.liaison) : '')
     + '<tr class="total"><td>TOTAL PASSIF</td><td class="num">' + fmtF(B.totalPassif) + '</td></tr></tbody></table>';
   var eq = B.equilibre ? '✔ Bilan équilibré (Actif = Passif)'
     : '⚠ Écart Actif / Passif : ' + fmtF(Math.abs(B.ecart)) + ' FCFA';
@@ -97731,26 +97757,27 @@ function etatCompteResultat() {
   var R = _calcResultat(year);
   function row(l, v){ return '<tr><td>' + l + '</td><td class="num">' + (v ? fmtF(v) : '\u2014') + '</td></tr>'; }
   function sig(l, v){ return '<tr><td>' + l + '</td><td class="num">' + (v < 0 ? '\u2212' : '') + fmtF(Math.abs(v)) + '</td></tr>'; }
-  var charges = '<h3>Charges \u2014 Classe 6</h3><table><tbody>'
-    + row('Achats (60)', R.achats)
-    + row('Transports (61)', R.transports)
-    + row('Services ext\u00e9rieurs (62)', R.servExt)
-    + row('Imp\u00f4ts &amp; taxes (63)', R.impots)
-    + row('Charges de personnel (64)', R.personnel)
-    + row('Autres charges (65)', R.autresCh)
-    + row('Charges financi\u00e8res (66)', R.chargesFin)
-    + row('Charges HAO (67)', R.chargesHAO)
-    + row('Dotations amortissements (68)', R.dotations)
-    + row('Participation (691)', R.participation)
-    + row('Imp\u00f4t sur les soci\u00e9t\u00e9s' + (R.isEstime ? ' (estim\u00e9 25%)' : ' (693)'), R.is)
+  var map = R.map, P = function(k){ return '(' + map[k].join(', ') + ')'; };
+  var charges = '<h3>Charges \u2014 Classe 6 (et 8)</h3><table><tbody>'
+    + row('Achats ' + P('achats'), R.achats)
+    + row('Transports ' + P('transports'), R.transports)
+    + row('Services ext\u00e9rieurs ' + P('servExt'), R.servExt)
+    + row('Imp\u00f4ts &amp; taxes ' + P('impots'), R.impots)
+    + row('Charges de personnel ' + P('personnel'), R.personnel)
+    + row('Autres charges ' + P('autresCh'), R.autresCh)
+    + row('Charges financi\u00e8res ' + P('chargesFin'), R.chargesFin)
+    + row('Charges HAO ' + P('chargesHAO'), R.chargesHAO)
+    + row('Dotations amortissements ' + P('dotations'), R.dotations)
+    + row('Participation ' + P('participation'), R.participation)
+    + row('Imp\u00f4t sur les soci\u00e9t\u00e9s' + (R.isEstime ? ' (estim\u00e9 25%)' : ' ' + P('is')), R.is)
     + '<tr class="total"><td>TOTAL CHARGES</td><td class="num">' + fmtF(R.totalCharges) + '</td></tr></tbody></table>';
   var produits = '<h3>Produits \u2014 Classe 7</h3><table><tbody>'
-    + row('Ventes lots / logements / travaux (70)', R.ventes)
-    + row('Production stock\u00e9e / immobilis\u00e9e (71-72)', R.prodStockee)
-    + row('Autres produits d\'exploitation (73-75)', R.autresProd)
-    + row('Reprises (78)', R.reprises)
-    + row('Produits financiers (76)', R.prodFin)
-    + row('Produits HAO (77)', R.prodHAO)
+    + row('Ventes lots / logements / travaux ' + P('ventes'), R.ventes)
+    + row('Production stock\u00e9e / variation de stocks ' + P('stock'), R.prodStockee)
+    + row('Autres produits d\'exploitation ' + P('autresProd'), R.autresProd)
+    + row('Reprises ' + P('reprises'), R.reprises)
+    + row('Produits financiers ' + P('prodFin'), R.prodFin)
+    + row('Produits HAO ' + P('prodHAO'), R.prodHAO)
     + '<tr class="total"><td>TOTAL PRODUITS</td><td class="num">' + fmtF(R.totalProduits) + '</td></tr></tbody></table>';
   var sigT = '<h3>Soldes interm\u00e9diaires de gestion</h3><table><tbody>'
     + sig('Production de l\'exercice', R.production)
