@@ -64,6 +64,7 @@ test('Référentiel SYSCOHADA révisé : 66 personnel, 64 impôts, 67 frais fina
     const R = await app.page.evaluate(function () {
       /* plan SYSCOHADA : le compte 661 y est la rémunération du personnel */
       APP.planComptable.filter(function (c) { return c.code === '661'; }).forEach(function (c) { c.label = 'Rémunérations directes versées au personnel national'; });
+      APP.planComptable.filter(function (c) { return c.code === '641'; }).forEach(function (c) { c.label = 'Impôts et taxes directs'; });   /* en SYSCOHADA 64 = impôts et taxes */
       const ref = referentielCompta();
       DATA.ecritures = [E('v','2025-02-01','4111','701',1000), E('p','2025-02-02','661','512',200), E('i','2025-02-03','641','512',50),
                         E('f','2025-02-04','671','512',30), E('h','2025-02-05','512','841',70), E('c','2025-02-06','831','512',20), E('t','2025-12-31','891','444',10)];
@@ -95,5 +96,25 @@ test('Plan d\'origine : numérotation de type PCG inchangée (64 personnel, 693 
     assert.equal(R.personnel, 200);
     assert.equal(R.impots, 50);
     assert.equal(R.is, 10);
+  } finally { await app.fermer(); }
+});
+
+test('Référentiel : le plan de production (SYSCOHADA révisé, libellés abrégés) est reconnu', async () => {
+  const app = await ouvrirApp();
+  try {
+    const r = await app.page.evaluate(async function () {
+      /* libellés réels du plan MENCO (1 827 comptes) */
+      APP.planComptable = APP.planComptable.filter(function (c) { return ['641', '661', '64', '66', '121', '129', '131', '139'].indexOf(c.code) === -1; });
+      [['64', 'IMPOTS TAXES'], ['641', 'IMPOTS TAXES DIRECTS'], ['66', 'CHARGES PERSONNEL'], ['661', 'REMU DIRECT VERS PERSL NATIONAL'],
+       ['121', 'REPORT A NOUVEAU CREDITEUR'], ['129', 'REPORT A NOUVEAU DEBITEUR'], ['131', 'RESULTAT NET BENEFICE'], ['139', 'RESULTAT NET PERTE']]
+        .forEach(function (x) { APP.planComptable.push({ code: x[0], classe: x[0][0], label: x[1], nature: 'variable' }); });
+      const ref = referentielCompta();
+      /* sans 131/139 au plan, 121/129 (report à nouveau) ne doivent JAMAIS recevoir le résultat */
+      APP.planComptable = APP.planComptable.filter(function (c) { return c.code !== '131' && c.code !== '139'; });
+      const cpt = await _assurerCompteResultat(true);
+      return { ref: ref, cpt: cpt };
+    });
+    assert.equal(r.ref, 'syscohada');
+    assert.equal(r.cpt, '131');
   } finally { await app.fermer(); }
 });
