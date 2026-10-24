@@ -3,7 +3,7 @@
 **Objet** : fixer qui fait quoi, dans quel ordre et avec quelles vérifications pour tenir la comptabilité dans l'ERP, de l'écriture au brouillard jusqu'à la clôture de l'exercice et à l'export du FEC.
 **Principe directeur** : une pièce n'est définitive qu'une fois **visée**. Une pièce visée ne se modifie ni ne se supprime : elle se **contre-passe**. Chaque exercice se clôture dans l'ordre, une seule fois, et se verrouille.
 
-> Les libellés d'onglets et de boutons sont ceux du module **Comptabilité**. Le plan et les comptes cités sont des paramètres : les numéros réels dépendent de votre plan comptable (SYSCOHADA révisé) et des **Comptes par défaut**.
+> Les libellés d'onglets et de boutons sont ceux du module **Comptabilité**. Le plan et les comptes cités sont des paramètres : les numéros réels dépendent de votre plan comptable et des **Comptes par défaut**. Le plan fourni d'origine suit une numérotation de classes 6 et 7 proche du plan comptable français (ex. 64 personnel, 121/129 résultat) ; si vous importez un plan SYSCOHADA révisé, le compte de résultat de l'exercice devient 131/139 (voir COM-11) et les rubriques du compte de résultat par préfixe sont à valider avec votre expert-comptable.
 > **À faire valider par votre expert-comptable** : le traitement de la TVA sur les débours de titre foncier, le choix des comptes par défaut et le calendrier de clôture. Ce manuel décrit le fonctionnement de l'ERP, il ne se substitue pas à un avis comptable ou fiscal.
 
 ---
@@ -43,7 +43,7 @@ R = réalise, A = approuve, C = consulté, I = informé.
 
 1. **Une écriture est équilibrée** : total débit = total crédit, au moins une ligne au débit et une au crédit, deux lignes minimum.
 2. **Seuls les comptes du plan comptable** sont imputables. Un compte de regroupement (parent) ne s'impute pas : imputer un sous-compte.
-3. **Une pièce visée est intangible.** Toute correction passe par une contre-passation.
+3. **Une pièce visée est intangible.** Toute correction passe par une contre-passation. Cela vaut aussi pour les écritures automatiques : modifier ou supprimer un versement dont l'écriture est visée (ou dans un exercice clos) est **refusé**, avec le message correspondant.
 4. **Un exercice clos est verrouillé** : aucune écriture, modification ni suppression à une date de cet exercice.
 5. **On clôture dans l'ordre**, exercice après exercice, pour que les à-nouveaux reprennent tous les soldes.
 6. **Jamais de saisie en double** : un versement souscripteur se saisit dans Paiements, un encaissement espèces dans Paiements (le bon d'entrée de caisse est créé automatiquement), pas en comptabilité.
@@ -138,8 +138,8 @@ L'ERP attribue une **référence** : JL-année-numéro de 5 chiffres. L'écritur
 
 **Où** : onglet **Tiers** (acquéreurs 4111, clients 411, fournisseurs 401, personnel 422, autres tiers 461).
 
-1. Vérifier que chaque écriture de tiers porte son **tiers auxiliaire**. Le lettrage et le FEC en ont besoin.
-2. Lancer le **lettrage automatique** de l'exercice : il lettre les correspondances **exactes 1 pour 1** entre un débit et un crédit du même tiers, et les **reliquats de solde nul** (un tiers globalement soldé reçoit une seule lettre).
+1. Vérifier que chaque ligne de compte de tiers porte son **tiers auxiliaire**. Les écritures automatiques (versements, ventes, résiliations) le portent d'office ; en saisie manuelle, la colonne **Tiers** apparaît dès qu'un compte client, fournisseur ou personnel est choisi (une confirmation est demandée si elle reste vide). Le lettrage, les postes ouverts, le Bilan et le FEC en ont besoin.
+2. Lancer le **lettrage automatique** de l'exercice : il lettre les correspondances **exactes 1 pour 1** entre un débit et un crédit du **même tiers**, et les **reliquats de solde nul** (un tiers globalement soldé reçoit une seule lettre). La lettre est portée par la **ligne**, jamais par l'écriture entière. Une écriture lettrée ne se modifie plus : délettrer d'abord.
 3. Consulter les **postes ouverts** (non lettrés) : par tiers, nombre de lignes, dernier mouvement, solde ouvert. Le total des soldes débiteurs est le montant à recouvrer, celui des soldes créditeurs le montant à payer.
 4. Le **délettrage** retire toutes les lettres de l'exercice, sans modifier les écritures.
 
@@ -212,8 +212,8 @@ L'ERP attribue une **référence** : JL-année-numéro de 5 chiffres. L'écritur
 
 | État | Contenu |
 |---|---|
-| **Bilan** | Actif et passif de l'exercice |
-| **Compte de résultat** | Charges et produits |
+| **Bilan** | Actif et passif de l'exercice. Chaque compte (par tiers pour les comptes collectifs) est classé à l'actif s'il est débiteur, au passif s'il est créditeur, sans compensation ; amortissements (28-29), trésorerie négative et comptes de classe 8 compris. Actif et passif ne diffèrent que d'un déséquilibre d'écriture (dans ce cas, utiliser « Diagnostiquer l'écart » de la Balance). L'état imprimé reprend le même calcul que l'écran. |
+| **Compte de résultat** | Charges et produits, en **soldes nets** (une contre-passation, un avoir ou un rabais réduit la charge ou le produit). Le résultat avant impôt est égal à celui du Bilan ; seul l'impôt sur les sociétés estimé (tant qu'il n'est pas comptabilisé au 693) les distingue. |
 | **Trésorerie** | Situation et prévisions |
 | **Analytique** | Ventilation par programme et par division |
 | **Intragroupe** | Flux inter-divisions et conventions réglementées (dossier du commissaire aux comptes) |
@@ -230,25 +230,30 @@ L'ERP attribue une **référence** : JL-année-numéro de 5 chiffres. L'écritur
 
 1. **Toutes les pièces de caisse** de l'exercice ont reçu le visa du Gérant, le cas échéant.
 2. L'exercice précédent est **déjà clôturé** (ou couvert par un bilan d'ouverture). Sinon l'ERP avertit : les à-nouveaux ne reprendraient pas les soldes antérieurs.
-3. Le visa des écritures est fait et les contrôles mensuels sont terminés.
+3. **Toutes les pièces de l'exercice sont visées** et **aucune n'est déséquilibrée** : l'ERP refuse la clôture sinon (une pièce au brouillard sortirait au FEC sans date de validation).
+4. Les contrôles mensuels sont terminés.
 
 **Déroulement**
 
 1. Choisir l'**année** et, si besoin, la **division** (clôture par entité) ou « toutes divisions » (consolidé).
 2. Confirmer **deux fois**.
 3. L'ERP :
-   - solde chaque compte de gestion (classes 6 et 7) mouvementé ;
-   - détermine le **résultat** : compte 131 si bénéfice, 139 si perte ;
+   - solde chaque compte de gestion (classes 6, 7 **et 8**) mouvementé ;
+   - détermine le **résultat** et le porte sur le compte du plan : 131 (bénéfice) / 139 (perte), ou 121 / 129 si c'est la numérotation de votre plan ; à défaut, 131 / 139 sont créés au plan ;
    - génère l'**écriture de clôture** au 31 décembre (journal CLO) ;
-   - génère les **à-nouveaux** au 1er janvier suivant (journal AN), un par compte de bilan mouvementé, en contrepartie du compte 890 ;
+   - génère les **à-nouveaux** au 1er janvier suivant (journal AN) : une écriture par compte de bilan, **une ligne par tiers** pour les comptes collectifs (chaque souscripteur retrouve son solde, sans compensation), équilibrée par le compte de liaison 890 ;
+   - **vise d'office** les pièces de clôture et d'à-nouveaux ;
    - **verrouille** l'exercice.
 
-**[bloquant]** Réservé à l'administrateur. Aucun mouvement de gestion sur l'exercice : clôture refusée. Pièces de caisse sans visa du Gérant : clôture refusée.
+À partir de la clôture, le Bilan et la liasse repartent des à-nouveaux : l'historique antérieur n'est plus recompté.
+
+**[bloquant]** Réservé à l'administrateur. Exercice déjà clôturé (pas de seconde clôture). Pièce au brouillard ou déséquilibrée : clôture refusée. Pièces de caisse sans visa du Gérant : clôture refusée.
 
 ### COM-12 — Rouvrir un exercice
 
 **Qui** : administrateur. Opération **exceptionnelle**.
 
+0. **Ordre** : on rouvre du plus récent au plus ancien. Si l'exercice suivant est clôturé, la réouverture est **refusée** (ses écritures reposent sur les à-nouveaux).
 1. Confirmer. L'ERP **supprime** l'écriture de clôture et les à-nouveaux du périmètre et lève le verrou.
 2. Passer les corrections nécessaires.
 3. **Clôturer de nouveau** sans attendre, pour reconstituer les à-nouveaux.
@@ -260,7 +265,7 @@ L'ERP attribue une **référence** : JL-année-numéro de 5 chiffres. L'écritur
 **Où** : **Clôture et FEC** › **Exporter le FEC**.
 
 1. Choisir l'année (et la division).
-2. L'ERP produit un fichier texte à séparateur `|` : journal, numéro d'écriture, date, compte et libellé, tiers auxiliaire, pièce, libellé, débit, crédit, lettrage, **date de validation**, une ligne par ligne comptable. Nom du fichier : identifiant fiscal, FEC, année.
+2. L'ERP produit un fichier texte à séparateur `|` : journal (celui de l'écriture, sinon déduit de ses comptes), numéro d'écriture, date, compte et libellé, **tiers auxiliaire** (code dossier du souscripteur), **pièce justificative saisie**, libellé, débit, crédit, **lettre de la ligne**, **date de validation**, une ligne par ligne comptable. Nom du fichier : identifiant fiscal, FEC, année.
 3. **Vérifier** avant remise : toutes les pièces sont visées. Une pièce au brouillard sort **sans date de validation**, ce qui la rend rejetable en contrôle.
 
 ---
@@ -273,13 +278,17 @@ L'ERP attribue une **référence** : JL-année-numéro de 5 chiffres. L'écritur
 | Compte inconnu du plan | Enregistrement refusé |
 | Compte de regroupement | Enregistrement refusé |
 | Date sur un exercice clos | Création, modification et suppression refusées |
-| Pièce visée | Modification et suppression refusées ; contre-passation seule |
+| Pièce visée | Modification et suppression refusées ; contre-passation seule. Même règle pour les écritures automatiques : un versement dont l'écriture est visée ou dans un exercice clos ne se modifie ni ne se supprime |
+| Écriture lettrée | Modification refusée (délettrer d'abord) |
+| Ligne de compte de tiers sans tiers auxiliaire (saisie manuelle) | Confirmation demandée |
 | Compte par défaut manquant | Opération automatique refusée, paramètre nommé |
 | Visa : ligne sans compte, compte parent, déséquilibre, visa du Gérant manquant | Pièce non visable |
 | Visa : plafond insuffisant | Visa refusé |
 | Dévalidation, clôture, réouverture | Administrateur uniquement |
 | Clôture avec pièces de caisse sans visa du Gérant | Clôture refusée |
 | Clôture sans exercice précédent clôturé ni bilan d'ouverture | Avertissement, confirmation demandée |
+| Clôture avec pièce au brouillard ou déséquilibrée, ou exercice déjà clôturé | Clôture refusée |
+| Réouverture alors que l'exercice suivant est clôturé | Réouverture refusée |
 
 ---
 
@@ -306,6 +315,9 @@ L'ERP attribue une **référence** : JL-année-numéro de 5 chiffres. L'écritur
 | « Compte de regroupement non imputable » | Compte parent saisi | Imputer un sous-compte |
 | « Exercice clôturé » | Date sur un exercice verrouillé | Choisir une date sur un exercice ouvert, ou rouvrir (exceptionnel) |
 | « Écriture validée — modification interdite » | Pièce visée | Contre-passer, puis ressaisir |
+| « Versement non modifiable / Suppression impossible » | L'écriture du versement est visée ou dans un exercice clos | Contre-passer l'écriture, puis saisir le versement correct |
+| « Clôture impossible : … pièce(s) au brouillard » | Pièces non visées | Comptabilité › Visa des écritures, puis relancer |
+| « Réouverture refusée » | L'exercice suivant est clôturé | Rouvrir d'abord l'exercice le plus récent |
 | Versement non enregistré, « paramétrage comptable manquant » | Compte par défaut absent | Renseigner le compte nommé |
 | Pièce non visable | Compte absent, parent, déséquilibre ou visa du Gérant manquant | Corriger dans l'onglet Anomalies |
 | Clôture refusée | Pièces de caisse sans visa du Gérant | Faire viser les pièces |
