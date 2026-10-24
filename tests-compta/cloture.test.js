@@ -135,3 +135,19 @@ test('Bilan 2026 après clôture 2025 : les soldes ne sont pas comptés deux foi
     assert.equal(r.actifApres, r.actifAvant);
   } finally { await app.fermer(); }
 });
+
+test('données importées (FEC) : le compte auxiliaire du fichier sert de tiers ; un journal d\'à-nouveaux importé n\'est pas compté deux fois', async () => {
+  const app = await ouvrirApp();
+  try {
+    const r = await app.page.evaluate(function () {
+      /* 2024 : vente à CLI1 ; 2025 : à-nouveau importé (journal RAN) qui reprend la créance, puis un règlement */
+      DATA.ecritures = [
+        { id: 'i1', date: '2024-03-01', libelle: 'Vente', journal: 'VE', lignes: [{ compte: '4111', sens: 'D', montant: 500, compte_aux: 'CLI1' }, { compte: '701', sens: 'C', montant: 500 }] },
+        { id: 'i2', date: '2025-01-01', libelle: 'RAN', journal: 'RAN', lignes: [{ compte: '4111', sens: 'D', montant: 500, compte_aux: 'CLI1' }, { compte: '890', sens: 'C', montant: 500 }] },
+        { id: 'i3', date: '2025-02-01', libelle: 'Règlement', journal: 'BQ', lignes: [{ compte: '521', sens: 'D', montant: 200 }, { compte: '4111', sens: 'C', montant: 200, compte_aux: 'CLI1' }] }];
+      const B = calcBilan(2025, '');
+      return { creances: B.creances, eq: B.equilibre };
+    });
+    assert.equal(r.creances, 300);   /* 500 − 200, et non 1 000 − 200 */
+  } finally { await app.fermer(); }
+});

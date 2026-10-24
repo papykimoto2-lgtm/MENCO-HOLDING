@@ -42266,6 +42266,7 @@ function ecrClientIdDe(e) {
 function ecrTiersLigne(e, l) {
   if (!l) return '';
   if (l.tiers_id) return l.tiers_id;
+  if (l.compte_aux) return l.compte_aux;   /* écritures importées (FEC) : le compte auxiliaire du fichier fait office de tiers */
   if (typeof _lettRacine === 'function' && _lettRacine(l.compte) === '411') return ecrClientIdDe(e) || '';
   return '';
 }
@@ -45912,7 +45913,7 @@ function genererLiasseFiscale() {
 function ecrFiltreDepuisOuverture(an, divF) {
   var kCons = 0, kDiv = {};
   (DATA.ecritures || []).forEach(function(e){
-    if (e.type !== 'a_nouveau' || !e.date) return;
+    if ((e.type !== 'a_nouveau' && !/^(AN|RAN|ANO)$/i.test(e.journal || '')) || !e.date) return;   /* à-nouveaux de l'ERP ou journal d'à-nouveaux d'un FEC importé */
     var k = parseInt(String(e.date).slice(0, 4), 10);
     if (!(k <= an)) return;
     var d = e.division || '';
@@ -47972,7 +47973,12 @@ function referentielCompta() {
   var p = DATA.params || {};
   if (p.referentiel_comptable === 'syscohada' || p.referentiel_comptable === 'pcg') return p.referentiel_comptable;
   var lib = function(c){ var x = (APP.planComptable || []).find(function(a){ return a && a.code === c && !a._horsPlan; }); return x ? String(x.label || '') : ''; };
-  return /r[ée]mun[ée]ration|personnel|salaire/i.test(lib('661')) ? 'syscohada' : 'pcg';
+  /* SYSCOHADA : 66 = charges de personnel (661 rémunérations), 64 = impôts et taxes, 67 = frais financiers.
+     Plan d'origine : 64 = personnel, 66 = financier. Les libellés des plans importés sont souvent abrégés
+     (« REMU DIRECT VERS PERSL NATIONAL »), d'où plusieurs indices. */
+  var indicesSyscohada = /personnel|persl|r[ée]mu/i.test(lib('66')) || /r[ée]mu|persl|personnel/i.test(lib('661')) || /imp[oô]ts?|taxes/i.test(lib('64')) || /frais financ/i.test(lib('67'));
+  var indicesPcg = /personnel|salaire/i.test(lib('641')) || /financi|int[ée]r[êe]ts/i.test(lib('66')) && !/personnel/i.test(lib('66'));
+  return (indicesSyscohada && !indicesPcg) ? 'syscohada' : 'pcg';
 }
 function referentielMapCR() {
   if (referentielCompta() === 'syscohada') return {
@@ -76507,10 +76513,10 @@ function etatNonLettres(annee) {
    plan de l'entreprise. À défaut, 131/139 sont créés au plan (comptes personnalisés)
    — ils étaient auparavant postés hors plan, donc absents du Bilan. */
 async function _assurerCompteResultat(benefice) {
-  var code = benefice ? '131' : '139', alt = benefice ? '121' : '129';
+  var code = benefice ? '131' : '139', alt = (typeof referentielCompta === 'function' && referentielCompta() === 'syscohada') ? '' : (benefice ? '121' : '129');   /* SYSCOHADA : 121/129 = report à nouveau, pas résultat */
   var existe = function(c){ return (APP.planComptable||[]).some(function(x){ return x && x.code === c && !x._horsPlan; }); };
   if (existe(code)) return code;
-  if (existe(alt)) return alt;
+  if (alt && existe(alt)) return alt;
   DATA.params = DATA.params || {};
   DATA.params.plan_comptable_custom = DATA.params.plan_comptable_custom || [];
   DATA.params.plan_comptable_custom.push({ code: code, classe: '1', nature: benefice ? 'passif' : 'actif',
