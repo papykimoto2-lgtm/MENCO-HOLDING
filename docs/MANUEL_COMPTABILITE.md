@@ -238,6 +238,7 @@ L'ERP attribue une **référence** : JL-année-numéro de 5 chiffres. L'écritur
 2. L'exercice précédent est **déjà clôturé** (ou couvert par un bilan d'ouverture). Sinon l'ERP avertit : les à-nouveaux ne reprendraient pas les soldes antérieurs.
 3. **Toutes les pièces de l'exercice sont visées** et **aucune n'est déséquilibrée** : l'ERP refuse la clôture sinon (une pièce au brouillard sortirait au FEC sans date de validation).
 4. Les contrôles mensuels sont terminés.
+5. **Aucun bilan d'ouverture n'existe déjà pour l'exercice suivant** (référence `BO-N+1`) : sinon la clôture est refusée, car ses à-nouveaux s'ajouteraient à l'ouverture existante. Supprimer ce bilan d'ouverture si la clôture doit le remplacer. Checklist détaillée année par année : `docs/CHECKLIST_CLOTURE_KONE.md`.
 
 **Déroulement**
 
