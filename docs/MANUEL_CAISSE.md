@@ -218,6 +218,29 @@ Après **10 minutes d'inactivité** sur l'écran Caisse, l'écran se verrouille.
 
 ---
 
+### CAI-12 — Traiter un écart de caisse (réel, mouvement manquant ou technique)
+
+**Qui** : responsable de caisse (droit de validation). **Où** : Caisse › **Écarts de caisse à régulariser**.
+
+Un écart n'est pas toujours une perte. **Avant toute écriture**, on le qualifie :
+
+| Nature | Signes | Traitement |
+|---|---|---|
+| **Mouvement manquant ou en trop** | Écart « rond » (1 000 000, 200 000…), argent sorti ou entré sans bon : remise en banque, avance, doublon | Saisir le bon manquant à sa vraie date, avec sa pièce (ou supprimer le doublon) : l'écart disparaît au recalcul. **Aucune perte** |
+| **Écart technique** | Dû à un **défaut du logiciel corrigé depuis** (fond d'ouverture hérité d'une clôture avant correction, doublon supprimé, solde théorique devenu négatif, mouvement rattaché après la clôture) | Bouton **🛠️ Technique** : cause + référence du correctif obligatoires. **Aucune écriture comptable** |
+| **Écart réel** | Manquant ou excédent avéré, sans cause technique | Expliquer, puis **✅ Régulariser** un par un (manquant : charge 658 ; excédent : produit 758), avec motif et pièces |
+
+**Qualifier un écart technique**
+
+1. Cliquer **🛠️ Technique** sur la ligne de l'écart.
+2. Décrire la **cause** (au moins 10 caractères) et la **référence du correctif** (date et intitulé).
+3. Confirmer : l'écart passe dans **Écarts techniques**, avec l'auteur et la date. Il n'est plus régularisable, ne figure plus dans la régularisation en masse, l'alerte quotidienne ni le cumul des écarts réels. Le rapprochement et l'état mensuel l'indiquent à part.
+4. **Annuler la qualification** (↩️) si la cause n'est pas confirmée : l'écart redevient réel ; l'historique est conservé.
+
+**[bloquant]** Écart déjà régularisé (contre-passer d'abord l'écriture d'écart) ; cause ou correctif non renseigné ; écart qualifié de technique : régularisation refusée.
+
+**À ne pas faire** : « Tout régulariser » sans avoir qualifié les écarts. Il comptabiliserait en perte ou en produit des écarts qui n'en sont pas.
+
 ## 4. Contrôles et blocages
 
 | Contrôle | Effet |
@@ -238,6 +261,8 @@ Après **10 minutes d'inactivité** sur l'écran Caisse, l'écran se verrouille.
 | Session déjà clôturée sur le cloud | Clôture refusée |
 | Bon visé, en bordereau, ou exercice clos | Modification ou suppression refusée |
 | Confirmation d'une remise par son auteur | Refusée |
+| Écart technique sans cause ou sans référence du correctif | Qualification refusée |
+| Régularisation d'un écart qualifié de technique | Refusée (aucune écriture) |
 
 ---
 
@@ -250,6 +275,8 @@ Après **10 minutes d'inactivité** sur l'écran Caisse, l'écran se verrouille.
 | Clôture : comptage, écart, explication, tiers ou tardive, mouvements en attente | Session de caisse |
 | Remises : preuve et confirmateur | Mouvement de caisse |
 | Ventilation : compte, auteur, date | Mouvement et écriture comptable |
+| Écart régularisé : motif, auteur, date, montant | Session de caisse et écriture d'écart |
+| Écart technique : cause, référence du correctif, auteur, date ; annulation avec motif | Session de caisse (historique conservé) |
 | États journalier et mensuel | Messagerie interne et e-mails des destinataires |
 
 ---
@@ -304,3 +331,4 @@ Après **10 minutes d'inactivité** sur l'écran Caisse, l'écran se verrouille.
 | Version | Date | Auteur | Objet |
 |---|---|---|---|
 | 1.0 | Octobre 2026 | | Création |
+| 1.1 | Octobre 2026 | | CAI-12 : traitement des écarts de caisse, qualification des écarts techniques |
