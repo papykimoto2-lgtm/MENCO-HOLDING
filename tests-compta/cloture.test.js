@@ -168,3 +168,22 @@ test('clôture : refusée si un bilan d\'ouverture existe déjà pour l\'exercic
     assert.ok(r.toasts.some(function (t) { return /bilan d'ouverture BO-2026/.test(t) && /EN DOUBLE/.test(t); }));
   } finally { await app.fermer(); }
 });
+
+test('Clôture & FEC : le champ « Périmètre » est rempli et garde la division choisie', async () => {
+  const app = await ouvrirApp();
+  try {
+    const r = await app.page.evaluate(function () {
+      DATA.divisions = [{ id: 'd1', nom: 'MENCO IMMO' }, { id: 'd2', nom: 'MENCO AGRO' }];
+      DATA.ecritures = [Object.assign(E('a', '2025-03-01', '512', '101', 100), { division: 'd2' }), E('b', '2025-03-02', '512', '101', 50)];
+      annee(2025);
+      renderClotureFEC();
+      const sel = function () { return document.getElementById('filter-division-cloture'); };
+      const options = [].map.call(sel().options, function (o) { return o.text; });
+      sel().value = 'd2'; sel().onchange();                    /* l'utilisateur choisit une division */
+      return { options: options, apres: sel().value, resume: document.getElementById('cloture-fec-content').textContent.match(/(\d+) écriture\(s\)/)[1] };
+    });
+    assert.deepEqual(r.options, ['— Toutes divisions (consolidé) —', 'MENCO IMMO', 'MENCO AGRO']);
+    assert.equal(r.apres, 'd2');       /* la sélection survit au rendu */
+    assert.equal(r.resume, '1');       /* et filtre bien l'export : 1 écriture pour cette division */
+  } finally { await app.fermer(); }
+});
