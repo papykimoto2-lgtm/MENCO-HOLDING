@@ -35652,6 +35652,13 @@ function getCompteCommission(typeB, sens) {
 /** Génère les 2 écritures SYSCOHADA pour une commission (charge + provision) */
 async function comptabiliserCommission(comm, silencieux) {
   if (!comm) return;
+  /* Une commission annulée ne se comptabilise jamais : elle n'est plus due (et son écriture, si elle a
+     existé, a été extournée ou supprimée). Sans ce garde-fou, « Comptabiliser toutes » ou le bouton de
+     la ligne recréait une charge pour une commission annulée dont l'écriture avait disparu. */
+  if (comm.statut === 'annulee') {
+    if (!silencieux) toast('Commission annulée : aucune écriture à générer.', 'info');
+    return;
+  }
   if (comm.ecriture_id) {
     if (!silencieux) toast('Déjà comptabilisée (réf. ' + comm.ecriture_id + ').', 'info');
     return;
@@ -35756,7 +35763,7 @@ async function comptabiliserPaiementCommission(comm, modePaiement) {
 
 /** Comptabiliser TOUTES les commissions non encore comptabilisées */
 async function comptabiliserToutesCommissions() {
-  var nonComptab = (DATA.commissions||[]).filter(function(c){ return !c.ecriture_id; });
+  var nonComptab = (DATA.commissions||[]).filter(function(c){ return !c.ecriture_id && c.statut !== 'annulee'; });
   if (!nonComptab.length) { toast('Toutes les commissions sont déjà comptabilisées.', 'info'); return; }
   if (!confirm('Générer les écritures comptables pour ' + nonComptab.length + ' commission(s) non comptabilisée(s) ?')) return;
   var nb = 0;
@@ -35771,6 +35778,9 @@ async function comptabiliserToutesCommissions() {
 
 /** Badge comptabilité sur une commission */
 function badgeComptaComm(comm) {
+  if (comm.statut === 'annulee') {
+    return '<span style="background:#F1F5F9;color:#64748B;padding:2px 8px;border-radius:8px;font-size:10px;font-weight:600;" title="Commission annulée : aucune écriture à générer">✗ Annulée</span>';
+  }
   if (comm.ecriture_id) {
     return '<span style="background:#ECFDF5;color:#059669;padding:2px 8px;border-radius:8px;font-size:10px;font-weight:600;" title="Écriture : '+escHtml(comm.ecriture_ref||'')+'">✓ Comptabilisée</span>';
   }
@@ -35911,6 +35921,8 @@ async function loadCommissions() {
 async function payerCommission(id) {
   var comm = (DATA.commissions||[]).find(function(c){ return c.id===id; });
   if (!comm) return;
+  /* Seule une commission « à payer » se règle : une annulée repasserait sinon « payée » et serait décaissée. */
+  if (comm.statut !== 'a_payer') { toast(comm.statut === 'annulee' ? 'Commission annulée : paiement impossible.' : 'Cette commission n\'est pas à payer (statut : ' + (comm.statut || '—') + ').', 'error'); return; }
   var ref = prompt('Référence de paiement (ex: virement SGCI) :', '');
   if (ref === null) return;
 
