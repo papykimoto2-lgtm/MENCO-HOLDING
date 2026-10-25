@@ -134814,6 +134814,7 @@ function caisseCalculerRapprochement(caisseId) {
   var dernComptee = clot.filter(_compte).pop();
   var reel = dernComptee && dernComptee === derniere ? parseFloat(derniere.fond_cloture_reel) || 0 : (parseFloat(derniere.fond_cloture_theorique) || 0);
   var somme = clot.reduce(function(a,s){ return a + (parseFloat(s.ecart) || 0); }, 0);
+  var sommeTech = clot.reduce(function(a,s){ return a + (caisseEcartEstTechnique(s) ? (parseFloat(s.ecart) || 0) : 0); }, 0);
   var ruptures = [];
   var precedent = null;
   sess.forEach(function(s){
@@ -134824,7 +134825,7 @@ function caisseCalculerRapprochement(caisseId) {
     if (s.statut === 'cloturee') precedent = s;
   });
   return { caisse_id: caisseId, fondInitial: fondInitial, entrees: entrees, sorties: sorties, attendu: attendu, reel: reel, ecartReel: reel - attendu,
-    sommeEcarts: somme, attenteEntrees: attE, attenteSorties: attS, ruptures: ruptures, nbSessions: clot.length,
+    sommeEcarts: somme, sommeEcartsTechniques: sommeTech, attenteEntrees: attE, attenteSorties: attS, ruptures: ruptures, nbSessions: clot.length,
     derniereDate: String(derniere.date || '').slice(0,10), sessionOuverte: !!ouverteId };
 }
 function caisseRapprochement() {
@@ -134844,6 +134845,7 @@ function caisseRapprochement() {
       + '<tr><td>Dernier comptage réel</td><td style="text-align:right;">' + fmtF(r.reel) + '</td></tr>'
       + '<tr style="font-weight:800;"><td>Écart réel cumulé</td><td style="text-align:right;color:' + couleur + ';">' + (r.ecartReel > 0 ? '+' : '') + fmtF(r.ecartReel) + ' FCFA</td></tr>'
       + '<tr><td style="color:var(--blanc-dim);">Somme des écarts enregistrés session par session</td><td style="text-align:right;color:var(--blanc-dim);">' + (r.sommeEcarts > 0 ? '+' : '') + fmtF(r.sommeEcarts) + '</td></tr>'
+      + (r.sommeEcartsTechniques ? '<tr><td style="color:var(--blanc-dim);">dont écarts qualifiés techniques (défaut logiciel corrigé, non comptabilisés)</td><td style="text-align:right;color:var(--blanc-dim);">' + (r.sommeEcartsTechniques > 0 ? '+' : '') + fmtF(r.sommeEcartsTechniques) + '</td></tr>' : '')
       + ((r.attenteEntrees || r.attenteSorties) ? '<tr><td style="color:var(--rouge);">Mouvements en attente de validation (non comptés)</td><td style="text-align:right;color:var(--rouge);">+' + fmtF(r.attenteEntrees) + ' / −' + fmtF(r.attenteSorties) + '</td></tr>' : '')
       + '</tbody></table>'
       + (r.ruptures.length ? '<div style="margin-top:8px;font-size:12px;"><strong>Ruptures de chaîne</strong> (fond d\'ouverture différent du dernier comptage) : ' + r.ruptures.length
@@ -139535,12 +139537,12 @@ async function caisseEnvoyerEtatMensuel(caisseId, manuel, moisStr) {
   var sessions = (DATA.caisse_sessions || []).filter(function(s){ return s.caisse_id === caisseId && s.statut === 'cloturee' && (s.date||'').slice(0,7) === mois; });
   if (!sessions.length) { if (manuel) toast('Aucune session clôturée pour ce mois.', 'error'); return; }
 
-  var totalEntrees = 0, totalSorties = 0, totalEcart = 0;
+  var totalEntrees = 0, totalSorties = 0, totalEcart = 0, totalEcartTech = 0;
   sessions.forEach(function(s) {
     var mvts = (DATA.caisse_mouvements || []).filter(function(m){ return m.session_id === s.id && _caisseMvtEffectif(m); });
     totalEntrees += mvts.filter(function(m){ return m.type==='entree'; }).reduce(function(sum,m){ return sum+(parseFloat(m.montant)||0); }, 0);
     totalSorties += mvts.filter(function(m){ return m.type==='sortie'; }).reduce(function(sum,m){ return sum+(parseFloat(m.montant)||0); }, 0);
-    totalEcart += parseFloat(s.ecart) || 0;
+    if (caisseEcartEstTechnique(s)) totalEcartTech += parseFloat(s.ecart) || 0; else totalEcart += parseFloat(s.ecart) || 0;
   });
 
   var texte = '💰 ÉTAT MENSUEL DE CAISSE — ' + c.nom + '\n'
@@ -139549,7 +139551,9 @@ async function caisseEnvoyerEtatMensuel(caisseId, manuel, moisStr) {
     + 'Total entrées du mois : ' + fmtF(totalEntrees) + ' FCFA\n'
     + 'Total sorties du mois : ' + fmtF(totalSorties) + ' FCFA\n'
     + 'Solde net du mois : ' + fmtF(totalEntrees - totalSorties) + ' FCFA\n'
-    + 'Cumul des écarts de caisse (théorique/réel) : ' + fmtF(totalEcart) + ' FCFA\n\n'
+    + 'Cumul des écarts de caisse (théorique/réel) : ' + fmtF(totalEcart) + ' FCFA\n'
+    + (totalEcartTech ? 'Écarts techniques (défaut logiciel corrigé, non comptabilisés) : ' + fmtF(totalEcartTech) + ' FCFA\n' : '')
+    + '\n'
     + 'Détail par journée disponible dans le module Caisse (brouillards journaliers).';
 
   var okInterne = await caisseEnvoyerMessageInterne(c, texte);
@@ -141336,7 +141340,7 @@ function _cdParCaisse(b){
     var ecartC = (DATA.caisse_sessions||[]).filter(function(s){
       var j=(s.date||'').slice(0,10);
       return s.caisse_id===c.id && s.statut==='cloturee' && j>=b.deb && j<=b.fin;
-    }).reduce(function(s,x){ return s+(parseFloat(x.ecart)||0); },0);
+    }).reduce(function(s,x){ return s+caisseEcartReel(x); },0);
 
     var session = caisseGetSessionOuverte(c.id);
     var solde = session ? caisseSoldeSession(session) : null;
@@ -141458,7 +141462,7 @@ function caisseRenderDashboard(){
   var ecartCumul = (DATA.caisse_sessions||[]).filter(function(s){
     var j=(s.date||'').slice(0,10);
     return s.statut==='cloturee' && j>=b.deb && j<=b.fin && idsFiltre.indexOf(s.caisse_id) >= 0;
-  }).reduce(function(s,x){ return s+(parseFloat(x.ecart)||0); },0);
+  }).reduce(function(s,x){ return s+caisseEcartReel(x); },0);
 
   /* [Fix lenteur] Cette fonction tourne à CHAQUE sauvegarde de bon. Avant :
      12 passages complets sur DATA.caisse_mouvements (un par mois de la
@@ -141596,10 +141600,89 @@ function _caisseCompteEcart(sens){
     : requireCompteDefaut('ecart_caisse_manquant');
 }
 
+/* ═══ ÉCARTS TECHNIQUES ═══
+   Un écart dû à un défaut du logiciel (corrigé depuis) n'est PAS un manquant ni un excédent : le
+   comptabiliser créerait une perte ou un produit fictif. On le QUALIFIE (cause + référence du correctif,
+   personne, date) : il reste visible et tracé, mais il n'est plus régularisable en comptabilité, n'entre
+   plus dans la régularisation en masse, l'alerte quotidienne ni le cumul des écarts réels. La qualification
+   est annulable (historique conservé). */
+function caisseEcartEstTechnique(s){ return !!(s && s.ecart_technique && String(s.ecart_technique.motif || '').trim()); }
+function caisseEcartReel(s){ return caisseEcartEstTechnique(s) ? 0 : (parseFloat(s && s.ecart) || 0); }
+function _caisseEcartsTechniques(){
+  return (DATA.caisse_sessions || []).filter(function(s){
+    return s.statut === 'cloturee' && (parseFloat(s.ecart) || 0) !== 0 && !s.ecart_regularise && caisseEcartEstTechnique(s);
+  }).sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
+}
 function _caisseEcartsEnAttente(){
   return (DATA.caisse_sessions || []).filter(function(s){
-    return s.statut === 'cloturee' && (parseFloat(s.ecart) || 0) !== 0 && !s.ecart_regularise;
+    return s.statut === 'cloturee' && (parseFloat(s.ecart) || 0) !== 0 && !s.ecart_regularise && !caisseEcartEstTechnique(s);
   }).sort(function(a,b){ return (a.date||'').localeCompare(b.date||''); });
+}
+async function caisseQualifierEcartTechnique(sessionId){
+  if (!exigerDroit('Caisse','v','la qualification d\'un écart technique')) return;
+  if (!caisseRoleAdminLike()) { toast('Réservé aux responsables de caisse.', 'error'); return; }
+  var s = (DATA.caisse_sessions||[]).find(function(x){ return x.id===sessionId; });
+  if (!s) return;
+  var ec = parseFloat(s.ecart) || 0;
+  if (s.statut !== 'cloturee' || ec === 0) { toast('Seule une session clôturée avec un écart peut être qualifiée.', 'info'); return; }
+  if (s.ecart_regularise) { toast('Écart déjà régularisé en comptabilité : il ne peut plus être qualifié (contre-passer l\'écriture d\'écart).', 'error', 7000); return; }
+  if (caisseEcartEstTechnique(s)) { toast('Écart déjà qualifié de technique.', 'info'); return; }
+  var c = (DATA.caisses||[]).find(function(x){ return x.id===s.caisse_id; });
+  var motif = prompt('ÉCART TECHNIQUE — ' + (c?c.nom:'') + ', session du ' + String(s.date||'').slice(0,10) + ', écart ' + (ec>0?'+':'') + fmtF(ec) + ' FCFA\n\nCause (obligatoire) : quel défaut du logiciel l\'a produit ?\nEx. : fond d\'ouverture hérité d\'une clôture avant correction ; doublon supprimé ; solde théorique devenu négatif.', '');
+  if (motif === null) return;
+  motif = motif.trim();
+  if (motif.length < 10) { toast('⚠️ Décrivez la cause (au moins 10 caractères).', 'error'); return; }
+  var ref = prompt('Référence du correctif (obligatoire) : date et intitulé du correctif qui a réglé le défaut.\nEx. : correctif du 08/08/2026 — fond d\'ouverture ; revue des écarts du 18/10/2026.', '');
+  if (ref === null) return;
+  ref = ref.trim();
+  if (ref.length < 4) { toast('⚠️ La référence du correctif est obligatoire.', 'error'); return; }
+  if (!confirm('Qualifier cet écart de TECHNIQUE ?\n\n• Aucune écriture comptable ne sera générée (ni perte ni produit).\n• L\'écart reste visible, tracé et annulable.\n• Le comptage physique n\'est pas modifié.\n\nÀ faire seulement si la cause est PROUVÉE (les écarts ronds sans explication sont, le plus souvent, des mouvements non saisis).')) return;
+  s.ecart_technique = { montant: ec, motif: motif, reference_correctif: ref,
+    par: (APP.currentUser&&APP.currentUser.nom)||'—', par_id: (APP.currentUser&&APP.currentUser.id)||null, le: new Date().toISOString() };
+  s._baseModifie = s._modifie || null;
+  await dbPut('caisse_sessions', s);
+  await caisseSyncEtAlerter('pi_caisse_sessions', s);
+  try { if (typeof logAction === 'function') logAction('CAISSE_ECART_TECHNIQUE', (c?c.nom:'') + ' ' + String(s.date||'').slice(0,10) + ' : ' + fmtF(ec) + ' FCFA — ' + motif); } catch(e){}
+  toast('✅ Écart qualifié de technique — aucune écriture générée.', 'success');
+  caisseRenderEcarts();
+  if (typeof caisseRenderDashboard==='function') caisseRenderDashboard();
+}
+async function caisseAnnulerEcartTechnique(sessionId){
+  if (!exigerDroit('Caisse','v','l\'annulation d\'une qualification d\'écart technique')) return;
+  if (!caisseRoleAdminLike()) { toast('Réservé aux responsables de caisse.', 'error'); return; }
+  var s = (DATA.caisse_sessions||[]).find(function(x){ return x.id===sessionId; });
+  if (!s || !caisseEcartEstTechnique(s)) return;
+  var motif = prompt('Pourquoi annuler la qualification « écart technique » ? (obligatoire)\nL\'écart redeviendra un écart réel à expliquer ou à régulariser.', '');
+  if (motif === null) return;
+  motif = motif.trim();
+  if (!motif) { toast('⚠️ Le motif est obligatoire.', 'error'); return; }
+  s.ecart_technique_historique = (s.ecart_technique_historique || []).concat([Object.assign({}, s.ecart_technique, {
+    annule_par: (APP.currentUser&&APP.currentUser.nom)||'—', annule_le: new Date().toISOString(), annule_motif: motif })]);
+  delete s.ecart_technique;
+  s._baseModifie = s._modifie || null;
+  await dbPut('caisse_sessions', s);
+  await caisseSyncEtAlerter('pi_caisse_sessions', s);
+  toast('Qualification annulée : l\'écart redevient un écart réel.', 'info');
+  caisseRenderEcarts();
+  if (typeof caisseRenderDashboard==='function') caisseRenderDashboard();
+}
+function caisseHtmlEcartsTechniques(){
+  var l = _caisseEcartsTechniques();
+  if (!l.length) return '';
+  var net = l.reduce(function(a,s){ return a + (parseFloat(s.ecart)||0); }, 0);
+  return '<div class="card" data-n="' + l.length + '" style="padding:16px;margin-top:12px;border-left:3px solid var(--bleu,#3B82F6);">'
+    + '<div style="font-weight:800;font-size:15px;margin-bottom:6px;">🛠️ Écarts techniques <span style="color:var(--bleu,#3B82F6);">(' + l.length + ', net ' + (net>0?'+':'') + fmtF(net) + ' FCFA)</span></div>'
+    + '<div style="font-size:11px;color:var(--blanc-dim);margin-bottom:10px;">Écarts dus à un défaut du logiciel corrigé depuis. <strong>Aucune écriture comptable</strong> : ni perte ni produit. Conservés pour la traçabilité.</div>'
+    + '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Caisse</th><th style="text-align:right;">Écart</th><th>Cause</th><th>Correctif</th><th>Qualifié par</th><th></th></tr></thead><tbody>'
+    + l.map(function(s){
+        var c = (DATA.caisses||[]).find(function(x){ return x.id===s.caisse_id; }), t = s.ecart_technique, ec = parseFloat(s.ecart)||0;
+        return '<tr><td>' + escHtml(String(s.date||'').slice(0,10)) + '</td><td>' + escHtml(c?c.nom:'') + '</td>'
+          + '<td style="text-align:right;font-weight:700;">' + (ec>0?'+':'') + fmtF(ec) + '</td>'
+          + '<td style="font-size:11.5px;">' + escHtml(t.motif) + '</td><td style="font-size:11.5px;">' + escHtml(t.reference_correctif || '') + '</td>'
+          + '<td style="font-size:11px;">' + escHtml(t.par || '') + '<br>' + escHtml(String(t.le||'').slice(0,10)) + '</td>'
+          + '<td><button class="btn btn-secondary btn-sm" onclick="caisseAnnulerEcartTechnique(\'' + s.id + '\')">↩️ Annuler</button></td></tr>';
+      }).join('')
+    + '</tbody></table></div></div>';
 }
 
 /* Net des écarts non régularisés, par caisse : permet de voir qu'un écart se compense avec un autre
@@ -141696,7 +141779,7 @@ function caisseRenderEcarts(){
 
   var liste = _caisseEcartsEnAttente(), _rupt = caisseRupturesAJustifier(), htmlR = caisseHtmlRuptures(_rupt);
   if (boxR) boxR.innerHTML = htmlR;
-  var suite = boxR ? '' : htmlR;
+  var suite = (boxR ? '' : htmlR) + caisseHtmlEcartsTechniques();
   if (!liste.length) { box.innerHTML = suite; return; }
 
   var html = '<div class="card" data-n="' + liste.length + '" style="padding:16px;border-left:3px solid var(--rouge);">'
@@ -141725,7 +141808,8 @@ function caisseRenderEcarts(){
       + '<td style="text-align:right;">'+fmtF(s.fond_cloture_reel)+'</td>'
       + '<td style="text-align:right;font-weight:700;color:'+(exc?'var(--vert)':'var(--rouge)')+';">'+(exc?'+':'')+fmtF(ec)+'</td>'
       + '<td>'+(exc?'<span style="color:var(--vert);">Excédent</span>':'<span style="color:var(--rouge);">Manquant</span>')+'</td>'
-      + '<td><button class="btn btn-primary btn-sm" onclick="caisseRegulariserEcart(\''+s.id+'\')">✅ Régulariser</button></td>'
+      + '<td style="white-space:nowrap;"><button class="btn btn-primary btn-sm" onclick="caisseRegulariserEcart(\''+s.id+'\')">✅ Régulariser</button> '
+      + '<button class="btn btn-secondary btn-sm" title="Écart dû à un défaut du logiciel corrigé depuis : aucune écriture comptable" onclick="caisseQualifierEcartTechnique(\''+s.id+'\')">🛠️ Technique</button></td>'
     + '</tr>';
   });
   html += caisseArboTableau('ecart', liste, function(s){ return s.caisse_id; }, function(s){ return s.date; }, function(s){ return _rowsE[s.id]; }, _thE, function(l){ return caisseResumeNet(l, function(s){ return s.ecart; }); }) + '</div>';
@@ -141735,6 +141819,7 @@ function caisseRenderEcarts(){
 async function genererEcritureEcartCaisse(session, motif){
   var ec = parseFloat(session.ecart)||0;
   if (ec === 0) return null;
+  if (caisseEcartEstTechnique(session)) { try { toast('⛔ Écart qualifié de technique : il ne se comptabilise pas (annulez d\'abord la qualification si c\'est un écart réel).', 'error', 7000); } catch(e){} return null; }
   var caisse = (DATA.caisses||[]).find(function(c){ return c.id===session.caisse_id; });
   var compteCaisse = (caisse && caisse.compte) || '571';
   var exc = ec > 0;
@@ -141783,6 +141868,7 @@ async function caisseRegulariserEcart(sessionId){
   var s = (DATA.caisse_sessions||[]).find(function(x){ return x.id===sessionId; });
   if (!s) return;
   if (s.ecart_regularise) { toast('Écart déjà régularisé.', 'info'); return; }
+  if (caisseEcartEstTechnique(s)) { toast('⛔ Écart qualifié de technique : il ne se comptabilise pas.', 'error', 6000); return; }
   if (caisseMvtsEnAttente(s).length) { toast('⛔ Cette session a encore des mouvements en attente de validation : validez-les ou rejetez-les avant de régulariser l\'écart.', 'error', 7000); return; }
   var _cs = (DATA.caisses||[]).find(function(x){ return x.id===s.caisse_id; });
   var _ec = parseFloat(s.ecart) || 0;
@@ -141870,7 +141956,7 @@ function caisseAVentilerStats(){
 }
 function caisseEcartNonRegularise(){
   return _dashArr('caisse_sessions').filter(function(s){
-    return s.statut==='cloturee' && (parseFloat(s.ecart)||0)!==0 && !s.ecart_regularise;
+    return s.statut==='cloturee' && (parseFloat(s.ecart)||0)!==0 && !s.ecart_regularise && !caisseEcartEstTechnique(s);
   }).reduce(function(a,s){ return a+Math.abs(parseFloat(s.ecart)||0); }, 0);
 }
 
