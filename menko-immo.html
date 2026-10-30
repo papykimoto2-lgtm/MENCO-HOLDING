@@ -50279,26 +50279,22 @@ async function promesseNouvelle(clientId) {
   var r = getRetardataires().find(function(x){ return x.id === clientId; });
   if (!c || !r) { toast('Ce souscripteur n\'est plus en retard.', 'info'); return; }
   if (typeof exigerDroit === 'function' && !exigerDroit('Relances', 'm', 'enregistrer une promesse de paiement')) return;
-  var dv = prompt('Le souscripteur promet de payer pour quelle date ? (JJ/MM/AAAA ou AAAA-MM-JJ)', '');
-  if (dv === null) return;
-  var d = (typeof fcDateSaisie === 'function') ? fcDateSaisie(dv) : dv;
-  if (!d) { toast('Date invalide : saisir JJ/MM/AAAA ou AAAA-MM-JJ.', 'error'); return; }
-  if (d < today()) { toast('La date promise ne peut pas être dans le passé.', 'error'); return; }
-  var mv = prompt('Montant promis (FCFA) :', String(Math.round(r.montantDu || 0)));
-  if (mv === null) return;
-  var montant = parseFloat(String(mv).replace(/[\s\u00a0]/g, '').replace(',', '.'));
-  if (!(montant > 0)) { toast('Montant invalide.', 'error'); return; }
-  var note = prompt('Remarque (facultatif) :', '') || '';
-  var par = (APP.currentUser && (APP.currentUser.nom || APP.currentUser.email || APP.currentUser.login)) || '';
-  if (!c.promesses_paiement) c.promesses_paiement = [];
-  c.promesses_paiement.push({ id: uid(), date_creation: today(), date_promise: d, montant: montant, note: note, par: par, statut: 'active' });
-  if (!c.actions_commerciales) c.actions_commerciales = [];
-  c.actions_commerciales.push({ date: today(), code: 'promesse_paiement', canal: '', note: 'Promesse de ' + fcfa(montant) + ' pour le ' + dateShort(d) + (note ? ' — ' + note : ''), par: par });
-  c._baseModifie = c._modifie || c._baseModifie || null;
-  await dbPut('clients', c);
-  if (typeof syncToSupabase === 'function') syncToSupabase('pi_clients', c);
-  toast('🤝 Promesse enregistrée : ' + fcfa(montant) + ' pour le ' + dateShort(d) + '.', 'success');
-  detectRelances();
+  formulaireSaisie('Promesse de paiement — ' + ((c.nom || '') + ' ' + (c.prenoms || '')).trim(), [
+    { cle: 'date', label: 'Date promise pour le paiement', type: 'date', valeur: '', requis: true, min: today() },
+    { cle: 'montant', label: 'Montant promis (FCFA)', type: 'number', valeur: Math.round(r.montantDu || 0), requis: true, positif: true, aide: 'Montant en retard : ' + fcfa(r.montantDu) },
+    { cle: 'note', label: 'Remarque', type: 'text', valeur: '' }
+  ], async function(v){
+    var par = (APP.currentUser && (APP.currentUser.nom || APP.currentUser.email || APP.currentUser.login)) || '';
+    if (!c.promesses_paiement) c.promesses_paiement = [];
+    c.promesses_paiement.push({ id: uid(), date_creation: today(), date_promise: v.date, montant: v.montant, note: v.note, par: par, statut: 'active' });
+    if (!c.actions_commerciales) c.actions_commerciales = [];
+    c.actions_commerciales.push({ date: today(), code: 'promesse_paiement', canal: '', note: 'Promesse de ' + fcfa(v.montant) + ' pour le ' + dateShort(v.date) + (v.note ? ' — ' + v.note : ''), par: par });
+    c._baseModifie = c._modifie || c._baseModifie || null;
+    await dbPut('clients', c);
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_clients', c);
+    toast('🤝 Promesse enregistrée : ' + fcfa(v.montant) + ' pour le ' + dateShort(v.date) + '.', 'success');
+    detectRelances();
+  }, 'Enregistrer la promesse');
 }
 async function promesseAnnuler(clientId, promesseId) {
   var c = (DATA.clients || []).find(function(x){ return x.id === clientId; });
@@ -93181,6 +93177,56 @@ async function deleteDossierJur(id) {
    si un dossier existe déjà pour ce client/cession et n'est pas clos,
    on le met à jour (priorité, montant, note datée) au lieu d'en recréer un.
 ══════════════════════════════════════════════════════ */
+/* ── Formulaire de saisie générique ──
+   champs : [{ cle, label, type: 'text'|'textarea'|'number'|'date'|'select', valeur, requis, min, max, options: [{v, l}], aide, positif, entier }]
+   soumettre(valeurs) peut renvoyer un message d'erreur (le formulaire reste ouvert) ou rien (il se ferme). */
+function formulaireSaisie(titre, champs, soumettre, libelleBouton) {
+  var ov = document.getElementById('modal-form-saisie');
+  if (!ov) {
+    ov = document.createElement('div'); ov.className = 'modal-overlay'; ov.id = 'modal-form-saisie';
+    ov.innerHTML = '<div class="modal" style="max-width:520px;width:96vw;"><div class="modal-header"><h3 id="fs-titre"></h3><button class="btn btn-secondary btn-icon" onclick="closeModal(\'modal-form-saisie\')">✕</button></div>'
+      + '<div class="modal-body"><div id="fs-corps"></div><div id="fs-erreur" style="color:var(--rouge);font-size:12px;margin-top:8px;display:none;"></div></div>'
+      + '<div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal(\'modal-form-saisie\')">Annuler</button><button class="btn btn-primary" id="fs-valider">Enregistrer</button></div></div>';
+    document.body.appendChild(ov);
+  }
+  document.getElementById('fs-titre').textContent = titre;
+  var E = function(v){ return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); };
+  document.getElementById('fs-corps').innerHTML = champs.map(function(c){
+    var id = 'fs-c-' + c.cle, attr = ' id="' + id + '" class="form-control"' + (c.min != null ? ' min="' + E(c.min) + '"' : '') + (c.max != null ? ' max="' + E(c.max) + '"' : ''), v = E(c.valeur);
+    var ctrl = c.type === 'textarea' ? '<textarea' + attr + ' rows="3">' + v + '</textarea>'
+      : c.type === 'select' ? '<select' + attr + '>' + (c.options || []).map(function(o){ return '<option value="' + E(o.v) + '"' + (String(o.v) === String(c.valeur) ? ' selected' : '') + '>' + E(o.l) + '</option>'; }).join('') + '</select>'
+      : '<input type="' + (c.type === 'number' ? 'number' : (c.type === 'date' ? 'date' : 'text')) + '"' + attr + (c.type === 'number' ? ' step="any" inputmode="decimal"' : '') + ' value="' + v + '">';
+    return '<div class="form-group" style="margin-bottom:10px;"><label for="' + id + '">' + E(c.label) + (c.requis ? ' *' : '') + '</label>' + ctrl + (c.aide ? '<div style="font-size:11px;color:var(--blanc-dim);margin-top:2px;">' + E(c.aide) + '</div>' : '') + '</div>';
+  }).join('');
+  var err = document.getElementById('fs-erreur'), btn = document.getElementById('fs-valider');
+  err.style.display = 'none'; btn.disabled = false; btn.textContent = libelleBouton || 'Enregistrer';
+  var montrer = function(m){ err.textContent = m; err.style.display = 'block'; };
+  btn.onclick = async function() {
+    var vals = {};
+    for (var i = 0; i < champs.length; i++) {
+      var c = champs[i], el = document.getElementById('fs-c-' + c.cle), brut = el ? String(el.value).trim() : '';
+      if (c.requis && !brut) { montrer(c.label + ' est obligatoire.'); if (el) el.focus(); return; }
+      if (c.type === 'number') {
+        var n = brut === '' ? null : parseFloat(brut.replace(',', '.'));
+        if (brut !== '' && isNaN(n)) { montrer(c.label + ' : nombre invalide.'); if (el) el.focus(); return; }
+        if (n != null && c.positif && !(n > 0)) { montrer(c.label + ' doit être supérieur à zéro.'); if (el) el.focus(); return; }
+        if (n != null && c.entier && Math.floor(n) !== n) { montrer(c.label + ' doit être un nombre entier.'); if (el) el.focus(); return; }
+        if (n != null && c.min != null && n < parseFloat(c.min)) { montrer(c.label + ' : minimum ' + c.min + '.'); if (el) el.focus(); return; }
+        if (n != null && c.max != null && n > parseFloat(c.max)) { montrer(c.label + ' : maximum ' + c.max + '.'); if (el) el.focus(); return; }
+        vals[c.cle] = n;
+      } else {
+        if (c.type === 'date' && brut && c.min && brut < c.min) { montrer(c.label + ' ne peut pas être antérieure au ' + dateShort(c.min) + '.'); if (el) el.focus(); return; }
+        vals[c.cle] = brut;
+      }
+    }
+    btn.disabled = true;
+    try { var r = await soumettre(vals); if (r) { montrer(r); btn.disabled = false; return; } closeModal('modal-form-saisie'); }
+    catch (e) { console.error('[Formulaire]', e); montrer('Enregistrement impossible : ' + (e && e.message ? e.message : e)); btn.disabled = false; }
+  };
+  openModal('modal-form-saisie');
+  var premier = document.querySelector('#fs-corps .form-control'); if (premier && premier.focus) setTimeout(function(){ premier.focus(); }, 50);
+}
+
 /* ══ Suivi du contentieux : mises en demeure, tribunal, audiences, frais, sommes récupérées ══
    Tout vit dans le dossier juridique (d.tribunal, d.mises_en_demeure, d.audiences, d.frais, d.recouvrements) : il se synchronise
    avec lui, sans nouvelle table. Le délai d'une mise en demeure court depuis la réception si elle est renseignée, sinon depuis l'envoi. */
@@ -93220,68 +93266,72 @@ async function ctxSauver(d) {
 function ctxDossierCourant() { return (DATA.dossiersJuridiques || []).find(function(x){ return x.id === APP._jurDetId; }) || null; }
 function ctxDroitOk(action) { return (typeof exigerDroit !== 'function') || exigerDroit('Dossiers Juridiques', 'm', action); }
 function ctxParQui() { return (APP.currentUser && (APP.currentUser.nom || APP.currentUser.email || APP.currentUser.login)) || ''; }
-function ctxSaisieDate(msg, defaut) { var v = prompt(msg, defaut || today()); if (v === null) return null; var d = (typeof fcDateSaisie === 'function') ? fcDateSaisie(v) : v; if (!d) { toast('Date invalide : saisir JJ/MM/AAAA ou AAAA-MM-JJ.', 'error'); return null; } return d; }
-function ctxSaisieMontant(msg, defaut) { var v = prompt(msg, defaut == null ? '' : String(defaut)); if (v === null) return null; var m = parseFloat(String(v).replace(/[\s ]/g, '').replace(',', '.')); if (!(m > 0)) { toast('Montant invalide.', 'error'); return null; } return m; }
-
 async function ctxTribunalEditer() {
   var d = ctxDossierCourant(); if (!d || !ctxDroitOk('modifier ce dossier')) return;
-  var v = prompt('Tribunal compétent (juridiction, ville) :', d.tribunal || ''); if (v === null) return;
-  d.tribunal = v.trim(); await ctxSauver(d);
+  formulaireSaisie('Tribunal compétent', [{ cle: 'tribunal', label: 'Juridiction, ville', type: 'text', valeur: d.tribunal || '' }], async function(v){ d.tribunal = v.tribunal; await ctxSauver(d); });
 }
 async function ctxMedAjouter() {
   var d = ctxDossierCourant(); if (!d || !ctxDroitOk('enregistrer une mise en demeure')) return;
-  var date = ctxSaisieDate('Date d\'envoi de la mise en demeure :'); if (!date) return;
-  var cles = Object.keys(CTX_MODES_MED), txt = cles.map(function(k, i){ return (i + 1) + '. ' + CTX_MODES_MED[k]; }).join('\n');
-  var c = parseInt(prompt('Mode d\'envoi :\n' + txt + '\n\nNuméro :', '2'), 10); if (!c || !cles[c - 1]) { toast('Mode d\'envoi obligatoire.', 'error'); return; }
-  var ref = prompt('N° de l\'acte, du recommandé ou référence (facultatif) :', ''); if (ref === null) return;
-  var dl = prompt('Délai accordé au débiteur pour régulariser (en jours) :', String(ctxDelaiMedDefaut())); if (dl === null) return;
-  var delai = parseInt(dl, 10); if (!(delai >= 0)) { toast('Délai invalide.', 'error'); return; }
-  if (!d.mises_en_demeure) d.mises_en_demeure = [];
-  d.mises_en_demeure.push({ id: uid(), date_envoi: date, mode: cles[c - 1], reference: ref.trim(), delai_jours: delai, accuse_le: '', par: ctxParQui() });
-  await ctxSauver(d); toast('📨 Mise en demeure enregistrée.', 'success');
+  formulaireSaisie('Enregistrer une mise en demeure', [
+    { cle: 'date', label: 'Date d\'envoi', type: 'date', valeur: today(), requis: true },
+    { cle: 'mode', label: 'Mode d\'envoi', type: 'select', valeur: 'recommande', options: Object.keys(CTX_MODES_MED).map(function(k){ return { v: k, l: CTX_MODES_MED[k] }; }), requis: true },
+    { cle: 'ref', label: 'N° de l\'acte, du recommandé ou référence', type: 'text', valeur: '' },
+    { cle: 'delai', label: 'Délai accordé au débiteur (jours)', type: 'number', valeur: ctxDelaiMedDefaut(), requis: true, min: 0, max: 365, entier: true, aide: 'Le délai court depuis la réception si elle est saisie, sinon depuis l\'envoi.' }
+  ], async function(v){
+    if (!d.mises_en_demeure) d.mises_en_demeure = [];
+    d.mises_en_demeure.push({ id: uid(), date_envoi: v.date, mode: v.mode, reference: v.ref, delai_jours: v.delai, accuse_le: '', par: ctxParQui() });
+    await ctxSauver(d); toast('📨 Mise en demeure enregistrée.', 'success');
+  });
 }
 async function ctxMedAccuse(medId) {
   var d = ctxDossierCourant(); if (!d || !ctxDroitOk('enregistrer un accusé de réception')) return;
   var m = (d.mises_en_demeure || []).find(function(x){ return x.id === medId; }); if (!m) return;
-  var date = ctxSaisieDate('Date de réception par le débiteur (accusé de réception, signification…) :', m.accuse_le || m.date_envoi); if (!date) return;
-  if (date < m.date_envoi) { toast('La réception ne peut pas précéder l\'envoi.', 'error'); return; }
-  m.accuse_le = date; await ctxSauver(d); toast('Réception enregistrée : le délai court depuis cette date.', 'success');
+  formulaireSaisie('Réception de la mise en demeure', [{ cle: 'date', label: 'Date de réception par le débiteur', type: 'date', valeur: m.accuse_le || m.date_envoi, requis: true, min: m.date_envoi, aide: 'Accusé de réception, signification…' }],
+    async function(v){ m.accuse_le = v.date; await ctxSauver(d); toast('Réception enregistrée : le délai court depuis cette date.', 'success'); });
 }
 async function ctxAudienceAjouter() {
   var d = ctxDossierCourant(); if (!d || !ctxDroitOk('enregistrer une audience')) return;
   var med = ctxDerniereMed(d), et = med ? ctxMedEtat(med, today()) : null;
   if (!med && !confirm('Aucune mise en demeure n\'est enregistrée pour ce dossier.\n\nEnregistrer quand même une audience ?')) return;
   if (med && et.etat === 'en_cours' && !confirm('Le délai de la dernière mise en demeure court encore jusqu\'au ' + dateShort(et.fin) + ' (' + et.jours + ' j).\n\nEnregistrer quand même une audience ?')) return;
-  var date = ctxSaisieDate('Date de l\'audience :'); if (!date) return;
-  var objet = prompt('Objet de l\'audience (mise en état, plaidoirie, délibéré…) :', ''); if (objet === null) return;
-  if (!d.audiences) d.audiences = [];
-  d.audiences.push({ id: uid(), date: date, objet: objet.trim(), resultat: '' });
-  await ctxSauver(d);
+  formulaireSaisie('Enregistrer une audience', [
+    { cle: 'date', label: 'Date de l\'audience', type: 'date', valeur: today(), requis: true },
+    { cle: 'objet', label: 'Objet', type: 'text', valeur: '', aide: 'Mise en état, plaidoirie, délibéré…' }
+  ], async function(v){
+    if (!d.audiences) d.audiences = [];
+    d.audiences.push({ id: uid(), date: v.date, objet: v.objet, resultat: '' });
+    await ctxSauver(d);
+  });
 }
 async function ctxAudienceResultat(audId) {
   var d = ctxDossierCourant(); if (!d || !ctxDroitOk('enregistrer le résultat d\'une audience')) return;
   var a = (d.audiences || []).find(function(x){ return x.id === audId; }); if (!a) return;
-  var v = prompt('Résultat ou décision de l\'audience du ' + dateShort(a.date) + ' :', a.resultat || ''); if (v === null) return;
-  a.resultat = v.trim(); await ctxSauver(d);
+  formulaireSaisie('Résultat de l\'audience du ' + dateShort(a.date), [{ cle: 'resultat', label: 'Résultat ou décision', type: 'textarea', valeur: a.resultat || '', requis: true }],
+    async function(v){ a.resultat = v.resultat; await ctxSauver(d); });
 }
 async function ctxFraisAjouter() {
   var d = ctxDossierCourant(); if (!d || !ctxDroitOk('enregistrer des frais')) return;
-  var date = ctxSaisieDate('Date de la dépense :'); if (!date) return;
-  var lib = prompt('Nature des frais (honoraires d\'avocat, huissier, greffe…) :', ''); if (lib === null) return;
-  if (!lib.trim()) { toast('Nature des frais obligatoire.', 'error'); return; }
-  var montant = ctxSaisieMontant('Montant des frais (FCFA) :'); if (!montant) return;
-  if (!d.frais) d.frais = [];
-  d.frais.push({ id: uid(), date: date, libelle: lib.trim(), montant: montant });
-  await ctxSauver(d);
+  formulaireSaisie('Enregistrer des frais', [
+    { cle: 'date', label: 'Date de la dépense', type: 'date', valeur: today(), requis: true },
+    { cle: 'libelle', label: 'Nature des frais', type: 'text', valeur: '', requis: true, aide: 'Honoraires d\'avocat, huissier, greffe…' },
+    { cle: 'montant', label: 'Montant (FCFA)', type: 'number', valeur: '', requis: true, positif: true }
+  ], async function(v){
+    if (!d.frais) d.frais = [];
+    d.frais.push({ id: uid(), date: v.date, libelle: v.libelle, montant: v.montant });
+    await ctxSauver(d);
+  });
 }
 async function ctxRecouvrementAjouter() {
   var d = ctxDossierCourant(); if (!d || !ctxDroitOk('enregistrer une somme récupérée')) return;
-  var date = ctxSaisieDate('Date de l\'encaissement :'); if (!date) return;
-  var montant = ctxSaisieMontant('Somme récupérée (FCFA) :'); if (!montant) return;
-  var note = prompt('Remarque (versement, exécution, accord amiable…) — facultatif :', ''); if (note === null) return;
-  if (!d.recouvrements) d.recouvrements = [];
-  d.recouvrements.push({ id: uid(), date: date, montant: montant, note: note.trim() });
-  await ctxSauver(d);
+  formulaireSaisie('Enregistrer une somme récupérée', [
+    { cle: 'date', label: 'Date de l\'encaissement', type: 'date', valeur: today(), requis: true },
+    { cle: 'montant', label: 'Somme récupérée (FCFA)', type: 'number', valeur: '', requis: true, positif: true },
+    { cle: 'note', label: 'Remarque', type: 'text', valeur: '', aide: 'Versement, exécution, accord amiable…' }
+  ], async function(v){
+    if (!d.recouvrements) d.recouvrements = [];
+    d.recouvrements.push({ id: uid(), date: v.date, montant: v.montant, note: v.note });
+    await ctxSauver(d);
+  });
 }
 async function ctxItemSupprimer(liste, itemId) {
   var d = ctxDossierCourant(); if (!d || !ctxDroitOk('modifier ce dossier')) return;
