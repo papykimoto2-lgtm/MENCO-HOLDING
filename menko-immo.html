@@ -7253,6 +7253,23 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
               ℹ️ Ces seuils sont utilisés pour déclencher les alertes du tableau de bord direction et les calculs de provision sur créances (compte 682).
             </div>
           </div>
+          <div class="card" style="margin-top:14px;">
+            <div class="form-section-title">📨 Relances et contentieux</div>
+            <div class="form-grid cols-3" style="margin-top:10px;">
+              <div class="form-group">
+                <label>Relancer un souscripteur sans relance depuis (jours)</label>
+                <input type="number" id="param-relance-delai" class="form-control" value="15" min="1" max="120">
+              </div>
+              <div class="form-group">
+                <label>Délai accordé après une mise en demeure (jours)</label>
+                <input type="number" id="param-ctx-delai-med" class="form-control" value="15" min="1" max="180">
+              </div>
+            </div>
+            <div style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+              <button class="btn btn-secondary btn-sm" onclick="relCtxParamsSauver()">💾 Enregistrer</button>
+              <span style="font-size:11px;color:var(--blanc-dim);">Le premier alimente l'onglet « À traiter aujourd'hui » de la page Relances ; le second est proposé par défaut à l'enregistrement d'une mise en demeure (modifiable à chaque saisie).</span>
+            </div>
+          </div>
         </div>
 
         <!-- Utilisateurs -->
@@ -30868,6 +30885,7 @@ function goTo(page) {
 }
 
 function switchTab(context, tab) {
+  if (context==='params' && tab==='alertes' && typeof relCtxParamsCharger==='function') relCtxParamsCharger();
   if (context==='juridique' && tab==='contentieux' && typeof ctxActualiserAuto==='function') ctxActualiserAuto();
   // Hook scan pointage
   if (context==='foncier' && tab==='fisc' && typeof fiscInit==='function') { fiscInit(); }
@@ -39507,6 +39525,24 @@ function renderSuiviAgrements() {
     + ' <button class="btn btn-secondary btn-sm" onclick="agrSauverSeuil()">💾 Enregistrer</button>'
     + '<span style="font-size:11px;">Rouge à moins de 60 j. Chaque renouvellement archive le cycle précédent.</span></div>'
     + '</div>';
+}
+/* Réglages « Relances et contentieux » (onglet Alertes des Paramètres). */
+function relCtxParamsCharger() {
+  var a = document.getElementById('param-relance-delai'), b = document.getElementById('param-ctx-delai-med');
+  if (a) a.value = relanceDelaiJours();
+  if (b) b.value = ctxDelaiMedDefaut();
+}
+async function relCtxParamsSauver() {
+  var j = parseInt(document.getElementById('param-relance-delai').value, 10), m = parseInt(document.getElementById('param-ctx-delai-med').value, 10);
+  if (!(j >= 1 && j <= 120)) { toast('Délai de relance invalide : entre 1 et 120 jours.', 'warning'); return; }
+  if (!(m >= 1 && m <= 180)) { toast('Délai de mise en demeure invalide : entre 1 et 180 jours.', 'warning'); return; }
+  DATA.params = DATA.params || {};
+  DATA.params.relance_delai_jours = j; DATA.params.ctx_delai_mise_en_demeure = m;
+  _paramsToucher(); DATA.params._modifie = new Date().toISOString();
+  await dbPut('params', DATA.params);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_params', DATA.params);
+  if (document.getElementById('tbody-relances') && typeof detectRelances === 'function') detectRelances();
+  toast('Réglages enregistrés : relance après ' + j + ' j, délai de mise en demeure ' + m + ' j.', 'success');
 }
 async function agrSauverSeuil() {
   var v = parseInt(document.getElementById('agr-seuil-j').value);
