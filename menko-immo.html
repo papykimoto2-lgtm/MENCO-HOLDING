@@ -79498,10 +79498,63 @@ function _releveCibles() {
 }
 /* Visualiser le relevé de compte d'un tiers (« client:<id> » ou « cession:<id> ») dans une fenêtre, sans quitter la page en cours. */
 function ouvrirReleveTiers(refId) {
+  if (/^(constructeur|fournisseur):/.test(String(refId))) return ouvrirReleveFournisseur(refId);
   var content = document.getElementById('releve-modal-content'); if (content) content.innerHTML = '';
   APP._releveModal = true;
   try { showReleveTiers(refId); } finally { APP._releveModal = false; }
   if (!content || !content.innerHTML) { toast('Relevé indisponible : tiers introuvable.', 'error'); return; }
+  openModal('modal-releve-tiers');
+}
+/* ── Relevé de compte fournisseur / constructeur (401) ──
+   Mêmes règles que le tableau « Tiers 401 » : constructeur = conventions (crédit) - avances et situations validées (débit) ;
+   fournisseur de matériaux = écritures du compte 401x. Le solde à payer ne descend jamais sous zéro (comme le tableau). */
+function releveFournisseur401Donnees(refId, divisionId) {
+  var type = String(refId).split(':')[0], id = String(refId).split(':').slice(1).join(':'), lignes = [], titre = '', note = '', retenue = 0;
+  if (type === 'constructeur') {
+    var constr = (DATA.constructeurs || []).find(function(x){ return x.id === id; }); if (!constr) return null;
+    titre = (constr.raison_sociale || '—') + (constr.specialite ? ' — ' + constr.specialite : '');
+    (DATA.conventions || []).filter(function(cv){ return cv.constructeur_id === id && (!divisionId || _progDivId(cv.programme_id) === divisionId); }).forEach(function(cv){
+      var num = cv.numero || '—';
+      lignes.push({ date: cv.date_signature || '', ordre: 0, libelle: 'Convention N° ' + num + (cv.objet ? ' — ' + cv.objet : ''), ref: cv.numero || '', debit: 0, credit: cv.montant_ttc || 0 });
+      if ((cv.avance_montant || 0) > 0) lignes.push({ date: cv.date_signature || '', ordre: 1, libelle: 'Avance de démarrage — convention N° ' + num, ref: cv.numero || '', debit: cv.avance_montant, credit: 0 });
+      retenue += cv.retenue_montant || 0;
+      (DATA.situations || []).filter(function(si){ return si.convention_id === cv.id && (si.montant_valide || 0) > 0; }).forEach(function(si){
+        lignes.push({ date: si.date || '', ordre: 2, libelle: 'Situation N° ' + (si.numero || '—') + (si.periode ? ' (' + si.periode + ')' : '') + ' — convention ' + num, ref: si.numero || '', debit: si.montant_valide, credit: 0 });
+      });
+    });
+    if (retenue > 0) note = 'Retenue de garantie : ' + fmtF(retenue) + ' FCFA — non déduite du solde ci-dessus (même règle que le tableau des tiers 401).';
+  } else {
+    var fr = (DATA.fournisseurs || []).find(function(x){ return x.id === id; }); if (!fr) return null;
+    titre = (fr.nom || '—') + (fr.compte ? ' (' + fr.compte + ')' : '');
+    if (fr.compte) (DATA.ecritures || []).filter(function(e){ return (e.compte_credit === fr.compte || e.compte_debit === fr.compte) && (!divisionId || (e.division || '') === divisionId); }).forEach(function(e){
+      if (e.compte_credit === fr.compte) lignes.push({ date: e.date || '', ordre: 0, libelle: e.libelle || '—', ref: e.piece || e.ref || '', debit: 0, credit: e.montant || 0 });
+      if (e.compte_debit === fr.compte) lignes.push({ date: e.date || '', ordre: 2, libelle: e.libelle || '—', ref: e.piece || e.ref || '', debit: e.montant || 0, credit: 0 });
+    });
+  }
+  lignes.sort(function(a, b){ return (a.date || '').localeCompare(b.date || '') || (a.ordre - b.ordre); });
+  var cumul = 0, totalDebit = 0, totalCredit = 0;
+  lignes.forEach(function(l){ cumul += (l.credit || 0) - (l.debit || 0); l.solde = cumul; totalDebit += l.debit || 0; totalCredit += l.credit || 0; });
+  return { type: type, titre: titre, lignes: lignes, totalDebit: totalDebit, totalCredit: totalCredit, solde: Math.max(0, totalCredit - totalDebit), avanceSurplus: Math.max(0, totalDebit - totalCredit), note: note };
+}
+function ouvrirReleveFournisseur(refId) {
+  var d = releveFournisseur401Donnees(refId, (typeof _comptaDivisionFilter === 'function') ? _comptaDivisionFilter() : '');
+  if (!d) { toast('Relevé indisponible : fournisseur introuvable.', 'error'); return; }
+  var nom = document.getElementById('releve-modal-nom'), content = document.getElementById('releve-modal-content'); if (!content) return;
+  if (nom) nom.textContent = d.titre;
+  var td = 'style="padding:5px 8px;font-size:12px;"', num = 'style="padding:5px 8px;font-size:12px;text-align:right;"';
+  content.innerHTML = '<div style="font-size:12px;color:var(--blanc-dim);margin-bottom:10px;">' + (d.type === 'constructeur' ? '🏗️ Constructeur — compte 401' : '🏢 Fournisseur de matériaux — compte 401') + '</div>'
+    + (d.lignes.length
+      ? '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Libellé</th><th>Réf.</th><th style="text-align:right;">Débit (réglé)</th><th style="text-align:right;">Crédit (dû)</th><th style="text-align:right;">Solde à payer</th></tr></thead><tbody>'
+        + d.lignes.map(function(l){ return '<tr><td ' + td + '>' + (l.date ? dateShort(l.date) : '—') + '</td><td ' + td + '>' + escHtml(l.libelle) + '</td><td ' + td + '>' + escHtml(l.ref || '—') + '</td>'
+            + '<td ' + num + '>' + (l.debit ? fmtF(l.debit) : '—') + '</td><td ' + num + '>' + (l.credit ? fmtF(l.credit) : '—') + '</td>'
+            + '<td ' + num + ' title="Solde cumulé après cette ligne"><strong style="color:' + (l.solde > 0 ? 'var(--rouge)' : 'var(--vert)') + ';">' + fmtF(Math.abs(l.solde)) + (l.solde < 0 ? ' (DB)' : '') + '</strong></td></tr>'; }).join('')
+        + '</tbody></table></div>'
+      : '<div style="padding:16px;color:var(--blanc-dim);">Aucun mouvement enregistré pour ce tiers.</div>')
+    + '<div style="display:flex;justify-content:flex-end;gap:24px;flex-wrap:wrap;padding:12px 0;border-top:1px solid var(--bord);font-weight:700;font-size:13px;margin-top:8px;">'
+    + '<span>Total dû : ' + fmtF(d.totalCredit) + ' FCFA</span><span>Total réglé : <span style="color:var(--vert);">' + fmtF(d.totalDebit) + ' FCFA</span></span>'
+    + '<span>Solde à payer : <span style="color:' + (d.solde > 0 ? 'var(--rouge)' : 'var(--vert)') + ';font-size:15px;">' + (d.solde > 0 ? fmtF(d.solde) + ' FCFA' : 'Soldé') + '</span></span></div>'
+    + (d.avanceSurplus > 0 ? '<div style="font-size:11px;color:var(--or);padding:4px 0;">ℹ️ Les règlements dépassent les montants dus de ' + fmtF(d.avanceSurplus) + ' FCFA (créance sur le tiers).</div>' : '')
+    + (d.note ? '<div style="font-size:11px;color:var(--dim);padding:4px 0;">ℹ️ ' + escHtml(d.note) + '</div>' : '');
   openModal('modal-releve-tiers');
 }
 function printReleveModal() { _printFromElement('releve-modal-content', 'Relevé de compte tiers'); }
@@ -79961,7 +80014,7 @@ function buildTiers401() {
         +'<td style="font-weight:700;color:'+(r.solde401>0?'var(--rouge)':'var(--vert)')+';">'+(r.solde401>0?fmtF(r.solde401)+' FCFA':'Soldé')+'</td>'
         +'<td style="color:'+(r.solde401>0?ancColorM:'var(--dim)')+';" title="Calculée depuis la date des écritures 401 (facture/paiement)">'+ancLabelM+'</td>'
         +'<td><span class="badge '+(r.statut==='solde'?'badge-vert':'badge-rouge')+'">'+(r.statut==='solde'?'Soldé':'À payer')+'</span></td>'
-        +'<td><button class="btn btn-secondary btn-sm btn-icon" onclick="openFournisseurs()">🏢</button></td>'
+        +'<td><button class="btn btn-secondary btn-sm btn-icon" title="Relevé de compte" onclick="ouvrirReleveTiers(\'fournisseur:'+fr.id+'\')">📄</button> <button class="btn btn-secondary btn-sm btn-icon" onclick="openFournisseurs()">🏢</button></td>'
         +'</tr>';
     }
     var convNums = r.convs.map(function(cv){return cv.numero;}).join(', ');
@@ -79983,7 +80036,7 @@ function buildTiers401() {
       +'<td style="font-weight:700;color:'+(r.solde401>0?'var(--rouge)':'var(--vert)')+';">'+(r.solde401>0?fmtF(r.solde401)+' FCFA':'Soldé')+'</td>'
       +'<td style="color:'+(r.solde401>0?ancColor:'var(--dim)')+';" title="'+ancTitle+'">'+ancLabel+ancTag+'</td>'
       +'<td><span class="badge '+(r.statut==='solde'?'badge-vert':'badge-rouge')+'">'+(r.statut==='solde'?'Soldé':'À payer')+'</span></td>'
-      +'<td><button class="btn btn-secondary btn-sm btn-icon" onclick="goTo(\'conventions\')">📋</button></td>'
+      +'<td><button class="btn btn-secondary btn-sm btn-icon" title="Relevé de compte" onclick="ouvrirReleveTiers(\'constructeur:'+r.constr.id+'\')">📄</button> <button class="btn btn-secondary btn-sm btn-icon" onclick="goTo(\'conventions\')">📋</button></td>'
       +'</tr>';
   }).join('');
 }
