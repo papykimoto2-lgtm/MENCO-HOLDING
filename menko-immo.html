@@ -65709,6 +65709,17 @@ function fcValidationRequise(d, e) {
   return fcUsersFonction(f).length ? f : '';
 }
 function fcPeutValiderEtape(f) { return fcEstAdmin() || fcRolesFonction(f).indexOf(fcRoleActeur()) !== -1; }
+/* Une validation n'a de sens que lorsque l'étape peut être terminée : on ne la demande pas tant que ses étapes préalables (ou, pour la clôture, toutes les autres étapes) ne sont pas terminées. */
+function fcObstacleValidation(d, e) {
+  if (!e) return '';
+  if (e.code === 'cloture') {
+    var restantes = (d.etapes || []).filter(function(x){ return x.code !== 'cloture' && FC_STATUTS_FINAUX.indexOf(x.statut) === -1; });
+    return restantes.length ? restantes.length + ' autre(s) étape(s) du dossier ne sont pas terminées' : '';
+  }
+  if (!fcDependancesActives()) return '';
+  var m = fcPrerequisManquants(d, e.code);
+  return m.length ? 'étape(s) préalable(s) non terminée(s) : ' + m.slice(0, 2).map(function(x){ return x.libelle; }).join(' ; ') + (m.length > 2 ? ' (+' + (m.length - 2) + ')' : '') : '';
+}
 async function fcDemanderValidationEtape(dossierId, code) {
   var d = fcDossier(dossierId), e = d && fcEtape(d, code);
   if (!d || !e) return { ok: false, erreur: 'Dossier ou étape introuvable.' };
@@ -65716,6 +65727,8 @@ async function fcDemanderValidationEtape(dossierId, code) {
   fcRattraperValidationEtape(d, e);
   var f = fcValidationRequise(d, e); if (!f) return { ok: false, erreur: 'Cette étape ne nécessite pas de validation.' };
   if (e.validation && e.validation.statut === 'demandee') return { ok: false, erreur: 'Une validation est déjà demandée.' };
+  var obst = (e.validation && e.validation.statut === 'validee') ? '' : fcObstacleValidation(d, e);
+  if (obst) return { ok: false, erreur: 'Validation impossible pour le moment : ' + obst + '. Terminez d\'abord les étapes qui précèdent.' };
   if (e.validation && e.validation.statut === 'validee') return { ok: false, erreur: 'Cette étape est déjà validée : il reste à la terminer.' };
   var a = fcActeur();
   if (!fcPeutGererDossier(d) && fcResponsableEtape(d, e) !== a.id) return { ok: false, erreur: "Seul le responsable de l'étape ou du dossier demande la validation." };
@@ -65758,6 +65771,8 @@ function fcValidationHtml(d, e) {
   if (v.statut === 'demandee') return '<br><span style="font-size:11px;color:#8a5a00;">⏳ Validation en attente — ' + lib + (peut ? ' <button class="btn btn-primary btn-sm" onclick="fcValiderEtapeUI(' + q + ',true)">✅ Valider</button> <button class="btn btn-secondary btn-sm" onclick="fcValiderEtapeUI(' + q + ',false)">⛔ Refuser</button>' : '') + '</span>';
   if (v.statut === 'validee') return '<br><span style="font-size:11px;color:#2e7d4f;">🔏 Validée par ' + escHtml(v.par || '') + ' (' + lib + ') — reste à terminer l\'étape' + (actif ? '' : ' (démarrez-la)') + ' <button class="btn btn-primary btn-sm" onclick="fcActionEtapeUI(' + q + ',\'termine\')">✅ Terminer cette étape</button></span>';
   if (v.statut === 'refusee') return '<br><span style="font-size:11px;color:#c0392b;">⛔ Validation refusée par ' + escHtml(v.decide_par || '') + ' : ' + escHtml(v.motif || '') + (actif ? ' <button class="btn btn-secondary btn-sm" onclick="fcDemanderValidationUI(' + q + ')">Redemander</button>' : '') + '</span>';
+  var obst = fcObstacleValidation(d, e);
+  if (obst) return '<br><span style="font-size:11px;color:#6a5acd;">🔏 À valider par ' + lib + ' — validation possible une fois les étapes qui précèdent terminées</span>';
   return '<br><span style="font-size:11px;color:#5b6b7a;">🔏 À valider par ' + lib + ' avant d\'être terminée' + (actif ? ' <button class="btn btn-secondary btn-sm" onclick="fcDemanderValidationUI(' + q + ')">Demander la validation</button>' : '') + '</span>';
 }
 async function fcDemanderValidationUI(id, code) { if (fcMsg(await fcDemanderValidationEtape(id, code), 'Validation demandée.')) { fcRender(); fcRenderDetail(id); } }
