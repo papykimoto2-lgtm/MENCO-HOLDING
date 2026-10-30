@@ -30833,7 +30833,7 @@ function goTo(page) {
   if (page === 'debourse') { edsRender(); }
   if (page === 'stock') { renderStock(); renderMargeChantiers(); }
   if (page === 'achats') { renderAchats(); }
-  if (page === 'validations') { renderValidations(); }
+  if (page === 'validations') { renderValidations(); if (typeof valActualiserDepuisCloud === 'function') valActualiserDepuisCloud(); }
   if (page === 'recliv') { renderRecliv(); }
   if (page === 'foncierops') { afRender(); }
   if (page === 'locatif') { locEnter(); if(typeof sigBadge==='function') sigBadge(); }
@@ -118466,6 +118466,26 @@ function valSearchChange(txt){
   clearTimeout(_valSearchTimer);
   _valSearchTimer=setTimeout(function(){ if(typeof renderValidations==='function') renderValidations(); }, 150);
 }
+/* À l'ouverture du module, on ne se contente pas de la copie locale : les demandes faites par d'autres personnes depuis la connexion
+   (temps réel coupé, session ancienne) n'y figurent pas. Récupération silencieuse (sans message), au plus une fois toutes les 15 s. */
+async function valActualiserDepuisCloud(){
+  if(APP._valPullEnCours || !navigator.onLine || typeof sbFetch!=='function' || typeof _supaUnwrap!=='function') return;
+  if(Date.now()-(APP._valPullLe||0)<15000) return;
+  APP._valPullEnCours=true; APP._valPullLe=Date.now();
+  try{
+    var rows=await sbFetch('pi_validations?select=*','GET'); if(!Array.isArray(rows)) return;
+    DATA.validations=DATA.validations||[];
+    var byId={}; DATA.validations.forEach(function(x){ byId[x.id]=x; }); var n=0;
+    for(var i=0;i<rows.length;i++){
+      var r=_supaUnwrap('pi_validations',rows[i]); if(!r||!r.id) continue;
+      if(typeof tombHas==='function' && tombHas('validations',r.id)) continue;
+      if(typeof _remoteWins==='function' && _remoteWins(r,byId[r.id])){ byId[r.id]=r; try{ await dbPut('validations',r); }catch(_){} n++; }
+    }
+    DATA.validations=Object.keys(byId).map(function(k){ return byId[k]; });
+    if(n && typeof renderValidations==='function') renderValidations();
+  }catch(e){ console.warn('[Validations] actualisation cloud',e); }
+  finally{ APP._valPullEnCours=false; }
+}
 function renderValidations(){
   var all=(DATA.validations||[]);
   var enAtt=all.filter(function(v){return v.statut==='en_attente';});
@@ -122428,7 +122448,7 @@ function etudesLiveRefresh(store) {
     if (typeof renderGantt === 'function') renderGantt();
     if (typeof renderRapports === 'function') renderRapports();
     if (typeof buildCoutRevient === 'function') buildCoutRevient();
-  } else if (page === 'validations' && typeof renderValidations === 'function') renderValidations();
+  } else if (page === 'validations' && typeof renderValidations === 'function') { renderValidations(); if (typeof valActualiserDepuisCloud === 'function') valActualiserDepuisCloud(); }
   else if (page === 'recliv' && typeof renderRecliv === 'function') renderRecliv();
 }
 
