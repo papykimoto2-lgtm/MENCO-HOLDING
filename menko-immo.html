@@ -61893,6 +61893,7 @@ async function fcChangerStatutEtape(dossierId, code, statut, o) {
     if (!motif) return { ok: false, erreur: 'Une dérogation exige un motif.' };
     derogation = true;
   }
+  if (statut === 'termine') fcRattraperValidationEtape(d, e);
   var valF = (statut === 'termine') ? fcValidationRequise(d, e) : '';
   if (valF && !(e.validation && e.validation.statut === 'validee')) {
     if (!fcPeutValiderEtape(valF)) return { ok: false, validation_requise: true, fonction: valF, erreur: 'Cette étape doit être validée par la fonction « ' + fcLibFonction(valF) + ' » avant d\'être terminée.' };
@@ -65696,6 +65697,12 @@ async function fcAjouterCatalogueUI(id) {
    Ne s'applique que si au moins une personne porte un rôle de cette fonction (sinon rien ne bloquerait jamais). Réglage : DATA.params.fc_validation_fonctions (actif par défaut). */
 function fcValidationFonctionsActive() { return ((DATA.params || {}).fc_validation_fonctions) !== false; }
 function fcRoleActeur() { return (APP.currentUser && APP.currentUser.role) || ''; }
+/* La ligne centrale du module Validations et l'état de l'étape peuvent diverger (synchronisation, ancienne donnée) : si la dernière ligne de cette étape est « validée », l'étape l'est aussi. */
+function fcRattraperValidationEtape(d, e) {
+  if (!d || !e || (e.validation && e.validation.statut === 'validee')) return;
+  var ref = d.id + '|' + e.code, lignes = (DATA.validations || []).filter(function(x){ return x.type === 'etape_fonciere' && x.ref_id === ref; }), v = lignes[lignes.length - 1];
+  if (v && v.statut === 'valide') e.validation = Object.assign({}, e.validation || {}, { statut: 'validee', fonction: (v.meta || {}).fonction || (e.validation || {}).fonction || '', par: v.valideur || '—', le: v.date_decision || new Date().toISOString(), motif: '' });
+}
 function fcValidationRequise(d, e) {
   if (!fcValidationFonctionsActive() || !e || FC_STATUTS_FINAUX.indexOf(e.statut) !== -1) return '';
   var f = fcEquipeEtape(e.code).valide; if (!f) return '';
@@ -65706,6 +65713,7 @@ async function fcDemanderValidationEtape(dossierId, code) {
   var d = fcDossier(dossierId), e = d && fcEtape(d, code);
   if (!d || !e) return { ok: false, erreur: 'Dossier ou étape introuvable.' };
   if (['cloture', 'annule'].indexOf(d.statut) !== -1) return { ok: false, erreur: 'Dossier ' + d.statut + '.' };
+  fcRattraperValidationEtape(d, e);
   var f = fcValidationRequise(d, e); if (!f) return { ok: false, erreur: 'Cette étape ne nécessite pas de validation.' };
   if (e.validation && e.validation.statut === 'demandee') return { ok: false, erreur: 'Une validation est déjà demandée.' };
   if (e.validation && e.validation.statut === 'validee') return { ok: false, erreur: 'Cette étape est déjà validée : il reste à la terminer.' };
@@ -65743,6 +65751,7 @@ async function fcDecisionValidationEtape(dossierId, code, decision, motif) {
 }
 fcProtegerMutations(['fcDemanderValidationEtape', 'fcDecisionValidationEtape']);
 function fcValidationHtml(d, e) {
+  fcRattraperValidationEtape(d, e);
   var f = fcValidationRequise(d, e), v = e.validation || {};
   if (!f) return v.statut === 'validee' ? '<br><span style="font-size:11px;color:#2e7d4f;" title="Validation par fonction">🔏 Validée par ' + escHtml(v.par || '') + ' (' + escHtml(fcLibFonction(v.fonction)) + ')</span>' : '';
   var q = "'" + d.id + "','" + e.code + "'", lib = escHtml(fcLibFonction(f)), actif = FC_STATUTS_ACTIFS.indexOf(e.statut) !== -1, peut = fcPeutValiderEtape(f);
