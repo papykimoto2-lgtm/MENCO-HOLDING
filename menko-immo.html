@@ -61595,10 +61595,23 @@ function tfwLienDossier(parcelleId){
   return d ? '<button class="btn btn-secondary btn-sm" onclick="fcAllerDossier(\''+d.id+'\')" title="Étapes détaillées, contrôles, justificatifs">📁 '+escHtml(d.reference)+'</button>' : '<span style="font-size:10px;color:var(--dim);">aucun dossier</span>';
 }
 /* Ouvre le dossier sur l'onglet Étapes, phase dépliée, et met l'étape en évidence (depuis la page Validations). */
+/* Depuis une autre page (Validations, tableau de bord…), il faut d'abord ouvrir la page Foncier : sinon le dossier s'affiche dans une page masquée. */
+function fcOuvrirPageFoncier() { if (typeof goTo === 'function' && (APP.currentPage || '') !== 'foncier') goTo('foncier'); }
+/* Dossier absent de la copie locale (créé ou modifié depuis la connexion) : on le récupère du cloud puis on réessaie une fois. */
+function fcDossierOuRecuperer(dossierId, suite) {
+  if (fcDossier(dossierId)) return true;
+  if (typeof syncPullStore === 'function' && navigator.onLine !== false) {
+    Promise.resolve(syncPullStore('dossiers_fonciers')).then(function(){ if (fcDossier(dossierId)) suite(); else toast('Dossier introuvable.', 'error'); }).catch(function(){ toast('Dossier introuvable.', 'error'); });
+    return false;
+  }
+  toast('Dossier introuvable.', 'error'); return false;
+}
 function fcAllerEtape(dossierId, code) {
-  var d = fcDossier(dossierId); if (!d) { toast('Dossier introuvable.', 'error'); return false; }
+  if (!fcDossierOuRecuperer(dossierId, function(){ fcAllerEtape(dossierId, code); })) return false;
+  var d = fcDossier(dossierId);
   var e = fcEtape(d, code); APP._fcOnglet = 'etapes';
   if (e && APP._fcPh && APP._fcPh[dossierId]) APP._fcPh[dossierId][e.phase] = false;
+  fcOuvrirPageFoncier();
   if (typeof switchTab === 'function') switchTab('foncier', 'dossiers');
   setTimeout(function() {
     fcOuvrirDetail(dossierId); fcOnglet('etapes');
@@ -61607,7 +61620,7 @@ function fcAllerEtape(dossierId, code) {
   }, 80);
   return true;
 }
-function fcAllerDossier(id){ if(typeof switchTab==='function') switchTab('foncier','dossiers'); setTimeout(function(){ if(typeof fcOuvrirDetail==='function') fcOuvrirDetail(id); },50); }
+function fcAllerDossier(id){ if(!fcDossierOuRecuperer(id, function(){ fcAllerDossier(id); })) return; fcOuvrirPageFoncier(); if(typeof switchTab==='function') switchTab('foncier','dossiers'); setTimeout(function(){ if(typeof fcOuvrirDetail==='function') fcOuvrirDetail(id); },50); }
 function fcAllerJalons(parcelleId){ if(typeof switchTab==='function') switchTab('foncier','workflow'); setTimeout(function(){ if(typeof tfwOpen==='function') tfwOpen(parcelleId); },50); }
 function tfwOpen(id){ var sel=document.getElementById('tfw-parc'); if(sel){ sel.value=id; tfwSelect(); } }
 
