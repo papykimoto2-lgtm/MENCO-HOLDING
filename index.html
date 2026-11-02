@@ -1619,9 +1619,33 @@ async function tbCharger(m){
     r = { kpis:[['Projets',(d.projets||[]).length],['Licences',(d.licences||[]).length],['CA (12 mois)',fmtF(ca)]],
       cartes:[['tb-12','Facturation par mois','CA des 12 derniers mois', ca ? tbHisto(ser.labels, ser.vals, TBC[2]) : '<p class="tb-empty">Activité non ouverte : le graphe se remplira à la première facture.</p>']] };
   } else {
-    r = { kpis:[['Comptes actifs','—'],['Connexions (30 j)','—'],['Souscriptions en ligne','—']],
-      cartes:[['tb-12','Portail client','Fréquentation, espaces utilisés, souscriptions en ligne',
-        '<p class="tb-empty">Aucune donnée de fréquentation n\'est encore enregistrée. Le portail doit journaliser ses connexions (table Supabase dédiée, protégée par RLS) avant d\'alimenter ce tableau.</p>']] };
+    // Journal du portail : table pi_portail_analytics (session_start / tab_view / session_end). Aucune donnée personnelle.
+    let rows = null;
+    try {
+      const cfg = sbCfg();
+      const dep = new Date(Date.now() - 365*86400000).toISOString();
+      const rep = await fetch(cfg.url.replace(/\/+$/,'') + '/rest/v1/pi_portail_analytics?select=session_id,event_type,onglet,duree_ms,appareil,referrer_domaine,cree_le&cree_le=gte.' + encodeURIComponent(dep) + '&order=cree_le.desc&limit=20000',
+        { headers:{ apikey:cfg.key, Authorization:'Bearer ' + (hubTok() || cfg.key) } });
+      if (rep.ok) rows = await rep.json();
+    } catch(e){}
+    if (!Array.isArray(rows)) {
+      r = { kpis:[['Visiteurs','—'],['Sessions','—'],['Durée moyenne','—']],
+        cartes:[['tb-12','Portail client','Fréquentation du portail','<p class="tb-empty">Journal du portail inaccessible (réseau ou droits). Vérifie la connexion Supabase dans Paramétrage.</p>']] };
+    } else {
+      const st = rows.filter(x => x.event_type === 'session_start'), en = rows.filter(x => x.event_type === 'session_end'), tv = rows.filter(x => x.event_type === 'tab_view');
+      const vis = new Set(st.map(x => x.session_id)).size;
+      const dm = en.length ? Math.round(en.reduce((a,x)=>a+(x.duree_ms||0),0)/en.length/1000) : 0;
+      const cnt = (l, ch, def) => { const c = {}; l.forEach(x => { const k = x[ch] || def; c[k] = (c[k]||0)+1; }); return Object.entries(c).sort((a,b)=>b[1]-a[1]); };
+      const ser = tbSerie(st,'cree_le',null);
+      const AP = {mobile:'Mobile', tablette:'Tablette', desktop:'Ordinateur'};
+      const pct = vis && tv.length ? Math.round(100*new Set(tv.map(x=>x.session_id)).size/vis) : 0;
+      r = { kpis:[['Visiteurs uniques',vis],['Sessions',st.length],['Durée moyenne', dm >= 60 ? Math.floor(dm/60)+' min '+(dm%60)+' s' : dm+' s'],['Visiteurs actifs', pct+' %']],
+        cartes:[
+         ['tb-8','Sessions par mois','Visites du portail sur 12 mois', st.length ? tbHisto(ser.labels, ser.vals, TBC[2]) : '<p class="tb-empty">Aucune visite enregistrée.</p>'],
+         ['tb-4','Appareils','Part des sessions', tbAnneau(cnt(st,'appareil','inconnu').map(x => [AP[x[0]]||x[0], x[1]]))],
+         ['tb-6','Onglets les plus vus','Nombre de consultations', tbBarresH(cnt(tv,'onglet','Accueil').slice(0,8))],
+         ['tb-6','Provenance des visiteurs','Site d\'origine', tbBarresH(cnt(st,'referrer_domaine','Direct / favoris').slice(0,8))]] };
+    }
   }
   TB.cache[m] = r; return r;
 }
