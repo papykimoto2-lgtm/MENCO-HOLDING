@@ -37312,6 +37312,19 @@ function _compteTresoVersement(mode) {
   var cd = (DATA.params && DATA.params.comptes_defaut) || {};
   return mode === 'especes' ? (_compteCaisseSouscripteurs()) : (mode === 'mobile_money' ? (requireCompteDefaut('treso_mobile')) : (requireCompteDefaut('treso_banque')));
 }
+/* Division d'un versement : lot principal, puis programme du souscripteur, puis lots supplémentaires.
+   Avant : seul client.lot_id comptait ; un souscripteur sans lot principal (multi-lots, programme seul)
+   produisait des versements SANS division, exclus des divisions et regroupés sous « Non affecté ». */
+function _divisionClientVersement(client) {
+  if (!client) return '';
+  var ids = [client.lot_id].concat(client.lot_ids || []).filter(Boolean);
+  for (var i = 0; i < ids.length; i++) {
+    var l = (DATA.lots || []).find(function(x){ return x.id === ids[i]; });
+    var d = l ? _progDivId(l.programme_id) : '';
+    if (d) return d;
+  }
+  return _progDivId(client.programme_id) || '';
+}
 async function genererEcritureVersement(versement) {
   var client = DATA.clients.find(function(c){ return c.id === versement.client_id; }) || {};
   var nomClient = (client.nom || '') + ' ' + (client.prenoms || '');
@@ -37320,8 +37333,7 @@ async function genererEcritureVersement(versement) {
   var cd = (DATA.params && DATA.params.comptes_defaut) || {};
   var compteCredit = estFrais ? requireParamCompte('compte_frais_souscription', 'Compte produit des frais de souscription') : (requireCompteDefaut('client_lots'));
   var typeLabels = { apport: 'Apport initial', mensualite: 'Mensualité', regularisation: 'Régularisation', frais_souscription: 'Frais de souscription', autre: 'Versement' };
-  var lotClient = client.lot_id ? (DATA.lots || []).find(function(l){ return l.id === client.lot_id; }) : null;
-  var progClient = lotClient ? (DATA.programmes || []).find(function(p){ return p.id === lotClient.programme_id; }) : null;
+  var divVersement = _divisionClientVersement(client);
   var ecr = {
     id: 'ecr_vrs_' + versement.id,
     ref: versement.ref || ('VRS-' + versement.id),
@@ -37338,7 +37350,7 @@ async function genererEcritureVersement(versement) {
       { compte: compteTreso, sens: 'D', montant: parseFloat(versement.montant) || 0 },
       { compte: compteCredit, sens: 'C', montant: parseFloat(versement.montant) || 0, tiers_id: estFrais ? undefined : versement.client_id }
     ],
-    division: (progClient && progClient.division_id) || '',
+    division: divVersement,
     montant: parseFloat(versement.montant) || 0,
     type: 'actif',
     mode: versement.mode,
