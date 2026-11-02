@@ -49,12 +49,15 @@ create policy portail_analytics_ins on public.pi_portail_analytics
     and (duree_ms is null or duree_ms between 0 and 86400000)
   );
 
--- Droits de table : le rôle anon n'a besoin que d'insérer.
-revoke select, update, delete on public.pi_portail_analytics from anon;
+-- Droits de table : anon n'a besoin que d'insérer (retire aussi TRUNCATE, REFERENCES, TRIGGER).
+revoke all on public.pi_portail_analytics from anon;
+grant insert on public.pi_portail_analytics to anon;
+-- authenticated : plus de TRUNCATE/REFERENCES/TRIGGER (le RLS borne déjà select/insert/update/delete).
+revoke truncate, references, trigger on public.pi_portail_analytics from authenticated;
 
 commit;
 
--- Vérifications attendues (en anon) : INSERT valide = 201 ; SELECT = [] ; DELETE/PATCH = aucune ligne touchée.
+-- Vérifications attendues (en anon) : INSERT valide = 201 ; SELECT = [] ; DELETE/PATCH/TRUNCATE refusés.
 -- Contrôle : select policyname, cmd, roles from pg_policies where tablename='pi_portail_analytics';
 
 -- ─── ROLLBACK (à jouer seul en cas de problème) ────────────────────────────
@@ -62,5 +65,5 @@ commit;
 --   drop policy if exists portail_analytics_ins on public.pi_portail_analytics;
 --   create policy portail_analytics_ins on public.pi_portail_analytics for insert to anon, authenticated with check (true);
 --   create policy pi_portail_analytics_open_rollback on public.pi_portail_analytics for all to anon, authenticated using (true) with check (true);
---   grant select, update, delete on public.pi_portail_analytics to anon;
+--   grant all on public.pi_portail_analytics to anon, authenticated;
 -- commit;
