@@ -132,6 +132,19 @@ Deno.serve(async (req) => {
       await audit(b.actor, b.event, b.detail);
       return json({ ok: true });
     }
+    case "portail_stats": {
+      // Lecture seule du journal de fréquentation du portail, pour le tableau de bord du hub.
+      // Réservé à un jeton hub valide ; colonnes non personnelles uniquement ; service_role côté serveur,
+      // donc fonctionne même quand pi_portail_analytics n'est plus lisible en anonyme.
+      if (!tk) return json({ ok: false, error: "auth" }, 401);
+      const jours = Math.min(Math.max(parseInt(b.jours, 10) || 365, 1), 730);
+      const depuis = new Date(Date.now() - jours * 86400000).toISOString();
+      const { data, error } = await db.from("pi_portail_analytics")
+        .select("session_id,event_type,onglet,duree_ms,appareil,referrer_domaine,cree_le")
+        .gte("cree_le", depuis).order("cree_le", { ascending: false }).limit(20000);
+      if (error) return json({ ok: false, error: "lecture" }, 500);
+      return json({ ok: true, rows: data || [] });
+    }
     case "change_password": {
       if (!tk) return json({ ok: false, error: "auth" }, 401);
       const { data: u } = await db.from("menko_hub_users").select("*").eq("id", tk.sub).maybeSingle();
