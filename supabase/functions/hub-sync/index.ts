@@ -140,7 +140,7 @@ Deno.serve(async (req) => {
       const jours = Math.min(Math.max(parseInt(b.jours, 10) || 365, 1), 730);
       const depuis = new Date(Date.now() - jours * 86400000).toISOString();
       const { data, error } = await db.from("pi_portail_analytics")
-        .select("session_id,event_type,onglet,duree_ms,appareil,referrer_domaine,cree_le")
+        .select("session_id,event_type,onglet,duree_ms,appareil,referrer_domaine,timezone,cree_le")
         .gte("cree_le", depuis).order("cree_le", { ascending: false }).limit(20000);
       if (error) return json({ ok: false, error: "lecture" }, 500);
       return json({ ok: true, rows: data || [] });
