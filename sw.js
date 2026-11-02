@@ -25,7 +25,7 @@
    ajoutées une par une, pour qu'un fichier manquant n'emporte plus les autres,
    et la console nomme celui qui manque. */
 
-var CACHE = 'menko-holding-v2';
+var CACHE = 'menko-holding-v3';
 
 /* Coquille commune aux deux applications. Chemins absolus : le service worker
    est servi depuis la racine, les chemins relatifs y résolvent donc déjà
@@ -33,6 +33,7 @@ var CACHE = 'menko-holding-v2';
    url.pathname dans le gestionnaire fetch. */
 var SHELL = [
   '/index.html',
+  '/pw-toggle.js',
   '/portail-unique.html',
   '/manifest.json',
   '/manifest-portail.json',
