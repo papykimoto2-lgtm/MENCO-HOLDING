@@ -37312,6 +37312,19 @@ function _compteTresoVersement(mode) {
   var cd = (DATA.params && DATA.params.comptes_defaut) || {};
   return mode === 'especes' ? (_compteCaisseSouscripteurs()) : (mode === 'mobile_money' ? (requireCompteDefaut('treso_mobile')) : (requireCompteDefaut('treso_banque')));
 }
+/* Division d'un versement : lot principal, puis programme du souscripteur, puis lots supplémentaires.
+   Avant : seul client.lot_id comptait ; un souscripteur sans lot principal (multi-lots, programme seul)
+   produisait des versements SANS division, exclus des divisions et regroupés sous « Non affecté ». */
+function _divisionClientVersement(client) {
+  if (!client) return '';
+  var ids = [client.lot_id].concat(client.lot_ids || []).filter(Boolean);
+  for (var i = 0; i < ids.length; i++) {
+    var l = (DATA.lots || []).find(function(x){ return x.id === ids[i]; });
+    var d = l ? _progDivId(l.programme_id) : '';
+    if (d) return d;
+  }
+  return _progDivId(client.programme_id) || '';
+}
 async function genererEcritureVersement(versement) {
   var client = DATA.clients.find(function(c){ return c.id === versement.client_id; }) || {};
   var nomClient = (client.nom || '') + ' ' + (client.prenoms || '');
@@ -37320,8 +37333,7 @@ async function genererEcritureVersement(versement) {
   var cd = (DATA.params && DATA.params.comptes_defaut) || {};
   var compteCredit = estFrais ? requireParamCompte('compte_frais_souscription', 'Compte produit des frais de souscription') : (requireCompteDefaut('client_lots'));
   var typeLabels = { apport: 'Apport initial', mensualite: 'Mensualité', regularisation: 'Régularisation', frais_souscription: 'Frais de souscription', autre: 'Versement' };
-  var lotClient = client.lot_id ? (DATA.lots || []).find(function(l){ return l.id === client.lot_id; }) : null;
-  var progClient = lotClient ? (DATA.programmes || []).find(function(p){ return p.id === lotClient.programme_id; }) : null;
+  var divVersement = _divisionClientVersement(client);
   var ecr = {
     id: 'ecr_vrs_' + versement.id,
     ref: versement.ref || ('VRS-' + versement.id),
@@ -37338,7 +37350,7 @@ async function genererEcritureVersement(versement) {
       { compte: compteTreso, sens: 'D', montant: parseFloat(versement.montant) || 0 },
       { compte: compteCredit, sens: 'C', montant: parseFloat(versement.montant) || 0, tiers_id: estFrais ? undefined : versement.client_id }
     ],
-    division: (progClient && progClient.division_id) || '',
+    division: divVersement,
     montant: parseFloat(versement.montant) || 0,
     type: 'actif',
     mode: versement.mode,
@@ -47593,6 +47605,15 @@ function _lfParCompte(soldes, prefixes, sauf, signe) {
 var _lfSoldeDeb = function(s, p, x){ return _lfParCompte(s, p, x, 1); };   /* somme des comptes débiteurs */
 var _lfSoldeCre = function(s, p, x){ return _lfParCompte(s, p, x, -1); };  /* somme des comptes créditeurs */
 
+/* Banques et établissements financiers (52 à 56, hors 565) : classement COMPTE PAR COMPTE.
+   Un compte débiteur va à l'actif (Trésorerie-Actif), un compte créditeur au passif (DR, concours bancaires).
+   Avant : le solde NET de 52 à 58 allait à l'actif ET le solde créditeur net au passif — un découvert était
+   déduit de l'actif et ajouté au passif (bilan déséquilibré de son montant), et deux comptes bancaires
+   (l'un à découvert) se compensaient sans que le découvert n'apparaisse. 57 et 58 (caisses, régies) restent nets. */
+var _LF_BANQUES = ['52','53','54','55','56'];
+function _lfTresoActif(s) { return _lfSoldeDeb(s, _LF_BANQUES, ['565']) + _lfD(s, ['57','58']); }
+function _lfTresoDecouvert(s) { return _lfSoldeCre(s, _LF_BANQUES, ['565']); }
+
 function _lfCalc(annee, divF) {
   var s = _lfSoldes(annee, divF);
   var B = {}, R = {};
@@ -47627,7 +47648,7 @@ function _lfCalc(annee, divF) {
 
   B.BQ = _lfD(s, ['50']) + _lfC(s, ['590']);
   B.BR = _lfD(s, ['51']) + _lfC(s, ['591']);
-  B.BS = _lfD(s, ['52','53','54','55','57','58']) + _lfC(s, ['592','593','594']);
+  B.BS = _lfTresoActif(s) + _lfC(s, ['592','593','594']);
   B.BT = B.BQ + B.BR + B.BS;
   B.BU = _lfD(s, ['478']);
   B.BZ = B.AZ + B.BK + B.BT + B.BU;
@@ -47703,8 +47724,7 @@ function _lfCalc(annee, divF) {
   B.DN = _lfC(s, ['499','599']);
   B.DP = B.DH + B.DI + B.DJ + B.DK + B.DM + B.DN;
   B.DQ = _lfC(s, ['565']);
-  B.DR = _lfC(s, ['52','56'], ['565']);
-  B.DR = B.DR > 0 ? B.DR : 0;
+  B.DR = _lfTresoDecouvert(s);
   B.DT = B.DQ + B.DR;
   B.DV = _lfC(s, ['479']);
   B.DZ = B.DF + B.DP + B.DT + B.DV;
@@ -47751,7 +47771,7 @@ function _lfCalc2(annee, divF) {
   A.BK = { b: A.BA.b + A.BB.b + A.BG.b, a: A.BA.a + A.BB.a + A.BG.a }; A.BK.n = A.BK.b - A.BK.a;
   act('BQ', ['50'], ['590']);
   act('BR', ['51'], ['591']);
-  act('BS', ['52','53','54','55','57','58'], ['592','593','594']);
+  A.BS = { b: _lfTresoActif(s), a: _lfAmo(s, ['592','593','594']) }; A.BS.n = A.BS.b - A.BS.a;
   A.BT = { b: A.BQ.b + A.BR.b + A.BS.b, a: A.BQ.a + A.BR.a + A.BS.a }; A.BT.n = A.BT.b - A.BT.a;
   act('BU', ['478'], null);
   A.BZ = { b: A.AZ.b + A.BK.b + A.BT.b + A.BU.b, a: A.AZ.a + A.BK.a + A.BT.a + A.BU.a }; A.BZ.n = A.BZ.b - A.BZ.a;
