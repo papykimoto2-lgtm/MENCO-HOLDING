@@ -47575,6 +47575,22 @@ function _lfS(soldes, prefixes, sauf) {
 }
 var _lfD = function(s, p, x){ return _lfS(s, p, x); };                 /* nature débitrice */
 var _lfC = function(s, p, x){ return -_lfS(s, p, x); };                /* nature créditrice */
+/* Classement PAR COMPTE et non par classe : un compte à solde débiteur va à l'actif, un compte à solde créditeur
+   va au passif, et chaque compte n'est repris qu'UNE fois. Sans cela, les comptes 42 à 47 (tiers à nature mixte)
+   figuraient à l'actif (solde net) ET au passif (solde net inversé) : le bilan était déséquilibré du solde net
+   de ces comptes. */
+function _lfParCompte(soldes, prefixes, sauf, signe) {
+  var tot = 0;
+  Object.keys(soldes).forEach(function(c){
+    if (!prefixes.some(function(p){ return c.indexOf(p) === 0; })) return;
+    if (sauf && sauf.some(function(p){ return c.indexOf(p) === 0; })) return;
+    var v = soldes[c];
+    if (signe > 0 ? v > 0 : v < 0) tot += Math.abs(v);
+  });
+  return tot;
+}
+var _lfSoldeDeb = function(s, p, x){ return _lfParCompte(s, p, x, 1); };   /* somme des comptes débiteurs */
+var _lfSoldeCre = function(s, p, x){ return _lfParCompte(s, p, x, -1); };  /* somme des comptes créditeurs */
 
 function _lfCalc(annee, divF) {
   var s = _lfSoldes(annee, divF);
@@ -47604,7 +47620,7 @@ function _lfCalc(annee, divF) {
   B.BB = _lfD(s, ['31','32','33','34','35','36','37','38']) + _lfC(s, ['39']);
   B.BH = _lfD(s, ['409']);
   B.BI = _lfD(s, ['41'], ['419']) + _lfC(s, ['491']);
-  B.BJ = _lfD(s, ['42','43','44','45','46','47'], ['485','488']) + _lfC(s, ['492','493','494','495','496','497','498']);
+  B.BJ = _lfSoldeDeb(s, ['42','43','44','45','46','47'], ['485','488','478','479']) + _lfC(s, ['492','493','494','495','496','497','498']);
   B.BG = B.BH + B.BI + B.BJ;
   B.BK = B.BA + B.BB + B.BG;
 
@@ -47681,8 +47697,8 @@ function _lfCalc(annee, divF) {
   B.DH = _lfC(s, ['481','482','484']);
   B.DI = _lfC(s, ['419']);
   B.DJ = _lfC(s, ['40'], ['409']);
-  B.DK = _lfC(s, ['42','43','44'], ['409']);
-  B.DM = _lfC(s, ['45','46','47'], ['478','481','482','484']);
+  B.DK = _lfSoldeCre(s, ['42','43','44'], ['409']);
+  B.DM = _lfSoldeCre(s, ['45','46','47'], ['478','479','481','482','484']);
   B.DN = _lfC(s, ['499','599']);
   B.DP = B.DH + B.DI + B.DJ + B.DK + B.DM + B.DN;
   B.DQ = _lfC(s, ['565']);
@@ -47727,7 +47743,9 @@ function _lfCalc2(annee, divF) {
   act('BB', ['31','32','33','34','35','36','37','38'], ['39']);
   act('BH', ['409'], null);
   act('BI', ['41'], ['491'], ['419']);
-  act('BJ', ['42','43','44','45','46','47'], ['492','493','494','495','496','497','498'], ['485','488','478']);
+  /* BJ : comptes 42 à 47 À SOLDE DÉBITEUR seulement (les soldes créditeurs sont au passif, DK / DM) ; 478 (BU) et 479 (DV) ont leur propre ligne. */
+  A.BJ = { b: _lfSoldeDeb(s, ['42','43','44','45','46','47'], ['485','488','478','479']), a: _lfAmo(s, ['492','493','494','495','496','497','498']) };
+  A.BJ.n = A.BJ.b - A.BJ.a;
   A.BG = { b: A.BH.b + A.BI.b + A.BJ.b, a: A.BH.a + A.BI.a + A.BJ.a }; A.BG.n = A.BG.b - A.BG.a;
   A.BK = { b: A.BA.b + A.BB.b + A.BG.b, a: A.BA.a + A.BB.a + A.BG.a }; A.BK.n = A.BK.b - A.BK.a;
   act('BQ', ['50'], ['590']);
