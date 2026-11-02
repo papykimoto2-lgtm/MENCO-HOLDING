@@ -1134,8 +1134,12 @@ async function doLogin(){
 
   /* Vérification côté serveur (hub-sync). 401 / 429 sont définitifs ; si le service est injoignable ou
      absent (hors ligne), on retombe sur la vérification locale du hash gardé sur cet appareil. */
-  let srv = null;
-  try { srv = await hubFn('login', { login, password: pass }); } catch(e){ srv = null; }
+  let srv = null, errReseau = '';
+  try { srv = await hubFn('login', { login, password: pass }); } catch(e){ srv = null; errReseau = (e && e.message) || 'réseau'; }
+  try {
+    if (srv && srv.ok && srv.token) sessionStorage.removeItem('menko_hub_diag');
+    else if (!srv || (srv.status !== 401 && srv.status !== 429)) sessionStorage.setItem('menko_hub_diag', srv ? 'HTTP ' + srv.status + (srv.error ? ' (' + srv.error + ')' : '') : errReseau);
+  } catch(e){}
   if (srv && srv.ok && srv.token && srv.user) {
     hubTokSet(srv.token);
     const dbS = await openHoldDB();
@@ -1605,7 +1609,7 @@ async function initDash(){
   });
 })();
 // ══ Tableaux de bord (lecture seule : aucune saisie, aucune écriture) ══
-const TB = { mod:'immo', cache:{}, annee:String(new Date().getFullYear()) };
+const TB = { mod:'immo', cache:{}, annee:String(new Date().getFullYear()), division:'' };
 const TB_MODS = [['immo','🏗️ Menko Immo'],['agro','🌾 Menko Agro'],['digitech','💻 Menko Digitech'],['caisse','💰 Caisses'],['compta','📒 Compta groupe'],['portail','🌐 Portail client']];
 const TB_MOIS = ['Jan','Fév','Mar','Avr','Mai','Jui','Juil','Août','Sep','Oct','Nov','Déc'];
 function tbEsc(x){ return String(x == null ? '' : x).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -1812,7 +1816,10 @@ async function tbCharger(m){
     } else {
       const ans = Object.keys(sy.exercices).sort().reverse();
       if (!ans.includes(String(TB.annee))) TB.annee = ans[0];
-      const ex = sy.exercices[TB.annee], c = ex.conso || {}, E = (ex.entites || []).filter(e => e.agrege !== false);
+      const ex = sy.exercices[TB.annee], E = (ex.entites || []).filter(e => e.agrege !== false);
+      if (TB.division && !(ex.entites || []).some(e => e.id === TB.division)) TB.division = '';
+      const divSel = TB.division ? (ex.entites || []).find(e => e.id === TB.division) : null;
+      const c = divSel ? { ca:divSel.ca, ebe:divSel.ebe, rex:divSel.rex, rn:divSel.rn, treso:divSel.treso, actif:divSel.actif, passif:divSel.passif, cp:divSel.cp } : (ex.conso || {});
       const cl = v => v < 0 ? 'neg' : v > 0 ? 'pos' : '';
       const maj = sy.maj ? new Date(sy.maj).toLocaleString('fr-FR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }) : '—';
       const bilanOk = Math.abs(n0(c.actif) - n0(c.passif)) < 1, ecart = n0(ex.ecart_reciprocite);
@@ -1822,6 +1829,29 @@ async function tbCharger(m){
         + (n0(c.minoritaires) ? `<span class="tb-chip wa">Minoritaires : ${fmtF(c.minoritaires)}</span>` : '')
         + (n0(ex.sans_division) ? `<span class="tb-chip ko">⚠ ${n0(ex.sans_division)} écriture(s) sans division, regroupées sur la ligne « Non affecté »</span>` : '') + `</div>`;
       const an = `<div class="tb-an" role="group" aria-label="Exercice">` + ans.map(a => `<button type="button" data-tb-an="${tbEsc(a)}" aria-pressed="${a === String(TB.annee)}">${tbEsc(a)}</button>`).join('') + `</div>`;
+      const cv = ex.controle_ventes;
+      let cvHtml = '';
+      if (cv) {
+        const sr = cv.soldes_reserves || { nb: 0, liste: [] };
+        const ps = cv.programmes_sans_division || { nb: 0, liste: [] };
+        const okV = !cv.nb_manquants && !cv.nb_prix_nul && !sr.nb && !ps.nb;
+        cvHtml = `<div class="tb-chips"><span class="tb-chip ${okV?'ok':'ko'}">${okV ? '✔ Toutes les ventes sont comptabilisées' : n0(cv.nb_manquants) ? '⚠ ' + n0(cv.nb_manquants) + ' vente(s) sans écriture de produit (702) : ' + fmtF(n0(cv.montant_manquant)) + ' hors chiffre d\'affaires' : '⚠ Contrôle à corriger (voir ci-dessous)'}</span>`
+          + (sr.nb ? `<span class="tb-chip ko">⚠ ${n0(sr.nb)} souscripteur(s) au-dessus du seuil de ${n0(sr.seuil)} % dont ${n0(sr.nb_soldes)} soldé(s), lot non passé « vendu » : ${fmtF(n0(sr.montant))} hors CA</span>` : '')
+          + `<span class="tb-chip">Lots vendus : ${n0(cv.nb_vendus)} · comptabilisés : ${n0(cv.nb_comptabilises)}</span>`
+          + (cv.nb_prix_nul ? `<span class="tb-chip ko">${n0(cv.nb_prix_nul)} lot(s) vendu(s) sans prix</span>` : '') + `</div>`
+          + (sr.nb ? `<div class="tb-tab tb-tw"><table><thead><tr><th>Souscripteur</th><th>Lot(s)</th><th>Statut</th><th class="n">% payé</th><th class="n">Montant</th></tr></thead><tbody>`
+            + sr.liste.map(m => `<tr><td>${tbEsc(m.client || '—')}</td><td>${tbEsc(m.lots)}</td><td>${tbEsc(m.statut || '—')}${m.solde ? ' · soldé' : ''}</td><td class="n">${n0(m.pct)} %</td><td class="n">${fmtF(n0(m.montant))}</td></tr>`).join('')
+            + `</tbody></table></div><p class="sub" style="margin-top:.6rem">Ces lots devraient être « vendu » : dans Menko Immo > Comptabilité, cliquer sur « 🔄 Régulariser les statuts ».</p>` : '')
+          + (ps.nb ? `<span class="tb-chip ko">⚠ ${n0(ps.nb)} programme(s) sans division : leurs ventes vont sur « Non affecté »</span>`
+            + `<div class="tb-tab tb-tw"><table><thead><tr><th>Programme</th><th class="n">Lots vendus</th><th class="n">Montant vendu</th></tr></thead><tbody>`
+            + ps.liste.map(m => `<tr><td>${tbEsc(m.nom)}</td><td class="n">${n0(m.nb_vendus)}</td><td class="n">${fmtF(n0(m.montant))}</td></tr>`).join('')
+            + `</tbody></table></div><p class="sub" style="margin-top:.6rem">Correction : dans Menko Immo > Programmes, renseigner la division de chaque programme, puis cliquer sur « 🏷️ Réaffecter les divisions » (Menko Immo > Comptabilité) pour rattacher les écritures déjà passées.</p>` : '')
+          + (cv.nb_manquants ? `<div class="tb-tab tb-tw"><table><thead><tr><th>Lot</th><th>Date de vente</th><th class="n">Prix</th></tr></thead><tbody>`
+            + (cv.manquants || []).map(m => `<tr><td>${tbEsc(m.lot)}</td><td>${tbEsc(m.date || '—')}</td><td class="n">${fmtF(n0(m.montant))}</td></tr>`).join('')
+            + `</tbody></table></div><p class="sub" style="margin-top:.6rem">Correction : dans Menko Immo, vérifier les comptes par défaut (client lots, produit terrain) puis lancer le rattrapage des ventes terrains / logements.</p>` : '');
+      }
+      const divs = `<div class="tb-an" role="group" aria-label="Division"><button type="button" data-tb-div="" aria-pressed="${!TB.division}">Groupe consolidé</button>`
+        + (ex.entites || []).map(e => `<button type="button" data-tb-div="${tbEsc(e.id)}" aria-pressed="${e.id === TB.division}">${tbEsc(String(e.nom).replace(' (sans division)', ''))}</button>`).join('') + `</div>`;
       const row = (lib, e, tot) => `<tr${tot?' class="tot"':''}><td>${tbEsc(lib)}</td><td class="n">${fmtF(n0(e.ca))}</td><td class="n">${fmtF(n0(e.ebe))}</td><td class="n ${cl(n0(e.rex))}">${fmtF(n0(e.rex))}</td><td class="n ${cl(n0(e.rn))}">${fmtF(n0(e.rn))}</td><td class="n">${fmtF(n0(e.treso))}</td><td class="n">${fmtF(n0(e.actif))}</td></tr>`;
       const tab = `<div class="tb-tab tb-tw"><table><thead><tr><th>Division</th><th class="n">Chiffre d'affaires</th><th class="n">EBE</th><th class="n">Résultat d'exploitation</th><th class="n">Résultat net</th><th class="n">Trésorerie</th><th class="n">Total actif</th></tr></thead><tbody>`
         + (ex.entites || []).map(e => row(e.nom + (e.agrege === false ? ' (mise en équivalence)' : e.methode === 'IP' ? ' (' + n0(e.pct) + ' %)' : ''), e, false)).join('')
@@ -1829,9 +1859,10 @@ async function tbCharger(m){
         + `<p class="sub" style="margin-top:.6rem">Société mère : ${tbEsc(ex.mere || '—')}. Données arrêtées au ${tbEsc(maj)}, publiées par Menko Immo. Détail, états complets et éliminations dans Menko Immo > Comptabilité.</p>`;
       r = { kpis:[kF('Chiffre d\'affaires', n0(c.ca)),kF('Résultat d\'exploitation', n0(c.rex)),kF('Résultat net', n0(c.rn)),kF('Trésorerie', n0(c.treso)),kF('Total du bilan', n0(c.actif)),kF('Capitaux propres', n0(c.cp))],
         cartes:[
-          ['tb-12','Comptabilité du groupe — exercice ' + TB.annee, 'SYSCOHADA révisé · même calcul que la consolidation de Menko Immo', an + chips],
+          ['tb-12','Comptabilité du groupe — exercice ' + TB.annee, 'SYSCOHADA révisé · même calcul que la consolidation de Menko Immo', an + divs + (divSel ? `<p class="sub">Division : ${tbEsc(divSel.nom)} — chiffres de l'entité seule, avant éliminations de consolidation.</p>` : '') + chips],
           ['tb-6','Chiffre d\'affaires par division','Après intégration selon la méthode de chaque entité', tbBarresH(E.map(e => [String(e.nom).replace(' (sans division)', ''), Math.max(0, n0(e.ca))]).sort((a,b)=>b[1]-a[1]))],
           ['tb-6','Résultat net par division','Perte en rouge', tbBarresDiv(E.map(e => [String(e.nom).replace(' (sans division)', ''), n0(e.rn)]).sort((a,b)=>b[1]-a[1]))],
+          ...(cv ? [['tb-12','Cohérence ventes ↔ comptabilité','Lots « vendu » de l\'exercice sans écriture de produit : ils n\'apparaissent pas dans le chiffre d\'affaires', cvHtml]] : []),
           ['tb-12','Synthèse par division','Montants en FCFA', tab]] };
     }
   } else {
@@ -1849,7 +1880,9 @@ async function tbCharger(m){
     if (!Array.isArray(rows)) {
       r = { kpis:[['Visiteurs','—'],['Sessions','—'],['Durée moyenne','—']],
         cartes:[['tb-12','Portail client','Fréquentation du portail', sansJeton
-          ? '<p class="tb-empty">Session serveur absente : déconnectez-vous puis reconnectez-vous au hub pour afficher les statistiques du portail.</p>'
+          ? '<p class="tb-empty">Session serveur absente : le jeton n\'est conservé que pour l\'onglet en cours et disparaît à la fermeture ou au rechargement de l\'application. Reconnectez-vous pour afficher les statistiques du portail.</p>'
+            + (() => { let d = ''; try { d = sessionStorage.getItem('menko_hub_diag') || ''; } catch(e){} return d ? '<p class="tb-empty">⚠ La dernière connexion a été validée sur cet appareil seulement : le service hub-sync n\'a pas répondu (' + tbEsc(d) + '). Vérifiez que la fonction hub-sync est déployée et joignable sur Supabase.</p>' : ''; })()
+            + '<p style="text-align:center;margin-top:.8rem"><button type="button" class="btn" onclick="doLogout()">🔄 Se reconnecter</button></p>'
           : '<p class="tb-empty">Journal du portail inaccessible (réseau ou droits). Vérifiez la connexion Supabase dans Paramétrage.</p>']] };
     } else {
       const st = rows.filter(x => x.event_type === 'session_start'), en = rows.filter(x => x.event_type === 'session_end'), tv = rows.filter(x => x.event_type === 'tab_view');
@@ -1889,7 +1922,7 @@ function tbOpen(){
   if (!box.children.length) {
     box.innerHTML = TB_MODS.map(m => `<button type="button" class="tb-pill" data-m="${m[0]}" aria-pressed="false">${m[1]}</button>`).join('');
     box.addEventListener('click', e => { const b = e.target.closest('.tb-pill'); if (b) { TB.mod = b.dataset.m; tbRendre(); } });
-    document.getElementById('tb-grid').addEventListener('click', e => { const b = e.target.closest('[data-tb-an]'); if (b) { TB.annee = b.dataset.tbAn; TB.cache = {}; tbRendre(); } });
+    document.getElementById('tb-grid').addEventListener('click', e => { const b = e.target.closest('[data-tb-an]'); if (b) { TB.annee = b.dataset.tbAn; TB.cache = {}; tbRendre(); return; } const d = e.target.closest('[data-tb-div]'); if (d) { TB.division = d.dataset.tbDiv; TB.cache = {}; tbRendre(); } });
   }
   TB.cache = {}; tbRendre();
 }

@@ -3811,6 +3811,8 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
           <button class="btn btn-secondary" onclick="backfillEcrituresVersements()" title="Génère les écritures comptables manquantes pour les versements déjà saisis">🧾 Générer écritures manquantes</button>
           <button class="btn btn-secondary" onclick="backfillVentesTerrains()" title="Comptabilise les ventes de parcelles (terrains vendus) sans écriture">🗺️ Comptabiliser ventes terrains</button>
           <button class="btn btn-secondary" onclick="backfillVentesLogements()" title="Comptabilise les ventes de logements (maisons/appartements vendus) sans écriture">🏠 Comptabiliser ventes logements</button>
+          <button class="btn btn-secondary" onclick="regulariserStatutsLots()" title="Passe en « vendu » (et comptabilise la vente) les lots dont le souscripteur a atteint le seuil d'immobilisation">🔄 Régulariser les statuts</button>
+          <button class="btn btn-secondary" onclick="reaffecterDivisionsEcritures()" title="Aligne la division des écritures de vente et de versement sur celle du programme du lot">🏷️ Réaffecter les divisions</button>
           <button class="btn btn-primary" onclick="openPaiementModal()">+ Enregistrer un versement</button>
         </div>
 
@@ -37513,6 +37515,69 @@ async function supprimerVenteLogement(lotId) {
   }
 }
 
+/* Régularisation : recalcule le statut des lots de tous les souscripteurs ayant atteint le seuil
+   d'immobilisation mais dont un lot n'est pas « vendu ». Réutilise majStatutLotClient, qui
+   passe le lot en « vendu » et comptabilise la vente (idempotent). */
+async function regulariserStatutsLots() {
+  var seuil = parseFloat((DATA.params || {}).seuil_immobilisation_pct) || 70;
+  var cibles = (DATA.clients || []).filter(function(c){
+    var total = parseFloat(c.montant_total) || 0;
+    if (total <= 0 || totalPayePrix(c.id) / total * 100 < seuil) return false;
+    return _lotIdsDeClient(c).some(function(id){
+      var l = (DATA.lots || []).find(function(x){ return x.id === id; });
+      return l && l.statut !== 'vendu';
+    });
+  });
+  if (!cibles.length) { toast('Aucun lot à régulariser : tous les souscripteurs au seuil sont « vendu ».', 'success'); return; }
+  if (!confirm(cibles.length + ' souscripteur(s) ont atteint ' + seuil + ' % mais leur lot n\'est pas « vendu ».\n\nPasser leurs lots en « vendu » et comptabiliser les ventes (4111/702) ?')) return;
+  var ok = 0, ko = 0;
+  for (var i = 0; i < cibles.length; i++) {
+    try { await majStatutLotClient(cibles[i].id); ok++; }
+    catch (e) { ko++; console.warn('[Régularisation statuts]', cibles[i].id, e); }
+  }
+  if (typeof buildBalance === 'function') buildBalance();
+  if (typeof buildBilan === 'function') buildBilan();
+  if (typeof filterEcritures === 'function') filterEcritures();
+  if (typeof publierSyntheseHub === 'function') publierSyntheseHub();
+  toast(ok + ' souscripteur(s) régularisé(s)' + (ko ? ' · ' + ko + ' en erreur (comptes de vente à paramétrer ?)' : '') + '.', ko ? 'error' : 'success');
+}
+
+/* Réaffectation : aligne la division des écritures de vente (ecr_vente_*) et de versement (ecr_vrs_*)
+   sur celle du programme, pour les écritures créées avant que le programme ait une division.
+   Ne touche jamais une écriture dont le programme n'a pas de division, ni les autres écritures. */
+async function reaffecterDivisionsEcritures() {
+  var maj = [];
+  (DATA.ecritures || []).forEach(function(e){
+    var id = e && e.id ? String(e.id) : '', cible = '';
+    var m = id.match(/^ecr_vente_(?:terrain|logement)_(.+)$/);
+    if (m) {
+      var lot = (DATA.lots || []).find(function(l){ return l.id === m[1]; });
+      cible = lot ? _progDivId(lot.programme_id) : '';
+    } else if (id.indexOf('ecr_vrs_') === 0) {
+      var cli = (DATA.clients || []).find(function(c){ return c.id === e.client_id; });
+      cible = cli ? _divisionClientVersement(cli) : '';
+    }
+    if (cible && (e.division || '') !== cible) maj.push({ e: e, cible: cible });
+  });
+  if (!maj.length) { toast('Aucune écriture à réaffecter : les divisions sont déjà alignées.', 'success'); return; }
+  var avant = maj.filter(function(x){ return !x.e.division; }).length;
+  if (!confirm(maj.length + ' écriture(s) de vente/versement seront rattachées à la division de leur programme (dont ' + avant + ' sans division).\n\nContinuer ?')) return;
+  var ok = 0;
+  for (var i = 0; i < maj.length; i++) {
+    try {
+      maj[i].e.division = maj[i].cible;
+      await dbPut('ecritures', maj[i].e);
+      if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', maj[i].e);
+      ok++;
+    } catch (err) { console.warn('[Réaffectation divisions]', maj[i].e.id, err); }
+  }
+  if (typeof buildBalance === 'function') buildBalance();
+  if (typeof buildBilan === 'function') buildBilan();
+  if (typeof filterEcritures === 'function') filterEcritures();
+  if (typeof publierSyntheseHub === 'function') publierSyntheseHub();
+  toast(ok + ' écriture(s) réaffectée(s)' + (ok < maj.length ? ' · ' + (maj.length - ok) + ' en erreur' : '') + '.', ok < maj.length ? 'error' : 'success');
+}
+
 /* Rattrapage : écritures de vente manquantes pour les logements déjà « vendu »
    au moment où ce correctif est déployé (mêmes principes que backfillVentesTerrains). */
 async function backfillVentesLogements() {
@@ -48019,11 +48084,66 @@ function publierSyntheseHub() {
   try {
     if (typeof DATA === 'undefined' || !DATA || !Array.isArray(DATA.ecritures) || typeof consoCalcul !== 'function') return;
     var an = new Date().getFullYear(), exercices = {};
+    /* Contrôle de cohérence ventes ↔ comptabilité : lots « vendu » sans écriture de produit (702). */
+    var idsEcr = {};
+    DATA.ecritures.forEach(function(e){ if (e && e.id) idsEcr[e.id] = 1; });
+    /* Souscripteurs ayant atteint le seuil d'immobilisation (ou soldé) dont un lot n'est pas passé « vendu ». */
+    var soldesReserves = (function(){
+      var r = { seuil: parseFloat((DATA.params || {}).seuil_immobilisation_pct) || 70, nb: 0, nb_soldes: 0, montant: 0, liste: [] };
+      if (typeof totalPayePrix !== 'function' || typeof _lotIdsDeClient !== 'function') return r;
+      (DATA.clients || []).forEach(function(c){
+        var total = parseFloat(c.montant_total) || 0;
+        if (total <= 0) return;
+        var pct = totalPayePrix(c.id) / total * 100;
+        if (pct < r.seuil) return;
+        var lots = _lotIdsDeClient(c).map(function(id){ return (DATA.lots || []).find(function(l){ return l.id === id; }); }).filter(Boolean);
+        var bloques = lots.filter(function(l){ return l.statut !== 'vendu'; });
+        if (!bloques.length) return;
+        var solde = pct >= 100 - 0.01;
+        r.nb++; if (solde) r.nb_soldes++; r.montant += total;
+        if (r.liste.length < 10) r.liste.push({ client: ((c.nom || '') + ' ' + (c.prenoms || '')).trim(), lots: bloques.map(function(l){ return String(l.numero || l.id); }).join(', '),
+          statut: bloques[0].statut || '', pct: Math.round(pct), solde: solde, montant: Math.round(total) });
+      });
+      r.montant = Math.round(r.montant);
+      return r;
+    })();
+    /* Programmes sans division : leurs ventes tombent sur la ligne « Non affecté » du groupe. */
+    var progsSansDiv = (function(){
+      var r = { nb: 0, nb_lots_vendus: 0, montant_vendu: 0, liste: [] };
+      (DATA.programmes || []).forEach(function(p){
+        if (p.division_id) return;
+        var vendus = (DATA.lots || []).filter(function(l){ return l.programme_id === p.id && l.statut === 'vendu'; });
+        var m = vendus.reduce(function(a, l){ return a + (parseFloat(l.prix) || 0); }, 0);
+        r.nb++; r.nb_lots_vendus += vendus.length; r.montant_vendu += m;
+        r.liste.push({ nom: String(p.nom || p.id), nb_vendus: vendus.length, montant: Math.round(m) });
+      });
+      r.liste.sort(function(a, b){ return b.montant - a.montant; });
+      r.liste = r.liste.slice(0, 10); r.montant_vendu = Math.round(r.montant_vendu);
+      return r;
+    })();
+    var controleVentes = function(annee){
+      var c = { programmes_sans_division: progsSansDiv, soldes_reserves: soldesReserves, nb_vendus: 0, nb_comptabilises: 0, nb_manquants: 0, montant_manquant: 0, nb_prix_nul: 0, manquants: [] };
+      (DATA.lots || []).forEach(function(l){
+        if (!l || l.statut !== 'vendu') return;
+        var a = parseInt(String(l.date_vente || '').slice(0, 4), 10) || an;
+        if (a !== annee) return;
+        c.nb_vendus++;
+        var prix = parseFloat(l.prix) || 0;
+        if (prix <= 0) { c.nb_prix_nul++; return; }
+        var pre = l.nature === 'terrain' ? 'ecr_vente_terrain_' : 'ecr_vente_logement_';
+        if (idsEcr[pre + l.id]) { c.nb_comptabilises++; return; }
+        c.nb_manquants++; c.montant_manquant += prix;
+        if (c.manquants.length < 10) c.manquants.push({ lot: String(l.numero || l.id), montant: Math.round(prix), date: l.date_vente || '' });
+      });
+      c.montant_manquant = Math.round(c.montant_manquant);
+      return c;
+    };
     [an, an - 1].forEach(function(annee){
       var K = consoCalcul(annee);
       if (!K || !K.lignes || !K.lignes.length) return;
       var n = function(v){ v = Number(v); return isFinite(v) ? Math.round(v) : 0; };
       exercices[String(annee)] = {
+        controle_ventes: controleVentes(annee),
         entites: K.lignes.map(function(r){
           return { id: r.id, nom: r.nom, methode: r.methode, pct: n(r.pct), agrege: !!r.agrege,
             ca: n(r.R && r.R.XB), ebe: n(r.R && r.R.XD), rex: n(r.R && r.R.XE), rao: n(r.R && r.R.XG), rhao: n(r.R && r.R.XH), rn: n(r.R && r.R.XI),
