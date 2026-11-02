@@ -1122,8 +1122,12 @@ async function doLogin(){
 
   /* Vérification côté serveur (hub-sync). 401 / 429 sont définitifs ; si le service est injoignable ou
      absent (hors ligne), on retombe sur la vérification locale du hash gardé sur cet appareil. */
-  let srv = null;
-  try { srv = await hubFn('login', { login, password: pass }); } catch(e){ srv = null; }
+  let srv = null, errReseau = '';
+  try { srv = await hubFn('login', { login, password: pass }); } catch(e){ srv = null; errReseau = (e && e.message) || 'réseau'; }
+  try {
+    if (srv && srv.ok && srv.token) sessionStorage.removeItem('menko_hub_diag');
+    else if (!srv || (srv.status !== 401 && srv.status !== 429)) sessionStorage.setItem('menko_hub_diag', srv ? 'HTTP ' + srv.status + (srv.error ? ' (' + srv.error + ')' : '') : errReseau);
+  } catch(e){}
   if (srv && srv.ok && srv.token && srv.user) {
     hubTokSet(srv.token);
     const dbS = await openHoldDB();
@@ -1859,7 +1863,9 @@ async function tbCharger(m){
     if (!Array.isArray(rows)) {
       r = { kpis:[['Visiteurs','—'],['Sessions','—'],['Durée moyenne','—']],
         cartes:[['tb-12','Portail client','Fréquentation du portail', sansJeton
-          ? '<p class="tb-empty">Session serveur absente : déconnectez-vous puis reconnectez-vous au hub pour afficher les statistiques du portail.</p>'
+          ? '<p class="tb-empty">Session serveur absente : le jeton n\'est conservé que pour l\'onglet en cours et disparaît à la fermeture ou au rechargement de l\'application. Reconnectez-vous pour afficher les statistiques du portail.</p>'
+            + (() => { let d = ''; try { d = sessionStorage.getItem('menko_hub_diag') || ''; } catch(e){} return d ? '<p class="tb-empty">⚠ La dernière connexion a été validée sur cet appareil seulement : le service hub-sync n\'a pas répondu (' + tbEsc(d) + '). Vérifiez que la fonction hub-sync est déployée et joignable sur Supabase.</p>' : ''; })()
+            + '<p style="text-align:center;margin-top:.8rem"><button type="button" class="btn" onclick="doLogout()">🔄 Se reconnecter</button></p>'
           : '<p class="tb-empty">Journal du portail inaccessible (réseau ou droits). Vérifiez la connexion Supabase dans Paramétrage.</p>']] };
     } else {
       const st = rows.filter(x => x.event_type === 'session_start'), en = rows.filter(x => x.event_type === 'session_end'), tv = rows.filter(x => x.event_type === 'tab_view');
