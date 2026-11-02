@@ -200,6 +200,27 @@
   .btn-mini:not(.outline):not(.danger) { background:linear-gradient(135deg,var(--or),var(--or-dark)); }
   .badge-role, .badge-on, .badge-off { font-weight:700; }
   @media (max-width:640px){ .params-tabs{margin-inline:0;} }
+
+  /* ── Tableaux de bord (lecture seule) ── */
+  .tb-bar { display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap; margin-bottom:1rem; }
+  .tb-pills { display:flex; gap:.5rem; flex-wrap:wrap; }
+  .tb-pill { border:1px solid var(--bord); background:var(--card); color:var(--ardoise); border-radius:999px; padding:.4rem .9rem; font-size:.82rem; font-weight:600; cursor:pointer; }
+  .tb-pill[aria-pressed="true"] { background:var(--or-dark); border-color:var(--or-dark); color:#fff; }
+  .tb-kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:.8rem; margin-bottom:1rem; }
+  .tb-kpi { background:var(--card); border:1px solid var(--bord); border-radius:14px; padding:.9rem 1rem; }
+  .tb-kpi small { display:block; color:var(--dim); font-size:.7rem; text-transform:uppercase; letter-spacing:.5px; }
+  .tb-kpi b { display:block; font-family:Georgia,serif; font-size:1.45rem; margin-top:.15rem; font-variant-numeric:tabular-nums; }
+  .tb-grid { display:grid; grid-template-columns:repeat(12,1fr); gap:1rem; }
+  .tb-card { background:var(--card); border:1px solid var(--bord); border-radius:14px; padding:1rem 1.1rem; min-width:0; }
+  .tb-card h4 { font-size:.95rem; color:var(--ardoise); margin-bottom:.2rem; }
+  .tb-card p.sub { font-size:.76rem; color:var(--dim); margin-bottom:.5rem; }
+  .tb-8 { grid-column:span 8; } .tb-4 { grid-column:span 4; } .tb-6 { grid-column:span 6; } .tb-12 { grid-column:span 12; }
+  @media (max-width:900px){ .tb-8,.tb-4,.tb-6 { grid-column:span 12; } }
+  .tb-card svg { width:100%; height:auto; display:block; }
+  .tb-card svg text { font-family:'Segoe UI',Arial,sans-serif; fill:var(--dim); font-size:11px; }
+  .tb-empty { color:var(--dim); font-size:.85rem; padding:1rem 0; }
+  .tb-leg { display:flex; gap:.9rem; flex-wrap:wrap; font-size:.74rem; color:var(--dim); margin-top:.3rem; }
+  .tb-leg i { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:.3rem; }
 </style>
 </head>
 <body>
@@ -257,6 +278,7 @@
 <nav class="hub-tabs" id="hub-tabs" role="tablist" aria-label="Sections du hub">
   <button class="hub-tab on" role="tab" data-v="vue">📊 Vue groupe</button>
   <button class="hub-tab" role="tab" data-v="act">🏢 Activités</button>
+  <button class="hub-tab" role="tab" data-v="dash">📈 Tableaux de bord</button>
   <button class="hub-tab" role="tab" data-v="out">🧰 Outils</button>
   <button class="hub-tab" role="tab" data-v="soc">🧱 Socle</button>
 </nav>
@@ -281,6 +303,15 @@
     <div class="hub-sec"><h3>Activités du groupe</h3></div>
     <div class="grid" id="dash-divisions"></div>
     <p class="hub-none" id="hub-none">Aucune activité ne correspond à cette recherche.</p>
+  </div>
+
+  <div id="hub-dash" style="display:none;">
+    <div class="tb-bar">
+      <div class="tb-pills" id="tb-pills" role="group" aria-label="Activité"></div>
+      <span class="modal-hint" style="margin:0">Lecture seule · 12 derniers mois</span>
+    </div>
+    <div class="tb-kpis" id="tb-kpis"></div>
+    <div class="tb-grid" id="tb-grid"></div>
   </div>
 
   <div id="hub-out" style="display:none;">
@@ -1464,11 +1495,12 @@ async function initDash(){
   const $ = id => document.getElementById(id);
   const dt = $('hub-date');
   if (dt) dt.textContent = 'Pilotage unique des activités · ' + new Date().toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
-  const vues = {vue:['hub-vue','hub-act'], act:['hub-act'], out:['hub-out'], soc:['hub-soc']};
-  const tous = ['hub-vue','hub-act','hub-out','hub-soc'];
+  const vues = {vue:['hub-vue','hub-act'], act:['hub-act'], dash:['hub-dash'], out:['hub-out'], soc:['hub-soc']};
+  const tous = ['hub-vue','hub-act','hub-dash','hub-out','hub-soc'];
   function show(v){
     document.querySelectorAll('.hub-tab').forEach(t => t.classList.toggle('on', t.dataset.v === v));
     tous.forEach(id => { const el = $(id); if (el) el.style.display = vues[v].includes(id) ? '' : 'none'; });
+    if (v === 'dash') tbOpen();
   }
   $('hub-tabs').addEventListener('click', e => { const b = e.target.closest('.hub-tab'); if (b) show(b.dataset.v); });
   const q = $('hub-q');
@@ -1486,6 +1518,128 @@ async function initDash(){
     if (e.key === '/' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); q.focus(); }
   });
 })();
+// ══ Tableaux de bord (lecture seule : aucune saisie, aucune écriture) ══
+const TB = { mod:'immo', cache:{} };
+const TB_MODS = [['immo','🏗️ Menko Immo'],['agro','🌾 Menko Agro'],['digitech','💻 Menko Digitech'],['portail','🌐 Portail client']];
+const TB_MOIS = ['Jan','Fév','Mar','Avr','Mai','Jui','Juil','Août','Sep','Oct','Nov','Déc'];
+function tbEsc(x){ return String(x == null ? '' : x).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function tbMois12(){
+  const out = [], d = new Date(); d.setDate(1);
+  for (let i = 11; i >= 0; i--) { const x = new Date(d.getFullYear(), d.getMonth() - i, 1);
+    out.push({ k: x.getFullYear() + '-' + String(x.getMonth()+1).padStart(2,'0'), l: TB_MOIS[x.getMonth()] }); }
+  return out;
+}
+function tbSerie(rows, champDate, champMontant){
+  const m = tbMois12(), t = {}; m.forEach(x => t[x.k] = 0);
+  (rows||[]).forEach(r => { const k = String(r[champDate]||'').slice(0,7); if (k in t) t[k] += champMontant ? (Number(champMontant(r))||0) : 1; });
+  return { labels: m.map(x => x.l), vals: m.map(x => t[x.k]) };
+}
+// lecture IndexedDB d'un magasin : getAll (stores simples) — jamais d'écriture
+function tbLire(dbName, stores){
+  return new Promise(res => {
+    const out = {}; stores.forEach(s => out[s] = []);
+    let req; try { req = indexedDB.open(dbName); } catch(e){ return res(out); }
+    req.onsuccess = e => {
+      const db = e.target.result; let n = 0;
+      const fin = () => { if (++n === stores.length) { db.close(); res(out); } };
+      stores.forEach(s => {
+        if (!db.objectStoreNames.contains(s)) return fin();
+        try { db.transaction(s,'readonly').objectStore(s).getAll().onsuccess = ev => { out[s] = ev.target.result || []; fin(); }; }
+        catch(err){ fin(); }
+      });
+    };
+    req.onerror = () => res(out);
+    req.onupgradeneeded = e => { e.target.transaction.abort(); res(out); };
+  });
+}
+function tbKV(dbName){
+  return new Promise(res => {
+    let req; try { req = indexedDB.open(dbName); } catch(e){ return res({}); }
+    req.onsuccess = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('kv')) { db.close(); return res({}); }
+      db.transaction('kv','readonly').objectStore('kv').get('data').onsuccess = ev => { db.close(); res((ev.target.result && ev.target.result.v) || {}); };
+    };
+    req.onerror = () => res({});
+    req.onupgradeneeded = e => { e.target.transaction.abort(); res({}); };
+  });
+}
+// ── Graphiques SVG sans dépendance (fonctionnent hors-ligne) ──
+const TBC = ['#B87333','#2a7a4a','#3b5b92','#8a6bb0','#c8a24a'];
+function tbAbr(n){ n = Math.abs(n); return n >= 1e9 ? (n/1e9).toFixed(1).replace('.0','')+' Md' : n >= 1e6 ? (n/1e6).toFixed(1).replace('.0','')+' M' : n >= 1e3 ? Math.round(n/1e3)+' k' : String(Math.round(n)); }
+function tbHisto(labels, vals, couleur){
+  const W=640,H=260,L=46,B=28,T=12,R=10, max = Math.max(...vals, 1), pw=W-L-R, ph=H-T-B, bw=pw/vals.length;
+  let g='';
+  for (let i=0;i<=4;i++){ const y=T+ph-ph*i/4; g+=`<line x1="${L}" x2="${W-R}" y1="${y}" y2="${y}" stroke="#e6e6ef"/><text x="${L-6}" y="${y+4}" text-anchor="end">${tbAbr(max*i/4)}</text>`; }
+  vals.forEach((v,i)=>{ const h=ph*v/max, x=L+i*bw+bw*.18;
+    g+=`<rect x="${x}" y="${T+ph-h}" width="${bw*.64}" height="${Math.max(h,0)}" rx="5" fill="${couleur||TBC[0]}"><title>${tbEsc(labels[i])} : ${new Intl.NumberFormat('fr-FR').format(Math.round(v))}</title></rect><text x="${x+bw*.32}" y="${H-10}" text-anchor="middle">${tbEsc(labels[i])}</text>`; });
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Histogramme">${g}</svg>`;
+}
+function tbAnneau(items){
+  const tot = items.reduce((s,x)=>s+x[1],0); if (!tot) return '<p class="tb-empty">Aucune donnée.</p>';
+  const R=70, C=2*Math.PI*R; let off=0, g='';
+  items.forEach((x,i)=>{ const l=C*x[1]/tot; g+=`<circle r="${R}" cx="100" cy="100" fill="none" stroke="${TBC[i%5]}" stroke-width="26" stroke-dasharray="${l} ${C-l}" stroke-dashoffset="${-off}" transform="rotate(-90 100 100)"><title>${tbEsc(x[0])} : ${x[1]}</title></circle>`; off+=l; });
+  g+=`<text x="100" y="104" text-anchor="middle" style="font-size:22px;font-weight:700;fill:#1C1C2E">${tot}</text>`;
+  return `<svg viewBox="0 0 200 200" style="max-width:230px;margin:0 auto" role="img" aria-label="Répartition">${g}</svg><div class="tb-leg">${items.map((x,i)=>`<span><i style="background:${TBC[i%5]}"></i>${tbEsc(x[0])} (${x[1]})</span>`).join('')}</div>`;
+}
+function tbBarresH(rows, pct){
+  if (!rows.length) return '<p class="tb-empty">Aucune donnée.</p>';
+  const W=520,rh=30,H=rows.length*rh+8,L=150, max = pct ? 100 : Math.max(...rows.map(r=>r[1]),1);
+  let g='';
+  rows.forEach((r,i)=>{ const y=4+i*rh, w=(W-L-50)*r[1]/max;
+    g+=`<text x="${L-8}" y="${y+16}" text-anchor="end">${tbEsc(String(r[0]).slice(0,22))}</text><rect x="${L}" y="${y+4}" width="${Math.max(w,0)}" height="16" rx="5" fill="${pct&&r[1]<50?TBC[4]:TBC[pct?1:0]}"/><text x="${L+w+6}" y="${y+16}">${pct? r[1]+' %' : tbAbr(r[1])}</text>`; });
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Barres">${g}</svg>`;
+}
+async function tbCharger(m){
+  if (TB.cache[m]) return TB.cache[m];
+  let r;
+  if (m === 'immo') {
+    const d = await tbLire('ImmoSuiteDB',['clients','programmes','lots','versements']);
+    const ser = tbSerie(d.versements,'date',v=>v.montant);
+    const total = d.versements.reduce((s,v)=>s+(Number(v.montant)||0),0);
+    const st = {disponible:0,reserve:0,vendu:0}; d.lots.forEach(l => { if (l.statut in st) st[l.statut]++; });
+    const prog = d.programmes.map(p => { const ls=d.lots.filter(l=>l.programme_id===p.id); const v=ls.filter(l=>l.statut==='vendu').length; return [p.nom||p.libelle||'Programme', ls.length ? Math.round(100*v/ls.length) : 0, ls.length]; }).filter(x=>x[2]>0).sort((a,b)=>b[1]-a[1]).slice(0,8);
+    const types = {}; d.versements.forEach(v => { const k=v.type||'autre'; types[k]=(types[k]||0)+(Number(v.montant)||0); });
+    r = { kpis:[['Clients',d.clients.length],['Programmes',d.programmes.length],['Versements cumulés',fmtF(total)],['Lots vendus',st.vendu+' / '+d.lots.length],['Lots disponibles',st.disponible]],
+      cartes:[
+       ['tb-8','Versements par mois','Encaissements des 12 derniers mois', tbHisto(ser.labels, ser.vals)],
+       ['tb-4','Lots par statut','Part de chaque statut', tbAnneau([['Vendus',st.vendu],['Réservés',st.reserve],['Disponibles',st.disponible]])],
+       ['tb-6','Avancement des ventes par programme','% de lots vendus', tbBarresH(prog,true)],
+       ['tb-6','Versements par type','Montant cumulé', tbBarresH(Object.entries(types).sort((a,b)=>b[1]-a[1]).slice(0,6))]] };
+  } else if (m === 'agro') {
+    const d = await tbKV('MenkoAgroDB');
+    const ser = tbSerie(d.ventes,'date',v=>(Number(v.qte)||0)*(Number(v.prixUnitaire||v.prix)||0));
+    const ca = ser.vals.reduce((a,b)=>a+b,0);
+    r = { kpis:[['Clients',(d.clients||[]).length],['Productions',(d.productions||[]).length],['Ventes (12 mois)',fmtF(ca)]],
+      cartes:[['tb-12','Ventes par mois','Chiffre d\'affaires des 12 derniers mois', ca ? tbHisto(ser.labels, ser.vals, TBC[1]) : '<p class="tb-empty">Activité non ouverte : le graphe se remplira à la première vente.</p>']] };
+  } else if (m === 'digitech') {
+    const d = await tbKV('MenkoDigitechDB');
+    const ser = tbSerie(d.factures,'date',v=>v.montant);
+    const ca = ser.vals.reduce((a,b)=>a+b,0);
+    r = { kpis:[['Projets',(d.projets||[]).length],['Licences',(d.licences||[]).length],['CA (12 mois)',fmtF(ca)]],
+      cartes:[['tb-12','Facturation par mois','CA des 12 derniers mois', ca ? tbHisto(ser.labels, ser.vals, TBC[2]) : '<p class="tb-empty">Activité non ouverte : le graphe se remplira à la première facture.</p>']] };
+  } else {
+    r = { kpis:[['Comptes actifs','—'],['Connexions (30 j)','—'],['Souscriptions en ligne','—']],
+      cartes:[['tb-12','Portail client','Fréquentation, espaces utilisés, souscriptions en ligne',
+        '<p class="tb-empty">Aucune donnée de fréquentation n\'est encore enregistrée. Le portail doit journaliser ses connexions (table Supabase dédiée, protégée par RLS) avant d\'alimenter ce tableau.</p>']] };
+  }
+  TB.cache[m] = r; return r;
+}
+async function tbRendre(){
+  document.querySelectorAll('.tb-pill').forEach(b => b.setAttribute('aria-pressed', b.dataset.m === TB.mod));
+  const r = await tbCharger(TB.mod);
+  document.getElementById('tb-kpis').innerHTML = r.kpis.map(k => `<div class="tb-kpi"><small>${tbEsc(k[0])}</small><b>${tbEsc(k[1])}</b></div>`).join('');
+  document.getElementById('tb-grid').innerHTML = r.cartes.map(c => `<div class="tb-card ${c[0]}"><h4>${tbEsc(c[1])}</h4><p class="sub">${tbEsc(c[2])}</p>${c[3]}</div>`).join('');
+}
+function tbOpen(){
+  const box = document.getElementById('tb-pills');
+  if (!box.children.length) {
+    box.innerHTML = TB_MODS.map(m => `<button type="button" class="tb-pill" data-m="${m[0]}" aria-pressed="false">${m[1]}</button>`).join('');
+    box.addEventListener('click', e => { const b = e.target.closest('.tb-pill'); if (b) { TB.mod = b.dataset.m; tbRendre(); } });
+  }
+  TB.cache = {}; tbRendre();
+}
+
 // ── Démarrage : exécuté en dernier, une fois DIVISIONS/APP_PATHS déclarés ──
 (async function boot(){
   const session = localStorage.getItem(SESSION_KEY);
