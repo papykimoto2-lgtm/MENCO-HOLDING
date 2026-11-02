@@ -1553,6 +1553,7 @@ async function initDash(){
   });
   const bp = document.getElementById('adm-params'); if (bp) bp.style.display = isAdminSession() ? '' : 'none';
   document.getElementById('chip-act').textContent = actives + ' / ' + vues.length + ' activité(s) ouverte(s)';
+  majAlerteVentilation();
 }
 
 // ── Hub v2 : onglets, recherche, date (graphique uniquement) ──
@@ -1587,7 +1588,7 @@ async function initDash(){
 })();
 // ══ Tableaux de bord (lecture seule : aucune saisie, aucune écriture) ══
 const TB = { mod:'immo', cache:{}, annee:String(new Date().getFullYear()) };
-const TB_MODS = [['immo','🏗️ Menko Immo'],['agro','🌾 Menko Agro'],['digitech','💻 Menko Digitech'],['compta','📒 Compta groupe'],['portail','🌐 Portail client']];
+const TB_MODS = [['immo','🏗️ Menko Immo'],['agro','🌾 Menko Agro'],['digitech','💻 Menko Digitech'],['caisse','💰 Caisses'],['compta','📒 Compta groupe'],['portail','🌐 Portail client']];
 const TB_MOIS = ['Jan','Fév','Mar','Avr','Mai','Jui','Juil','Août','Sep','Oct','Nov','Déc'];
 function tbEsc(x){ return String(x == null ? '' : x).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function tbMois12(){
@@ -1674,6 +1675,55 @@ function tbSynthese(){
   let sy = null; try { sy = JSON.parse(localStorage.getItem('menko_synthese_compta') || 'null'); } catch(e){}
   return (sy && sy.v === 1 && sy.exercices && typeof sy.exercices === 'object') ? sy : null;
 }
+// ── Suivi de la ventilation des caisses (lecture seule, données d'Immo sur cet appareil) ──
+const VENT_HIST_KEY = 'menko_ventilation_hist';
+async function tbCaisseCalc(){
+  const d = await tbLire('ImmoSuiteDB', ['caisse_mouvements','caisses','divisions','ecritures']);
+  const mv = d.caisse_mouvements || [];
+  const caisses = {}; (d.caisses || []).forEach(c => caisses[c.id] = c);
+  const divNom = {}; (d.divisions || []).forEach(x => divNom[x.id] = x.nom || x.libelle || x.id);
+  const ecr = new Set((d.ecritures || []).map(e => e.id));
+  const auj = new Date(); auj.setHours(12,0,0,0);
+  const age = dt => { const t = Date.parse(String(dt || '').slice(0,10) + 'T12:00:00'); return isNaN(t) ? 0 : Math.max(0, Math.round((auj - t) / 86400000)); };
+  // à ventiler = statut enregistré « a_ventiler » (ou sans statut ni compte ventilé), hors mouvements rejetés
+  const aV = mv.filter(m => m.rejete !== true && (m.statut === 'a_ventiler' || (!m.statut && !m.compte_ventile)));
+  const effectif = m => !m.requiert_validation || m.valide === true;       // même règle qu'Immo
+  const par = {};
+  aV.forEach(m => {
+    const k = m.caisse_id || '?', c = caisses[k] || {}, mt = Number(m.montant) || 0;
+    const r = par[k] || (par[k] = { nom:c.nom || c.libelle || 'Caisse inconnue', div:divNom[c.division_id || c.division] || '—', nb:0, prets:0, att:0, ent:0, sor:0, plus:'' });
+    r.nb++; effectif(m) ? r.prets++ : r.att++;
+    m.type === 'entree' ? (r.ent += mt) : (r.sor += mt);
+    const dt = String(m.date || '').slice(0,10); if (dt && (!r.plus || dt < r.plus)) r.plus = dt;
+  });
+  const lignes = Object.values(par).sort((a,b) => (a.plus || '9') < (b.plus || '9') ? -1 : 1);
+  const tot = lignes.reduce((t,r) => (t.nb += r.nb, t.prets += r.prets, t.att += r.att, t.ent += r.ent, t.sor += r.sor, t), { nb:0, prets:0, att:0, ent:0, sor:0 });
+  const plusAncien = lignes.reduce((m,r) => r.plus && (!m || r.plus < m) ? r.plus : m, '');
+  const casses = mv.filter(m => m.statut === 'ventile' && m.ecriture_id && !ecr.has(m.ecriture_id)).length;
+  const mois = tbSerie(aV, 'date', null);
+  // Historique : un point par jour, pour voir l'arriéré diminuer
+  let hist = []; try { hist = JSON.parse(localStorage.getItem(VENT_HIST_KEY) || '[]'); if (!Array.isArray(hist)) hist = []; } catch(e){ hist = []; }
+  if (mv.length) {
+    const j = new Date().toISOString().slice(0,10), pt = { j, nb:tot.nb, mt:Math.round(tot.ent + tot.sor) };
+    const i = hist.findIndex(x => x.j === j); i >= 0 ? (hist[i] = pt) : hist.push(pt);
+    hist = hist.slice(-120); try { localStorage.setItem(VENT_HIST_KEY, JSON.stringify(hist)); } catch(e){}
+  }
+  return { total:mv.length, nb:tot.nb, tot, lignes, plusAncien, ageMax:plusAncien ? age(plusAncien) : 0, casses, mois, hist, age };
+}
+async function majAlerteVentilation(){
+  const chip = document.getElementById('chip-alert'); if (!chip) return;
+  try {
+    if (!tbPeutVoirCompta()) return;
+    const v = await tbCaisseCalc();
+    if (!v.total) return;                                  // aucune donnée de caisse sur cet appareil : on ne dit rien
+    if (v.nb > 0) {
+      chip.className = 'hub-chip warn'; chip.style.cursor = 'pointer'; chip.setAttribute('role', 'button'); chip.tabIndex = 0;
+      chip.textContent = '⚠ ' + v.nb + ' mouvement(s) de caisse à ventiler · le plus ancien date de ' + v.ageMax + ' j';
+      const go = () => { TB.mod = 'caisse'; if (window.hubShow) window.hubShow('dash'); };
+      chip.onclick = go; chip.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
+    }
+  } catch(e){}
+}
 async function tbCharger(m){
   if (TB.cache[m]) return TB.cache[m];
   let r;
@@ -1702,6 +1752,32 @@ async function tbCharger(m){
     const ca = ser.vals.reduce((a,b)=>a+b,0);
     r = { kpis:[['Projets',(d.projets||[]).length],['Licences',(d.licences||[]).length],['CA (12 mois)',fmtF(ca)]],
       cartes:[['tb-12','Facturation par mois','CA des 12 derniers mois', ca ? tbHisto(ser.labels, ser.vals, TBC[2]) : '<p class="tb-empty">Activité non ouverte : le graphe se remplira à la première facture.</p>']] };
+  } else if (m === 'caisse') {
+    if (!tbPeutVoirCompta()) {
+      r = { kpis:[['Accès','—']], cartes:[['tb-12','Ventilation des caisses','Suivi de l\'arriéré','<p class="tb-empty">Accès réservé aux rôles autorisés sur Menko Immo.</p>']] };
+    } else {
+      const v = await tbCaisseCalc();
+      if (!v.total) {
+        r = { kpis:[['À ventiler','—'],['Montant','—'],['Plus ancien','—']],
+          cartes:[['tb-12','Ventilation des caisses','Suivi de l\'arriéré','<p class="tb-empty">Aucun mouvement de caisse sur cet appareil. Ouvrez Menko Immo une fois, connecté : ses données se synchronisent ici.</p>']] };
+      } else {
+        const t = v.tot, n0 = x => Number(x) || 0;
+        const tab = `<div class="tb-tab tb-tw"><table><thead><tr><th>Caisse</th><th>Division</th><th class="n">À ventiler</th><th class="n">Prêts</th><th class="n">À valider d'abord</th><th class="n">Entrées</th><th class="n">Sorties</th><th class="n">Plus ancien</th><th class="n">Âge</th></tr></thead><tbody>`
+          + v.lignes.map(l => `<tr><td>${tbEsc(l.nom)}</td><td>${tbEsc(l.div)}</td><td class="n">${l.nb}</td><td class="n pos">${l.prets}</td><td class="n ${l.att ? 'neg' : ''}">${l.att}</td><td class="n">${fmtF(l.ent)}</td><td class="n">${fmtF(l.sor)}</td><td class="n">${tbEsc(l.plus ? l.plus.split('-').reverse().join('/') : '—')}</td><td class="n ${v.age(l.plus) > 60 ? 'neg' : ''}">${l.plus ? v.age(l.plus) + ' j' : '—'}</td></tr>`).join('')
+          + `<tr class="tot"><td>Total</td><td></td><td class="n">${t.nb}</td><td class="n">${t.prets}</td><td class="n">${t.att}</td><td class="n">${fmtF(t.ent)}</td><td class="n">${fmtF(t.sor)}</td><td class="n"></td><td class="n"></td></tr></tbody></table></div>`
+          + `<p class="sub" style="margin-top:.6rem">« Prêts » : mouvements effectifs (validés ou sans validation requise), ventilables tout de suite. « À valider d'abord » : validation requise et pas encore donnée. Les mouvements rejetés sont exclus. La ventilation se fait dans Menko Immo, module Caisse.</p>`;
+        const histPts = v.hist.slice(-30);
+        const evo = histPts.length >= 2
+          ? tbHisto(histPts.map(x => x.j.slice(8,10) + '/' + x.j.slice(5,7)), histPts.map(x => n0(x.nb)), TBC[2])
+          : '<p class="tb-empty">L\'historique se constitue à chaque ouverture du hub : un point par jour. Revenez demain pour voir la tendance.</p>';
+        r = { kpis:[['À ventiler', String(t.nb)],['Montant (entrées + sorties)', fmtF(t.ent + t.sor)],['Prêts à ventiler', String(t.prets)],['À valider d\'abord', String(t.att)],['Plus ancien', v.plusAncien ? v.ageMax + ' j' : '—'],['Liens cassés', String(v.casses)]],
+          cartes:[
+            ['tb-12','Arriéré de ventilation par caisse','Du plus ancien au plus récent : commencer par le haut du tableau', t.nb ? tab : '<p class="tb-empty">Aucun mouvement à ventiler : toutes les caisses sont à jour.</p>'],
+            ['tb-6','Arriéré par mois du mouvement','Nombre de mouvements non ventilés, sur 12 mois', t.nb ? tbHisto(v.mois.labels, v.mois.vals, TBC[0]) : '<p class="tb-empty">Rien à afficher.</p>'],
+            ['tb-6','Évolution de l\'arriéré','Nombre de mouvements à ventiler, un point par jour d\'ouverture du hub', evo],
+            ...(v.casses ? [['tb-12','Liens cassés','Mouvements ventilés dont l\'écriture comptable est introuvable','<p class="tb-empty">' + v.casses + ' mouvement(s) ventilé(s) pointent vers une écriture absente. À réparer dans Menko Immo : recréer l\'écriture ou rattacher le mouvement.</p>']] : [])] };
+      }
+    }
   } else if (m === 'compta') {
     // Synthèse comptable groupe / division : publiée par Menko Immo (même calcul que sa consolidation), lecture seule.
     const sy = tbSynthese(), n0 = x => Number(x) || 0;
@@ -1771,7 +1847,7 @@ async function tbCharger(m){
 }
 async function tbRendre(){
   document.querySelectorAll('.tb-pill').forEach(b => b.setAttribute('aria-pressed', b.dataset.m === TB.mod));
-  const nt = document.getElementById('tb-note'); if (nt) nt.textContent = TB.mod === 'compta' ? 'Lecture seule · exercice comptable' : 'Lecture seule · 12 derniers mois';
+  const nt = document.getElementById('tb-note'); if (nt) nt.textContent = TB.mod === 'compta' ? 'Lecture seule · exercice comptable' : TB.mod === 'caisse' ? 'Lecture seule · état actuel' : 'Lecture seule · 12 derniers mois';
   const r = await tbCharger(TB.mod);
   document.getElementById('tb-kpis').innerHTML = r.kpis.map(k => `<div class="tb-kpi"><small>${tbEsc(k[0])}</small><b>${tbEsc(k[1])}</b></div>`).join('');
   document.getElementById('tb-grid').innerHTML = r.cartes.map(c => `<div class="tb-card ${c[0]}"><h4>${tbEsc(c[1])}</h4><p class="sub">${tbEsc(c[2])}</p>${c[3]}</div>`).join('');
