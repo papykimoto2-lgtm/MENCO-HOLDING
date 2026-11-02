@@ -3811,6 +3811,7 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
           <button class="btn btn-secondary" onclick="backfillEcrituresVersements()" title="Génère les écritures comptables manquantes pour les versements déjà saisis">🧾 Générer écritures manquantes</button>
           <button class="btn btn-secondary" onclick="backfillVentesTerrains()" title="Comptabilise les ventes de parcelles (terrains vendus) sans écriture">🗺️ Comptabiliser ventes terrains</button>
           <button class="btn btn-secondary" onclick="backfillVentesLogements()" title="Comptabilise les ventes de logements (maisons/appartements vendus) sans écriture">🏠 Comptabiliser ventes logements</button>
+          <button class="btn btn-secondary" onclick="regulariserStatutsLots()" title="Passe en « vendu » (et comptabilise la vente) les lots dont le souscripteur a atteint le seuil d'immobilisation">🔄 Régulariser les statuts</button>
           <button class="btn btn-primary" onclick="openPaiementModal()">+ Enregistrer un versement</button>
         </div>
 
@@ -37511,6 +37512,33 @@ async function supprimerVenteLogement(lotId) {
   if (DATA.ecritures.some(function(e){ return e.id === ecrId; })) {
     await deleteRecord('ecritures', ecrId, { skipIntegrity: true });
   }
+}
+
+/* Régularisation : recalcule le statut des lots de tous les souscripteurs ayant atteint le seuil
+   d'immobilisation mais dont un lot n'est pas « vendu ». Réutilise majStatutLotClient, qui
+   passe le lot en « vendu » et comptabilise la vente (idempotent). */
+async function regulariserStatutsLots() {
+  var seuil = parseFloat((DATA.params || {}).seuil_immobilisation_pct) || 70;
+  var cibles = (DATA.clients || []).filter(function(c){
+    var total = parseFloat(c.montant_total) || 0;
+    if (total <= 0 || totalPayePrix(c.id) / total * 100 < seuil) return false;
+    return _lotIdsDeClient(c).some(function(id){
+      var l = (DATA.lots || []).find(function(x){ return x.id === id; });
+      return l && l.statut !== 'vendu';
+    });
+  });
+  if (!cibles.length) { toast('Aucun lot à régulariser : tous les souscripteurs au seuil sont « vendu ».', 'success'); return; }
+  if (!confirm(cibles.length + ' souscripteur(s) ont atteint ' + seuil + ' % mais leur lot n\'est pas « vendu ».\n\nPasser leurs lots en « vendu » et comptabiliser les ventes (4111/702) ?')) return;
+  var ok = 0, ko = 0;
+  for (var i = 0; i < cibles.length; i++) {
+    try { await majStatutLotClient(cibles[i].id); ok++; }
+    catch (e) { ko++; console.warn('[Régularisation statuts]', cibles[i].id, e); }
+  }
+  if (typeof buildBalance === 'function') buildBalance();
+  if (typeof buildBilan === 'function') buildBilan();
+  if (typeof filterEcritures === 'function') filterEcritures();
+  if (typeof publierSyntheseHub === 'function') publierSyntheseHub();
+  toast(ok + ' souscripteur(s) régularisé(s)' + (ko ? ' · ' + ko + ' en erreur (comptes de vente à paramétrer ?)' : '') + '.', ko ? 'error' : 'success');
 }
 
 /* Rattrapage : écritures de vente manquantes pour les logements déjà « vendu »
