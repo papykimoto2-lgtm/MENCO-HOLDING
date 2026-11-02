@@ -238,6 +238,19 @@
   .adm-card .soon-b { font-size:.65rem; background:var(--bord); color:var(--dim); padding:.15rem .5rem; border-radius:20px; font-family:'Segoe UI',Arial,sans-serif; }
   .socle-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:.7rem; }
   .socle-grid div { background:var(--card); border:1px solid var(--bord); border-radius:12px; padding:.75rem .9rem; font-size:.83rem; }
+
+  .tb-chips { display:flex; gap:.5rem; flex-wrap:wrap; margin:.3rem 0 .6rem; }
+  .tb-chip { font-size:.78rem; font-weight:600; padding:.3rem .75rem; border-radius:99px; border:1px solid var(--bord); background:var(--card); }
+  .tb-chip.ok { background:#e3f3ea; color:var(--vert); border-color:transparent; } .tb-chip.ko { background:#fbe4e2; color:#b3261e; border-color:transparent; } .tb-chip.wa { background:#fdf0d8; color:#a15c00; border-color:transparent; }
+  .tb-an { display:flex; gap:.4rem; flex-wrap:wrap; }
+  .tb-an button { border:1px solid var(--bord); background:var(--card); color:var(--ardoise); border-radius:99px; padding:.25rem .8rem; font-size:.8rem; font-weight:600; cursor:pointer; }
+  .tb-an button[aria-pressed="true"] { background:var(--or-dark); border-color:var(--or-dark); color:#fff; }
+  .tb-tab table { width:100%; border-collapse:collapse; font-size:.83rem; }
+  .tb-tab th { text-align:left; color:var(--dim); font-size:.66rem; text-transform:uppercase; letter-spacing:.5px; padding:.4rem .5rem; border-bottom:1px solid var(--bord); white-space:nowrap; }
+  .tb-tab td { padding:.5rem; border-bottom:1px solid var(--bord); }
+  .tb-tab th.n, .tb-tab td.n { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .tb-tab td.neg { color:#b3261e; } .tb-tab td.pos { color:var(--vert); } .tb-tab tr.tot td { font-weight:700; background:rgba(184,115,51,.07); }
+  .tb-tw { overflow-x:auto; }
 </style>
 </head>
 <body>
@@ -329,11 +342,11 @@
           <p>Site public du groupe : programmes, catalogue, souscription en ligne et espaces clients (souscripteur, apporteur, locataire, diaspora…).</p>
           <span class="go">Ouvrir le portail</span>
         </a>
-        <a class="adm-card" style="--c:#0b3b4c" href="menko-immo.html#comptabilite" onclick="return lancerApp('immo', event)">
+        <button type="button" class="adm-card" style="--c:#0b3b4c" onclick="ouvrirSyntheseCompta()">
           <div class="ic">📒</div><h4>Comptabilité du groupe</h4>
-          <p>Comptabilité SYSCOHADA du groupe et de ses divisions, intégrée à Menko Immo : balance, grand livre, états financiers et consolidation avec éliminations.</p>
-          <span class="go">Ouvrir la comptabilité</span>
-        </a>
+          <p>Synthèse SYSCOHADA du groupe et de chaque division, directement dans le hub : chiffre d'affaires, résultats, trésorerie, total du bilan et contrôles de consolidation.</p>
+          <span class="go">Voir la synthèse</span>
+        </button>
         <div class="adm-card soon" style="--c:#7c3aed" aria-disabled="true">
           <div class="ic">🤝</div><h4>CRM du groupe <span class="soon-b">à venir</span></h4>
           <p>Une fiche unique par personne dans toutes les activités : historique, segments, impayés, relances et tâches de suivi.</p>
@@ -359,7 +372,7 @@
   <div id="hub-dash" style="display:none;">
     <div class="tb-bar">
       <div class="tb-pills" id="tb-pills" role="group" aria-label="Activité"></div>
-      <span class="modal-hint" style="margin:0">Lecture seule · 12 derniers mois</span>
+      <span class="modal-hint" style="margin:0" id="tb-note">Lecture seule · 12 derniers mois</span>
     </div>
     <div class="tb-kpis" id="tb-kpis"></div>
     <div class="tb-grid" id="tb-grid"></div>
@@ -1554,6 +1567,7 @@ async function initDash(){
     tous.forEach(id => { const el = $(id); if (el) el.style.display = vues[v].includes(id) ? '' : 'none'; });
     if (v === 'dash') tbOpen();
   }
+  window.hubShow = show;
   $('hub-tabs').addEventListener('click', e => { const b = e.target.closest('.hub-tab'); if (b) show(b.dataset.v); });
   const q = $('hub-q');
   q.addEventListener('input', () => {
@@ -1572,8 +1586,8 @@ async function initDash(){
   });
 })();
 // ══ Tableaux de bord (lecture seule : aucune saisie, aucune écriture) ══
-const TB = { mod:'immo', cache:{} };
-const TB_MODS = [['immo','🏗️ Menko Immo'],['agro','🌾 Menko Agro'],['digitech','💻 Menko Digitech'],['portail','🌐 Portail client']];
+const TB = { mod:'immo', cache:{}, annee:String(new Date().getFullYear()) };
+const TB_MODS = [['immo','🏗️ Menko Immo'],['agro','🌾 Menko Agro'],['digitech','💻 Menko Digitech'],['compta','📒 Compta groupe'],['portail','🌐 Portail client']];
 const TB_MOIS = ['Jan','Fév','Mar','Avr','Mai','Jui','Juil','Août','Sep','Oct','Nov','Déc'];
 function tbEsc(x){ return String(x == null ? '' : x).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function tbMois12(){
@@ -1643,6 +1657,23 @@ function tbBarresH(rows, pct){
     g+=`<text x="${L-8}" y="${y+16}" text-anchor="end">${tbEsc(String(r[0]).slice(0,22))}</text><rect x="${L}" y="${y+4}" width="${Math.max(w,0)}" height="16" rx="5" fill="${pct&&r[1]<50?TBC[4]:TBC[pct?1:0]}"/><text x="${L+w+6}" y="${y+16}">${pct? r[1]+' %' : tbAbr(r[1])}</text>`; });
   return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Barres">${g}</svg>`;
 }
+function tbBarresDiv(rows){
+  if (!rows.length) return '<p class="tb-empty">Aucune donnée.</p>';
+  const W=520,rh=30,H=rows.length*rh+8,L=150,pw=W-L-110, mx=Math.max(...rows.map(r=>Math.abs(r[1])),1), neg=rows.some(r=>r[1]<0), x0=L+(neg?pw/2:0), half=neg?pw/2:pw;
+  let g=neg?`<line x1="${x0}" x2="${x0}" y1="0" y2="${H}" stroke="#d6d6e2"/>`:'';
+  rows.forEach((r,i)=>{ const y=4+i*rh, w=half*Math.abs(r[1])/mx, x=r[1]<0?x0-w:x0;
+    g+=`<text x="${L-8}" y="${y+16}" text-anchor="end">${tbEsc(String(r[0]).slice(0,22))}</text><rect x="${x}" y="${y+4}" width="${Math.max(w,0)}" height="16" rx="5" fill="${r[1]<0?'#b3261e':TBC[1]}"/><text x="${r[1]<0?x-6:x0+w+6}" y="${y+16}" text-anchor="${r[1]<0?'end':'start'}">${tbAbr(r[1])}${r[1]<0?' (−)':''}</text>`; });
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Barres">${g}</svg>`;
+}
+function ouvrirSyntheseCompta(){ TB.mod = 'compta'; if (window.hubShow) window.hubShow('dash'); }
+function tbPeutVoirCompta(){
+  const u = currentSession(); if (u.role === 'admin') return true;
+  const d = getHubRoles()[u.role]; return !d || !d.activites || d.activites.includes('immo');
+}
+function tbSynthese(){
+  let sy = null; try { sy = JSON.parse(localStorage.getItem('menko_synthese_compta') || 'null'); } catch(e){}
+  return (sy && sy.v === 1 && sy.exercices && typeof sy.exercices === 'object') ? sy : null;
+}
 async function tbCharger(m){
   if (TB.cache[m]) return TB.cache[m];
   let r;
@@ -1671,6 +1702,38 @@ async function tbCharger(m){
     const ca = ser.vals.reduce((a,b)=>a+b,0);
     r = { kpis:[['Projets',(d.projets||[]).length],['Licences',(d.licences||[]).length],['CA (12 mois)',fmtF(ca)]],
       cartes:[['tb-12','Facturation par mois','CA des 12 derniers mois', ca ? tbHisto(ser.labels, ser.vals, TBC[2]) : '<p class="tb-empty">Activité non ouverte : le graphe se remplira à la première facture.</p>']] };
+  } else if (m === 'compta') {
+    // Synthèse comptable groupe / division : publiée par Menko Immo (même calcul que sa consolidation), lecture seule.
+    const sy = tbSynthese(), n0 = x => Number(x) || 0;
+    if (!tbPeutVoirCompta()) {
+      r = { kpis:[['Accès','—']], cartes:[['tb-12','Comptabilité du groupe','Synthèse groupe / division','<p class="tb-empty">Accès réservé aux rôles autorisés sur Menko Immo.</p>']] };
+    } else if (!sy) {
+      r = { kpis:[['Chiffre d\'affaires','—'],['Résultat net','—'],['Trésorerie','—']],
+        cartes:[['tb-12','Comptabilité du groupe','Synthèse groupe / division','<p class="tb-empty">Aucune synthèse publiée sur cet appareil. Ouvrez Menko Immo une fois, connecté : il publie sa synthèse comptable au hub quelques secondes après la connexion.</p>']] };
+    } else {
+      const ans = Object.keys(sy.exercices).sort().reverse();
+      if (!ans.includes(String(TB.annee))) TB.annee = ans[0];
+      const ex = sy.exercices[TB.annee], c = ex.conso || {}, E = (ex.entites || []).filter(e => e.agrege !== false);
+      const cl = v => v < 0 ? 'neg' : v > 0 ? 'pos' : '';
+      const maj = sy.maj ? new Date(sy.maj).toLocaleString('fr-FR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }) : '—';
+      const bilanOk = Math.abs(n0(c.actif) - n0(c.passif)) < 1, ecart = n0(ex.ecart_reciprocite);
+      const chips = `<div class="tb-chips"><span class="tb-chip ${bilanOk?'ok':'ko'}">${bilanOk?'✔ Bilan équilibré':'⚠ Bilan déséquilibré : écart '+fmtF(n0(c.actif)-n0(c.passif))}</span>`
+        + `<span class="tb-chip ${Math.abs(ecart)<1000?'ok':'ko'}">${Math.abs(ecart)<1000?'✔ Comptes de liaison réciproques':'⚠ Écart de réciprocité '+fmtF(Math.abs(ecart))}</span>`
+        + `<span class="tb-chip">Éliminations : ${fmtF(n0(ex.elim_liaison))}</span>`
+        + (n0(c.minoritaires) ? `<span class="tb-chip wa">Minoritaires : ${fmtF(c.minoritaires)}</span>` : '') + `</div>`;
+      const an = `<div class="tb-an" role="group" aria-label="Exercice">` + ans.map(a => `<button type="button" data-tb-an="${tbEsc(a)}" aria-pressed="${a === String(TB.annee)}">${tbEsc(a)}</button>`).join('') + `</div>`;
+      const row = (lib, e, tot) => `<tr${tot?' class="tot"':''}><td>${tbEsc(lib)}</td><td class="n">${fmtF(n0(e.ca))}</td><td class="n">${fmtF(n0(e.ebe))}</td><td class="n ${cl(n0(e.rex))}">${fmtF(n0(e.rex))}</td><td class="n ${cl(n0(e.rn))}">${fmtF(n0(e.rn))}</td><td class="n">${fmtF(n0(e.treso))}</td><td class="n">${fmtF(n0(e.actif))}</td></tr>`;
+      const tab = `<div class="tb-tab tb-tw"><table><thead><tr><th>Division</th><th class="n">Chiffre d'affaires</th><th class="n">EBE</th><th class="n">Résultat d'exploitation</th><th class="n">Résultat net</th><th class="n">Trésorerie</th><th class="n">Total actif</th></tr></thead><tbody>`
+        + (ex.entites || []).map(e => row(e.nom + (e.agrege === false ? ' (mise en équivalence)' : e.methode === 'IP' ? ' (' + n0(e.pct) + ' %)' : ''), e, false)).join('')
+        + row('Groupe consolidé', { ca:c.ca, ebe:c.ebe, rex:c.rex, rn:c.rn, treso:c.treso, actif:c.actif }, true) + `</tbody></table></div>`
+        + `<p class="sub" style="margin-top:.6rem">Société mère : ${tbEsc(ex.mere || '—')}. Données arrêtées au ${tbEsc(maj)}, publiées par Menko Immo. Détail, états complets et éliminations dans Menko Immo > Comptabilité.</p>`;
+      r = { kpis:[['Chiffre d\'affaires', fmtF(n0(c.ca))],['Résultat d\'exploitation', fmtF(n0(c.rex))],['Résultat net', fmtF(n0(c.rn))],['Trésorerie', fmtF(n0(c.treso))],['Total du bilan', fmtF(n0(c.actif))],['Capitaux propres', fmtF(n0(c.cp))]],
+        cartes:[
+          ['tb-12','Comptabilité du groupe — exercice ' + TB.annee, 'SYSCOHADA révisé · même calcul que la consolidation de Menko Immo', an + chips],
+          ['tb-6','Chiffre d\'affaires par division','Après intégration selon la méthode de chaque entité', tbBarresH(E.map(e => [e.nom, Math.max(0, n0(e.ca))]).sort((a,b)=>b[1]-a[1]))],
+          ['tb-6','Résultat net par division','Perte en rouge', tbBarresDiv(E.map(e => [e.nom, n0(e.rn)]).sort((a,b)=>b[1]-a[1]))],
+          ['tb-12','Synthèse par division','Montants en FCFA', tab]] };
+    }
   } else {
     // Journal du portail : table pi_portail_analytics (session_start / tab_view / session_end). Aucune donnée personnelle.
     let rows = null;
@@ -1708,6 +1771,7 @@ async function tbCharger(m){
 }
 async function tbRendre(){
   document.querySelectorAll('.tb-pill').forEach(b => b.setAttribute('aria-pressed', b.dataset.m === TB.mod));
+  const nt = document.getElementById('tb-note'); if (nt) nt.textContent = TB.mod === 'compta' ? 'Lecture seule · exercice comptable' : 'Lecture seule · 12 derniers mois';
   const r = await tbCharger(TB.mod);
   document.getElementById('tb-kpis').innerHTML = r.kpis.map(k => `<div class="tb-kpi"><small>${tbEsc(k[0])}</small><b>${tbEsc(k[1])}</b></div>`).join('');
   document.getElementById('tb-grid').innerHTML = r.cartes.map(c => `<div class="tb-card ${c[0]}"><h4>${tbEsc(c[1])}</h4><p class="sub">${tbEsc(c[2])}</p>${c[3]}</div>`).join('');
@@ -1717,6 +1781,7 @@ function tbOpen(){
   if (!box.children.length) {
     box.innerHTML = TB_MODS.map(m => `<button type="button" class="tb-pill" data-m="${m[0]}" aria-pressed="false">${m[1]}</button>`).join('');
     box.addEventListener('click', e => { const b = e.target.closest('.tb-pill'); if (b) { TB.mod = b.dataset.m; tbRendre(); } });
+    document.getElementById('tb-grid').addEventListener('click', e => { const b = e.target.closest('[data-tb-an]'); if (b) { TB.annee = b.dataset.tbAn; TB.cache = {}; tbRendre(); } });
   }
   TB.cache = {}; tbRendre();
 }

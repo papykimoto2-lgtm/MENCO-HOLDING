@@ -30491,6 +30491,7 @@ async function doLogin() {
   document.getElementById('user-name').textContent   = user.nom;
   document.getElementById('user-avatar').textContent = user.nom[0].toUpperCase();
   goTo(pageInitiale());
+  try { setTimeout(function(){ if (typeof publierSyntheseHub === 'function') publierSyntheseHub(); }, 6000); } catch(e){}
 
   /* Pull silencieux en arrière-plan : récupère les données cloud sans bloquer l'UI.
      Délai 1,5 s pour laisser le dashboard se rendre avant la mise à jour. */
@@ -47943,6 +47944,40 @@ async function sauverPerimetreConso() {
   document.getElementById('modal-conso-perim').classList.remove('open');
   toast('Périmètre de consolidation enregistré.', 'success');
 }
+
+/* ── Synthèse comptable publiée au hub du groupe (lecture seule) ──
+   Même calcul que la consolidation ci-dessous (consoCalcul) : le hub affiche donc exactement les chiffres d'Immo.
+   Stockée dans localStorage (menko_synthese_compta) : agrégats par division et consolidés, aucune écriture comptable. */
+var _synthHubEnCours = false;
+function publierSyntheseHub() {
+  if (_synthHubEnCours) return;
+  _synthHubEnCours = true;
+  try {
+    if (typeof DATA === 'undefined' || !DATA || !Array.isArray(DATA.ecritures) || typeof consoCalcul !== 'function') return;
+    var an = new Date().getFullYear(), exercices = {};
+    [an, an - 1].forEach(function(annee){
+      var K = consoCalcul(annee);
+      if (!K || !K.lignes || !K.lignes.length) return;
+      var n = function(v){ v = Number(v); return isFinite(v) ? Math.round(v) : 0; };
+      exercices[String(annee)] = {
+        entites: K.lignes.map(function(r){
+          return { id: r.id, nom: r.nom, methode: r.methode, pct: n(r.pct), agrege: !!r.agrege,
+            ca: n(r.R && r.R.XB), ebe: n(r.R && r.R.XD), rex: n(r.R && r.R.XE), rao: n(r.R && r.R.XG), rhao: n(r.R && r.R.XH), rn: n(r.R && r.R.XI),
+            actif: n(r.A && r.A.BZ && r.A.BZ.n), passif: n(r.B && r.B.DZ), treso: n(r.B && r.B.BT), cp: n(r.B && r.B.CP) };
+        }),
+        conso: { ca: n(K.conso.XB), ebe: n(K.conso.XD), rex: n(K.conso.XE), rao: n(K.conso.XG), rhao: n(K.conso.XH), rn: n(K.conso.XI),
+          actif: n(K.conso.BZ), passif: n(K.conso.DZ), treso: n(K.conso.BT), cp: n(K.conso.CP), goodwill: n(K.conso.goodwill), minoritaires: n(K.conso.minoritaires) },
+        elim_liaison: n(K.elimRec),
+        ecart_reciprocite: n(K.elim.reciproques.reduce(function(a, x){ return a + x.solde; }, 0)),
+        mere: K.mere ? K.mere.nom : ''
+      };
+    });
+    localStorage.setItem('menko_synthese_compta', JSON.stringify({ v: 1, maj: new Date().toISOString(),
+      societe: (DATA.params && DATA.params.societe) || '', nb_ecritures: DATA.ecritures.length, exercices: exercices }));
+  } catch (e) { /* jamais bloquant */ }
+  finally { _synthHubEnCours = false; }
+}
+setInterval(function(){ try { if (typeof DATA !== 'undefined' && DATA && DATA.ecritures && DATA.ecritures.length) publierSyntheseHub(); } catch (e) {} }, 15 * 60 * 1000);
 
 /* ── États consolidés : tableau de passage entité → cumul → élim. → conso ── */
 function genererConsolidation() {
@@ -94369,6 +94404,7 @@ async function startApp() {
        tenter la synchro de la migration. */
     setTimeout(function(){ migratePasswords().catch(function(){}); }, 2000);
     goTo(pageInitiale());
+    try { setTimeout(function(){ if (typeof publierSyntheseHub === 'function') publierSyntheseHub(); }, 6000); } catch(e){}
     /* Démarrage Realtime après login */
     try { setTimeout(startRealtime, 1500); } catch(e){}
   } else {
