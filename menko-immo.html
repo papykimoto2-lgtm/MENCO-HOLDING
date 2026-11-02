@@ -47569,7 +47569,14 @@ function _lfSoldes(annee, divF) {
     if (!_depuis(e)) return;
     ecrLignes(e).forEach(function(l){
       var c = String(l.compte || ''); if (!c) return;
-      s[c] = (s[c] || 0) + (l.sens === 'D' ? 1 : -1) * (parseFloat(l.montant) || 0);
+      var cle = c;
+      /* Clients (41) et fournisseurs (40) : un solde par TIERS (clé « compte§tiers »). Le préfixe du compte est
+         conservé, donc les totaux par préfixe restent identiques ; mais le classement compte par compte peut
+         séparer les tiers débiteurs (actif) des tiers créditeurs (passif), comme la page Bilan. */
+      if ((c.indexOf('40') === 0 || c.indexOf('41') === 0) && typeof _lettRacine === 'function' && _lettRacine(c)) {
+        var tid = ecrTiersLigne(e, l); if (tid) cle = c + '§' + tid;
+      }
+      s[cle] = (s[cle] || 0) + (l.sens === 'D' ? 1 : -1) * (parseFloat(l.montant) || 0);
     });
   });
   return s;
@@ -47640,8 +47647,8 @@ function _lfCalc(annee, divF) {
 
   B.BA = _lfD(s, ['485','488']);
   B.BB = _lfD(s, ['31','32','33','34','35','36','37','38']) + _lfC(s, ['39']);
-  B.BH = _lfD(s, ['409']);
-  B.BI = _lfD(s, ['41'], ['419']) + _lfC(s, ['491']);
+  B.BH = _lfD(s, ['409']) + _lfSoldeDeb(s, ['40'], ['409']);          /* avances versées + fournisseurs débiteurs (par tiers) */
+  B.BI = _lfSoldeDeb(s, ['41'], ['419']) + _lfC(s, ['491']);         /* clients débiteurs (par tiers) */
   B.BJ = _lfSoldeDeb(s, ['42','43','44','45','46','47'], ['485','488','478','479']) + _lfC(s, ['492','493','494','495','496','497','498']);
   B.BG = B.BH + B.BI + B.BJ;
   B.BK = B.BA + B.BB + B.BG;
@@ -47717,8 +47724,8 @@ function _lfCalc(annee, divF) {
   B.DD = B.DA + B.DB + B.DC;
   B.DF = B.CP + B.DD;
   B.DH = _lfC(s, ['481','482','484']);
-  B.DI = _lfC(s, ['419']);
-  B.DJ = _lfC(s, ['40'], ['409']);
+  B.DI = _lfC(s, ['419']) + _lfSoldeCre(s, ['41'], ['419']);           /* avances reçues + clients créditeurs (par tiers) */
+  B.DJ = _lfSoldeCre(s, ['40'], ['409']);                              /* fournisseurs créditeurs (par tiers) */
   B.DK = _lfSoldeCre(s, ['42','43','44'], ['409']);
   B.DM = _lfSoldeCre(s, ['45','46','47'], ['478','479','481','482','484']);
   B.DN = _lfC(s, ['499','599']);
@@ -47762,8 +47769,8 @@ function _lfCalc2(annee, divF) {
 
   act('BA', ['485','488'], null);
   act('BB', ['31','32','33','34','35','36','37','38'], ['39']);
-  act('BH', ['409'], null);
-  act('BI', ['41'], ['491'], ['419']);
+  A.BH = { b: _lfD(s, ['409']) + _lfSoldeDeb(s, ['40'], ['409']), a: 0 }; A.BH.n = A.BH.b;
+  A.BI = { b: _lfSoldeDeb(s, ['41'], ['419']), a: _lfAmo(s, ['491']) }; A.BI.n = A.BI.b - A.BI.a;
   /* BJ : comptes 42 à 47 À SOLDE DÉBITEUR seulement (les soldes créditeurs sont au passif, DK / DM) ; 478 (BU) et 479 (DV) ont leur propre ligne. */
   A.BJ = { b: _lfSoldeDeb(s, ['42','43','44','45','46','47'], ['485','488','478','479']), a: _lfAmo(s, ['492','493','494','495','496','497','498']) };
   A.BJ.n = A.BJ.b - A.BJ.a;
