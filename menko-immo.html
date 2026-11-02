@@ -47551,7 +47551,8 @@ function _lfSoldes(annee, divF) {
   var s = {};
   var _depuis = ecrFiltreDepuisOuverture(parseInt(annee, 10), divF);
   (DATA.ecritures || []).forEach(function(e){
-    if (divF && e.division !== divF) return;
+    if (divF === DIV_SANS) { if (e.division) return; }
+    else if (divF && e.division !== divF) return;
     if (!e.date || e.date >= (parseInt(annee, 10) + 1) + '-01-01') return;
     if (!_depuis(e)) return;
     ecrLignes(e).forEach(function(l){
@@ -47851,6 +47852,24 @@ function consoCalcul(annee) {
     lignes.push(row);
   });
 
+  /* Écritures SANS division : elles n'appartenaient à aucune entité et sortaient donc de la consolidation sans
+     avertissement (chiffre d'affaires et charges manquants). Elles sont regroupées sur une ligne « Non affecté »,
+     intégrée à 100 %, ajoutée EN DERNIER (la société mère reste une vraie entité). */
+  var nonAffecte = null;
+  (function(){
+    var dep = ecrFiltreDepuisOuverture(annee, DIV_SANS), nb = 0;
+    (DATA.ecritures || []).forEach(function(e){
+      if (e.division || !e.date || e.date >= (parseInt(annee, 10) + 1) + '-01-01' || !dep(e)) return;
+      nb++;
+    });
+    if (!nb) return;
+    var calc = _lfCalc2(annee, DIV_SANS);
+    if (!Object.keys(calc.s).some(function(c){ return Math.abs(calc.s[c]) >= 1; })) return;
+    nonAffecte = { nb: nb };
+    lignes.push({ id: DIV_SANS, nom: 'Non affecté (sans division)', methode: 'IG', pct: 100, quote: 1,
+      B: calc.B, A: calc.A, R: calc.R, s: calc.s, agrege: true, nonAffecte: true });
+  })();
+
   function cum(k, src) {
     return lignes.reduce(function(a, r){
       if (!r.agrege) return a;
@@ -47878,7 +47897,7 @@ function consoCalcul(annee) {
   var goodwill = 0, minoritaires = 0;
   if (mere) {
     lignes.forEach(function(r){
-      if (!r.agrege || r.id === mere.id) return;
+      if (!r.agrege || r.id === mere.id || r.nonAffecte) return;   /* « Non affecté » n'est pas une filiale */
       var q = (parseFloat(r.pct) || 100) / 100;
       var cpFille = r.B.CP || 0;
       var quotePart = cpFille * q;
@@ -47907,7 +47926,7 @@ function consoCalcul(annee) {
   conso.CP_groupe = (totalAgrege.CP || 0) - minoritaires - (mere ? _consoSolde(mere.s, ['26']) : 0) + goodwill;
 
   return { annee: annee, cfg: cfg, lignes: lignes, agrege: totalAgrege, elim: elim,
-    elimRec: elimRecMontant, conso: conso, mere: mere };
+    elimRec: elimRecMontant, conso: conso, mere: mere, nonAffecte: nonAffecte };
 }
 
 /* ── Paramétrage du périmètre ── */
@@ -47985,6 +48004,7 @@ function publierSyntheseHub() {
         }),
         conso: { ca: n(K.conso.XB), ebe: n(K.conso.XD), rex: n(K.conso.XE), rao: n(K.conso.XG), rhao: n(K.conso.XH), rn: n(K.conso.XI),
           actif: n(K.conso.BZ), passif: n(K.conso.DZ), treso: n(K.conso.BT), cp: n(K.conso.CP), goodwill: n(K.conso.goodwill), minoritaires: n(K.conso.minoritaires) },
+        sans_division: n(K.nonAffecte ? K.nonAffecte.nb : 0),
         elim_liaison: n(K.elimRec),
         ecart_reciprocite: n(K.elim.reciproques.reduce(function(a, x){ return a + x.solde; }, 0)),
         mere: K.mere ? K.mere.nom : ''
@@ -48085,6 +48105,7 @@ function genererConsolidation() {
     + '<div style="text-align:center;"><h1>COMPTES CONSOLIDÉS DU GROUPE</h1>'
     + '<div>SYSCOHADA révisé · Exercice clos le 31/12/' + annee + ' · Montants en FCFA</div></div>'
     + '<div style="text-align:right;font-size:8.5px;">Société mère :<br>' + escHtml(K.mere ? K.mere.nom : '—') + '</div></div>'
+    + (K.nonAffecte ? '<div class="ctrl ko">⚠ ' + K.nonAffecte.nb + ' écriture(s) sans division sont regroupées dans la colonne « Non affecté (sans division) ». Affectez-leur une division pour une consolidation par entité exacte.</div>' : '')
     + bilan + resultat + notes
     + '<div style="margin-top:10px;font-size:8.5px;color:#555;">Consolidation établie par agrégation des comptes sociaux de chaque entité, '
     + 'élimination des soldes portés sur les comptes de liaison intra-groupe et des titres de participation détenus au sein du périmètre. '
@@ -49305,6 +49326,8 @@ function genererLiasseFiscale() {
    division, on part de son dernier à-nouveau ; en vue consolidée, du dernier à-nouveau
    consolidé ou de celui de la division de l'écriture. Sans à-nouveau (jamais clôturé,
    ou reprise par bilan d'ouverture), tout l'historique est cumulé comme avant. */
+/* Pseudo-division : écritures SANS division (voir consoCalcul, ligne « Non affecté »). */
+var DIV_SANS = '__sans_division__';
 function ecrFiltreDepuisOuverture(an, divF) {
   var kCons = 0, kDiv = {};
   (DATA.ecritures || []).forEach(function(e){
@@ -49314,8 +49337,12 @@ function ecrFiltreDepuisOuverture(an, divF) {
     var d = e.division || '';
     if (d) kDiv[d] = Math.max(kDiv[d] || 0, k); else kCons = Math.max(kCons, k);
   });
+  /* Écritures sans division : leur historique est repris par le dernier à-nouveau du groupe (quelle que soit
+     la division qui le porte), sinon on le compterait deux fois avec le bilan d'ouverture. */
+  var kTous = Object.keys(kDiv).reduce(function(m, k){ return Math.max(m, kDiv[k]); }, kCons);
   return function(e) {
     var y = parseInt(String(e.date).slice(0, 4), 10);
+    if (divF === DIV_SANS) return y >= kTous;
     var d = e.division || '';
     var depuis = Math.max(divF ? 0 : kCons, d ? (kDiv[d] || 0) : 0);
     return y >= depuis;
