@@ -76,3 +76,23 @@ test('versement en espèces rattaché à une session clôturée : bon marqué et
     assert.equal(r.ecart, -250000);
   } finally { await app.fermer(); }
 });
+
+test('INC-0018 : comptage réel = solde « si tout validé » figé à la clôture → bon déjà compté, pas de rattachement à la session suivante', async () => {
+  const app = await ouvrirApp();
+  try {
+    await app.page.evaluate(function () {
+      const clot = new Date(Date.now() - 3 * 3600000).toISOString();
+      DATA.caisse_sessions = [{ id: 's1', caisse_id: 'c1', date: new Date().toISOString().slice(0, 10), statut: 'cloturee', fond_ouverture: 1000, fond_cloture_theorique: 1000, fond_cloture_reel: 600, fond_cloture_si_valide: 600, ecart: -400,
+        mvts_attente_a_la_cloture: ['m1'], ouverte_par: 'T', ouverte_par_id: 'u1', ouverte_le: new Date(Date.now() - 8 * 3600000).toISOString(), cloturee_le: clot }];
+      DATA.caisse_mouvements = [{ id: 'm1', session_id: 's1', caisse_id: 'c1', type: 'sortie', montant: 400, requiert_validation: true, valide: false, numero: 'S1', motif: 'Transport', beneficiaire: 'Chauffeur', created_at: new Date(Date.now() - 4 * 3600000).toISOString() }];
+    });
+    const r = await app.page.evaluate(async function () {
+      const m = DATA.caisse_mouvements[0];
+      APP.currentUser = { id: 'u2', nom: 'Valideur', role: 'comptable' };
+      m.valide = true; m.valide_le = new Date().toISOString();
+      await caisseRecalculerSiCloturee(m);
+      return { session: m.session_id, attente: m.en_attente_session, ecart: DATA.caisse_sessions[0].ecart };
+    });
+    assert.deepEqual([r.session, r.attente, r.ecart], ['s1', undefined, 0]);
+  } finally { await app.fermer(); }
+});
