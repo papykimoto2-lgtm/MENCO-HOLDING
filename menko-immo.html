@@ -48019,11 +48019,32 @@ function publierSyntheseHub() {
   try {
     if (typeof DATA === 'undefined' || !DATA || !Array.isArray(DATA.ecritures) || typeof consoCalcul !== 'function') return;
     var an = new Date().getFullYear(), exercices = {};
+    /* Contrôle de cohérence ventes ↔ comptabilité : lots « vendu » sans écriture de produit (702). */
+    var idsEcr = {};
+    DATA.ecritures.forEach(function(e){ if (e && e.id) idsEcr[e.id] = 1; });
+    var controleVentes = function(annee){
+      var c = { nb_vendus: 0, nb_comptabilises: 0, nb_manquants: 0, montant_manquant: 0, nb_prix_nul: 0, manquants: [] };
+      (DATA.lots || []).forEach(function(l){
+        if (!l || l.statut !== 'vendu') return;
+        var a = parseInt(String(l.date_vente || '').slice(0, 4), 10) || an;
+        if (a !== annee) return;
+        c.nb_vendus++;
+        var prix = parseFloat(l.prix) || 0;
+        if (prix <= 0) { c.nb_prix_nul++; return; }
+        var pre = l.nature === 'terrain' ? 'ecr_vente_terrain_' : 'ecr_vente_logement_';
+        if (idsEcr[pre + l.id]) { c.nb_comptabilises++; return; }
+        c.nb_manquants++; c.montant_manquant += prix;
+        if (c.manquants.length < 10) c.manquants.push({ lot: String(l.numero || l.id), montant: Math.round(prix), date: l.date_vente || '' });
+      });
+      c.montant_manquant = Math.round(c.montant_manquant);
+      return c;
+    };
     [an, an - 1].forEach(function(annee){
       var K = consoCalcul(annee);
       if (!K || !K.lignes || !K.lignes.length) return;
       var n = function(v){ v = Number(v); return isFinite(v) ? Math.round(v) : 0; };
       exercices[String(annee)] = {
+        controle_ventes: controleVentes(annee),
         entites: K.lignes.map(function(r){
           return { id: r.id, nom: r.nom, methode: r.methode, pct: n(r.pct), agrege: !!r.agrege,
             ca: n(r.R && r.R.XB), ebe: n(r.R && r.R.XD), rex: n(r.R && r.R.XE), rao: n(r.R && r.R.XG), rhao: n(r.R && r.R.XH), rn: n(r.R && r.R.XI),
