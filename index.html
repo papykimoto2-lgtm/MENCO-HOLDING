@@ -1593,7 +1593,7 @@ async function initDash(){
   });
 })();
 // ══ Tableaux de bord (lecture seule : aucune saisie, aucune écriture) ══
-const TB = { mod:'immo', cache:{}, annee:String(new Date().getFullYear()) };
+const TB = { mod:'immo', cache:{}, annee:String(new Date().getFullYear()), division:'' };
 const TB_MODS = [['immo','🏗️ Menko Immo'],['agro','🌾 Menko Agro'],['digitech','💻 Menko Digitech'],['caisse','💰 Caisses'],['compta','📒 Compta groupe'],['portail','🌐 Portail client']];
 const TB_MOIS = ['Jan','Fév','Mar','Avr','Mai','Jui','Juil','Août','Sep','Oct','Nov','Déc'];
 function tbEsc(x){ return String(x == null ? '' : x).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -1800,7 +1800,10 @@ async function tbCharger(m){
     } else {
       const ans = Object.keys(sy.exercices).sort().reverse();
       if (!ans.includes(String(TB.annee))) TB.annee = ans[0];
-      const ex = sy.exercices[TB.annee], c = ex.conso || {}, E = (ex.entites || []).filter(e => e.agrege !== false);
+      const ex = sy.exercices[TB.annee], E = (ex.entites || []).filter(e => e.agrege !== false);
+      if (TB.division && !(ex.entites || []).some(e => e.id === TB.division)) TB.division = '';
+      const divSel = TB.division ? (ex.entites || []).find(e => e.id === TB.division) : null;
+      const c = divSel ? { ca:divSel.ca, ebe:divSel.ebe, rex:divSel.rex, rn:divSel.rn, treso:divSel.treso, actif:divSel.actif, passif:divSel.passif, cp:divSel.cp } : (ex.conso || {});
       const cl = v => v < 0 ? 'neg' : v > 0 ? 'pos' : '';
       const maj = sy.maj ? new Date(sy.maj).toLocaleString('fr-FR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }) : '—';
       const bilanOk = Math.abs(n0(c.actif) - n0(c.passif)) < 1, ecart = n0(ex.ecart_reciprocite);
@@ -1826,6 +1829,8 @@ async function tbCharger(m){
             + (cv.manquants || []).map(m => `<tr><td>${tbEsc(m.lot)}</td><td>${tbEsc(m.date || '—')}</td><td class="n">${fmtF(n0(m.montant))}</td></tr>`).join('')
             + `</tbody></table></div><p class="sub" style="margin-top:.6rem">Correction : dans Menko Immo, vérifier les comptes par défaut (client lots, produit terrain) puis lancer le rattrapage des ventes terrains / logements.</p>` : '');
       }
+      const divs = `<div class="tb-an" role="group" aria-label="Division"><button type="button" data-tb-div="" aria-pressed="${!TB.division}">Groupe consolidé</button>`
+        + (ex.entites || []).map(e => `<button type="button" data-tb-div="${tbEsc(e.id)}" aria-pressed="${e.id === TB.division}">${tbEsc(String(e.nom).replace(' (sans division)', ''))}</button>`).join('') + `</div>`;
       const row = (lib, e, tot) => `<tr${tot?' class="tot"':''}><td>${tbEsc(lib)}</td><td class="n">${fmtF(n0(e.ca))}</td><td class="n">${fmtF(n0(e.ebe))}</td><td class="n ${cl(n0(e.rex))}">${fmtF(n0(e.rex))}</td><td class="n ${cl(n0(e.rn))}">${fmtF(n0(e.rn))}</td><td class="n">${fmtF(n0(e.treso))}</td><td class="n">${fmtF(n0(e.actif))}</td></tr>`;
       const tab = `<div class="tb-tab tb-tw"><table><thead><tr><th>Division</th><th class="n">Chiffre d'affaires</th><th class="n">EBE</th><th class="n">Résultat d'exploitation</th><th class="n">Résultat net</th><th class="n">Trésorerie</th><th class="n">Total actif</th></tr></thead><tbody>`
         + (ex.entites || []).map(e => row(e.nom + (e.agrege === false ? ' (mise en équivalence)' : e.methode === 'IP' ? ' (' + n0(e.pct) + ' %)' : ''), e, false)).join('')
@@ -1833,7 +1838,7 @@ async function tbCharger(m){
         + `<p class="sub" style="margin-top:.6rem">Société mère : ${tbEsc(ex.mere || '—')}. Données arrêtées au ${tbEsc(maj)}, publiées par Menko Immo. Détail, états complets et éliminations dans Menko Immo > Comptabilité.</p>`;
       r = { kpis:[kF('Chiffre d\'affaires', n0(c.ca)),kF('Résultat d\'exploitation', n0(c.rex)),kF('Résultat net', n0(c.rn)),kF('Trésorerie', n0(c.treso)),kF('Total du bilan', n0(c.actif)),kF('Capitaux propres', n0(c.cp))],
         cartes:[
-          ['tb-12','Comptabilité du groupe — exercice ' + TB.annee, 'SYSCOHADA révisé · même calcul que la consolidation de Menko Immo', an + chips],
+          ['tb-12','Comptabilité du groupe — exercice ' + TB.annee, 'SYSCOHADA révisé · même calcul que la consolidation de Menko Immo', an + divs + (divSel ? `<p class="sub">Division : ${tbEsc(divSel.nom)} — chiffres de l'entité seule, avant éliminations de consolidation.</p>` : '') + chips],
           ['tb-6','Chiffre d\'affaires par division','Après intégration selon la méthode de chaque entité', tbBarresH(E.map(e => [String(e.nom).replace(' (sans division)', ''), Math.max(0, n0(e.ca))]).sort((a,b)=>b[1]-a[1]))],
           ['tb-6','Résultat net par division','Perte en rouge', tbBarresDiv(E.map(e => [String(e.nom).replace(' (sans division)', ''), n0(e.rn)]).sort((a,b)=>b[1]-a[1]))],
           ...(cv ? [['tb-12','Cohérence ventes ↔ comptabilité','Lots « vendu » de l\'exercice sans écriture de produit : ils n\'apparaissent pas dans le chiffre d\'affaires', cvHtml]] : []),
@@ -1894,7 +1899,7 @@ function tbOpen(){
   if (!box.children.length) {
     box.innerHTML = TB_MODS.map(m => `<button type="button" class="tb-pill" data-m="${m[0]}" aria-pressed="false">${m[1]}</button>`).join('');
     box.addEventListener('click', e => { const b = e.target.closest('.tb-pill'); if (b) { TB.mod = b.dataset.m; tbRendre(); } });
-    document.getElementById('tb-grid').addEventListener('click', e => { const b = e.target.closest('[data-tb-an]'); if (b) { TB.annee = b.dataset.tbAn; TB.cache = {}; tbRendre(); } });
+    document.getElementById('tb-grid').addEventListener('click', e => { const b = e.target.closest('[data-tb-an]'); if (b) { TB.annee = b.dataset.tbAn; TB.cache = {}; tbRendre(); return; } const d = e.target.closest('[data-tb-div]'); if (d) { TB.division = d.dataset.tbDiv; TB.cache = {}; tbRendre(); } });
   }
   TB.cache = {}; tbRendre();
 }
