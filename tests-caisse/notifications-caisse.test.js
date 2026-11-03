@@ -88,3 +88,20 @@ test('envoi automatique : un e-mail par destinataire, une seule fois par périod
     assert.deepEqual(r.dernier, ['s1']);
   } finally { await app.fermer(); }
 });
+
+test('envoi automatique : en mode serveur le navigateur n\'envoie rien (évite les doublons)', async () => {
+  const app = await ouvrirApp();
+  try {
+    await amorcer(app.page);
+    const r = await app.page.evaluate(async function () {
+      var envois = [];
+      window.emailjs = { init: function () {}, send: function (s, t, d) { envois.push(d); return Promise.resolve(); } };
+      window.caisseRoleAdminLike = function () { return true; };
+      DATA.params = DATA.params || {}; DATA.params.emailjs_service = 's'; DATA.params.emailjs_template = 't'; DATA.params.emailjs_key = 'k';
+      DATA.params.caisse_notif_auto = { actif: true, serveur: true, seuil_h: 24, relance_h: 24, emails: 'dg@exemple.com', dernier: {} };
+      var res = await caisseNotifAutoCycle();
+      return { res: res, n: envois.length };
+    });
+    assert.equal(r.res.ignore, 'serveur'); assert.equal(r.n, 0);
+  } finally { await app.fermer(); }
+});
