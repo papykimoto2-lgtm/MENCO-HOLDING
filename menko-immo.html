@@ -140633,7 +140633,8 @@ function caisseBanniereApresCloture() {
 /* ═══ NOTIFICATIONS DE CAISSE PAR WHATSAPP / E-MAIL ═══════════════════
    Texte de synthèse (caisses visibles : état, solde, bons en attente, à ventiler + alertes) envoyé au choix par
    WhatsApp (lien wa.me) ou e-mail (EmailJS s'il est configuré, sinon application de messagerie). */
-function caisseNotifTexte() {
+function caisseNotifTexte(seuilH) {
+  seuilH = seuilH || 24;
   var soc = (DATA.params && DATA.params.societe) || 'ImmoSuite ERP';
   var vis = caissesVisibles(), n = new Date();
   var t = '💰 État des caisses — ' + soc + '\n' + n.toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' })
@@ -140653,9 +140654,9 @@ function caisseNotifTexte() {
     if (aVent.length) t += '\n   🧾 ' + aVent.length + ' à ventiler (' + fmtF(montVent) + ' FCFA)';
   });
   var alertes = [];
-  caisseSessionsAnciennes(24).forEach(function(s){
+  caisseSessionsAnciennes(seuilH).forEach(function(s){
     var c = (DATA.caisses || []).find(function(x){ return x.id === s.caisse_id; });
-    alertes.push('⚠️ Session ouverte depuis plus de 24 h : ' + (c ? c.nom : '?') + ' (ouverte le ' + dateShort(String(s.date || '').slice(0, 10)) + ' par ' + (s.ouverte_par || '—') + ', ' + Math.round(caisseHeuresOuverte(s)) + ' h)');
+    alertes.push('⚠️ Session ouverte depuis plus de ' + seuilH + ' h : ' + (c ? c.nom : '?') + ' (ouverte le ' + dateShort(String(s.date || '').slice(0, 10)) + ' par ' + (s.ouverte_par || '—') + ', ' + Math.round(caisseHeuresOuverte(s)) + ' h)');
   });
   var limite = Date.now() - 7 * 86400000, ids = vis.map(function(c){ return c.id; }), par = {};
   (DATA.caisse_mouvements || []).forEach(function(m){
@@ -140690,6 +140691,7 @@ function caisseNotifOuvrir() {
     + '<label style="font-size:12px;display:block;margin-top:8px;">WhatsApp (numéro)</label><input id="cn-tel" style="' + st + '" placeholder="Ex. 07 00 00 00 00 — vide : choisir le contact dans WhatsApp" inputmode="tel">'
     + '<label style="font-size:12px;display:block;margin-top:8px;">E-mail</label><input id="cn-mail" style="' + st + '" placeholder="adresse@exemple.com" inputmode="email">'
     + '<label style="font-size:12px;display:block;margin-top:8px;">Message (modifiable)</label><textarea id="cn-msg" rows="11" style="' + st + 'font-family:inherit;">' + escHtml(caisseNotifTexte()) + '</textarea>'
+    + caisseNotifAutoHtml(st)
     + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">'
     + '<button class="btn btn-success" onclick="caisseNotifEnvoyerWA()">💬 WhatsApp</button>'
     + '<button class="btn btn-primary" onclick="caisseNotifEnvoyerEmail()">✉️ E-mail</button>'
@@ -140729,6 +140731,85 @@ async function caisseNotifEnvoyerEmail() {
 function caisseBarreNotif() {
   return '<div style="grid-column:1/-1;display:flex;justify-content:flex-end;">'
     + '<button class="btn btn-secondary btn-sm" onclick="caisseNotifOuvrir()" title="Envoyer l\'état des caisses et les alertes par WhatsApp ou e-mail">📤 Envoyer l\'état par WhatsApp / e-mail</button></div>';
+}
+
+/* ── Envoi automatique par e-mail des sessions ouvertes depuis trop longtemps ──
+   Réglages dans DATA.params.caisse_notif_auto (synchronisés) : { actif, seuil_h, relance_h, emails, dernier:{sessionId:ISO} }.
+   S'exécute tant que Menko Immo est ouvert sur l'appareil d'un administrateur, manager ou comptable (aucun serveur) ;
+   utilise EmailJS (Paramètres › Communications). Une session n'est notifiée qu'une fois par période de relance.
+   WhatsApp ne peut pas être envoyé automatiquement (aucune API branchée) : il reste manuel. */
+function caisseNotifAutoConfig() {
+  return Object.assign({ actif: false, seuil_h: 24, relance_h: 24, emails: '', dernier: {} }, (DATA.params && DATA.params.caisse_notif_auto) || {});
+}
+function caisseNotifAutoHtml(st) {
+  var c = caisseNotifAutoConfig();
+  return '<details style="margin-top:12px;border:1px solid var(--bordure,#ccc);border-radius:8px;padding:8px 10px;"' + (c.actif ? ' open' : '') + '>'
+    + '<summary style="cursor:pointer;font-size:13px;font-weight:600;">⚙️ Envoi automatique par e-mail' + (c.actif ? ' — activé' : '') + '</summary>'
+    + '<p style="font-size:12px;color:var(--blanc-dim);margin:6px 0;">Un e-mail est envoyé quand une session reste ouverte au-delà du seuil. Il part tant que Menko Immo est ouvert sur l\'appareil d\'un administrateur, manager ou comptable, via EmailJS (Paramètres › Communications).</p>'
+    + '<label style="font-size:12px;"><input type="checkbox" id="cn-auto-actif"' + (c.actif ? ' checked' : '') + '> Activer l\'envoi automatique</label>'
+    + '<div style="display:flex;gap:8px;margin-top:6px;"><div style="flex:1;"><label style="font-size:12px;">Seuil (heures)</label><input id="cn-auto-seuil" type="number" min="1" value="' + escHtml(String(c.seuil_h)) + '" style="' + st + '"></div>'
+    + '<div style="flex:1;"><label style="font-size:12px;">Relance (heures)</label><input id="cn-auto-relance" type="number" min="1" value="' + escHtml(String(c.relance_h)) + '" style="' + st + '"></div></div>'
+    + '<label style="font-size:12px;display:block;margin-top:6px;">Destinataires (adresses e-mail séparées par une virgule)</label>'
+    + '<textarea id="cn-auto-emails" rows="2" style="' + st + '" placeholder="dg@exemple.com, compta@exemple.com">' + escHtml(c.emails || '') + '</textarea>'
+    + '<div style="margin-top:8px;"><button class="btn btn-primary btn-sm" onclick="caisseNotifAutoSauver()">💾 Enregistrer</button></div></details>';
+}
+function caisseNotifAutoEmails(txt) {
+  return String(txt || '').split(/[,;\s]+/).filter(Boolean);
+}
+async function caisseNotifAutoSauver() {
+  var emails = caisseNotifAutoEmails((document.getElementById('cn-auto-emails') || {}).value);
+  var bad = emails.filter(function(x){ return !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x); });
+  var actif = !!(document.getElementById('cn-auto-actif') || {}).checked;
+  if (bad.length) { toast('Adresse invalide : ' + bad[0], 'error'); return; }
+  if (actif && !emails.length) { toast('Ajoutez au moins une adresse e-mail pour activer l\'envoi.', 'error'); return; }
+  var old = caisseNotifAutoConfig();
+  DATA.params = DATA.params || {};
+  DATA.params.caisse_notif_auto = {
+    actif: actif, emails: emails.join(', '), dernier: old.dernier || {},
+    seuil_h: Math.max(1, parseFloat((document.getElementById('cn-auto-seuil') || {}).value) || 24),
+    relance_h: Math.max(1, parseFloat((document.getElementById('cn-auto-relance') || {}).value) || 24)
+  };
+  _paramsToucher();
+  try { await dbPut('params', DATA.params); if (typeof syncToSupabase === 'function') syncToSupabase('pi_params', DATA.params); } catch (e) {}
+  var p = DATA.params;
+  var avert = (actif && (!p.emailjs_service || !p.emailjs_template || !p.emailjs_key)) ? ' EmailJS n\'est pas encore configuré : rien ne partira avant.' : '';
+  toast(actif ? 'Envoi automatique activé.' + avert : 'Envoi automatique désactivé.', avert ? 'error' : 'success');
+}
+async function caisseNotifAutoCycle() {
+  try {
+    if (!APP.currentUser || !caisseRoleAdminLike()) return { ignore: 'role' };
+    var cfg = caisseNotifAutoConfig(), p = DATA.params || {};
+    if (!cfg.actif) return { ignore: 'inactif' };
+    var dest = caisseNotifAutoEmails(cfg.emails).filter(function(x){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x); });
+    if (!dest.length) return { ignore: 'sans_destinataire' };
+    if (!p.emailjs_service || !p.emailjs_template || !p.emailjs_key || typeof emailjs === 'undefined') return { ignore: 'emailjs' };
+    var seuil = Math.max(1, parseFloat(cfg.seuil_h) || 24), relance = Math.max(1, parseFloat(cfg.relance_h) || 24) * 3600000, now = Date.now();
+    var dernier = cfg.dernier || {};
+    var dues = caisseSessionsAnciennes(seuil).filter(function(s){ var d = dernier[s.id]; return !d || now - new Date(d).getTime() >= relance; });
+    if (!dues.length) return { rien: true };
+    var soc = p.societe || 'ImmoSuite ERP', msg = caisseNotifTexte(seuil), ok = 0;
+    emailjs.init(p.emailjs_key);
+    for (var i = 0; i < dest.length; i++) {
+      try {
+        await emailjs.send(p.emailjs_service, p.emailjs_template, { to_email: dest[i], to_name: '', subject: '⚠️ ' + soc + ' — ' + dues.length + ' caisse(s) ouverte(s) depuis plus de ' + seuil + ' h', message: msg, from_name: soc, reply_to: p.email || '' });
+        ok++;
+      } catch (e) { console.warn('[Caisse notif auto] échec e-mail', dest[i], e); }
+    }
+    if (ok) {
+      var ouvertes = {}; (DATA.caisse_sessions || []).forEach(function(s){ if (s.statut === 'ouverte') ouvertes[s.id] = true; });
+      var nv = {}; Object.keys(dernier).forEach(function(k){ if (ouvertes[k]) nv[k] = dernier[k]; });
+      dues.forEach(function(s){ nv[s.id] = new Date(now).toISOString(); });
+      DATA.params.caisse_notif_auto = Object.assign({}, cfg, { dernier: nv });
+      _paramsToucher();
+      try { await dbPut('params', DATA.params); if (typeof syncToSupabase === 'function') syncToSupabase('pi_params', DATA.params); } catch (e) {}
+      if (typeof toast === 'function') toast('Alerte caisse envoyée par e-mail (' + dues.length + ' session(s)).', 'info');
+    }
+    return { envoyes: ok, sessions: dues.length };
+  } catch (e) { console.warn('[Caisse notif auto]', e); return { erreur: String(e && e.message || e) }; }
+}
+if (!window._caisseNotifAutoTimer) {
+  window._caisseNotifAutoTimer = setInterval(function(){ caisseNotifAutoCycle(); }, 30 * 60000);
+  setTimeout(function(){ caisseNotifAutoCycle(); }, 60000);
 }
 
 /* ═══ RAPPROCHEMENT CUMULÉ PAR CAISSE ═══════════════════════════════════

@@ -59,3 +59,32 @@ test('e-mail : adresse invalide refusée, sinon ouverture de la messagerie', asy
     assert.ok(r.some(function (m) { return /invalide/.test(m); }));
   } finally { await app.fermer(); }
 });
+
+test('envoi automatique : un e-mail par destinataire, une seule fois par période, rien si désactivé ou sous le seuil', async () => {
+  const app = await ouvrirApp();
+  try {
+    await amorcer(app.page);
+    const r = await app.page.evaluate(async function () {
+      var envois = [];
+      window.emailjs = { init: function () {}, send: function (s, t, d) { envois.push(d); return Promise.resolve(); } };
+      window.caisseRoleAdminLike = function () { return true; };
+      DATA.params = DATA.params || {}; DATA.params.emailjs_service = 's'; DATA.params.emailjs_template = 't'; DATA.params.emailjs_key = 'k';
+      DATA.params.caisse_notif_auto = { actif: false, seuil_h: 24, relance_h: 24, emails: 'dg@exemple.com, compta@exemple.com', dernier: {} };
+      var desact = await caisseNotifAutoCycle();
+      DATA.params.caisse_notif_auto.actif = true;
+      DATA.params.caisse_notif_auto.seuil_h = 48;                 /* session ouverte depuis 30 h : sous le seuil */
+      var sous = await caisseNotifAutoCycle();
+      DATA.params.caisse_notif_auto.seuil_h = 24;
+      var un = await caisseNotifAutoCycle();
+      var deux = await caisseNotifAutoCycle();                    /* même période : pas de renvoi */
+      return { desact: desact, sous: sous, un: un, deux: deux, n: envois.length, a: envois.map(function (e) { return e.to_email; }), sujet: envois[0] && envois[0].subject, dernier: Object.keys(DATA.params.caisse_notif_auto.dernier) };
+    });
+    assert.equal(r.desact.ignore, 'inactif');
+    assert.equal(r.sous.rien, true);
+    assert.equal(r.un.envoyes, 2);
+    assert.equal(r.deux.rien, true);
+    assert.deepEqual(r.a, ['dg@exemple.com', 'compta@exemple.com']);
+    assert.match(r.sujet, /1 caisse\(s\) ouverte\(s\) depuis plus de 24 h/);
+    assert.deepEqual(r.dernier, ['s1']);
+  } finally { await app.fermer(); }
+});
