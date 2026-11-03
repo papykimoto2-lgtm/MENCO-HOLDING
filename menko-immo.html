@@ -140739,7 +140739,7 @@ function caisseBarreNotif() {
    utilise EmailJS (Paramètres › Communications). Une session n'est notifiée qu'une fois par période de relance.
    WhatsApp ne peut pas être envoyé automatiquement (aucune API branchée) : il reste manuel. */
 function caisseNotifAutoConfig() {
-  return Object.assign({ actif: false, seuil_h: 24, relance_h: 24, emails: '', dernier: {} }, (DATA.params && DATA.params.caisse_notif_auto) || {});
+  return Object.assign({ actif: false, serveur: false, seuil_h: 24, relance_h: 24, emails: '', dernier: {} }, (DATA.params && DATA.params.caisse_notif_auto) || {});
 }
 function caisseNotifAutoHtml(st) {
   var c = caisseNotifAutoConfig();
@@ -140747,6 +140747,9 @@ function caisseNotifAutoHtml(st) {
     + '<summary style="cursor:pointer;font-size:13px;font-weight:600;">⚙️ Envoi automatique par e-mail' + (c.actif ? ' — activé' : '') + '</summary>'
     + '<p style="font-size:12px;color:var(--blanc-dim);margin:6px 0;">Un e-mail est envoyé quand une session reste ouverte au-delà du seuil. Il part tant que Menko Immo est ouvert sur l\'appareil d\'un administrateur, manager ou comptable, via EmailJS (Paramètres › Communications).</p>'
     + '<label style="font-size:12px;"><input type="checkbox" id="cn-auto-actif"' + (c.actif ? ' checked' : '') + '> Activer l\'envoi automatique</label>'
+    + '<label style="font-size:12px;display:block;margin-top:6px;">Mode d\'envoi</label>'
+    + '<select id="cn-auto-mode" style="' + st + '"><option value="nav"' + (c.serveur ? '' : ' selected') + '>Navigateur (application ouverte)</option>'
+    + '<option value="srv"' + (c.serveur ? ' selected' : '') + '>Serveur 24 h/24 (application fermée possible)</option></select>'
     + '<div style="display:flex;gap:8px;margin-top:6px;"><div style="flex:1;"><label style="font-size:12px;">Seuil (heures)</label><input id="cn-auto-seuil" type="number" min="1" value="' + escHtml(String(c.seuil_h)) + '" style="' + st + '"></div>'
     + '<div style="flex:1;"><label style="font-size:12px;">Relance (heures)</label><input id="cn-auto-relance" type="number" min="1" value="' + escHtml(String(c.relance_h)) + '" style="' + st + '"></div></div>'
     + '<label style="font-size:12px;display:block;margin-top:6px;">Destinataires (adresses e-mail séparées par une virgule)</label>'
@@ -140765,14 +140768,20 @@ async function caisseNotifAutoSauver() {
   var old = caisseNotifAutoConfig();
   DATA.params = DATA.params || {};
   DATA.params.caisse_notif_auto = {
-    actif: actif, emails: emails.join(', '), dernier: old.dernier || {},
+    actif: actif, serveur: ((document.getElementById('cn-auto-mode') || {}).value === 'srv'), emails: emails.join(', '), dernier: old.dernier || {},
     seuil_h: Math.max(1, parseFloat((document.getElementById('cn-auto-seuil') || {}).value) || 24),
     relance_h: Math.max(1, parseFloat((document.getElementById('cn-auto-relance') || {}).value) || 24)
   };
+  /* Mode serveur : la fonction lit l'identifiant de service, le modèle et la clé PUBLIQUE EmailJS ici
+     (la clé privée reste un secret du serveur) ; ces trois valeurs ne sont pas confidentielles. */
+  if (DATA.params.caisse_notif_auto.serveur && DATA.params.emailjs_service) {
+    DATA.params.caisse_notif_auto.emailjs = { service: DATA.params.emailjs_service, template: DATA.params.emailjs_template, key: DATA.params.emailjs_key };
+  }
   _paramsToucher();
   try { await dbPut('params', DATA.params); if (typeof syncToSupabase === 'function') syncToSupabase('pi_params', DATA.params); } catch (e) {}
   var p = DATA.params;
   var avert = (actif && (!p.emailjs_service || !p.emailjs_template || !p.emailjs_key)) ? ' EmailJS n\'est pas encore configuré : rien ne partira avant.' : '';
+  if (actif && DATA.params.caisse_notif_auto.serveur && !avert) avert = ' Mode serveur : la clé privée EmailJS doit être enregistrée comme secret « EMAILJS_PRIVATE_KEY » dans Supabase.';
   toast(actif ? 'Envoi automatique activé.' + avert : 'Envoi automatique désactivé.', avert ? 'error' : 'success');
 }
 async function caisseNotifAutoCycle() {
@@ -140780,6 +140789,7 @@ async function caisseNotifAutoCycle() {
     if (!APP.currentUser || !caisseRoleAdminLike()) return { ignore: 'role' };
     var cfg = caisseNotifAutoConfig(), p = DATA.params || {};
     if (!cfg.actif) return { ignore: 'inactif' };
+    if (cfg.serveur) return { ignore: 'serveur' };   /* l'envoi est assuré par la fonction Supabase caisse-alertes */
     var dest = caisseNotifAutoEmails(cfg.emails).filter(function(x){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x); });
     if (!dest.length) return { ignore: 'sans_destinataire' };
     if (!p.emailjs_service || !p.emailjs_template || !p.emailjs_key || typeof emailjs === 'undefined') return { ignore: 'emailjs' };
