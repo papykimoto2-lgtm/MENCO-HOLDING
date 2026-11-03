@@ -140630,6 +140630,107 @@ function caisseBanniereApresCloture() {
     + '. Le solde et l\'écart de ces sessions ont été recalculés : vérifiez-les avant toute régularisation.</div>';
 }
 
+/* ═══ NOTIFICATIONS DE CAISSE PAR WHATSAPP / E-MAIL ═══════════════════
+   Texte de synthèse (caisses visibles : état, solde, bons en attente, à ventiler + alertes) envoyé au choix par
+   WhatsApp (lien wa.me) ou e-mail (EmailJS s'il est configuré, sinon application de messagerie). */
+function caisseNotifTexte() {
+  var soc = (DATA.params && DATA.params.societe) || 'ImmoSuite ERP';
+  var vis = caissesVisibles(), n = new Date();
+  var t = '💰 État des caisses — ' + soc + '\n' + n.toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' })
+    + ' à ' + n.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) + '\n';
+  vis.forEach(function(c){
+    var ses = caisseGetSessionOuverte(c.id);
+    var mv = DATA.caisse_mouvements || [];
+    var attente = mv.filter(function(m){ return m.caisse_id === c.id && m.requiert_validation && m.valide !== true && !m.rejete; }).length;
+    var aVent = mv.filter(function(m){
+      if (m.caisse_id !== c.id || !_caisseMvtEffectif(m) || m.statut === 'ventile') return false;
+      var s = (DATA.caisse_sessions || []).find(function(x){ return x.id === m.session_id; });
+      return s && s.statut === 'cloturee';
+    });
+    var montVent = aVent.reduce(function(a, m){ return a + (parseFloat(m.montant) || 0); }, 0);
+    t += '\n• ' + (c.nom || '?') + ' : ' + (ses ? 'OUVERTE — ' + fmtF(caisseSoldeSession(ses)) + ' FCFA en caisse' : 'fermée');
+    if (attente) t += '\n   ⏳ ' + attente + ' bon(s) en attente de validation';
+    if (aVent.length) t += '\n   🧾 ' + aVent.length + ' à ventiler (' + fmtF(montVent) + ' FCFA)';
+  });
+  var alertes = [];
+  caisseSessionsAnciennes(24).forEach(function(s){
+    var c = (DATA.caisses || []).find(function(x){ return x.id === s.caisse_id; });
+    alertes.push('⚠️ Session ouverte depuis plus de 24 h : ' + (c ? c.nom : '?') + ' (ouverte le ' + dateShort(String(s.date || '').slice(0, 10)) + ' par ' + (s.ouverte_par || '—') + ', ' + Math.round(caisseHeuresOuverte(s)) + ' h)');
+  });
+  var limite = Date.now() - 7 * 86400000, ids = vis.map(function(c){ return c.id; }), par = {};
+  (DATA.caisse_mouvements || []).forEach(function(m){
+    var tm = new Date(m.valide_le || m.created_at || 0).getTime();
+    if (!(m.saisi_apres_cloture || m.valide_apres_cloture) || ids.indexOf(m.caisse_id) < 0 || tm < limite) return;
+    var c = (DATA.caisses || []).find(function(x){ return x.id === m.caisse_id; });
+    var sx = (DATA.caisse_sessions || []).find(function(x){ return x.id === m.session_id; });
+    var k = (c ? c.nom : '?') + ' — session du ' + (sx ? dateShort(String(sx.date || '').slice(0, 10)) : '?');
+    par[k] = (par[k] || 0) + 1;
+  });
+  Object.keys(par).forEach(function(k){ alertes.push('⚠️ Bon(s) ajouté(s) ou validé(s) après clôture (7 j) : ' + k + ' (' + par[k] + ')'); });
+  t += '\n\n' + (alertes.length ? 'Alertes :\n' + alertes.join('\n') : '✅ Aucune alerte.');
+  return t;
+}
+function caisseNotifDestinataires() {
+  return (DATA.users || []).filter(function(u){ return u.actif !== false && (u.tel || u.email); });
+}
+function caisseNotifOuvrir() {
+  if (!caissesVisibles().length) { toast('Aucune caisse à notifier.', 'info'); return; }
+  var old = document.getElementById('modal-caisse-notif'); if (old) old.remove();
+  var us = caisseNotifDestinataires();
+  var opts = '<option value="">— Choisir un destinataire —</option>' + us.map(function(u){
+    return '<option value="' + escHtml(u.id) + '">' + escHtml((u.nom || u.login || '?') + (u.role ? ' (' + u.role + ')' : '')) + '</option>';
+  }).join('');
+  var st = 'width:100%;padding:8px;border:1px solid var(--bordure,#ccc);border-radius:8px;background:var(--card2);color:var(--blanc);font-size:13px;margin-top:4px;';
+  var d = document.createElement('div');
+  d.id = 'modal-caisse-notif';
+  d.setAttribute('style', 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:14px;');
+  d.innerHTML = '<div style="background:var(--card);color:var(--blanc);border-radius:14px;max-width:520px;width:100%;max-height:92vh;overflow:auto;padding:18px;">'
+    + '<h3 style="margin:0 0 10px;font-size:16px;">📤 Envoyer l\'état des caisses</h3>'
+    + '<label style="font-size:12px;">Destinataire</label><select id="cn-dest" style="' + st + '" onchange="caisseNotifChoisir()">' + opts + '</select>'
+    + '<label style="font-size:12px;display:block;margin-top:8px;">WhatsApp (numéro)</label><input id="cn-tel" style="' + st + '" placeholder="Ex. 07 00 00 00 00 — vide : choisir le contact dans WhatsApp" inputmode="tel">'
+    + '<label style="font-size:12px;display:block;margin-top:8px;">E-mail</label><input id="cn-mail" style="' + st + '" placeholder="adresse@exemple.com" inputmode="email">'
+    + '<label style="font-size:12px;display:block;margin-top:8px;">Message (modifiable)</label><textarea id="cn-msg" rows="11" style="' + st + 'font-family:inherit;">' + escHtml(caisseNotifTexte()) + '</textarea>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">'
+    + '<button class="btn btn-success" onclick="caisseNotifEnvoyerWA()">💬 WhatsApp</button>'
+    + '<button class="btn btn-primary" onclick="caisseNotifEnvoyerEmail()">✉️ E-mail</button>'
+    + '<button class="btn btn-secondary" onclick="document.getElementById(\'modal-caisse-notif\').remove()">Fermer</button></div></div>';
+  document.body.appendChild(d);
+}
+function caisseNotifChoisir() {
+  var id = (document.getElementById('cn-dest') || {}).value;
+  var u = (DATA.users || []).find(function(x){ return x.id === id; });
+  document.getElementById('cn-tel').value = u && u.tel ? u.tel : '';
+  document.getElementById('cn-mail').value = u && u.email ? u.email : '';
+}
+function caisseNotifEnvoyerWA() {
+  var msg = (document.getElementById('cn-msg') || {}).value || '';
+  var tel = ((document.getElementById('cn-tel') || {}).value || '').trim();
+  if (!msg.trim()) { toast('Message vide.', 'error'); return; }
+  var num = tel ? telWhatsApp(tel) : '';
+  window.open('https://wa.me/' + num + '?text=' + encodeURIComponent(msg), '_blank');
+  toast(tel ? 'Message WhatsApp préparé.' : 'WhatsApp ouvert : choisissez le contact.', 'success');
+}
+async function caisseNotifEnvoyerEmail() {
+  var msg = (document.getElementById('cn-msg') || {}).value || '';
+  var to = ((document.getElementById('cn-mail') || {}).value || '').trim();
+  var p = DATA.params || {}, soc = p.societe || 'ImmoSuite ERP';
+  var sujet = 'État des caisses — ' + soc;
+  if (!msg.trim()) { toast('Message vide.', 'error'); return; }
+  if (!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) { toast('Adresse e-mail invalide.', 'error'); return; }
+  if (p.emailjs_service && p.emailjs_template && typeof emailjs !== 'undefined') {
+    try {
+      await emailjs.send(p.emailjs_service, p.emailjs_template, { to_email: to, to_name: '', subject: sujet, message: msg, from_name: soc, reply_to: p.email || '' });
+      toast('E-mail envoyé à ' + to + '.', 'success');
+      return;
+    } catch (e) { toast('Envoi EmailJS impossible : ouverture de votre messagerie.', 'error'); }
+  }
+  window.location.href = 'mailto:' + encodeURIComponent(to) + '?subject=' + encodeURIComponent(sujet) + '&body=' + encodeURIComponent(msg);
+}
+function caisseBarreNotif() {
+  return '<div style="grid-column:1/-1;display:flex;justify-content:flex-end;">'
+    + '<button class="btn btn-secondary btn-sm" onclick="caisseNotifOuvrir()" title="Envoyer l\'état des caisses et les alertes par WhatsApp ou e-mail">📤 Envoyer l\'état par WhatsApp / e-mail</button></div>';
+}
+
 /* ═══ RAPPROCHEMENT CUMULÉ PAR CAISSE ═══════════════════════════════════
    Écart réel = dernier comptage − (premier fond + tous les mouvements validés des sessions clôturées).
    Indépendant des écarts enregistrés session par session, qui peuvent se compenser ou se masquer
@@ -141789,7 +141890,7 @@ function caisseRenderListe() {
       + '</div>';
     return;
   }
-  el.innerHTML = caisseBanniereAnciennes() + caisseBanniereReprise() + caisseBanniereApresCloture() + caisseBanniereRemises() + liste.map(function(c) {
+  el.innerHTML = caisseBarreNotif() + caisseBanniereAnciennes() + caisseBanniereReprise() + caisseBanniereApresCloture() + caisseBanniereRemises() + liste.map(function(c) {
     var session = caisseGetSessionOuverte(c.id);
     var ouverte = !!session;
     var solde = ouverte ? caisseSoldeSession(session) : null;
