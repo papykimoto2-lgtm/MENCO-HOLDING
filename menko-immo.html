@@ -140103,10 +140103,42 @@ var CAISSE_VERROU_MS = 10 * 60 * 1000;
    symptôme signalé : "les utilisateurs clôturent mais les caisses restent
    ouvertes" ailleurs. On attend maintenant le résultat et on alerte fortement
    si l'envoi échoue pour une raison AUTRE que le hors-ligne simple. */
+/* Le numéro d'un bon est unique par caisse côté base (index uq_pi_caisse_mouvements_numero, voir
+   supabase/caisse_numero_unique.sql). Si l'envoi est refusé parce qu'un AUTRE poste a pris ce numéro entre-temps,
+   on prend le numéro suivant et on renvoie, au lieu de laisser le bon en quarantaine, visible de ce seul poste.
+   Renvoie true si le bon a été renuméroté et envoyé ; false si le refus n'est pas un conflit de numéro. */
+async function _caisseResoudreNumeroPris(m) {
+  if (!m || !m.numero || !m.caisse_id || typeof sbFetch !== 'function' || !navigator.onLine) return false;
+  for (var essai = 0; essai < 3; essai++) {
+    var rows;
+    try {
+      rows = await sbFetch('pi_caisse_mouvements?select=id&data->>caisse_id=eq.' + encodeURIComponent(m.caisse_id)
+        + '&data->>numero=eq.' + encodeURIComponent(m.numero) + '&limit=2');
+    } catch (e) { return false; }
+    if (!rows || !rows.some(function(r){ return r.id !== m.id; })) return false;   /* autre cause que le numéro */
+    var caisse = (DATA.caisses || []).find(function(x){ return x.id === m.caisse_id; });
+    var ancien = m.numero;
+    m.numero = await caisseProchainNumero(m.caisse_id, m.type, String(m.date || '').slice(0, 10), caisse && caisse.compte);
+    if (m.numero === ancien) return false;
+    m.numero_precedent = ancien;   /* trace d'audit */
+    await dbPut('caisse_mouvements', m);
+    var ecr = m.ecriture_id ? (DATA.ecritures || []).find(function(x){ return x.id === m.ecriture_id; }) : null;
+    if (ecr) { ecr.ref = m.numero; await dbPut('ecritures', ecr); if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecr); }
+    if (await syncToSupabase('pi_caisse_mouvements', m) !== false) {
+      try { _outboxWrite(_outboxRead().filter(function(e){ return !(e.table === 'pi_caisse_mouvements' && e.id === m.id); })); } catch (e) {}
+      try { if (typeof toast === 'function') toast('ℹ️ Le numéro ' + ancien + ' venait d\'être pris par un autre poste : ce bon porte le numéro ' + m.numero + '.', 'info', 8000); } catch (e) {}
+      return true;
+    }
+  }
+  return false;
+}
 async function caisseSyncEtAlerter(table, obj) {
   if (typeof syncToSupabase !== 'function') return true;
   var avantConflits = (DATA.conflits_sync || []).length;
   var ok = await syncToSupabase(table, obj);
+  if (ok === false && table === 'pi_caisse_mouvements' && navigator.onLine) {
+    if (await _caisseResoudreNumeroPris(obj)) return true;
+  }
   if (ok === false) {
     var apresConflits = (DATA.conflits_sync || []).length;
     if (apresConflits > avantConflits) {

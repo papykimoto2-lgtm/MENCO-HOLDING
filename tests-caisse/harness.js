@@ -61,6 +61,7 @@ async function ouvrirApp() {
 /* Neutralise droits, persistance et synchro ; fournit un utilisateur et une caisse de test. */
 function preparer() {
   window.__syncReel = window.__syncReel || syncToSupabase;   /* la vraie fonction, pour les tests de synchro */
+  window.__caisseSyncReel = window.__caisseSyncReel || caisseSyncEtAlerter;   /* la vraie fonction (le bouchon ci-dessous renvoie toujours true) */
   APP.currentUser = { id: 'u1', nom: 'Comptable Test', role: 'comptable' };
   window.exigerDroit = function () { return true; };
   window.exigerPlafond = function () { return true; };
