@@ -80235,61 +80235,132 @@ async function deleteImmoSociete(id) {
   renderImmoSociete();
 }
 
-/* Génère les écritures de dotation annuelle (681 débit / 28 crédit) pour l'exercice sélectionné.
-   Une seule génération par immobilisation et par année (traçée dans dotations_generees). */
+/* ═══ MOTEUR DE DOTATION PARTAGÉ — « Générer » (immobilisations société) et « Comptabiliser » (tous les biens) ═══
+   Les deux boutons écrivent la MÊME écriture (même id déterministe) : elle est donc construite à un seul endroit.
+   Avant, « Générer » créditait le compte générique amort_cumul (ex. « 28 », inconnu de la liasse) et « Comptabiliser »
+   le compte 28x du bien : le compte crédité dépendait du bouton, et la liasse n'était plus équilibrée. */
+function _amortEcritureDotation(b, annee, ecrId, cptDot) {
+  var date31 = annee + '-12-31';
+  return {
+    id: ecrId,
+    ref: 'DAP-' + annee + '-' + (b.dossier || String(b.id).slice(-6).toUpperCase()),
+    date: date31,
+    piece: cptDot + '/' + b.compte_amort,
+    libelle: 'Dotation amortissement ' + annee + ' — ' + b.designation.slice(0, 50) + (b.dossier ? ' (' + b.dossier + ')' : ''),
+    compte: cptDot, compte_debit: cptDot, compte_credit: b.compte_amort,
+    montant: calcAnnuite(b, annee),
+    type: 'charge', mode: 'interne', journal: 'OD',
+    division: b.division_id || '',
+    notes: 'Amortissement ' + b.methode + ' — ' + b.duree + ' ans',
+    created_at: date31
+  };
+}
+function _amortEcritureId(b, annee) {
+  return b._source === 'immobilisations' ? ('ecr_immosoc_dot_' + b.id + '_' + annee) : ('ecr_681_' + b.id + '_' + annee);
+}
+/* Écriture de dotation « en vigueur » : suit les révisions (_r2, _r3…) créées après contre-passation d'une pièce visée. */
+function _amortEcritureCourante(id) {
+  var cur = (DATA.ecritures || []).find(function(e){ return e.id === id; });
+  var rev = 1;
+  while (cur && cur.contrepassee_par) {
+    rev++;
+    var suivante = id + '_r' + rev;
+    cur = (DATA.ecritures || []).find(function(e){ return e.id === suivante; });
+  }
+  return cur || null;
+}
+/* Ce que le plan attend et ce que le grand livre contient : années manquantes ou divergentes, jusqu'à l'exercice choisi. */
+function amortControleGrandLivre(annee) {
+  var ecarts = [];
+  _amortTousBiens().forEach(function(b){
+    var debut = parseInt(String(b.date_debut || '').slice(0, 4), 10) || annee;
+    for (var y = debut; y <= annee; y++) {
+      var dot = calcAnnuite(b, y);
+      if (dot <= 0) continue;
+      var ex = _amortEcritureCourante(_amortEcritureId(b, y));
+      if (!ex) ecarts.push({ bien: b, annee: y, plan: dot, ecriture: 0, type: 'manquante' });
+      else if (Math.round(ex.montant) !== Math.round(dot)) ecarts.push({ bien: b, annee: y, plan: dot, ecriture: Math.round(ex.montant), type: 'divergente' });
+    }
+  });
+  return ecarts;
+}
+/* Cœur commun : crée ou met à jour l'écriture de dotation de chaque bien pour l'année.
+   Refuse (sans rien écrire) si l'exercice est clos — consolidé OU propre à la division du bien — ou si la pièce est visée.
+   Lève si le compte de dotation n'est pas paramétré (avant toute écriture). */
+async function _amortComptabiliserBiens(biens, annee) {
+  var res = { count: 0, refuses: 0, divergentes: [], cptDot: '' };
+  res.cptDot = requireCompteDefaut('amort_dotation');
+  for (var i = 0; i < biens.length; i++) {
+    var b = biens[i];
+    var dot = calcAnnuite(b, annee);
+    if (dot <= 0) continue;
+    if (typeof exerciceEstClos === 'function' && exerciceEstClos(annee + '-12-31', b.division_id)) { res.refuses++; continue; }
+    /* Dotation déjà visée : identique → rien à faire ; différente et non contre-passée → à contre-passer ;
+       contre-passée → nouvelle écriture « révision » (l'id d'origine reste occupé par la pièce visée). */
+    var ecrId = _amortEcritureId(b, annee), _id0 = ecrId, _rev = 1, _skip = false;
+    for (;;) {
+      var _ex = (DATA.ecritures || []).find(function(e){ return e.id === ecrId; });
+      if (!_ex || !ecrEstValidee(_ex)) break;
+      if (!_ex.contrepassee_par) {
+        if (Math.round(_ex.montant) !== Math.round(dot)) res.divergentes.push(b.designation + ' (' + fmtF(_ex.montant) + ' → ' + fmtF(dot) + ')');
+        _skip = true; break;
+      }
+      _rev++; ecrId = _id0 + '_r' + _rev;
+    }
+    if (_skip) continue;
+    var ecr = _amortEcritureDotation(b, annee, ecrId, res.cptDot);
+    var idxDot = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; });
+    if (idxDot >= 0) DATA.ecritures[idxDot] = ecr; else DATA.ecritures.push(ecr);
+    var _ok = await dbPut('ecritures', ecr);
+    if (_ok === false) {
+      var _idx2 = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id && e._rejete; });   /* seulement l'objet refusé : dbPut a remis la pièce persistée en mémoire */
+      if (_idx2 >= 0) DATA.ecritures.splice(_idx2, 1);
+      res.refuses++;
+      continue;
+    }
+    if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecr);
+    /* Traçabilité sur la fiche réelle de l'immobilisation (pas l'objet adapté) */
+    if (b._source === 'immobilisations') {
+      var imReel = (DATA.immobilisations || []).find(function(x){ return x.id === b.id; });
+      if (imReel) {
+        imReel.dotations_generees = imReel.dotations_generees || []; if (imReel.dotations_generees.indexOf(annee) === -1) imReel.dotations_generees.push(annee);
+        imReel.ecritures_dotation_ids = imReel.ecritures_dotation_ids || []; if (imReel.ecritures_dotation_ids.indexOf(ecr.id) === -1) imReel.ecritures_dotation_ids.push(ecr.id);
+        await dbPut('immobilisations', imReel);
+        if (typeof syncToSupabase === 'function') syncToSupabase('pi_immobilisations', imReel);
+      }
+    }
+    res.count++;
+  }
+  return res;
+}
+function _amortMessageBilan(r, annee) {
+  return '✅ ' + r.count + ' dotation(s) comptabilisée(s) — Débit ' + r.cptDot + ' / Crédit compte d\'amortissement du bien pour ' + annee + '.'
+    + (r.refuses ? ' · ⛔ ' + r.refuses + ' refusée(s) (pièce visée ou exercice clos).' : '')
+    + (r.divergentes.length ? ' · ⚠️ Dotation visée différente du calcul actuel, à contre-passer puis regénérer : ' + r.divergentes.join(' ; ') + '.' : '');
+}
+
+/* « Générer » (onglet Immobilisations société) : dote les immobilisations dont l'écriture manque, a changé ou a été contre-passée. */
 async function genererDotationsAnnuelles() {
   var year = parseInt((document.getElementById('immo-soc-annee')||{}).value) || new Date().getFullYear();
   if (typeof exerciceEstClos === 'function' && exerciceEstClos(year+'-12-31')) {
     toast('🔒 Exercice ' + year + ' clôturé — dotations bloquées.', 'error'); return;
   }
-  var cd = (DATA.params && DATA.params.comptes_defaut) || {};
-  var cptDotation = requireCompteDefaut('amort_dotation');
-  var cptCumul = requireCompteDefaut('amort_cumul');
-  var list = (DATA.immobilisations || []).filter(function(im){
-    var c = immoSocCalc(im, year);
-    return c.estAmortiPourAnnee && !c.dejaGenere && c.dotationAnnuelle > 0;
+  var biens = (DATA.immobilisations || []).map(_amortAdapterImmo);
+  var aFaire = biens.filter(function(b){
+    if (calcAnnuite(b, year) <= 0) return false;
+    var ex = (DATA.ecritures || []).find(function(e){ return e.id === _amortEcritureId(b, year); });
+    return !ex || ex.contrepassee_par || Math.round(ex.montant) !== Math.round(calcAnnuite(b, year))
+      || ex.compte_credit !== b.compte_amort || (ex.division || '') !== (b.division_id || '');
   });
-  if (!list.length) { toast('Aucune dotation à générer pour ' + year + '.', 'info'); return; }
-  if (!confirm(list.length + ' immobilisation(s) à doter pour ' + year + '. Générer les écritures ?')) return;
-  var refusesDot = 0;
-  for (var i = 0; i < list.length; i++) {
-    var im = list[i];
-    var c = immoSocCalc(im, year);
-    /* [FIX] id déterministe — remplace uid() (aléatoire). Avec un id
-       aléatoire, un reclic ou une resynchronisation après coupure réseau
-       pouvait créer une DEUXIÈME écriture pour la même dotation au lieu
-       d'écraser proprement la même (dbPut fait un upsert par id). Même
-       convention que comptabiliserDotations() (foncier) : ecr_<source>_<id>_<année>
-       — garantit qu'appeler cette fonction OU le bouton unifié "Comptabiliser
-       dotations 681" pour le même véhicule/année produit exactement la même
-       écriture, jamais un doublon. */
-    var ec = {
-      id: 'ecr_immosoc_dot_'+im.id+'_'+year, ref: 'DOT-' + year + '-' + String(i+1).padStart(3,'0'), date: year+'-12-31', piece: 'DOTATION',
-      type: 'charge', libelle: 'Dotation amortissement ' + year + ' — ' + im.designation,
-      lignes: [ { compte: cptDotation, sens:'D', montant: c.dotationAnnuelle, libelle:'Dotation' }, { compte: cptCumul, sens:'C', montant: c.dotationAnnuelle, libelle:'Amortissement cumulé' } ],
-      compte: cptDotation, compte_debit: cptDotation, compte_credit: cptCumul, montant: c.dotationAnnuelle,
-      mode: 'od', programme_id: '', division: im.division_id||'', notes: 'Immobilisation ' + im.designation + ' — année ' + (c.anneesEcoulees) + '/' + c.duree, created_at: today()
-    };
-    var idxEc = DATA.ecritures.findIndex(function(e){ return e.id === ec.id; });
-    if (idxEc >= 0) DATA.ecritures[idxEc] = ec; else DATA.ecritures.push(ec);
-    var _okDot = await dbPut('ecritures', ec);
-    if (_okDot === false) {   /* pièce visée ou exercice clos : ni marquée « générée », ni envoyée au cloud */
-      var _iR = DATA.ecritures.findIndex(function(e){ return e.id === ec.id && e._rejete; });
-      if (_iR >= 0) DATA.ecritures.splice(_iR, 1);
-      refusesDot++; continue;
-    }
-    if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ec);
-    im.dotations_generees = im.dotations_generees || []; if (im.dotations_generees.indexOf(year)===-1) im.dotations_generees.push(year);
-    im.ecritures_dotation_ids = im.ecritures_dotation_ids || []; if (im.ecritures_dotation_ids.indexOf(ec.id)===-1) im.ecritures_dotation_ids.push(ec.id);
-    await dbPut('immobilisations', im);
-    if (typeof syncToSupabase === 'function') syncToSupabase('pi_immobilisations', im);
-  }
-  toast((list.length - refusesDot) + ' dotation(s) générée(s) pour ' + year + '.' + (refusesDot ? ' · ⛔ ' + refusesDot + ' refusée(s) (pièce visée ou exercice clos).' : ''), refusesDot ? 'warning' : 'success');
+  if (!aFaire.length) { toast('Aucune dotation à générer pour ' + year + '.', 'info'); return; }
+  if (!confirm(aFaire.length + ' immobilisation(s) à doter ou à corriger pour ' + year + '. Générer les écritures ?')) return;
+  var r;
+  try { r = await _amortComptabiliserBiens(aFaire, year); } catch (e) { return; }   /* compte non paramétré : message déjà affiché, rien d'écrit */
+  toast(_amortMessageBilan(r, year), (r.refuses || r.divergentes.length) ? 'warning' : 'success');
   renderImmoSociete();
   if (typeof buildBalance === 'function') buildBalance();
   if (typeof buildCompteResultat === 'function') buildCompteResultat();
 }
-
 
 function switchAmortTab(tab) {
   ['biens','tableau','dotations','nouveau','societe'].forEach(function(t) {
@@ -82563,13 +82634,17 @@ function buildDotations() {
     return;
   }
 
-  // Vérifier si les dotations ont déjà été comptabilisées cette année
-  var dejaCompta=DATA.ecritures&&DATA.ecritures.some(function(e){
-    return e.compte_debit==='681'&&(e.date||'').startsWith(String(annee));
-  });
+  /* Contrôle plan / grand livre : le plan calculé et les écritures sont deux sources de vérité ; une année non
+     comptabilisée (ou comptabilisée avec un autre montant) fait diverger le tableau du bilan sans aucune alerte. */
+  var ecartsGL=amortControleGrandLivre(annee);
   if(alertEl){
-    alertEl.style.display=dejaCompta?'flex':'none';
-    alertEl.textContent='⚠️ Des dotations ont déjà été comptabilisées pour '+annee+'. Vérifiez le journal avant de recomptabiliser.';
+    if(ecartsGL.length){
+      var _liste=ecartsGL.slice(0,6).map(function(e){ return escHtml(String(e.bien.designation).slice(0,30))+' '+e.annee+' ('+(e.type==='manquante'?'absente':fmtF(e.ecriture)+' au lieu de '+fmtF(e.plan))+')'; }).join(' ; ');
+      alertEl.style.display='flex';
+      alertEl.innerHTML='<span>⚠️ '+ecartsGL.length+' dotation(s) du plan absente(s) ou différente(s) au grand livre jusqu\'en '+annee+' : '+_liste+(ecartsGL.length>6?' …':'')+'</span> <button class="btn btn-warning btn-sm" style="margin-left:10px;" onclick="amortRattraperExercices()">🔁 Rattraper</button>';
+    } else {
+      alertEl.style.display='none';
+    }
   }
 
   var totalDot=0,totalCumul=0,totalVNC=0;
@@ -82610,73 +82685,32 @@ async function comptabiliserDotations() {
   if (typeof exerciceEstClos === 'function' && exerciceEstClos(annee+'-12-31')) {
     toast('🔒 Exercice ' + annee + ' clôturé — dotations bloquées.', 'error'); return;
   }
+  var r;
+  try { r = await _amortComptabiliserBiens(biens, annee); } catch (e) { return; }   /* compte non paramétré : message déjà affiché, rien d'écrit */
+  toast(_amortMessageBilan(r, annee), (r.refuses||r.divergentes.length)?'warning':'success');
+  buildDotations();
+  buildAmortBiens();
+  if (typeof renderImmoSociete === 'function') renderImmoSociete();
+}
 
-  var count=0, refuses=0, divergentes=[];
-  var date31dec=annee+'-12-31';
-  for(var i=0;i<biens.length;i++){
-    var b=biens[i];
-    var dot=calcAnnuite(b,annee);
-    if(dot<=0)continue;
-    /* [Unification] Identifiant déterministe différent selon le registre
-       d'origine, mais IDENTIQUE à celui que produirait l'autre bouton
-       (genererDotationsAnnuelles pour un véhicule) — upsert sûr, jamais
-       de double écriture même si les deux boutons sont utilisés. */
-    var ecrId = b._source==='immobilisations' ? ('ecr_immosoc_dot_'+b.id+'_'+annee) : ('ecr_681_'+b.id+'_'+annee);
-    /* Dotation déjà visée : identique → rien à faire ; différente et non contre-passée → à contre-passer ;
-       contre-passée → nouvelle écriture « révision » (l'id d'origine reste occupé par la pièce visée). */
-    var _id0 = ecrId, _rev = 1, _skip = false;
-    for (;;) {
-      var _ex = (DATA.ecritures||[]).find(function(e){ return e.id === ecrId; });
-      if (!_ex || !ecrEstValidee(_ex)) break;
-      if (!_ex.contrepassee_par) {
-        if (Math.round(_ex.montant) === Math.round(dot)) { _skip = true; } else { divergentes.push(b.designation + ' (' + fmtF(_ex.montant) + ' → ' + fmtF(dot) + ')'); _skip = true; }
-        break;
-      }
-      _rev++; ecrId = _id0 + '_r' + _rev;
+/* Rattrape les exercices dont la dotation manque au grand livre ou diffère du plan (jusqu'à l'exercice choisi). */
+async function amortRattraperExercices() {
+  var sel=document.getElementById('filter-amort-annee');
+  var annee=parseInt(sel?sel.value||new Date().getFullYear():new Date().getFullYear());
+  var ecarts=amortControleGrandLivre(annee);
+  if(!ecarts.length){toast('Rien à rattraper : le grand livre est conforme au plan.','success');return;}
+  var parAnnee={}; ecarts.forEach(function(e){ (parAnnee[e.annee]=parAnnee[e.annee]||{})[e.bien._source+'|'+e.bien.id]=e.bien; });
+  var annees=Object.keys(parAnnee).sort();
+  if(!confirm('Comptabiliser les dotations manquantes ou divergentes des exercices ' + annees.join(', ') + ' ?\n\nLes exercices clos et les pièces visées sont refusés ; une pièce visée divergente est signalée, jamais modifiée.')) return;
+  var total={count:0,refuses:0,divergentes:[],cptDot:''};
+  try {
+    for(var k=0;k<annees.length;k++){
+      var biensA=Object.keys(parAnnee[annees[k]]).map(function(c){return parAnnee[annees[k]][c];});
+      var r=await _amortComptabiliserBiens(biensA, parseInt(annees[k]));
+      total.count+=r.count; total.refuses+=r.refuses; total.divergentes=total.divergentes.concat(r.divergentes); total.cptDot=r.cptDot;
     }
-    if (_skip) continue;
-    var ecr={
-      id:ecrId,
-      ref:'DAP-'+annee+'-'+(b.dossier||b.id.slice(-6).toUpperCase()),
-      date:date31dec,
-      piece:'681/'+b.compte_amort,
-      libelle:'Dotation amortissement '+annee+' — '+b.designation.slice(0,50)+(b.dossier?' ('+b.dossier+')':''),
-      compte:requireCompteDefaut('amort_dotation'),
-      compte_debit:requireCompteDefaut('amort_dotation'),
-      compte_credit:b.compte_amort,
-      montant:dot,
-      type:'charge',
-      mode:'interne',
-      division:b.division_id||'',
-      notes:'Amortissement '+b.methode+' — '+b.duree+' ans',
-      created_at:date31dec,
-    };
-    var idxDot = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id; });
-    if (idxDot >= 0) DATA.ecritures[idxDot] = ecr; else DATA.ecritures.push(ecr);
-    var _ok = await dbPut('ecritures',ecr);
-    if (_ok === false) {
-      var _idx2 = DATA.ecritures.findIndex(function(e){ return e.id === ecr.id && e._rejete; });   /* seulement l'objet refusé : dbPut a remis la pièce persistée en mémoire */
-      if (_idx2 >= 0) DATA.ecritures.splice(_idx2, 1);
-      refuses++;
-      continue;
-    }
-    if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', ecr);
-    /* Traçabilité sur la fiche réelle (pas l'objet adapté) — même champs
-       que genererDotationsAnnuelles(), pour que les deux boutons tiennent
-       le même registre de suivi sur l'immobilisation. */
-    if (b._source==='immobilisations') {
-      var imReel = (DATA.immobilisations||[]).find(function(x){ return x.id===b.id; });
-      if (imReel) {
-        imReel.dotations_generees = imReel.dotations_generees || []; if (imReel.dotations_generees.indexOf(annee)===-1) imReel.dotations_generees.push(annee);
-        imReel.ecritures_dotation_ids = imReel.ecritures_dotation_ids || []; if (imReel.ecritures_dotation_ids.indexOf(ecr.id)===-1) imReel.ecritures_dotation_ids.push(ecr.id);
-        await dbPut('immobilisations', imReel);
-        if (typeof syncToSupabase === 'function') syncToSupabase('pi_immobilisations', imReel);
-      }
-    }
-    count++;
-  }
-  toast('✅ '+count+' dotation(s) comptabilisée(s) — Débit 681 / Crédit 281 pour '+annee+'.'+(refuses?' · ⛔ '+refuses+' refusée(s) (pièce visée ou exercice clos).':'')
-    +(divergentes.length?' · ⚠️ Dotation visée différente du calcul actuel, à contre-passer puis regénérer : '+divergentes.join(' ; ')+'.':''), (refuses||divergentes.length)?'warning':'success');
+  } catch (e) { return; }
+  toast('🔁 Rattrapage : ' + _amortMessageBilan(total, annees.join(', ')), (total.refuses||total.divergentes.length)?'warning':'success');
   buildDotations();
   buildAmortBiens();
   if (typeof renderImmoSociete === 'function') renderImmoSociete();
