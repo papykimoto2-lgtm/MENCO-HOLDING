@@ -135,3 +135,47 @@ test('écrans : le registre, les soldes cumulés, les alertes et le dossier CAC 
     assert.deepEqual(app.etat.erreursPage, []);
   } finally { await app.fermer(); }
 });
+
+test('appariement : chaque ligne de liaison est rapprochée de son miroir dans une autre division ; les lignes seules sont listées', async () => {
+  const app = await ouvrirApp();
+  try {
+    const r = await app.page.evaluate(function () {
+      DATA.divisions = [{ id: 'd1', nom: 'Div 1' }, { id: 'd2', nom: 'Div 2' }];
+      DATA.params.consolidation = { liaison: ['185'] };
+      DATA.ecritures = [
+        E('p1', '2025-03-01', '185', '521', 1000, { division: 'd1', piece: 'P1' }),          // d1 débit 1000
+        E('p2', '2025-03-03', '521', '185', 1000, { division: 'd2', piece: 'P2' }),          // d2 crédit 1000 : miroir
+        E('s1', '2025-04-01', '185', '521', 500, { division: 'd1', piece: 'S1' }),           // sans miroir
+        E('s2', '2025-05-01', '521', '185', 700, { division: 'd2', piece: 'S2' }),           // sans miroir
+        E('m1', '2025-06-01', '185', '521', 300, { division: 'd1', piece: 'M1' }),           // même division des deux côtés :
+        E('m2', '2025-06-01', '521', '185', 300, { division: 'd1', piece: 'M2' })            // ne s'apparient pas entre elles
+      ];
+      const A = _intragAppariement('2025');
+      _intragAnnee = '2025'; _intragRender();
+      return { app: A.apparies.map(function (x) { return [x.debit.piece, x.credit.piece, x.ecartJours]; }), seuls: A.sansMiroir.map(function (x) { return x.piece; }).sort(),
+        ecran: /4 ligne\(s\) sans miroir/.test(document.getElementById('tab-intragroupe-flux').innerHTML) };
+    });
+    assert.deepEqual(r.app, [['P1', 'P2', 2]]);
+    assert.deepEqual(r.seuls, ['M1', 'M2', 'S1', 'S2']);
+    assert.equal(r.ecran, true);
+  } finally { await app.fermer(); }
+});
+
+test('appariement : la date la plus proche l\'emporte, au-delà de 60 jours rien n\'est apparié', async () => {
+  const app = await ouvrirApp();
+  try {
+    const r = await app.page.evaluate(function () {
+      DATA.divisions = [{ id: 'd1', nom: 'Div 1' }, { id: 'd2', nom: 'Div 2' }];
+      DATA.params.consolidation = { liaison: ['185'] };
+      DATA.ecritures = [
+        E('d', '2025-06-10', '185', '521', 100, { division: 'd1', piece: 'D' }),
+        E('c1', '2025-01-05', '521', '185', 100, { division: 'd2', piece: 'LOIN' }),
+        E('c2', '2025-06-12', '521', '185', 100, { division: 'd2', piece: 'PROCHE' })
+      ];
+      const A = _intragAppariement('2025');
+      return { app: A.apparies.map(function (x) { return x.credit.piece; }), seuls: A.sansMiroir.map(function (x) { return x.piece; }) };
+    });
+    assert.deepEqual(r.app, ['PROCHE']);
+    assert.deepEqual(r.seuls, ['LOIN']);
+  } finally { await app.fermer(); }
+});
