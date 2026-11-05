@@ -127,3 +127,23 @@ test('recherche par sections de tous les manuels : « immatriculer une parcelle 
     assert.ok(r.rurale.texte.length < 9500);
   } finally { await app.fermer(); }
 });
+
+test('accueil : le message annonce le manuel de procédures et propose des questions fréquentes envoyées en un clic', async () => {
+  const app = await ouvrirApp();
+  try {
+    const r = await app.page.evaluate(async function () {
+      IAA.messages = []; iaaRender();
+      const box = document.getElementById('iaa-messages');
+      const texte = box.innerText, boutons = box.querySelectorAll('#iaa-suggestions button').length;
+      const envoyes = []; const reel = window.iaaEnvoyer; window.iaaEnvoyer = function () { envoyes.push(document.getElementById('iaa-input').value); };
+      box.querySelector('#iaa-suggestions button').click();
+      window.iaaEnvoyer = reel;
+      return { texte, boutons, envoyes, placeholder: document.getElementById('iaa-input').placeholder };
+    });
+    assert.match(r.texte, /manuel de l'entreprise/);
+    assert.match(r.texte, /PRO-xx/);
+    assert.equal(r.boutons, 5);
+    assert.deepEqual(r.envoyes, ['Comment enregistrer un versement ?']);
+    assert.match(r.placeholder, /Comment enregistrer un versement/);
+  } finally { await app.fermer(); }
+});
