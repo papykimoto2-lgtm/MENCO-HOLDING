@@ -145,3 +145,56 @@ test('garde-fou : une fiche de document vide n\'est jamais envoyée', async () =
   const i = html.indexOf('async function syncToSupabase(table, obj, opts) {');
   assert.match(html.slice(i, i + 1200), /table === 'pi_documents' && obj && !obj\.name && !obj\.entity_type && !obj\.titre\)/);
 });
+
+/* Plantage « Aïe aïe aïe » à l'ouverture d'une fiche : toute la table des documents (fichiers compris) était chargée en mémoire. */
+const gros = (id, type, ent) => ({ id: id, entity_type: type, entity_id: ent, name: id + '.pdf', type: 'application/pdf', size: 3, blob: 'data:application/pdf;base64,' + 'A'.repeat(200000), upload_date: '2026-11-01', visible_portail: true });
+
+test('index IndexedDB sur les documents (entity_id, entity_type) créé à l\'ouverture de la base', async () => {
+  const app = await ouvrirApp();
+  try {
+    const noms = await app.page.evaluate(function () { return Array.from(db.transaction('documents', 'readonly').objectStore('documents').indexNames).sort(); });
+    assert.deepEqual(noms, ['entity_id', 'entity_type']);
+  } finally { await app.fermer(); }
+});
+
+test('documents d\'une fiche : seuls ses fichiers sont lus, en copie légère, sans jamais charger toute la table', async () => {
+  const app = await ouvrirApp();
+  try {
+    const r = await app.page.evaluate(async function (f) {
+      const gros = eval('(' + f + ')');
+      for (const d of [gros('a1', 'client', 'c1'), gros('a2', 'client', 'c1'), gros('b1', 'client', 'c2'), gros('p1', 'programme', 'c1')]) await dbPut('documents', d);
+      const reel = window.dbGetAll; window.__lectures = [];
+      window.dbGetAll = function (s) { window.__lectures.push(s); return reel(s); };
+      const legers = await docsDeEntite('client', 'c1');
+      const pleins = await docsDeEntite('client', 'c1', true);
+      const el = document.getElementById('client-doc-list');
+      await refreshDocumentsForEntity('client', 'c1');
+      const html = el.innerHTML;
+      const ged = await gedCollecter();
+      window.dbGetAll = reel;
+      return { ids: legers.map(function (d) { return d.id; }).sort(), blobLeger: legers.some(function (d) { return d.blob || d.data; }), aContenu: legers.every(function (d) { return d._a_contenu === true; }),
+        blobPlein: pleins.every(function (d) { return !!d.blob; }), lecturesDocuments: window.__lectures.filter(function (s) { return s === 'documents'; }).length, liste: /a1\.pdf/.test(html) && /a2\.pdf/.test(html) && !/b1\.pdf/.test(html), ged: ged.length };
+    }, gros.toString());
+    assert.deepEqual(r.ids, ['a1', 'a2']);
+    assert.equal(r.blobLeger, false);
+    assert.equal(r.aContenu, true);
+    assert.equal(r.blobPlein, true);
+    assert.equal(r.lecturesDocuments, 0, 'aucune lecture de toute la table');
+    assert.equal(r.liste, true);
+    assert.ok(r.ged >= 4);
+  } finally { await app.fermer(); }
+});
+
+test('liste Souscripteurs : le nombre de fichiers par souscripteur est compté par les index, sans lire les fichiers', async () => {
+  const app = await ouvrirApp();
+  try {
+    const r = await app.page.evaluate(async function (f) {
+      const gros = eval('(' + f + ')');
+      for (const d of [gros('a1', 'client', 'c1'), gros('a2', 'client', 'c1'), gros('b1', 'client', 'c2'), gros('p1', 'programme', 'c1')]) await dbPut('documents', d);
+      _docsClientInvalider();
+      await new Promise(function (ok) { docsClientIndexer(ok); });
+      return Object.assign({}, _docsClientIdx);
+    }, gros.toString());
+    assert.deepEqual(r, { c1: 2, c2: 1 });
+  } finally { await app.fermer(); }
+});
