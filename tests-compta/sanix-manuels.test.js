@@ -106,3 +106,24 @@ test('affichage : les références PRO-xx deviennent des liens vers le PDF du ma
     assert.doesNotMatch(html, />PRO-INCONNU<\/a>/);
   } finally { await app.fermer(); }
 });
+
+test('recherche par sections de tous les manuels : « immatriculer une parcelle rurale » retrouve PRO-19, « changer la procédure » le guide foncier', async () => {
+  const app = await ouvrirApp();
+  try {
+    const tous = fs.readdirSync(DOCS).filter((f) => /^MANUEL_.*\.md$/.test(f)).map((f) => f.slice(0, -3));
+    await charger(app, tous);
+    const r = await app.page.evaluate(async function () {
+      const lire = async function (q) { const res = await iaaChercherProcedure(q, ''); return { refs: res.refs.map(function (m) { return m.ref; }), texte: res.texte }; };
+      return { rurale: await lire('comment immatriculer une parcelle rurale'), docs: await lire('quels documents pour la procédure d\'immatriculation'),
+        changer: await lire('comment changer la procédure d\'un dossier foncier'), cai: await lire('comment traiter un écart de caisse'), precis: await iaaChercherProcedure('frais', 'PRO-PAI') };
+    });
+    assert.equal(r.rurale.refs[0], 'PRO-FON');
+    assert.match(r.rurale.texte, /PRO-19 — Immatriculer une parcelle rurale/);
+    assert.equal(r.docs.refs[0], 'PRO-FON');
+    assert.equal(r.changer.refs[0], 'GUI-FON');
+    assert.match(r.changer.texte, /Changer la procédure d'un dossier ouvert/);
+    assert.match(r.cai.texte, /CAI-12 — Traiter un écart de caisse/);
+    assert.deepEqual(r.precis.refs.map(function (m) { return m.ref; }), ['PRO-PAI']);
+    assert.ok(r.rurale.texte.length < 9500);
+  } finally { await app.fermer(); }
+});
