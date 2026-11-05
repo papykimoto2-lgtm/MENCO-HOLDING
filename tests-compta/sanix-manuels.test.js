@@ -147,3 +147,64 @@ test('accueil : le message annonce le manuel de procédures et propose des quest
     assert.match(r.placeholder, /Comment enregistrer un versement/);
   } finally { await app.fermer(); }
 });
+
+/* Erreur « API error 503 » : l'assistant doit dire pourquoi, retenter sur saturation, et répondre depuis le manuel quand l'IA est indisponible. */
+const reponse = (status, corps) => `new Response(${JSON.stringify(JSON.stringify(corps))}, { status: ${status}, headers: { 'Content-Type': 'application/json' } })`;
+
+test('clé serveur absente (503 not_configured) : message explicite, aucune reprise inutile', async () => {
+  const app = await ouvrirApp();
+  try {
+    const r = await app.page.evaluate(async function () {
+      let appels = 0;
+      window.fetch = async function () { appels++; return new Response(JSON.stringify({ error: 'not_configured', message: 'ANTHROPIC_API_KEY non définie sur Vercel.' }), { status: 503, headers: { 'Content-Type': 'application/json' } }); };
+      IAA_RETRY_DELAIS = [0, 0];
+      let msg = ''; try { await iaaAppelBoucle([{ role: 'user', content: 'bonjour' }]); } catch (e) { msg = e.message; }
+      return { appels, msg };
+    });
+    assert.equal(r.appels, 1);
+    assert.match(r.msg, /clé ANTHROPIC_API_KEY non définie dans Vercel/);
+  } finally { await app.fermer(); }
+});
+
+test('service saturé (503, 529) : reprises automatiques puis succès ; échec final expliqué', async () => {
+  const app = await ouvrirApp();
+  try {
+    const r = await app.page.evaluate(async function () {
+      IAA_RETRY_DELAIS = [0, 0];
+      let n = 0;
+      window.fetch = async function () { n++; return n < 3 ? new Response(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }), { status: 529 }) : new Response(JSON.stringify({ content: [{ type: 'text', text: 'Réponse OK' }], stop_reason: 'end_turn' }), { status: 200 }); };
+      const ok = await iaaAppelBoucle([{ role: 'user', content: 'bonjour' }]);
+      const tentativesOk = n;
+      n = 0; window.fetch = async function () { n++; return new Response(JSON.stringify({ error: 'x' }), { status: 503 }); };
+      let msg = ''; try { await iaaAppelBoucle([{ role: 'user', content: 'bonjour' }]); } catch (e) { msg = e.message; }
+      const lim = (window.fetch = async function () { return new Response('{}', { status: 429 }); }, null);
+      let msg429 = ''; try { await iaaAppelBoucle([{ role: 'user', content: 'bonjour' }]); } catch (e) { msg429 = e.message; }
+      return { ok, tentativesOk, tentativesEchec: n, msg, msg429 };
+    });
+    assert.equal(r.ok, 'Réponse OK');
+    assert.equal(r.tentativesOk, 3);
+    assert.equal(r.tentativesEchec, 3, 'une tentative + deux reprises');
+    assert.match(r.msg, /momentanément indisponible \(code 503/);
+    assert.match(r.msg, /Trop de questions|momentanément/);
+    assert.match(r.msg429, /Trop de questions/);
+  } finally { await app.fermer(); }
+});
+
+test('IA indisponible : la question de procédure reçoit quand même une réponse du manuel, avec l\'explication de la panne', async () => {
+  const app = await ouvrirApp();
+  try {
+    await charger(app, ['MANUEL_CAISSE', 'MANUEL_REAPPRO']);
+    const r = await app.page.evaluate(async function () {
+      IAA_RETRY_DELAIS = [0, 0]; IA.key = 'sk-test'; getIAConfig = function () {};
+      window.fetch = async function () { return new Response(JSON.stringify({ error: 'not_configured' }), { status: 503 }); };
+      IAA.messages = []; IAA.running = false;
+      document.getElementById('iaa-input').value = 'Comment traiter un écart de caisse ?';
+      await iaaEnvoyer();
+      return IAA.messages.map(function (m) { return m.content; });
+    });
+    const rep = r[r.length - 1];
+    assert.match(rep, /⚠️ L'assistant IA n'est pas encore activé sur le serveur/);
+    assert.match(rep, /réponse locale \(sans IA\)/);
+    assert.match(rep, /CAI-12/);
+  } finally { await app.fermer(); }
+});
