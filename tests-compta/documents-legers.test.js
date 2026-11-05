@@ -118,3 +118,30 @@ test('garde-fou : un document sans contenu n\'est jamais renvoyé au cloud', asy
   assert.ok(i > 0);
   assert.match(html.slice(i, i + 400), /table === 'pi_documents' && obj && obj\._sans_contenu\) return true/);
 });
+
+test('fiche de document vidée dans le cloud : non appliquée, et ce poste renvoie le vrai document pour réparer le cloud', async () => {
+  const app = await ouvrirApp();
+  try {
+    await preparerRpc(app.page, { pi_documents: [{ id: 'v1', updated_at: '2026-11-04T10:00:00Z', data: { id: 'v1', _modifie: '2026-11-04T10:00:00Z', updated_at: '2026-11-04T10:00:00Z', _baseModifie: '2026-11-04T10:00:00Z' } },
+      { id: 'v2', updated_at: '2026-11-04T10:00:00Z', data: { id: 'v2', _modifie: '2026-11-04T10:00:00Z' } }] });
+    const r = await app.page.evaluate(async function () {
+      await dbPut('documents', { id: 'v1', name: 'vrai.pdf', type: 'application/pdf', size: 3, blob: 'data:application/pdf;base64,QUJD', entity_type: 'client', entity_id: 'c1', _modifie: '2026-10-26T16:06:11Z' });
+      window.__envoyes = [];
+      window.syncToSupabase = async function (t, o) { window.__envoyes.push(t + ':' + o.id + ':' + (o.name || '')); return true; };
+      await _pullBatchViaRPC();
+      const v1 = (await dbGetAll('documents')).find(function (x) { return x.id === 'v1'; });
+      const v2 = (await dbGetAll('documents')).find(function (x) { return x.id === 'v2'; });
+      return { v1: v1 && v1.name, v1blob: !!(v1 && v1.blob), v2: !!v2, envoyes: window.__envoyes };
+    });
+    assert.equal(r.v1, 'vrai.pdf');
+    assert.equal(r.v1blob, true);
+    assert.equal(r.v2, false, 'fiche vide sans copie locale : ignorée');
+    assert.deepEqual(r.envoyes, ['pi_documents:v1:vrai.pdf']);
+  } finally { await app.fermer(); }
+});
+
+test('garde-fou : une fiche de document vide n\'est jamais envoyée', async () => {
+  const html = fs.readFileSync(PAGE_ERP, 'utf8');
+  const i = html.indexOf('async function syncToSupabase(table, obj, opts) {');
+  assert.match(html.slice(i, i + 1200), /table === 'pi_documents' && obj && !obj\.name && !obj\.entity_type && !obj\.titre\)/);
+});
