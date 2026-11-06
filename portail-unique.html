@@ -360,6 +360,12 @@
     }
     .carte-etiquette{ background:var(--pp-charbon); color:#fff; border:none; border-radius:6px; padding:3px 8px; font-size:.68rem; font-weight:600; box-shadow:0 2px 6px rgba(0,0,0,.2); }
     .carte-etiquette::before{ border-top-color:var(--pp-charbon); }
+    .carte-legende-lots{ display:flex; flex-wrap:wrap; gap:6px 12px; margin:2px 0 6px 30px; font-size:.7rem; color:#4b6a8b; }
+    .carte-legende-lots span{ display:inline-flex; align-items:center; gap:5px; }
+    .carte-legende-lots i{ width:10px; height:10px; border-radius:2px; opacity:.85; }
+    .carte-astuce-lots{ position:absolute; left:50%; top:10px; transform:translateX(-50%); z-index:500; background:rgba(255,255,255,.94); border:1px solid #cfdfed; border-radius:999px; padding:5px 12px; font-size:.72rem; color:#1e4663; box-shadow:0 2px 8px rgba(0,0,0,.08); pointer-events:none; max-width:calc(100% - 130px); text-align:center; line-height:1.3; }
+    .leaflet-tooltip.carte-lot-num{ background:transparent; border:0; box-shadow:none; color:#fff; font-size:.62rem; font-weight:700; text-shadow:0 0 3px rgba(0,0,0,.9),0 0 2px rgba(0,0,0,.9); padding:0; }
+    .leaflet-tooltip.carte-lot-num::before{ display:none; }
   </style>
   <style id="theme-vitrine">
     /* ═══ Thème vitrine « Moderne dynamique » ═══
@@ -900,6 +906,14 @@
             <span class="dot" style="background:#16a34a;"></span> Lots &amp; parcelles à vendre
             <span class="cnt" id="cnt-vente">0</span>
           </label>
+          <label class="carte-layer-toggle">
+            <input type="checkbox" id="mapf-contours" checked onchange="majCarte()">
+            <span class="dot" style="background:transparent;border:2px solid #16a34a;border-radius:3px;"></span> Contours des lots
+            <span class="cnt" id="cnt-contours">0</span>
+          </label>
+          <div class="carte-legende-lots" aria-label="Couleur des contours">
+            <span><i style="background:#16a34a"></i>Disponible</span><span><i style="background:#f59e0b"></i>Réservé</span><span><i style="background:#94a3b8"></i>Vendu</span>
+          </div>
           <label class="carte-layer-toggle" style="border-top:1px solid #eef2f8;margin-top:6px;padding-top:12px;">
             <input type="checkbox" id="mapf-dispo" onchange="majCarte()"> Disponibles uniquement
           </label>
@@ -923,6 +937,7 @@
         </div>
         <div id="carte-wrap" style="position:relative;">
           <div id="carte-immo" style="height:520px; border-radius:14px; overflow:hidden; border:1px solid #cfdfed; background:#eef3fc;"></div>
+          <div id="carte-astuce-lots" class="carte-astuce-lots" hidden>Zoomez pour voir les contours des lots</div>
           <div id="carte-fallback" style="display:none; padding:24px; text-align:center; color:#4b6a8b; background:#eef3fc; border-radius:14px; border:1px solid #cfdfed;">
             <i class="fas fa-map" style="font-size:2rem; opacity:.4;"></i>
             <p style="margin-top:10px;">La carte n'a pas pu se charger. Vérifiez votre connexion — la liste ci-dessous reste consultable.</p>
@@ -4897,7 +4912,11 @@
      décalée de façon déterministe (même bien → même zone, sinon un
      déplacement à chaque visite éveillerait le soupçon).
   ═══════════════════════════════════════════════════════════════ */
-  var CARTE = { map:null, couche:null, charge:false, echec:false, baseRues:null, baseSatellite:null, etiquettes:false };
+  var CARTE = { map:null, couche:null, charge:false, echec:false, baseRues:null, baseSatellite:null, etiquettes:false,
+                contours:null, marqLots:null, rendu:null };
+  /* Calque des lots : au-delà de ce zoom, chaque lot tracé est dessiné par son contour réel (couleur = statut)
+     au lieu d'une épingle ; en vue éloignée, les épingles restent, plus lisibles qu'un semis de petites formes. */
+  var CARTE_ZOOM_CONTOURS = 16;
   function toggleEtiquettesCarte(checked){
     CARTE.etiquettes = checked;
     if (typeof majCarte === 'function') majCarte();
@@ -5027,12 +5046,22 @@
                periodicite:b.periodicite, dispo_le:b.disponible_le, brut:b };
     }).filter(Boolean);
   }
+  function _mapContourLot(g){
+    if(!Array.isArray(g) || g.length<3) return null;
+    var poly=g.map(function(pt){
+      var a=_mapNum(Array.isArray(pt)?pt[0]:(pt&&pt.lat)), b=_mapNum(Array.isArray(pt)?pt[1]:(pt&&pt.lng));
+      return _mapValide(a,b)?[a,b]:null;
+    }).filter(Boolean);
+    return poly.length>=3 ? poly : null;
+  }
   function _mapPointsLots(){
     return (BIENS.lots||[]).map(function(l,i){
-      var lat=_mapNum(l.lat), lng=_mapNum(l.lng);
+      var lat=_mapNum(l.lat), lng=_mapNum(l.lng), contour=_mapContourLot(l.geo_polygon);
+      /* Un lot tracé sans point saisi est placé au centre de son contour. */
+      if(!_mapValide(lat,lng) && contour){ lat=contour.reduce(function(a,x){return a+x[0];},0)/contour.length; lng=contour.reduce(function(a,x){return a+x[1];},0)/contour.length; }
       if(!_mapValide(lat,lng)) return null;
       var st=_mapStatutLot(l.statut);
-      return { type:'lot', idx:i, nom:'Lot '+(l.numero||l.id)+(l.ilot?(' — îlot '+l.ilot):''),
+      return { type:'lot', idx:i, nom:'Lot '+(l.numero||l.id)+(l.ilot?(' — îlot '+l.ilot):''), numero:(l.numero||''), contour:contour,
                lat:lat, lng:lng, flou:false, statut:st, dispo:st.lib,
                prix:l.prix, surf:l.superficie, nature:l.nature,
                estimee:!!l.position_estimee, brut:l };
@@ -5450,6 +5479,10 @@
       maxZoom:19, attribution:'Tiles &copy; Esri'
     });
     CARTE.couche=L.layerGroup().addTo(CARTE.map);
+    CARTE.rendu=L.canvas({ padding:.5 });                 /* des centaines de contours : dessin sur canevas, pas un nœud par lot */
+    CARTE.contours=L.layerGroup();
+    CARTE.marqLots=L.layerGroup();
+    CARTE.map.on('zoomend', _majZoomLots);
     CARTE.charge=true;
     majCarte();
   }
@@ -5498,7 +5531,11 @@
     setK('kpi-prog', pts.filter(function(p){ return p.type==='programme'||p.type==='operation'; }).length);
     if(!CARTE.map||!CARTE.couche) return;
     CARTE.couche.clearLayers();
-    if(!pts.length) return;
+    if(CARTE.contours) CARTE.contours.clearLayers();
+    if(CARTE.marqLots) CARTE.marqLots.clearLayers();
+    var avecContours=((document.getElementById('mapf-contours')||{}).checked!==false) && !!CARTE.contours;
+    var nbContours=0;
+    if(!pts.length){ _majZoomLots(); var c0=document.getElementById('cnt-contours'); if(c0) c0.textContent='0'; return; }
     var bornes=[];
     pts.forEach(function(p){
       /* La forme réelle d'une parcelle vaut mieux qu'un point : c'est elle
@@ -5512,16 +5549,35 @@
         L.circle([p.lat,p.lng],{ radius:250, color:'#94a3b8', weight:1.5,
           fillColor:'#94a3b8', fillOpacity:.18 }).addTo(CARTE.couche).bindPopup(_mapPopup(p));
       }
-      var mk = L.marker([p.lat,p.lng],{ icon:_mapIcone(p) }).addTo(CARTE.couche).bindPopup(_mapPopup(p));
+      /* Lot tracé : son contour (vue rapprochée) et son épingle (vue éloignée) vont dans deux calques basculés au zoom. */
+      var dest=CARTE.couche;
+      if(avecContours && p.type==='lot' && p.contour){
+        var pg=L.polygon(p.contour,{ renderer:CARTE.rendu, color:p.statut.col, weight:1.5, opacity:.95, fillColor:p.statut.col, fillOpacity:.42 })
+          .addTo(CARTE.contours).bindPopup(_mapPopup(p));
+        if(CARTE.etiquettes && p.numero) pg.bindTooltip(esc(p.numero), { permanent:true, direction:'center', className:'carte-lot-num' });
+        dest=CARTE.marqLots; nbContours++;
+      }
+      var mk = L.marker([p.lat,p.lng],{ icon:_mapIcone(p) }).addTo(dest).bindPopup(_mapPopup(p));
+      if(dest===CARTE.marqLots) mk.on('click', function(){ if(CARTE.map.getZoom()<CARTE_ZOOM_CONTOURS) CARTE.map.setView([p.lat,p.lng], CARTE_ZOOM_CONTOURS+1); });
       if (CARTE.etiquettes && p.nom) {
         mk.bindTooltip(esc(p.nom), { permanent:true, direction:'top', offset:[0,-8], className:'carte-etiquette' });
       }
       bornes.push([p.lat,p.lng]);
     });
+    var cc=document.getElementById('cnt-contours'); if(cc) cc.textContent=nbContours;
     try{
       if(bornes.length===1) CARTE.map.setView(bornes[0],15);
       else CARTE.map.fitBounds(L.latLngBounds(bornes).pad(0.18));
     }catch(e){}
+    _majZoomLots();
+  }
+  /* Bascule épingles ↔ contours selon le zoom ; l'astuce invite à zoomer tant que des contours existent hors de vue. */
+  function _majZoomLots(){
+    if(!CARTE.map||!CARTE.contours||!CARTE.marqLots) return;
+    var proche=CARTE.map.getZoom()>=CARTE_ZOOM_CONTOURS, aContours=CARTE.contours.getLayers().length>0;
+    if(proche && aContours){ if(CARTE.map.hasLayer(CARTE.marqLots)) CARTE.map.removeLayer(CARTE.marqLots); if(!CARTE.map.hasLayer(CARTE.contours)) CARTE.contours.addTo(CARTE.map); }
+    else { if(CARTE.map.hasLayer(CARTE.contours)) CARTE.map.removeLayer(CARTE.contours); if(!CARTE.map.hasLayer(CARTE.marqLots)) CARTE.marqLots.addTo(CARTE.map); }
+    var a=document.getElementById('carte-astuce-lots'); if(a) a.hidden=!(aContours && !proche);
   }
 
   /* Liste textuelle : utile sans connexion, et seul contenu indexable
