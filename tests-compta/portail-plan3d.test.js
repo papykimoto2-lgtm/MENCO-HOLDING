@@ -38,14 +38,23 @@ function planAvecTraces(n, mien) {
 const PAIEMENT = { total: 6600000, verse: 4200000, reste: 2400000, pct: 63.6 };
 
 let pw, nav;
-async function ouvrirPage() {
+/* PNG 1 × 1 valide, servi à la place des tuiles satellite (aucun accès réseau réel). */
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+async function ouvrirPage(opts) {
+  opts = opts || {};
   if (!nav) { pw = chargerPlaywright(); nav = await pw.chromium.launch({ executablePath: trouverChromium(), args: ['--use-gl=swiftshader', '--enable-webgl', '--ignore-gl-blocklist', '--ignore-gpu-blocklist', '--no-sandbox'] }); }
   const page = await nav.newPage({ viewport: { width: 1100, height: 900 } });
   const erreurs = []; page.on('pageerror', (e) => erreurs.push(e.message));
+  const tuiles = [];
+  await page.route(/server\.arcgisonline\.com/, (route) => {
+    tuiles.push(route.request().url());
+    if (opts.tuilesEnPanne) return route.abort();
+    return route.fulfill({ contentType: 'image/png', headers: { 'access-control-allow-origin': '*' }, body: PNG });
+  });
   await page.setContent('<!doctype html><html><head><meta charset="utf-8"><style>:root{--pp-primary:#A6431C}</style></head><body><div id="s-plan"></div></body></html>');
   await page.addScriptTag({ path: path.join(RACINE, 'vendor/three.r128.min.js') });
   await page.addScriptTag({ path: path.join(RACINE, 'portail-plan3d.js') });
-  return { page, erreurs };
+  return { page, erreurs, tuiles };
 }
 test.after(async () => { if (nav) await nav.close(); });
 
@@ -137,4 +146,70 @@ test('fonction serveur : champs renvoyés limités, statut réduit à 3 valeurs,
   assert.ok(/grant execute on function public\.fc_vue_plan_lotissement\(\) to authenticated, service_role;/.test(sql));
   assert.ok(/security definer set search_path to ''/.test(sql));
   assert.ok(/auth\.jwt\(\) ->> 'kind'/.test(sql) && /<> 'souscripteur'/.test(sql));
+});
+
+test('satellite : aucune requête avant le clic ; au clic, tuiles Esri couvrant le plan, lots translucides, mention Esri ; second clic : retour', async () => {
+  const { page, erreurs, tuiles } = await ouvrirPage();
+  await page.evaluate((a) => { window.__c = window.PortailPlan3D.monter(document.getElementById('s-plan'), { plans: [a.plan], paiement: a.pay }); }, { plan: planAvecTraces(60, 5), pay: PAIEMENT });
+  await page.waitForTimeout(400);
+  assert.strictEqual(tuiles.length, 0, 'aucune image externe demandée avant le clic');
+  assert.strictEqual(await page.locator('.p3-attr').isHidden(), true);
+  await page.locator('[data-a="sat"]').click();
+  await page.waitForFunction(() => window.__c.info().satellite === true, null, { timeout: 15000 });
+  assert.ok(tuiles.length >= 1 && tuiles.length <= 30, 'nombre de tuiles : ' + tuiles.length);
+  /* les tuiles demandées sont à proximité d'Abidjan (lat 5,315 ; lng -4,432), au même zoom */
+  const zooms = new Set(tuiles.map((u) => u.match(/tile\/(\d+)\//)[1]));
+  assert.strictEqual(zooms.size, 1);
+  const z = +[...zooms][0], n = Math.pow(2, z), xAttendu = Math.floor((-4.4317 + 180) / 360 * n);
+  const xs = tuiles.map((u) => +u.match(/\/(\d+)$/)[1]);
+  assert.ok(xs.some((x) => Math.abs(x - xAttendu) <= 1), 'tuile x proche de ' + xAttendu + ' (reçu ' + xs.join(',') + ')');
+  assert.ok(z >= 17 && z <= 19, 'zoom adapté à un petit programme : ' + z);
+  assert.strictEqual(await page.locator('.p3-attr').isVisible(), true);
+  assert.match(await page.locator('.p3-attr').innerText(), /Esri/);
+  assert.strictEqual(await page.locator('[data-a="sat"]').getAttribute('aria-pressed'), 'true');
+  await page.locator('[data-a="sat"]').click();
+  assert.strictEqual(await page.evaluate(() => window.__c.info().satellite), false);
+  assert.strictEqual(await page.locator('.p3-attr').isHidden(), true);
+  const avant = tuiles.length;
+  await page.locator('[data-a="sat"]').click();     /* réactivation : l'image est déjà chargée, aucune nouvelle requête */
+  assert.strictEqual(await page.evaluate(() => window.__c.info().satellite), true);
+  assert.strictEqual(tuiles.length, avant);
+  assert.deepStrictEqual(erreurs, []);
+  await page.close();
+});
+
+test('satellite : tuiles indisponibles → message clair, le plan reste utilisable', async () => {
+  const { page, erreurs } = await ouvrirPage({ tuilesEnPanne: true });
+  await page.evaluate((a) => { window.__c = window.PortailPlan3D.monter(document.getElementById('s-plan'), { plans: [a.plan], paiement: a.pay }); }, { plan: planAvecTraces(30, 2), pay: PAIEMENT });
+  await page.locator('[data-a="sat"]').click();
+  await page.waitForSelector('.p3-sat-err', { timeout: 15000 });
+  assert.match(await page.locator('.p3-sat-err').innerText(), /n'a pas pu être chargée/);
+  assert.strictEqual(await page.evaluate(() => window.__c.info().satellite), false);
+  assert.strictEqual(await page.locator('[data-a="sat"]').isEnabled(), true, 'on peut réessayer');
+  await page.evaluate(() => window.__c.select('L1'));    /* le plan reste interactif */
+  assert.match(await page.locator('.p3-card').innerText(), /Lot L2/);
+  assert.deepStrictEqual(erreurs, []);
+  await page.close();
+});
+
+test('satellite : absent quand les lots n\'ont pas de tracé (grille indicative, aucune position réelle)', async () => {
+  const { page, tuiles } = await ouvrirPage();
+  const plan = planAvecTraces(24, 2); plan.lots.forEach((l) => { l.poly = null; });
+  const info = await page.evaluate((a) => { window.__c = window.PortailPlan3D.monter(document.getElementById('s-plan'), { plans: [a.plan], paiement: a.pay }); return window.__c.info(); }, { plan, pay: PAIEMENT });
+  assert.strictEqual(info.georef, false);
+  assert.strictEqual(await page.locator('[data-a="sat"]').count(), 0);
+  assert.strictEqual(tuiles.length, 0);
+  await page.close();
+});
+
+test('satellite : disponible aussi sur le plan public', async () => {
+  const { page, erreurs } = await ouvrirPage();
+  await page.evaluate((a) => {
+    const lots = a.plan.lots.map((l) => Object.assign({}, l, { statut: l.statut === 'mon_lot' ? 'libre' : l.statut, prix: 6600000 }));
+    window.__c = window.PortailPlan3D.monter(document.getElementById('s-plan'), { mode: 'public', plans: [Object.assign({}, a.plan, { lots })] });
+  }, { plan: planAvecTraces(40, 5) });
+  await page.locator('[data-a="sat"]').click();
+  await page.waitForFunction(() => window.__c.info().satellite === true, null, { timeout: 15000 });
+  assert.deepStrictEqual(erreurs, []);
+  await page.close();
 });
