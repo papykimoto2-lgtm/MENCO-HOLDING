@@ -37,6 +37,7 @@
     '.p3-chip i{width:10px;height:10px;border-radius:2px;background:var(--c)}',
     '.p3-chip[aria-pressed="false"]{opacity:.5}.p3-chip[aria-pressed="false"] i{background:transparent;border:1.5px solid var(--c)}',
     '.p3-chip.fixe{cursor:default}',
+    '.p3-attr{position:absolute;right:8px;bottom:50px;font-size:.62rem;color:#fff;background:rgba(0,0,0,.55);padding:2px 6px;border-radius:4px;pointer-events:none}',
     '.p3-compass{position:absolute;top:10px;right:10px;width:48px;height:48px;pointer-events:none}',
     '.p3-bar{position:absolute;left:10px;right:10px;bottom:10px;display:flex;flex-wrap:wrap;gap:6px}',
     '.p3-btn{background:rgba(255,255,255,.92);border:1px solid #cfdfed;border-radius:8px;padding:7px 12px;font-size:.78rem;font-weight:600;color:#1e4663;cursor:pointer}',
@@ -86,11 +87,13 @@
     var avecTrace = lots.filter(function (l) { return l.poly; });
     var modeGrille = avecTrace.length < Math.max(3, lots.length * 0.6);
     var sansTrace = 0;
+    var geo = null;
     if (!modeGrille) {
       var ref = avecTrace.filter(function (l) { return l.statut === 'mon_lot'; }); if (!ref.length) ref = avecTrace;
       var s0 = 0, s1 = 0, n = 0;
       ref.forEach(function (l) { l.poly.forEach(function (p) { s0 += +p[0]; s1 += +p[1]; n++; }); });
       var lat0 = s0 / n, lng0 = s1 / n, kx = 111320 * Math.cos(lat0 * Math.PI / 180), kz = 110540;
+      geo = { lat0: lat0, lng0: lng0, kx: kx, kz: kz };
       lots = lots.filter(function (l) { if (!l.poly) { sansTrace++; return false; } return true; });
       lots.forEach(function (l) {
         var pts = l.poly.map(function (p) { return [(+p[1] - lng0) * kx, -(+p[0] - lat0) * kz]; });
@@ -111,7 +114,45 @@
     lots.forEach(function (l) {
       var sx = 0, sz = 0; l.pts.forEach(function (p) { sx += p[0]; sz += p[1]; }); l.cx = sx / l.pts.length; l.cz = sz / l.pts.length;
     });
-    return { lots: lots, modeGrille: modeGrille, sansTrace: sansTrace };
+    return { lots: lots, modeGrille: modeGrille, sansTrace: sansTrace, geo: geo };
+  }
+
+  /* ---------- Image satellite (tuiles Web Mercator assemblées en une texture posée au sol) ---------- */
+  var TUILES = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+  function lng2x(lng, z) { return (lng + 180) / 360 * Math.pow(2, z); }
+  function lat2y(lat, z) { var r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * Math.pow(2, z); }
+  function x2lng(x, z) { return x / Math.pow(2, z) * 360 - 180; }
+  function y2lat(y, z) { return Math.atan(Math.sinh(Math.PI * (1 - 2 * y / Math.pow(2, z)))) * 180 / Math.PI; }
+  /* Emprise des lots (+ marge) puis plus fort zoom dont la mosaïque tient en 30 tuiles au plus. */
+  function planTuiles(lots, geo) {
+    var x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    lots.forEach(function (l) { l.pts.forEach(function (p) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); z0 = Math.min(z0, p[1]); z1 = Math.max(z1, p[1]); }); });
+    var mx = Math.max(25, (x1 - x0) * 0.2), mz = Math.max(25, (z1 - z0) * 0.2);
+    var west = geo.lng0 + (x0 - mx) / geo.kx, east = geo.lng0 + (x1 + mx) / geo.kx, north = geo.lat0 - (z0 - mz) / geo.kz, south = geo.lat0 - (z1 + mz) / geo.kz;
+    for (var z = 19; z >= 12; z--) {
+      var ta = Math.floor(lng2x(west, z)), tb = Math.floor(lng2x(east, z)), tc = Math.floor(lat2y(north, z)), td = Math.floor(lat2y(south, z));
+      var nx = tb - ta + 1, ny = td - tc + 1;
+      if (nx * ny <= 30 || z === 12) return { z: z, x0: ta, y0: tc, nx: nx, ny: ny };
+    }
+  }
+  function chargerImage(url) {
+    return new Promise(function (ok, ko) {
+      var im = new Image(); im.crossOrigin = 'anonymous'; im.onload = function () { ok(im); }; im.onerror = function () { ko(new Error('tuile')); }; im.src = url;
+    });
+  }
+  /* Renvoie { canvas, centre: [x, z] en mètres, largeur, hauteur } ou rejette si une tuile manque. */
+  async function mosaique(lots, geo) {
+    var t = planTuiles(lots, geo), cv = document.createElement('canvas');
+    cv.width = t.nx * 256; cv.height = t.ny * 256;
+    var ctx2 = cv.getContext('2d'), jobs = [];
+    for (var j = 0; j < t.ny; j++) for (var i = 0; i < t.nx; i++) (function (i, j) {
+      var url = TUILES.replace('{z}', t.z).replace('{y}', t.y0 + j).replace('{x}', t.x0 + i);
+      jobs.push(chargerImage(url).then(function (im) { ctx2.drawImage(im, i * 256, j * 256, 256, 256); }));
+    })(i, j);
+    await Promise.all(jobs);
+    var west = x2lng(t.x0, t.z), east = x2lng(t.x0 + t.nx, t.z), north = y2lat(t.y0, t.z), south = y2lat(t.y0 + t.ny, t.z);
+    return { canvas: cv, tuiles: t, centre: [((west + east) / 2 - geo.lng0) * geo.kx, -((north + south) / 2 - geo.lat0) * geo.kz],
+             largeur: (east - west) * geo.kx, hauteur: (north - south) * geo.kz };
   }
 
   /* ---------- Montage ---------- */
@@ -162,7 +203,9 @@
       '<svg class="p3-compass" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="22" fill="rgba(255,255,255,.9)" stroke="#cfdfed"/><path d="M24 6l6 18H18z" fill="var(--pp-primary,#A6431C)"/><path d="M24 42l-6-18h12z" fill="#8a97a3" opacity=".5"/></svg>' +
       '<div class="p3-hint">Glisser pour tourner · molette pour zoomer · cliquer un lot</div>' +
       '<div class="p3-bar">' + (pub ? '' : '<button type="button" class="p3-btn pri" data-a="mon">Mon lot</button>') + '<button type="button" class="p3-btn' + (pub ? ' pri' : '') + '" data-a="tout">' + (pub ? 'Vue d\'ensemble' : 'Tout le lotissement') + '</button>' +
-      '<button type="button" class="p3-btn" data-a="plan" aria-pressed="false">Vue du plan</button><button type="button" class="p3-btn" data-a="rejouer">Rejouer l\'animation</button></div>' +
+      '<button type="button" class="p3-btn" data-a="plan" aria-pressed="false">Vue du plan</button><button type="button" class="p3-btn" data-a="rejouer">Rejouer l\'animation</button>' +
+      (prep.geo ? '<button type="button" class="p3-btn" data-a="sat" aria-pressed="false">🛰️ Satellite</button>' : '') + '</div>' +
+      '<div class="p3-attr" hidden>Images satellite © Esri</div>' +
       '<div class="p3-tip" role="presentation"></div></div>' +
       '<div class="p3-card" aria-live="polite"></div>' +
       (prep.sansTrace ? '<p class="p3-note">' + prep.sansTrace + ' lot' + (prep.sansTrace > 1 ? 's' : '') + ' sans tracé ne figure' + (prep.sansTrace > 1 ? 'nt' : '') + ' pas sur ce plan.</p>' : '') +
@@ -230,7 +273,7 @@
     scene.fog = new THREE.Fog(0xe9eef1, RT * 5 + 300, RT * 11 + 900);
 
     /* groupes fusionnés par statut : un seul maillage par statut, quelle que soit la taille du plan */
-    var groups = {}, meshes = [];
+    var groups = {}, meshes = [], matsLots = [], matsLignes = [];
     ORDRE.forEach(function (st) {
       var subset = lots.filter(function (l) { return l.statut === st; });
       var h = HAUT[st], chunksP = [], chunksN = [], ranges = [], face = 0, lines = [], total = 0;
@@ -249,10 +292,12 @@
       var P = new Float32Array(total), N = new Float32Array(total), o = 0;
       chunksP.forEach(function (c, i) { P.set(c, o); N.set(chunksN[i], o); o += c.length; });
       var geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(P, 3)); geo.setAttribute('normal', new THREE.BufferAttribute(N, 3));
-      var mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: COL[st], roughness: 0.75, metalness: 0.03 }));
+      var matLot = new THREE.MeshStandardMaterial({ color: COL[st], roughness: 0.75, metalness: 0.03 }); matsLots.push(matLot);
+      var mesh = new THREE.Mesh(geo, matLot);
       mesh.userData.ranges = ranges; grp.add(mesh); meshes.push(mesh);
       var lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(lines), 3));
-      grp.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: 0x1b2a35, transparent: true, opacity: 0.35 })));
+      var matLigne = new THREE.LineBasicMaterial({ color: 0x1b2a35, transparent: true, opacity: 0.35 }); matsLignes.push(matLigne);
+      grp.add(new THREE.LineSegments(lg, matLigne));
     });
     function lotDe(hit) {
       var rs = hit.object.userData.ranges, f = hit.faceIndex, lo = 0, hi = rs.length - 1;
@@ -350,6 +395,37 @@
       if (l && !sansCamera) { want.tx = l.cx; want.tz = l.cz; want.r = Math.min(want.r, 90); stopSpin(); }
     }
 
+    /* satellite : image posée au sol, lots rendus translucides pour qu'elle reste lisible dessous */
+    var sat = { actif: false, plan: null, charge: false, encours: null };
+    var attr = box.querySelector('.p3-attr'), bSat = box.querySelector('[data-a="sat"]');
+    function appliquerSat() {
+      matsLots.forEach(function (m) { m.transparent = sat.actif; m.opacity = sat.actif ? 0.5 : 1; m.depthWrite = !sat.actif; m.needsUpdate = true; });
+      matsLignes.forEach(function (m) { m.color.setHex(sat.actif ? 0xffffff : 0x1b2a35); m.opacity = sat.actif ? 0.95 : 0.35; });
+      if (sat.plan) sat.plan.visible = sat.actif;
+      if (attr) attr.hidden = !sat.actif;
+      if (bSat) { bSat.setAttribute('aria-pressed', sat.actif ? 'true' : 'false'); bSat.classList.toggle('on', sat.actif); }
+    }
+    async function basculerSat(voulu) {
+      if (!prep.geo) return false;
+      var on = typeof voulu === 'boolean' ? voulu : !sat.actif;
+      if (on && !sat.charge) {
+        if (sat.encours) return sat.encours;
+        if (bSat) { bSat.disabled = true; bSat.textContent = 'Chargement de l\'image…'; }
+        sat.encours = mosaique(lots, prep.geo).then(function (m) {
+          var tex = new THREE.CanvasTexture(m.canvas); tex.encoding = THREE.sRGBEncoding; tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+          var plan = new THREE.Mesh(new THREE.PlaneGeometry(m.largeur, m.hauteur), new THREE.MeshBasicMaterial({ map: tex, fog: false }));
+          plan.rotation.x = -Math.PI / 2; plan.position.set(m.centre[0], -0.02, m.centre[1]); plan.visible = false; scene.add(plan);
+          sat.plan = plan; sat.charge = true; sat.actif = true; appliquerSat(); return true;
+        }).catch(function () {
+          sat.actif = false; appliquerSat();
+          var n = card.querySelector('.p3-sat-err'); if (!n) { n = document.createElement('p'); n.className = 'p3-note p3-sat-err'; n.setAttribute('role', 'status'); card.appendChild(n); }
+          n.textContent = 'L\'image satellite n\'a pas pu être chargée pour le moment. Réessayez plus tard.'; return false;
+        }).then(function (r) { if (bSat) { bSat.disabled = false; bSat.textContent = '🛰️ Satellite'; } sat.encours = null; return r; });
+        return sat.encours;
+      }
+      sat.actif = on; appliquerSat(); return on;
+    }
+
     /* commandes */
     box.addEventListener('change', function (e) { var t = e.target; if (t && t.hasAttribute && t.hasAttribute('data-planselect')) changerPlan(+t.value); });
     box.addEventListener('click', function (e) {
@@ -363,6 +439,7 @@
       else if (b.dataset.a === 'tout') { choisir(null, true); want.tx = ax; want.tz = az; want.r = clamp(RT * (pub ? 2.4 : 2.6), 90, pub ? 700 : rMax); want.ph = 0.9; stopSpin(); }
       else if (b.dataset.a === 'plan') { planVue = !planVue; b.classList.toggle('on', planVue); b.setAttribute('aria-pressed', planVue ? 'true' : 'false'); want.ph = planVue ? 0.08 : 0.95; if (planVue) want.th = 0; stopSpin(); }
       else if (b.dataset.a === 'rejouer') rejouer();
+      else if (b.dataset.a === 'sat') basculerSat();
       else if (b.dataset.a === 'fermer') choisir(null);
     });
 
@@ -399,8 +476,9 @@
     boucle();
     return {
       destroy: detruire,
+      satellite: basculerSat,
       select: function (id) { choisir(id); return selected ? selected.id : null; },
-      info: function () { return { webgl: true, public: pub, lots: lots.length, mes: mes.length, grille: prep.modeGrille, libres: cnt.libre, reserves: cnt.reserve, attribues: cnt.attribue, vendus: cnt.vendu, sansTrace: prep.sansTrace }; }
+      info: function () { return { webgl: true, public: pub, lots: lots.length, mes: mes.length, grille: prep.modeGrille, satellite: sat.actif, georef: !!prep.geo, libres: cnt.libre, reserves: cnt.reserve, attribues: cnt.attribue, vendus: cnt.vendu, sansTrace: prep.sansTrace }; }
     };
   }
 
