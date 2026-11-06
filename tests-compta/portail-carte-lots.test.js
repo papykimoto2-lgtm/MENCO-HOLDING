@@ -41,7 +41,15 @@ function lotsSimules() {
 }
 
 let nav;
-async function ouvrirCarte() {
+/* Simulation du serveur : respecte limit / offset et plafonne chaque réponse à 1 000 lignes, comme Supabase. */
+const PLAFOND_SERVEUR = 1000;
+function pageServeur(url, lignes, journal) {
+  const q = new URL(url).searchParams, off = +(q.get('offset') || 0), lim = Math.min(+(q.get('limit') || PLAFOND_SERVEUR), PLAFOND_SERVEUR);
+  if (journal) journal.push({ offset: off, limit: lim, order: q.get('order') });
+  return lignes.slice(off, off + lim);
+}
+async function ouvrirCarte(lots, journal) {
+  lots = lots || lotsSimules();
   if (!nav) nav = await chargerPlaywright().chromium.launch({ executablePath: trouverChromium() });
   const page = await nav.newPage({ viewport: { width: 1200, height: 1000 } });
   const erreurs = []; page.on('pageerror', (e) => erreurs.push(e.message));
@@ -50,7 +58,7 @@ async function ouvrirCarte() {
     if (u.startsWith('file:')) return route.continue();
     if (/leaflet\.min\.js/.test(u)) return route.fulfill({ contentType: 'application/javascript', body: fs.readFileSync(path.join(FIX, 'leaflet-1.9.4.js')) });
     if (/leaflet\.min\.css/.test(u)) return route.fulfill({ contentType: 'text/css', body: fs.readFileSync(path.join(FIX, 'leaflet-1.9.4.css')) });
-    if (/\/rest\/v1\/pi_lots_public/.test(u)) return route.fulfill({ contentType: 'application/json', body: JSON.stringify(lotsSimules()) });
+    if (/\/rest\/v1\/pi_lots_public/.test(u)) return route.fulfill({ contentType: 'application/json', body: JSON.stringify(pageServeur(u, lots, journal)) });
     if (/\/rest\/v1\//.test(u)) return route.fulfill({ contentType: 'application/json', body: '[]' });
     return route.abort();
   });
@@ -120,5 +128,18 @@ test('« Disponibles uniquement » s\'applique aussi aux contours', async () => 
   await page.evaluate(() => { document.getElementById('mapf-dispo').checked = true; majCarte(); });
   const n = await page.evaluate(() => CARTE.contours.getLayers().length);
   assert.strictEqual(n, 24);
+  await page.close();
+});
+
+test('plus de 2 000 lots : la carte les charge tous, page par page, malgré le plafond de 1 000 lignes du serveur', async () => {
+  const base = lotsSimules().slice(0, 40), lots = [];
+  for (let i = 0; i < 2771; i++) { const l = Object.assign({}, base[i % 40]); l.id = 'Z' + String(i).padStart(5, '0'); l.numero = String(i + 1); lots.push(l); }
+  const journal = [];
+  const { page, erreurs } = await ouvrirCarte(lots, journal);
+  const n = await page.evaluate(() => ({ lots: BIENS.lots.length, distincts: new Set(BIENS.lots.map((l) => l.id)).size }));
+  assert.deepStrictEqual(n, { lots: 2771, distincts: 2771 });
+  assert.deepStrictEqual(journal.map((j) => j.offset), [0, 1000, 2000, 2771], 'pages demandées');
+  assert.ok(journal.every((j) => j.order === 'id'), 'ordre stable demandé');
+  assert.deepStrictEqual(erreurs, []);
   await page.close();
 });

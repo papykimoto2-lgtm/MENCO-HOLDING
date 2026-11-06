@@ -2163,6 +2163,19 @@
     if(!r.ok) throw new Error('HTTP '+r.status);
     return await r.json();
   }
+  /* Lecture complète d'une vue, page par page. Le serveur plafonne le nombre de lignes par réponse (souvent 1 000) :
+     un simple « limit=2000 » renvoyait donc au plus ce plafond, et des lots manquaient sur la carte.
+     On avance du nombre de lignes réellement reçues jusqu'à une page vide, quel que soit ce plafond ;
+     « order » garantit un découpage stable d'une page à l'autre. Garde-fou : 50 pages. */
+  async function sbTout(path, ordre){
+    var tout=[], sep=path.indexOf('?')===-1?'?':'&', off=0;
+    for(var i=0;i<50;i++){
+      var page=await sb(path+sep+'order='+(ordre||'id')+'&limit=1000&offset='+off);
+      if(!Array.isArray(page)||!page.length) break;
+      tout=tout.concat(page); off+=page.length;
+    }
+    return tout;
+  }
 
   async function sha256Hex(str){
     var data=new TextEncoder().encode(str);
@@ -5001,9 +5014,9 @@
     BIENS.charge=true;
     try{
       var r=await Promise.all([
-        sb('pi_lots_public?select=*&limit=2000').catch(function(){return [];}),
-        sb('pi_parcelles_public?select=*&limit=1000').catch(function(){return [];}),
-        sb('pi_biens_louer_public?select=*&limit=1000').catch(function(){return [];}),
+        sbTout('pi_lots_public?select=*').catch(function(){return [];}),
+        sbTout('pi_parcelles_public?select=*').catch(function(){return [];}),
+        sbTout('pi_biens_louer_public?select=*').catch(function(){return [];}),
         /* Programmes et opérations depuis les vues publiques. Les programmes
            venaient d'un champ texte ressaisi à la main dans le paramétrage :
            il ignorait la table programmes et se périmait dès la première
