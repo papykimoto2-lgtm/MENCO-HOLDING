@@ -25753,8 +25753,15 @@ async function loadAllData() {
      terrain fréquent en Afrique). Le résultat final est identique : chaque
      store est toujours assigné indépendamment, avec le même filet de
      sécurité en cas d'erreur (conserver l'ancienne valeur de DATA[store]). */
+  /* [Plantage « Aïe aïe aïe » — fichiers joints] Le store 'documents' contient les FICHIERS en base64
+     (plusieurs Mo chacun ; des Go au total sur un poste qui a reçu la synchronisation complète d'avant v14.198).
+     Un getAll() ici les désérialisait TOUS dans le tas JavaScript à chaque démarrage → onglet tué sur téléphone.
+     Aucun code ne lit DATA.documents : les fichiers se lisent par clé (_docLocalGet), par entité (docsDeEntite)
+     ou par curseur (docsListeLegere). Le tableau reste donc vide ; les fichiers restent dans IndexedDB. */
+  var STORES_FICHIERS_HORS_MEMOIRE = ['documents'];
   await Promise.all(allKeys.map(async function(store) {
     try {
+      if (STORES_FICHIERS_HORS_MEMOIRE.indexOf(store) !== -1) { DATA[store] = []; return; }
       var rows = await dbGetAll(store);
       DATA[store] = rows.length ? rows : (DATA[store] || []);
     } catch(e) {
@@ -29543,6 +29550,28 @@ async function _appliquerLignesPullTable(table, store, rows) {
    méthode séquentielle si la fonction RPC n'existe pas encore côté
    Supabase (compatible avant/après migration) ou si l'appel échoue pour
    toute autre raison — jamais de blocage total de la synchro sur ce point. */
+/* [Mobile — plantage « Aïe aïe aïe » après connexion] Quand les curseurs sont vides
+   (première connexion sur l'appareil, cache vidé, magasins locaux vides), le lot RPC
+   ci-dessous renvoie TOUTES les tables dans UNE SEULE réponse JSON, intégralement
+   chargée en mémoire par resp.json() : sur un téléphone modeste, l'onglet est tué par
+   Chrome. Dans ce cas (appareil mobile ou peu de mémoire ET démarrage à froid), on
+   emprunte directement la méthode table par table, PAGINÉE (limit/offset) : plus de
+   requêtes, mais un pic mémoire borné. Les cycles suivants (curseurs remplis, réponse
+   petite) reprennent le lot RPC. */
+function _pullLotTropLourdPourCetAppareil() {
+  try {
+    var faible = (navigator.deviceMemory && navigator.deviceMemory <= 4) || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
+    if (!faible) return false;
+    var vides = 0;
+    for (var i = 0; i < SUPA_STORE_MAP.length; i++) {
+      var t = SUPA_STORE_MAP[i][0];
+      if (SUPA_STORE_MAP[i][1] === 'suppressions_sync' || PULL_TOUJOURS_COMPLET.indexOf(t) !== -1 || PULL_INCR_INAPTES[t]) continue;
+      if (!_pullCurseurEffectif(t)) vides++;
+    }
+    return vides >= 20;   /* démarrage à froid : la grande majorité des tables n'a aucun curseur */
+  } catch (e) { return false; }
+}
+
 async function _pullBatchViaRPC() {
   var curseurs = {};
   var tablesConcernees = [];
@@ -29742,6 +29771,7 @@ async function pullFromCloudSilent() {
        séquentielle juste en dessous — aucune perte de service. ── */
     var _rpcReussi = false;
     try {
+      if (_pullLotTropLourdPourCetAppareil()) throw new Error('lot RPC évité : démarrage à froid sur appareil mobile');
       var _totalRPC = await _pullBatchViaRPC();
       total += _totalRPC;
       _rpcReussi = true;
@@ -94155,8 +94185,8 @@ async function refreshDocumentsForEntity(entity_type, entity_id) {
           : '<span class="badge" style="font-size:9px;background:rgba(148,163,184,0.15);color:var(--dim);border:1px solid var(--bord);margin-left:6px;">🔒 Interne</span>')
       : '';
     return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:var(--card2);border-radius:var(--r);margin-bottom:6px;">'
-      +'<div><div style="font-size:13px;font-weight:600;">'+icon+' '+doc.name+badgeVis+'</div>'
-        +'<div style="font-size:10px;color:var(--blanc-dim);">'+dateShort(doc.upload_date)+' · '+(doc.size/1024).toFixed(1)+' KB'+(doc.description?' · '+doc.description:'')+'</div>'
+      +'<div><div style="font-size:13px;font-weight:600;">'+icon+' '+escHtml(doc.name)+badgeVis+'</div>'
+        +'<div style="font-size:10px;color:var(--blanc-dim);">'+dateShort(doc.upload_date)+' · '+(doc.size/1024).toFixed(1)+' KB'+(doc.description?' · '+escHtml(doc.description):'')+'</div>'
       +'</div>'
       +'<div style="display:flex;gap:4px;">'
         +'<button class="btn btn-secondary btn-sm btn-icon" onclick="apercuDocument(\''+doc.id+'\')" title="Aperçu">👁️</button>'
@@ -94375,8 +94405,8 @@ async function gedCollecter() {
 
 function _gedBlobField(rec) { return rec.blob!==undefined ? 'blob' : 'data'; }
 async function _gedGetRecord(store, id) {
-  var arr = await dbGetAll(store);
-  var rec = arr.find(function(x){ return x.id === id; });
+  /* documents : lecture par clé — dbGetAll('documents') chargeait TOUS les fichiers pour en ouvrir un seul. */
+  var rec = store === 'documents' ? await _docLocalGet(id) : (await dbGetAll(store)).find(function(x){ return x.id === id; });
   /* Document connu seulement par sa fiche (synchronisation légère) : le contenu est récupéré à la demande (administrateur / manager). */
   if (store === 'documents' && rec && (rec._sans_contenu || !(rec.blob || rec.data))) rec = await docChargerContenu(id);
   return rec;
@@ -94565,10 +94595,9 @@ async function _gedContenu(store, id, action) {
 /* Aperçu dans la page (calque) : plus de fenêtre contextuelle, que les navigateurs bloquent après un chargement asynchrone. */
 async function gedApercu(store, id) {
   var c = await _gedContenu(store, id, 'consultation'); if (!c) return;
-  var burl;
-  try { burl = URL.createObjectURL(await (await fetch(c.url)).blob()); } catch (e) { toast('Aperçu impossible : fichier illisible.', 'error'); return; }
-  var _tp = '';
-  try { _tp = String((await (await fetch(c.url)).blob()).type || '').toLowerCase(); } catch (e) {}
+  var burl, _blob;
+  try { _blob = await (await fetch(c.url)).blob(); burl = URL.createObjectURL(_blob); } catch (e) { toast('Aperçu impossible : fichier illisible.', 'error'); return; }
+  var _tp = String((_blob && _blob.type) || '').toLowerCase();
   var _estImage = /^image\/(png|jpe?g|gif|webp|bmp)$/.test(_tp), _estPdf = _tp === 'application/pdf';
   if (!_estImage && !_estPdf) { URL.revokeObjectURL(burl); toast('Aperçu indisponible pour ce type de fichier (' + (_tp || 'inconnu') + ') : téléchargez-le.', 'info'); return; }
   c.mime = _estImage ? 'image/*' : 'application/pdf';
