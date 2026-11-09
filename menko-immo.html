@@ -268,6 +268,24 @@ tr.pc-row-detail:hover td { background: rgba(184,115,51,0.05); }
 /* ══════ APP SHELL ══════════════════════════════════════ */
 #app { display:none; height:100vh; height:100dvh; flex-direction:column; }
 
+/* ── Bandeau licence : rouge, visible de tous, NON bloquant (en flux) ── */
+#lic-bandeau { display:none; flex-shrink:0; background:#c0151b; color:#fff; box-shadow:0 2px 6px rgba(0,0,0,.35); position:relative; z-index:101; }
+#lic-bandeau.on { display:block; }
+#lic-bandeau .lic-bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:8px 14px; }
+#lic-bandeau .lic-msg { flex:1 1 240px; font-size:13px; font-weight:600; }
+#lic-bandeau .lic-act { display:flex; gap:8px; flex-wrap:wrap; }
+#lic-bandeau button { min-height:36px; padding:0 12px; border:0; border-radius:6px; font:inherit; font-size:12px; font-weight:700; cursor:pointer; }
+#lic-bandeau .lic-p { background:#fff; color:#a00f14; }
+#lic-bandeau .lic-s { background:rgba(255,255,255,.18); color:#fff; }
+#lic-bandeau .lic-panel { display:none; background:#fff; color:#1a2430; border-top:3px solid #7f0d11; max-height:55vh; overflow:auto; }
+#lic-bandeau .lic-panel.open { display:block; }
+#lic-bandeau .lic-in { padding:12px 16px; }
+#lic-bandeau .lic-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:18px; font-size:13px; }
+#lic-bandeau h4 { margin:0 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:#5b6876; }
+#lic-bandeau ol, #lic-bandeau ul { margin:0; padding-left:18px; }
+#lic-bandeau li { margin:3px 0; }
+#lic-bandeau .lic-note { margin-top:10px; padding:7px 10px; border-left:4px solid #1f7a3d; background:#f1f5f2; font-size:12px; }
+
 /* ── Topbar ─────────────────────────────────────────── */
 .topbar {
   height:var(--topbar-h); flex-shrink:0;
@@ -2851,6 +2869,62 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
     <button onclick="_rechargerPourMaj()" style="background:#fff;color:#B87333;border:none;padding:6px 14px;border-radius:6px;font-weight:700;cursor:pointer;">Recharger maintenant</button>
     <button onclick="document.getElementById('maj-banner').style.display='none';" title="Masquer (le rappel réapparaîtra plus tard)" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.5);padding:6px 10px;border-radius:6px;cursor:pointer;">Plus tard</button>
   </div>
+
+  <!-- Bandeau licence (impayé) : rouge, permanent, non bloquant. Alimenté par
+       licenceBandeauAfficher(etat) ; aperçu : ?licence_preview=1 -->
+  <div id="lic-bandeau" role="alert" aria-live="polite">
+    <div class="lic-bar">
+      <span aria-hidden="true">⚠</span>
+      <div class="lic-msg" id="lic-msg"></div>
+      <div class="lic-act">
+        <button type="button" class="lic-p" id="lic-pay">Régulariser</button>
+        <button type="button" class="lic-s" id="lic-toggle" aria-expanded="false" aria-controls="lic-panel">Voir la procédure</button>
+      </div>
+    </div>
+    <div class="lic-panel" id="lic-panel">
+      <div class="lic-in">
+        <div class="lic-grid">
+          <section><h4>1. Régulariser</h4>
+            <ol><li>Ouvrir la facture <b id="lic-num"></b>.</li><li>Payer par virement, Mobile Money ou chèque.</li><li>Indiquer la référence <b id="lic-ref"></b>.</li><li>Envoyer la preuve à la comptabilité.</li></ol>
+          </section>
+          <section><h4>2. Étapes à venir</h4><ul id="lic-tl" style="list-style:none;padding:0;"></ul></section>
+          <section><h4>3. Aide</h4>
+            <ul><li>Erreur ou litige : contester sous 5 jours ouvrés.</li><li>Échéancier : demande écrite à la comptabilité.</li><li id="lic-contact"></li></ul>
+          </section>
+        </div>
+        <div class="lic-note">Le logiciel reste pleinement utilisable. Aucune donnée n'est supprimée.</div>
+      </div>
+    </div>
+  </div>
+  <script>
+  /* Bandeau licence — textContent uniquement (anti-XSS). etat = {num, montant, jours, contact} */
+  function licenceBandeauAfficher(etat){
+    var $=function(i){return document.getElementById(i)};
+    var b=$('lic-bandeau'); if(!b) return;
+    if(!etat||!(etat.jours>0)){ b.classList.remove('on'); return; }
+    var mk=function(t,x){var e=document.createElement(t);e.textContent=x;return e};
+    var m=$('lic-msg'); m.textContent='';
+    var mont=new Intl.NumberFormat('fr-FR').format(etat.montant)+' FCFA';
+    m.append('Paiement en retard : facture ',mk('b',etat.num),' ('+mont+') impayée depuis ',mk('b',etat.jours+' jours'),'. Merci de régulariser.');
+    $('lic-num').textContent=etat.num; $('lic-ref').textContent=etat.num;
+    $('lic-contact').textContent=etat.contact||'';
+    var tl=$('lic-tl'); tl.textContent=''; var marque=false;
+    [[15,'Avertissement, support suspendu'],[30,'Mode lecture seule'],[45,'Création de documents bloquée'],[60,'Licence suspendue (export seul)']].forEach(function(s){
+      var li=document.createElement('li'); li.style.cssText='display:flex;gap:10px;padding:4px 0;border-bottom:1px solid #e3e7eb;';
+      var j=mk('span','J+'+s[0]); j.style.cssText='flex:0 0 52px;font-weight:700;';
+      li.append(j,mk('span',s[1]));
+      if(etat.jours>=s[0]) li.style.color='#1f7a3d'; else if(!marque){li.style.color='#c0151b';li.style.fontWeight='700';marque=true;}
+      tl.appendChild(li);
+    });
+    b.classList.add('on');
+  }
+  (function(){
+    var t=document.getElementById('lic-toggle'); if(!t) return;
+    t.onclick=function(){var o=document.getElementById('lic-panel').classList.toggle('open');t.setAttribute('aria-expanded',o);t.textContent=o?'Masquer la procédure':'Voir la procédure';};
+    document.getElementById('lic-pay').onclick=function(){if(!document.getElementById('lic-panel').classList.contains('open'))t.click();};
+    if(/[?&]licence_preview=1/.test(location.search)) licenceBandeauAfficher({num:'FAC-2026-0142',montant:4850000,jours:12,contact:'compta@sanix.example'});
+  })();
+  </script>
 
   <!-- Topbar mobile -->
   <div class="topbar">
