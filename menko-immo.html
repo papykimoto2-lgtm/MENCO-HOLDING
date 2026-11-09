@@ -29543,6 +29543,28 @@ async function _appliquerLignesPullTable(table, store, rows) {
    méthode séquentielle si la fonction RPC n'existe pas encore côté
    Supabase (compatible avant/après migration) ou si l'appel échoue pour
    toute autre raison — jamais de blocage total de la synchro sur ce point. */
+/* [Mobile — plantage « Aïe aïe aïe » après connexion] Quand les curseurs sont vides
+   (première connexion sur l'appareil, cache vidé, magasins locaux vides), le lot RPC
+   ci-dessous renvoie TOUTES les tables dans UNE SEULE réponse JSON, intégralement
+   chargée en mémoire par resp.json() : sur un téléphone modeste, l'onglet est tué par
+   Chrome. Dans ce cas (appareil mobile ou peu de mémoire ET démarrage à froid), on
+   emprunte directement la méthode table par table, PAGINÉE (limit/offset) : plus de
+   requêtes, mais un pic mémoire borné. Les cycles suivants (curseurs remplis, réponse
+   petite) reprennent le lot RPC. */
+function _pullLotTropLourdPourCetAppareil() {
+  try {
+    var faible = (navigator.deviceMemory && navigator.deviceMemory <= 4) || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
+    if (!faible) return false;
+    var vides = 0;
+    for (var i = 0; i < SUPA_STORE_MAP.length; i++) {
+      var t = SUPA_STORE_MAP[i][0];
+      if (SUPA_STORE_MAP[i][1] === 'suppressions_sync' || PULL_TOUJOURS_COMPLET.indexOf(t) !== -1 || PULL_INCR_INAPTES[t]) continue;
+      if (!_pullCurseurEffectif(t)) vides++;
+    }
+    return vides >= 20;   /* démarrage à froid : la grande majorité des tables n'a aucun curseur */
+  } catch (e) { return false; }
+}
+
 async function _pullBatchViaRPC() {
   var curseurs = {};
   var tablesConcernees = [];
@@ -29742,6 +29764,7 @@ async function pullFromCloudSilent() {
        séquentielle juste en dessous — aucune perte de service. ── */
     var _rpcReussi = false;
     try {
+      if (_pullLotTropLourdPourCetAppareil()) throw new Error('lot RPC évité : démarrage à froid sur appareil mobile');
       var _totalRPC = await _pullBatchViaRPC();
       total += _totalRPC;
       _rpcReussi = true;
