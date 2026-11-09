@@ -25,6 +25,9 @@
    ajoutées une par une, pour qu'un fichier manquant n'emporte plus les autres,
    et la console nomme celui qui manque. */
 
+/* [CORRECTIF] Cache.put() refuse les réponses partielles (206) : seules les 200 sont
+   mises en cache, et le rejet de put() est désormais capté (return) au lieu de
+   remonter en « Uncaught (in promise) ». */
 var CACHE = 'menko-holding-v3';
 
 /* Coquille commune aux deux applications. Chemins absolus : le service worker
@@ -91,9 +94,9 @@ self.addEventListener('fetch', function (e) {
   if (req.mode === 'navigate') {
     e.respondWith(
       fetch(req).then(function (res) {
-        if (estCoquille && res && res.ok) {
+        if (estCoquille && res && res.status === 200) {
           var copie = res.clone();
-          caches.open(CACHE).then(function (c) { c.put(req, copie); }).catch(function () {});
+          caches.open(CACHE).then(function (c) { return c.put(req, copie); }).catch(function () {});
         }
         return res;
       }).catch(function () {
@@ -115,9 +118,9 @@ self.addEventListener('fetch', function (e) {
 
   e.respondWith(
     fetch(req).then(function (res) {
-      if (res && res.ok) {
+      if (res && res.status === 200) {
         var copie = res.clone();
-        caches.open(CACHE).then(function (c) { c.put(req, copie); }).catch(function () {});
+        caches.open(CACHE).then(function (c) { return c.put(req, copie); }).catch(function () {});
       }
       return res;
     }).catch(function () {
