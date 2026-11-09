@@ -2468,6 +2468,31 @@
   function sLotNum(){ var l=S.lots.find(function(x){return x.id===S.client.lot_id;}); return (l&&(l.numero||l.nom))||S.client.lot||''; }
   function sVers(){ return S.versements.filter(function(v){return v.client_id===S.client.id;}); }
 
+  /* Bandeau de rappel de règlement : même calcul que l'échéancier affiché au client (donc jamais en contradiction avec lui).
+     Aucun bandeau pour un financement bancaire (le paiement est géré par la banque) ni sans échéancier défini. */
+  function sBandeauReglement(){
+    var c=S.client||{}, m=String(c.mode_acquisition||'').toLowerCase().replace(/[_\s.]+/g,' ').trim();
+    if(/(cr[eé]dit|pr[eê]t|financement) bancaire|^cb\b/.test(m)) return '';
+    var total=parseFloat(c.montant_total)||0, apport=parseFloat(c.apport)||0, duree=parseInt(c.duree)||0;
+    if(!total||!duree||!c.date_debut) return '';
+    var verse=sVers().filter(surPrix).reduce(function(s,v){return s+(parseFloat(v.montant)||0);},0);
+    if(verse>=total-1) return '<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;"><strong style="color:#065f46;">✔ Votre prix est entièrement réglé. Merci pour votre confiance.</strong></div>';
+    var mens=Math.ceil((total-apport)/duree), debut=new Date(c.date_debut), now=new Date(), echues=0, prochaine=null;
+    for(var i=0;i<duree;i++){
+      var ech=new Date(debut.getFullYear(),debut.getMonth()+i,1);
+      if(ech<=now) echues=i+1; else { prochaine=ech; break; }
+    }
+    var du=Math.max(0,Math.min(total,apport+mens*echues)-verse);
+    var voir='<button class="highlight-btn" style="margin-top:10px;" onclick="var b=document.querySelectorAll(\'.subnav button\')[1]; if(b) b.click();">Voir mon échéancier</button>';
+    if(du>0) return '<div class="card" style="background:#fef2f2;border-color:#fecaca;"><strong style="color:#991b1b;">⚠️ Un règlement de '+fmt(du)+' F est en attente sur votre dossier.</strong>'
+      +'<div style="font-size:.85rem;color:#7f1d1d;margin-top:4px;line-height:1.5;">Merci de le régulariser dès que possible pour que votre dossier reste à jour. Une difficulté ? Écrivez-nous depuis la messagerie, nous trouverons une solution ensemble.</div>'+voir+'</div>';
+    if(prochaine){
+      var j=Math.ceil((prochaine-now)/864e5);
+      if(j<=10) return '<div class="card" style="background:#fffbeb;border-color:#fde68a;"><strong style="color:#92400e;">📅 Prochaine échéance le '+prochaine.toLocaleDateString('fr-FR')+' : '+fmt(mens)+' F</strong>'
+        +'<div style="font-size:.85rem;color:#78350f;margin-top:4px;">Réglez à l\'avance pour garder votre dossier à jour.</div>'+voir+'</div>';
+    }
+    return '<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;"><strong style="color:#065f46;">✔ Votre dossier est à jour. Merci !</strong></div>';
+  }
   function rendreSouscripteur(){
     var c=S.client, vs=sVers();
     var total=parseFloat(c.montant_total)||0;
@@ -2484,6 +2509,7 @@
       +kpiBox('Versé sur prix',fmt(versePrix)+' F','color:#16a34a;')
       +kpiBox('Reste à payer',fmt(reste)+' F','color:#991b1b;')
       +kpiBox('Prix réglé',pct.toFixed(0)+'%','')+'</div>';
+    html+=sBandeauReglement();
     if(frais>0) html+='<div class="card" style="background:#fff7ed; border-color:#fed7aa; display:flex; justify-content:space-between; align-items:center;"><div><strong style="color:#92400e;">📝 Frais de souscription</strong><div style="font-size:.75rem; color:#4b6a8b;">Non remboursables — hors prix du bien</div></div><div style="font-weight:700; color:#92400e;">'+fmt(frais)+' F</div></div>';
     html+='<div class="subnav">'
       +'<button class="on" onclick="sSub(this,\'fin\')">Finances</button>'
