@@ -67090,6 +67090,34 @@ async function fcRetirerPiece(pieceId, motif) {
   return { ok: true };
 }
 
+/* Promoteur : corriger les informations d'une pièce jointe (nom affiché, note, catégorie, confidentialité, expiration).
+   Le fichier lui-même n'est jamais modifié (empreinte d'origine) : pour le changer, déposer une nouvelle version. */
+async function fcModifierPiece(pieceId, champs) {
+  champs = champs || {};
+  var p = fcPiece(pieceId), d = p && fcDossier(p.dossier_id);
+  if (!p || !d) return { ok: false, erreur: 'Pièce introuvable.' };
+  if (!fcPeutGererDossier(d)) return { ok: false, erreur: 'Seul le responsable du dossier (ou un administrateur) peut modifier une pièce.' };
+  if (!fcDossierOuvert(d)) return { ok: false, erreur: 'Dossier ' + d.statut + ' : aucune modification.' };
+  if (p.retire || p.remplacee_par) return { ok: false, erreur: "Cette pièce n'est plus la version courante." };
+  if (!fcPieceLisible(p)) return { ok: false, erreur: "Vous n'avez pas accès à ce document." };
+  var nom = champs.nom !== undefined ? String(champs.nom).trim().slice(0, 160) : p.nom;
+  if (!nom) return { ok: false, erreur: 'Le nom du document est obligatoire.' };
+  var cat = champs.categorie !== undefined ? champs.categorie : (p.categorie || 'autre');
+  if (!FC_CATEGORIES_DOC[cat]) return { ok: false, erreur: 'Catégorie documentaire inconnue.' };
+  var conf = champs.confidentialite !== undefined ? champs.confidentialite : (p.confidentialite || 'normale');
+  if (!FC_CONFIDENTIALITES[conf]) return { ok: false, erreur: 'Niveau de confidentialité inconnu.' };
+  if (conf === 'restreinte' && p.visibilite === 'souscripteur' && !p.client_id) return { ok: false, erreur: 'Une pièce restreinte ne peut pas être visible du souscripteur.' };
+  var exp = champs.expire_le !== undefined ? String(champs.expire_le || '') : (p.expire_le || '');
+  if (exp && !/^\d{4}-\d{2}-\d{2}$/.test(exp)) return { ok: false, erreur: "Date d'expiration invalide (AAAA-MM-JJ)." };
+  var ancien = fcNomJournal(p);
+  p.nom = nom; p.categorie = cat; p.confidentialite = conf; p.expire_le = exp;
+  if (champs.note !== undefined) p.note = String(champs.note).trim().slice(0, 500);
+  p.modifie_par = fcActeur().nom; p.modifie_le = new Date().toISOString();
+  await fcDb('pieces_foncieres', p, { forceRole: true });
+  await fcEvenement(d, p.etape_code, 'piece_modifiee', 'Pièce « ' + ancien + ' » modifiée' + (ancien !== fcNomJournal(p) ? ' → « ' + fcNomJournal(p) + ' »' : ''), { source_ref: p.id });
+  return { ok: true, piece: p };
+}
+
 /* Vue du souscripteur : ses pièces et celles que le promoteur lui a ouvertes, jamais le reste. */
 function fcPiecesVueSouscripteur(clientId, d) {
   var docs = [], demandes = [];
@@ -67124,8 +67152,9 @@ function fcPanneauPieces(d) {
       + (p.note ? '<div style="color:var(--dim);">' + escHtml(p.note) + '</div>' : '')
       + (p.retire ? ' — <b>retirée</b> : ' + escHtml(p.retire_motif)
          : (p.statut === 'a_verifier' ? ' <button class="btn btn-secondary btn-sm" onclick="fcDecisionPieceUI(\'' + p.id + '\',\'acceptee\')">Accepter</button> <button class="btn btn-secondary btn-sm" onclick="fcDecisionPieceUI(\'' + p.id + '\',\'refusee\')">Refuser</button>' : '')
-           + ' <button class="btn btn-secondary btn-sm" onclick="fcRetirerPieceUI(\'' + p.id + '\')">Retirer</button>') + '</div>';
-  }).join('') : '<div style="color:var(--dim);font-size:12px;">Aucune pièce sur cette étape.</div>';
+           + (p.remplacee_par ? '' : ' <button class="btn btn-secondary btn-sm" onclick="fcModifierPieceUI(\'' + p.id + '\')">✏️ Modifier</button> <button class="btn btn-secondary btn-sm" onclick="fcRemplacerFichierUI(\'' + p.id + '\')">🔄 Remplacer le fichier</button>')
+           + ' <button class="btn btn-danger btn-sm" title="Retire la pièce de la liste ; elle reste conservée au journal du dossier" onclick="fcRetirerPieceUI(\'' + p.id + '\')">🗑 Supprimer</button>') + '</div>';
+  }).join('') + '<input type="file" id="fd-version-input" style="display:none" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*" onchange="fcVersionChoisie(this)">' : '<div style="color:var(--dim);font-size:12px;">Aucune pièce sur cette étape.</div>';
   if (e.justificatif_requis && !(e.justificatifs || []).length) h += '<div style="margin-top:8px;padding:6px 8px;background:rgba(201,168,76,.12);border-radius:6px;font-size:12px;">ℹ️ Cette étape exige un justificatif : le fichier que vous joignez ici sera enregistré comme justificatif.</div>';
   h += '<div class="filters-bar" style="align-items:end;margin-top:10px;"><div class="form-group"><label>Fichier (PDF, JPG, PNG — les grosses photos sont réduites automatiquement)</label><input type="file" id="fc-piece-fichier" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*"></div>'
     + '<div class="form-group"><label>Visibilité</label><select class="filter-select" id="fc-piece-visi"><option value="interne">Interne</option>' + (e.visibilite === 'souscripteur' ? '<option value="souscripteur">Visible du souscripteur</option>' : '') + '</select></div>'
@@ -67154,16 +67183,29 @@ async function fcDecisionPieceUI(id, decision) {
   var motif = ''; if (decision === 'refusee') { motif = prompt('Motif du refus (communiqué au souscripteur) :'); if (!motif) return; }
   var p = fcPiece(id); fcMsg(await fcDecisionPiece(id, decision, motif), 'Décision enregistrée.'); if (p) fcRenderDetail(p.dossier_id);
 }
+async function fcModifierPieceUI(id, ged) {
+  var p = fcPiece(id); if (!p) return;
+  var nom = prompt('Nom du document :', p.nom); if (nom === null) return;
+  var note = prompt('Note (facultative) :', p.note || ''); if (note === null) return;
+  fcMsg(await fcModifierPiece(id, { nom: nom, note: note }), 'Pièce modifiée.');
+  if (ged) fcRenderDocuments(); else fcRenderDetail(p.dossier_id);
+}
+/* Remplacer le fichier depuis le panneau d'une étape : nouvelle version (l'ancienne reste consultable). */
+function fcRemplacerFichierUI(id) {
+  var p = fcPiece(id); if (!p) return;
+  APP._fdVersionPour = id; APP._fcRemplacerDossier = p.dossier_id;
+  var i = document.getElementById('fd-version-input'); if (i) { i.value = ''; i.click(); }
+}
 async function fcRetirerPieceUI(id, ged) {
-  var m = prompt('Motif de l\'archivage (obligatoire, conservé au journal) :'); if (!m) return;
-  var p = fcPiece(id); fcMsg(await fcRetirerPiece(id, m), 'Document archivé.'); if (ged) fcRenderDocuments(); else if (p) fcRenderDetail(p.dossier_id);
+  var m = prompt('Motif de la suppression (obligatoire). La pièce est retirée de la liste mais conservée au journal du dossier :'); if (!m) return;
+  var p = fcPiece(id); fcMsg(await fcRetirerPiece(id, m), 'Pièce supprimée (conservée au journal).'); if (ged) fcRenderDocuments(); else if (p) fcRenderDetail(p.dossier_id);
 }
 async function fcDeposerPieceApercuUI(clientId, dossierId, code, inputId) {
   var inp = document.getElementById(inputId); if (!inp || !inp.files[0]) { alert('Choisissez un fichier.'); return; }
   var f; try { f = await fcLireFichier(inp.files[0]); } catch (e) { alert(e.message); return; }
   fcMsg(await fcDeposerPieceSouscripteur(clientId, dossierId, code, f, ''), 'Pièce déposée.'); fcRenderSouscripteurs();
 }
-fcProtegerMutations(['fcAjouterPiece', 'fcDemanderPiece', 'fcFermerDepot', 'fcDecisionPiece', 'fcRetirerPiece', 'fcDeposerPieceSouscripteur', 'fcDefinirEcheance']);
+fcProtegerMutations(['fcAjouterPiece', 'fcDemanderPiece', 'fcFermerDepot', 'fcDecisionPiece', 'fcRetirerPiece', 'fcModifierPiece', 'fcDeposerPieceSouscripteur', 'fcDefinirEcheance']);
 
 /* ═══ Gestion documentaire (cahier §11) — au-dessus des pièces jointes ═══
    Catégories, versions, date d'expiration, confidentialité, archivage logique, empreinte SHA-256,
@@ -67353,7 +67395,7 @@ function fcRenderDocuments() {
         + '<td>' + (p.expire_le ? escHtml(p.expire_le) + (ex === 'expiree' ? '<br><b style="color:#c0392b;font-size:11px;">Expiré</b>' : (ex === 'bientot' ? '<br><span style="color:#B87333;font-size:11px;">Bientôt</span>' : '')) : '—') + '</td>'
         + '<td style="white-space:nowrap;"><button class="btn btn-secondary btn-sm" title="Aperçu" onclick="fcPrevisualiserUI(\'' + p.id + '\')">👁</button> <button class="btn btn-secondary btn-sm" title="Télécharger" onclick="fcTelechargerPieceUI(\'' + p.id + '\')">⬇</button> <button class="btn btn-secondary btn-sm" title="Vérifier l\'intégrité" onclick="fcIntegriteUI(\'' + p.id + '\')">🔍</button>'
         + (p.retire ? ' <button class="btn btn-secondary btn-sm" onclick="fcRestaurerPieceUI(\'' + p.id + '\')">Restaurer</button>'
-           : (p.remplacee_par ? '' : ' <button class="btn btn-secondary btn-sm" onclick="fcVersionUI(\'' + p.id + '\')">+ version</button> <button class="btn btn-secondary btn-sm" onclick="fcRetirerPieceUI(\'' + p.id + '\',true)">Archiver</button>')) + '</td></tr>'; }).join('')
+           : (p.remplacee_par ? '' : ' <button class="btn btn-secondary btn-sm" onclick="fcModifierPieceUI(\'' + p.id + '\',true)">✏️ Modifier</button> <button class="btn btn-secondary btn-sm" onclick="fcVersionUI(\'' + p.id + '\')">🔄 Remplacer le fichier</button> <button class="btn btn-danger btn-sm" title="Retire le document de la liste ; il reste conservé au journal du dossier" onclick="fcRetirerPieceUI(\'' + p.id + '\',true)">🗑 Supprimer</button>')) + '</td></tr>'; }).join('')
     + '</tbody></table></div>' : '<div style="color:var(--dim);padding:10px;">Aucun document ne correspond. Joignez une pièce depuis un dossier (bouton 📎 d\'une étape) ou déposez-la ci-dessous.</div>';
   h += '</div>' + fcFormulaireDepot();
   host.innerHTML = h + '<input type="file" id="fd-version-input" style="display:none" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*" onchange="fcVersionChoisie(this)">';
@@ -67402,7 +67444,8 @@ function fcVersionUI(id) { APP._fdVersionPour = id; var i = document.getElementB
 async function fcVersionChoisie(inp) {
   if (!inp.files[0] || !APP._fdVersionPour) return;
   var f; try { f = await fcLireFichier(inp.files[0]); } catch (e) { alert(e.message); return; }
-  fcMsg(await fcNouvelleVersion(APP._fdVersionPour, f, {}), 'Nouvelle version enregistrée.'); APP._fdVersionPour = null; fcRenderDocuments();
+  fcMsg(await fcNouvelleVersion(APP._fdVersionPour, f, {}), 'Nouvelle version enregistrée.'); APP._fdVersionPour = null;
+  if (APP._fcRemplacerDossier) { var dr = APP._fcRemplacerDossier; APP._fcRemplacerDossier = null; fcRenderDetail(dr); } else fcRenderDocuments();
 }
 async function fcRestaurerPieceUI(id) { fcMsg(await fcRestaurerPiece(id), 'Document restauré.'); fcRenderDocuments(); }
 function fcExporterRegistreUI() { if (!fcPeutExporter()) { fcMsg({ ok: false, erreur: "Votre profil ne permet pas d'exporter les données foncières." }); return; } fcTelechargerTexte('documents-fonciers-' + fcAuj() + '.csv', fcRegistreCsv(fcFiltresDocs())); }
@@ -119249,7 +119292,9 @@ function afRenderStageDocs(stage){
       +'<div style="flex:1;min-width:0;"><div style="color:var(--blanc);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+afEsc(d.name)+'</div>'
       +'<div style="font-size:10px;color:var(--blanc-dim);">'+_afFmtSize(d.size)+' · '+(d.upload_date||'')+'</div></div>'
       +'<button class="btn btn-secondary btn-sm" onclick="afDownloadDoc(\''+d.id+'\')">⬇</button>'
-      +'<button class="btn btn-danger btn-sm" onclick="afDeleteStageDoc(\''+d.id+'\',\''+stage+'\')">🗑</button></div>';
+      +'<button class="btn btn-secondary btn-sm" title="Modifier le nom" onclick="afRenameStageDoc(\''+d.id+'\',\''+stage+'\')">✏️</button>'
+      +'<button class="btn btn-secondary btn-sm" title="Remplacer le fichier" onclick="afReplaceStageDocTrigger(\''+d.id+'\',\''+stage+'\')">🔄</button>'
+      +'<button class="btn btn-danger btn-sm" title="Supprimer" onclick="afDeleteStageDoc(\''+d.id+'\',\''+stage+'\')">🗑</button></div>';
   }).join('');
 }
 
@@ -119258,6 +119303,39 @@ async function afDownloadDoc(id){
   if(d && (!d.blob || d._sans_contenu)) d = await docChargerContenu(id);
   if(!d||!d.blob){ toast('Fichier introuvable.','error'); return; }
   var a=document.createElement('a'); a.href=d.blob; a.download=d.name||'document'; a.click();
+}
+
+async function afRenameStageDoc(id, stage){
+  var d = _afDocCache.find(function(x){ return x.id===id; }); if(!d) return;
+  var nom = prompt('Nom de la pièce jointe :', d.name||''); if(nom===null) return;
+  nom = nom.trim(); if(!nom){ toast('Le nom est obligatoire.','error'); return; }
+  if (d._sans_contenu || !d.blob){ var c = await docChargerContenu(id); if (c) d = c; }
+  d.name = nom;
+  try { await dbPut('documents', d); if (typeof syncToSupabase==='function') syncToSupabase('pi_documents', d); }
+  catch(err){ toast('Enregistrement impossible : '+(err.message||err),'error'); return; }
+  _afDocCache = _afDocCache.map(function(x){ return x.id===id ? d : x; });
+  afRenderStageDocs(stage); toast('Pièce modifiée.','success');
+}
+/* Remplacer le fichier d'une pièce : même enregistrement, nouveau contenu. */
+var _afReplaceId = null;
+function afReplaceStageDocTrigger(id, stage){
+  _afReplaceId = { id:id, stage:stage };
+  var inp = document.getElementById('af-doc-replace-input');
+  if(!inp){ inp = document.createElement('input'); inp.type='file'; inp.id='af-doc-replace-input'; inp.style.display='none'; inp.onchange=function(){ afReplaceStageDocFile(inp); }; document.body.appendChild(inp); }
+  inp.value=''; inp.click();
+}
+function afReplaceStageDocFile(input){
+  var file = input.files && input.files[0]; if(!file || !_afReplaceId) return;
+  if (file.size > 10*1024*1024){ toast('Fichier trop volumineux (max 10 Mo).','error'); input.value=''; return; }
+  var ref = _afReplaceId, r = new FileReader();
+  r.onload = async function(e){
+    var d = _afDocCache.find(function(x){ return x.id===ref.id; }); if(!d) return;
+    d.name = file.name; d.type = file.type||'application/octet-stream'; d.size = file.size; d.blob = e.target.result; d._sans_contenu = false; d.upload_date = today();
+    try { await dbPut('documents', d); if (typeof syncToSupabase==='function') syncToSupabase('pi_documents', d); }
+    catch(err){ toast('Enregistrement impossible : '+(err.message||err),'error'); return; }
+    afRenderStageDocs(ref.stage); toast('Fichier remplacé.','success'); input.value=''; _afReplaceId=null;
+  };
+  r.readAsDataURL(file);
 }
 
 async function afDeleteStageDoc(id, stage){

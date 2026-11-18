@@ -120,3 +120,27 @@ test('store synchronisé (métadonnées) ; interface : panneau promoteur et aper
   assert.match(await run(app.page, () => document.getElementById('fs-root').innerHTML), /Pièce demandée/);
   assert.deepEqual(app.etat.erreursPage, []);
 });
+
+test('le promoteur modifie le nom et la note d\'une pièce ; le fichier et l\'empreinte restent intacts', async () => {
+  const app = await ouvrirApp(); const { d } = await preparer(app.page);
+  const id = (await run(app.page, (d) => fcAjouterPiece(d, 'depot', PDF, { visibilite: 'interne' }), d)).piece.id;
+  const avant = await run(app.page, (id) => ({ emp: fcPiece(id).empreinte, contenu: fcPiece(id).contenu }), id);
+  const r = await run(app.page, (id) => fcModifierPiece(id, { nom: 'CNI recto-verso.pdf', note: 'scan couleur' }), id);
+  assert.equal(r.ok, true);
+  const apres = await run(app.page, (id) => ({ nom: fcPiece(id).nom, note: fcPiece(id).note, emp: fcPiece(id).empreinte, contenu: fcPiece(id).contenu, ev: DATA.evenements_fonciers.some(function (e) { return e.type === 'piece_modifiee'; }) }), id);
+  assert.equal(apres.nom, 'CNI recto-verso.pdf'); assert.equal(apres.note, 'scan couleur');
+  assert.equal(apres.emp, avant.emp); assert.equal(apres.contenu, avant.contenu); assert.equal(apres.ev, true);
+  const vide = await run(app.page, (id) => fcModifierPiece(id, { nom: '  ' }), id);
+  assert.equal(vide.ok, false); assert.match(vide.erreur, /obligatoire/);
+  assert.deepEqual(app.etat.erreursPage, []);
+});
+
+test('une pièce retirée ou remplacée ne se modifie plus ; le panneau d\'étape propose Modifier, Remplacer et Supprimer', async () => {
+  const app = await ouvrirApp(); const { d } = await preparer(app.page);
+  const id = (await run(app.page, (d) => fcAjouterPiece(d, 'depot', PDF, { visibilite: 'interne' }), d)).piece.id;
+  const html = await run(app.page, (d) => { APP._fcPiecesSel = { d: d, c: 'depot' }; return fcPanneauPieces(fcDossier(d)); }, d);
+  assert.match(html, /✏️ Modifier/); assert.match(html, /Remplacer le fichier/); assert.match(html, /🗑 Supprimer/); assert.match(html, /fd-version-input/);
+  await run(app.page, (id) => fcRetirerPiece(id, 'doublon'), id);
+  const r = await run(app.page, (id) => fcModifierPiece(id, { nom: 'x.pdf' }), id);
+  assert.equal(r.ok, false); assert.match(r.erreur, /version courante/);
+});
