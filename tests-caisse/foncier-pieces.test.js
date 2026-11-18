@@ -144,3 +144,12 @@ test('une pièce retirée ou remplacée ne se modifie plus ; le panneau d\'étap
   const r = await run(app.page, (id) => fcModifierPiece(id, { nom: 'x.pdf' }), id);
   assert.equal(r.ok, false); assert.match(r.erreur, /version courante/);
 });
+
+test('le registre des documents propose Modifier, Remplacer et Supprimer en boutons compacts (toujours visibles)', async () => {
+  const app = await ouvrirApp(); const { d } = await preparer(app.page);
+  await run(app.page, (d) => fcAjouterPiece(d, 'depot', PDF, { visibilite: 'interne' }), d);
+  const html = await run(app.page, () => { switchTab('foncier', 'documents'); var h = document.getElementById('fc-documents') || document.getElementById('fc-root'); fcRenderDocuments(); return document.body.innerHTML; });
+  assert.match(html, /title="Modifier le nom et la note"/);
+  assert.match(html, /title="Remplacer le fichier \(nouvelle version\)"/);
+  assert.match(html, /fcRetirerPieceUI\([^)]*true\)">🗑<\/button>/);
+});
