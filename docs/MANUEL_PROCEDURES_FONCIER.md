@@ -226,6 +226,31 @@ Toute modification de paramètre est **annoncée aux équipes** avant applicatio
 - **Désactiver** les contrôles : paramètre `fon_controle_rural = false`.
 - **Base de données** : `supabase/foncier_urbain_rural_l3.sql` (à exécuter sur chaque projet) applique les mêmes règles de forme côté serveur.
 
+**Droits et patrimoine (lot L5)** — Foncier › 2.6 Foncier rural & droits. Valable pour les parcelles urbaines et rurales.
+
+| Vue | Règle |
+|---|---|
+| Propriétaires | Chaîne de propriété datée. Quotes-parts des propriétaires actuels ≤ 100 %. « Transférer » clôt l'ancien et crée le nouveau (origine du droit et référence de l'acte obligatoires) |
+| Charges & servitudes | Hypothèque et saisie exigent une référence. **Active : la cession de la parcelle est bloquée** (administrateur + motif pour passer outre, journalisé). Mainlevée : référence obligatoire |
+| Exploitations | Surfaces en cours cumulées ≤ superficie de la parcelle |
+| Contrats | Brouillon → Activer (génère l'échéancier de redevances) → Encaisser (montant exact + référence) → Résilier (motif). Redevance périodique : date de fin obligatoire. Après un premier encaissement, redevance et période sont figées. Impayés signalés |
+| Ayants droit | Parcelles et part des droits ; total par parcelle ≤ 100 % |
+| Titres | CF, ACD, TF…, numéro unique par type, titre mère (ex. CF → TF) |
+
+Limites : les redevances ne génèrent pas encore d'écriture comptable ; les paiements partiels ne sont pas gérés. Base de données : `supabase/foncier_urbain_rural_l5.sql`.
+
+**Saisie terrain sur téléphone (lot L6)** — Foncier › 2.6 › 📱 Terrain. À utiliser sur le téléphone, sur le terrain.
+
+| Geste | Comportement |
+|---|---|
+| 📍 Ma position = nouvelle borne | Prend la position GPS, la convertit en UTM, ajoute la borne à la parcelle avec sa précision. Précision au-delà de 20 m : confirmation demandée. Point à moins de 1 m d'une borne existante : refusé. Point qui ferait recouvrir une autre parcelle : refusé et annulé |
+| 📷 Photo géolocalisée | Ouvre l'appareil photo, réduit l'image à 1280 px, l'enregistre avec la position GPS (si indisponible : enregistrée sans position, avec un avertissement) |
+| ✍ Signatures (Bornages) | Chaque riverain signe au doigt dans le cadre ; la signature vaut présence. Un cadre vide ou un simple point est refusé |
+
+- **Hors-ligne** : les saisies sont gardées sur le téléphone et envoyées au retour du réseau. L'écran affiche l'état du réseau et le nombre d'envois en attente.
+- Le GPS exige l'autorisation de localisation du navigateur pour ce site.
+- Une précision de 3 à 5 m est normale à découvert ; sous couvert végétal, elle se dégrade.
+
 **Tableau des étapes de la procédure rurale** (31 étapes ; l'ERP ajoute « Création du dossier » au début et « Clôture » à la fin)
 
 **Rural — Phase 1 : recherche, délimitation et levé de la parcelle**
