@@ -80,12 +80,15 @@ create unique index if not exists pi_tf_numero_unique
 
 -- ── 4. Rattrapage du régime des parcelles existantes ───────────────────────
 -- Rural : parcelle portant au moins un dossier de procédure rurale. Sinon urbain.
+-- IMPORTANT : si le projet porte le garde « dernier écrit gagne » (trigger trg_lww / pi_lww_guard), une mise à jour qui n'avance pas
+-- data._modifie est IGNORÉE EN SILENCE. On l'avance donc explicitement (horloge serveur, même format que pi_stamp_modifie).
 update public.pi_parcelles p
-   set data = p.data || jsonb_build_object('regime',
-         case when exists (select 1 from public.pi_dossiers_fonciers d
-                            where d.data ->> 'parcelle_id' = p.id
-                              and d.data ->> 'type_procedure' = 'immatriculation_rurale')
-              then 'rural' else 'urbain' end)
+   set data = p.data || jsonb_build_object(
+         'regime', case when exists (select 1 from public.pi_dossiers_fonciers d
+                                      where d.data ->> 'parcelle_id' = p.id
+                                        and d.data ->> 'type_procedure' = 'immatriculation_rurale')
+                        then 'rural' else 'urbain' end,
+         '_modifie', to_char((now() at time zone 'utc'), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
  where coalesce(p.data ->> 'regime', '') not in ('urbain', 'rural');
 
 -- Obligation : régime toujours valide. Un poste en cache (ancienne version, sans le champ) ne doit pas
@@ -112,7 +115,7 @@ insert into public.pi_titres_fonciers (id, data)
 select 'TIT-' || p.id,
        jsonb_strip_nulls(jsonb_build_object(
          'parcelle_id', p.id,
-         'regime',      p.data ->> 'regime',
+         'regime',      coalesce(p.data ->> 'regime', 'urbain'),
          'type',        case p.data ->> 'type_titre'
                           when 'droit_coutumier' then 'attestation_coutumiere'
                           when 'ar'              then 'arrete_concession'
@@ -127,8 +130,7 @@ select 'TIT-' || p.id,
   from public.pi_parcelles p
  where coalesce(trim(p.data ->> 'num_titre'), '') <> ''
    and p.data ->> 'type_titre' in ('droit_coutumier','ar','acd','tf_provisoire','tf_definitif','bail')
-on conflict (id) do nothing;
--- Les numéros en double (même type, même numéro) sont ignorés par l'index unique : le second reste dans la parcelle.
+on conflict do nothing;   -- (id) déjà migré, ou numéro en double (même type, même numéro) refusé par l'index unique : le second reste dans la parcelle.
 
 -- ── 6. Realtime ────────────────────────────────────────────────────────────
 do $$

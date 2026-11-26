@@ -112,8 +112,11 @@ begin
   return new;
 end$$;
 revoke all on function public.fonc_parcelles_geom_garde() from public, anon, authenticated;
+-- Nom en « zz_ » : les triggers BEFORE s'exécutent par ordre alphabétique. Celui-ci doit passer APRÈS le garde « dernier écrit gagne »
+-- (trg_lww) : une écriture périmée refusée par ce garde ne doit ni modifier la table des contours ni lever d'erreur de chevauchement.
 drop trigger if exists pi_parcelles_geom_garde on public.pi_parcelles;
-create trigger pi_parcelles_geom_garde before insert or update on public.pi_parcelles
+drop trigger if exists zz_pi_parcelles_geom_garde on public.pi_parcelles;
+create trigger zz_pi_parcelles_geom_garde before insert or update on public.pi_parcelles
   for each row execute function public.fonc_parcelles_geom_garde();
 
 create or replace function public.fonc_parcelles_geom_suppr()
@@ -165,6 +168,6 @@ select (select count(*) from public.pi_parcelles_geom) as contours,
 --  5. select * from fonc_audit_chevauchements();  → liste des couples à régulariser.
 --
 -- ── RETOUR ARRIÈRE ─────────────────────────────────────────────────────────
---  drop trigger pi_parcelles_geom_garde on public.pi_parcelles; drop trigger pi_parcelles_geom_suppr on public.pi_parcelles;
+--  drop trigger zz_pi_parcelles_geom_garde on public.pi_parcelles; drop trigger pi_parcelles_geom_suppr on public.pi_parcelles;
 --  drop table public.pi_parcelles_geom; drop function public.fonc_parcelles_geom_garde(), public.fonc_parcelles_geom_suppr(),
 --    public.fonc_audit_chevauchements(), public.fonc_parcelles_chevauchantes(text, extensions.geometry, numeric), public.fonc_parcelle_geom(jsonb);
