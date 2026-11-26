@@ -356,6 +356,25 @@ Valable pour tous les écrans de **2.6 Droits & procédure foncière** (enquête
 
 **Trace d'une suppression** : copie de l'enregistrement dans l'historique de la parcelle et dans le journal, avec le nom, la date et le motif.
 
+## L14 — Le classeur Excel vient du logiciel
+
+Écran **2.6 › Import Excel**. Le classeur MENKO n'est plus seulement un fichier à fournir : le logiciel le produit.
+
+| Bouton | Contenu |
+|---|---|
+| ⬇ Modèle vierge (.xlsx) | Mêmes feuilles et colonnes que « Modele_Import_MENKO_ERP_Foncier_V2 » : MENKO_OPERATIONS, MENKO_LOTS, MENKO_WORKFLOW_DOSSIERS, REFERENTIEL_LISTES_MENKO ; listes déroulantes, volets figés, filtres |
+| ⬇ État foncier à jour (.xlsx) | Les mêmes feuilles remplies depuis la base, plus **SYNTHESE_ETAT** (portefeuille, parcours, cohérence) et **PARCELLES_FONCIER** (superficie, contour, étape, avancement, constats ouverts) |
+
+**D'où vient chaque colonne de l'état**
+
+| Feuille | Source dans la base |
+|---|---|
+| MENKO_OPERATIONS | Programmes, parcelle mère, titre mère, protocole de purge (statut, part villageoise), notaire |
+| MENKO_LOTS | Lots ; statut commercial calculé (hors vente, vendu, réservé, disponible) ; souscripteur actif (code, nom, prix) ; taux d'encaissement = versements sur prix ÷ montant total |
+| MENKO_WORKFLOW_DOSSIERS | Suivi du titre porté par le lot ; à défaut dossier foncier individuel |
+
+**Ré-import sans doublon.** Clé d'une opération : référence d'import, à défaut référence de la parcelle liée. Clé d'un lot : référence d'import, à défaut opération + îlot + numéro. L'état exporté se ré-importe donc avec « mise à jour » partout et aucune création ; un lot déjà rattaché à un souscripteur garde son statut et son prix. Les lots sans programme ne sont pas exportés (le nombre figure dans la synthèse).
+
 **Tableau des étapes de la procédure rurale** (31 étapes ; l'ERP ajoute « Création du dossier » au début et « Clôture » à la fin)
 
 **Rural — Phase 1 : recherche, délimitation et levé de la parcelle**

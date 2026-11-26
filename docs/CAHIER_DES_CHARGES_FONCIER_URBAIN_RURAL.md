@@ -113,6 +113,7 @@ Légende : **E** existant · **A** à adapter · **N** nouveau. Priorité : P1 i
 | FUR-317 | **Modèles de documents** : protocole de purge des droits coutumiers (conditionné à l'audit GO), PV de remise de lot (conditionné au solde), PV de remise d'ACD | E (L10) | P1 |
 | FUR-318 | **Contrôle de cohérence** : le logiciel détecte les incohérences, établit l'état, propose la correction (appuyée sur les pièces) ; l'utilisateur décide ; corrections, observations, motifs et historique enregistrés (registre synchronisé, décisions respectées, constat corrigé réapparu = rouvert) | E (L12) | P1 |
 | FUR-319 | **Moteur d'impression, de modification et de suppression** sur tous les écrans fonciers : fiche et liste imprimables, export CSV, historique des modifications (avant/après/motif), enregistrement clos modifiable par administrateur avec motif, suppression contrôlée (administrateur, motif, règles par type, trace, garde-fou serveur) | E (L13) | P1 |
+| FUR-320 | **Classeur Excel MENKO produit par le logiciel** : modèle vierge (mêmes feuilles, listes déroulantes, volets figés) et état à jour rempli depuis la base (opérations, lots, souscripteurs, encaissements, suivi des titres) + synthèse et état des parcelles ; ré-importable sans doublon | E (L14) | P1 |
 
 ### 4.5 Cartographie
 

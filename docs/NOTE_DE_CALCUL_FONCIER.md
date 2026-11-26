@@ -727,21 +727,32 @@
 
 **Alimente** : Pilotage et alertes
 
-## Import Excel  `rural:import`
+## Import et état Excel  `rural:import`
 
-**À quoi ça sert.** Charger le modèle MENKO : opérations, lots, suivi.
+**À quoi ça sert.** Le classeur MENKO vient du logiciel : modèle vierge à remplir, ou état à jour rempli depuis la base. Même structure dans les deux cas, ré-importable sans doublon.
 
 **Comment faire**
 
-1. Choisir le fichier.
-2. Lire l'analyse (aucune écriture).
-3. Appliquer.
+1. Télécharger le modèle vierge (listes déroulantes, volets figés) ou l'état foncier à jour.
+2. Compléter ou corriger le classeur, puis choisir le fichier : analyse sans écriture.
+3. Lire le rapport ligne par ligne, puis appliquer.
+
+**Calculs**
+
+| Calcul | Formule |
+|---|---|
+| Statut commercial exporté | hors vente → « Non Commercialisable » ; vendu → « Vendu » ; souscripteur actif → « Réservé » ; sinon statut du lot |
+| Taux d'encaissement exporté | versements sur prix du souscripteur ÷ montant total du souscripteur × 100 (plafonné à 100) |
+| Clé d'une opération | référence d'import, à défaut référence de la parcelle liée, à défaut code du programme |
+| Clé d'un lot | référence d'import, à défaut code de l'opération + îlot + numéro de lot |
 
 **Règles appliquées**
 
-- Analyse d'abord, écriture ensuite ; doublons ignorés.
+- Feuilles du classeur : MENKO_OPERATIONS, MENKO_LOTS, MENKO_WORKFLOW_DOSSIERS, REFERENTIEL_LISTES_MENKO ; l'état ajoute SYNTHESE_ETAT et PARCELLES_FONCIER (ignorées à l'import).
+- Analyse d'abord, écriture ensuite ; doublons ignorés ; un lot déjà rattaché à un souscripteur garde son statut et son prix.
+- Les lots sans programme ne sont pas exportés ; la synthèse en indique le nombre.
 
-**Reçoit de** : Fichier .xlsx
+**Reçoit de** : Programmes ; Lots ; Souscripteurs et versements ; Suivi des titres
 
 **Alimente** : Programmes ; Lots ; Parcelles
 
