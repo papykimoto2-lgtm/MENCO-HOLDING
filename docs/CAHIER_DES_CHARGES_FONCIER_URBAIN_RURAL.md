@@ -116,6 +116,7 @@ Légende : **E** existant · **A** à adapter · **N** nouveau. Priorité : P1 i
 | FUR-320 | **Classeur Excel MENKO produit par le logiciel** : modèle vierge (mêmes feuilles, listes déroulantes, volets figés) et état à jour rempli depuis la base (opérations, lots, souscripteurs, encaissements, suivi des titres) + synthèse et état des parcelles ; ré-importable sans doublon | E (L14) | P1 |
 | FUR-321 | **Nouveau / ajusté mis en évidence** dans Paramètres › Manuels & flux : pastille verte (nouveau) ou orange (ajusté) sur les manuels, les diagrammes et les étapes ; panneau de synthèse ; précision que l'immatriculation urbaine est inchangée et que la rurale garde ses étapes | E (L15) | P2 |
 | FUR-322 | **Correctifs de la revue générale** (serveur : champs obligatoires, retours en arrière interdits, régime et contours sur upsert, cycle d'alertes robuste ; client : signatures de bornage, statuts à l'import, clés d'export, performance de la cohérence, échéancier des contrats, comptes de produit de cession 82x / 70x, ergonomie mobile et accessibilité) | E (L15) | P1 |
+| FUR-323 | **Note explicative visible sous chaque onglet** du Foncier et de la procédure 2.6 (usage de l'écran, première action), avec le détail (calculs, règles, liens) en volet replié ; une seule rangée d'onglets par écran | E (L16) | P1 |
 
 ### 4.5 Cartographie
 
