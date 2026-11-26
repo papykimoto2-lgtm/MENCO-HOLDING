@@ -304,6 +304,8 @@ Les cases du constat de terrain (PV de remise de lot) restent à cocher à la ma
 - **Note de calcul** : volet bleu replié en tête de chaque onglet ; « Note complète du module » l'imprime ; « Carte des interconnexions » liste les flux entre écrans et modules.
 - **Navigation 2.6** : boutons regroupés par étape ; le bandeau donne l'étape, son but, et les boutons précédent / suivant.
 
+- **Note explicative visible sous chaque onglet** : « À quoi sert cet écran » et « Pour commencer », suivie du volet replié « Note de calcul et mode d'emploi ».
+
 ## L12 — Cohérence des données foncières
 
 Écran **Vue d'ensemble › 🩺 Cohérence des données**. Principe : le logiciel détecte, établit l'état et propose ; l'utilisateur décide. Le contrôle ne modifie jamais les données.
