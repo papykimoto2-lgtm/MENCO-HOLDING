@@ -239,6 +239,18 @@ Toute modification de paramètre est **annoncée aux équipes** avant applicatio
 
 Limites : les redevances ne génèrent pas encore d'écriture comptable ; les paiements partiels ne sont pas gérés. Base de données : `supabase/foncier_urbain_rural_l5.sql`.
 
+**Saisie terrain sur téléphone (lot L6)** — Foncier › 2.6 › 📱 Terrain. À utiliser sur le téléphone, sur le terrain.
+
+| Geste | Comportement |
+|---|---|
+| 📍 Ma position = nouvelle borne | Prend la position GPS, la convertit en UTM, ajoute la borne à la parcelle avec sa précision. Précision au-delà de 20 m : confirmation demandée. Point à moins de 1 m d'une borne existante : refusé. Point qui ferait recouvrir une autre parcelle : refusé et annulé |
+| 📷 Photo géolocalisée | Ouvre l'appareil photo, réduit l'image à 1280 px, l'enregistre avec la position GPS (si indisponible : enregistrée sans position, avec un avertissement) |
+| ✍ Signatures (Bornages) | Chaque riverain signe au doigt dans le cadre ; la signature vaut présence. Un cadre vide ou un simple point est refusé |
+
+- **Hors-ligne** : les saisies sont gardées sur le téléphone et envoyées au retour du réseau. L'écran affiche l'état du réseau et le nombre d'envois en attente.
+- Le GPS exige l'autorisation de localisation du navigateur pour ce site.
+- Une précision de 3 à 5 m est normale à découvert ; sous couvert végétal, elle se dégrade.
+
 **Tableau des étapes de la procédure rurale** (31 étapes ; l'ERP ajoute « Création du dossier » au début et « Clôture » à la fin)
 
 **Rural — Phase 1 : recherche, délimitation et levé de la parcelle**

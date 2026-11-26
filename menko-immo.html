@@ -22012,6 +22012,20 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
 </div>
 
 <!-- Modal Parcelle Foncière -->
+<div class="modal-overlay" id="modal-fon-signature">
+  <div class="modal">
+    <div class="modal-header"><h3>✍ Signatures des riverains</h3><button class="btn btn-secondary btn-icon" onclick="closeModal('modal-fon-signature')">✕</button></div>
+    <div class="modal-body">
+      <div style="font-size:12px;color:var(--dim);margin-bottom:6px;">Touchez un nom, puis faites signer au doigt dans le cadre. La signature atteste la présence au bornage.</div>
+      <div id="fon-sig-liste" style="margin-bottom:8px;"></div>
+      <div id="fon-sig-zone" style="display:none;">
+        <canvas id="fon-sig-canvas" width="480" height="200" style="width:100%;max-width:480px;border:2px dashed var(--bord);border-radius:8px;background:#fff;touch-action:none;"></canvas>
+        <div style="margin-top:8px;display:flex;gap:8px;"><button class="btn btn-secondary" onclick="fonSignatureEffacer()">Effacer</button><button class="btn btn-primary" onclick="fonSignatureValider()">Valider la signature</button></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-fon-rural">
   <div class="modal modal-lg">
     <div class="modal-header"><h3 id="fon-rural-titre">Foncier rural</h3><button class="btn btn-secondary btn-icon" onclick="closeModal('modal-fon-rural')">✕</button></div>
@@ -116728,8 +116742,9 @@ function _fonParcRef(id) { var p = (DATA.parcelles || []).find(function (x) { re
 function _fonBtn(label, js, cls) { return '<button class="btn btn-secondary btn-sm' + (cls ? ' ' + cls : '') + '" onclick="' + js + '">' + label + '</button> '; }
 function fonRuralRender() {
   var host = document.getElementById('fon-rural-liste'); if (!host) return;
+  if (FON_RURAL.vue === 'terrain') return fonTerrainRender();
   var vue = FON_RURAL.vue, T = FON_RURAL_TYPES[vue], liste = DATA[T.store] || [], aujourd = fcAuj();
-  var onglets = [['enquetes', '🔎 Enquêtes'], ['oppositions', '⚖️ Oppositions'], ['bornages', '📐 Bornages contradictoires'], ['villages', '🏘 Villages & comités'], ['ayants_droit', '👥 Ayants droit'], ['titres', '📜 Titres'], ['proprietaires', '🏠 Propriétaires'], ['charges', '⛓ Charges & servitudes'], ['exploitations', '🌱 Exploitations'], ['contrats', '📑 Contrats']];
+  var onglets = FON_ONGLETS;
   var nbOpp = (DATA.oppositions_fonciers || []).filter(function (o) { return o.statut === 'ouverte' || o.statut === 'en_mediation'; }).length;
   document.getElementById('fon-rural-onglets').innerHTML = onglets.map(function (o) { return '<button class="btn btn-' + (o[0] === vue ? 'primary' : 'secondary') + ' btn-sm" onclick="fonRuralVue(\'' + o[0] + '\')">' + o[1] + (o[0] === 'oppositions' && nbOpp ? ' <span class="tbadge">' + nbOpp + '</span>' : '') + '</button> '; }).join('')
     + '<button class="btn btn-primary btn-sm" style="float:right;" onclick="fonRuralOuvrir(\'' + vue + '\')">+ ' + escHtml(T.lib) + '</button>';
@@ -116746,6 +116761,7 @@ function fonRuralRender() {
     } else if (vue === 'bornages') {
       var cv = r.convocations || [];
       cells = [r.reference, _fonParcRef(r.parcelle_id), E(r.date || '—'), cv.filter(function (c) { return c.present; }).length + ' / ' + cv.length + ' présents', E(r.pv_ref || 'PV manquant') + ' · ' + E(r.statut)];
+      if (r.statut === 'convoque') act += _fonBtn('✍ Signatures', 'fonSignatureOuvrir(\'' + r.id + '\')');
       if (r.statut === 'convoque') act += _fonBtn('✅ Réalisé', 'fonRuralAction(\'bornages\',\'' + r.id + '\',\'realise\')') + _fonBtn('Annuler', 'fonRuralAction(\'bornages\',\'' + r.id + '\',\'annule\')');
     } else if (vue === 'villages') {
       var cm = r.comite || {};
@@ -116944,6 +116960,133 @@ async function fonDroitsAction(kind, rec, action) {
     toast('Propriété transférée à ' + nouveau.proprietaire + '.', 'success'); return true;
   }
   return false;
+}
+
+/* ═══ Foncier urbain et rural — lot L6 : saisie terrain sur téléphone (GPS, photos géolocalisées, signature au doigt) ═══
+   Le mode hors-ligne existe déjà : écritures locales (IndexedDB) + file d'envoi (outbox) rejouée au retour du réseau.
+   Ce lot ajoute les gestes terrain : point GPS → borne, photo compressée et géolocalisée, signature des riverains sur le procès-verbal. */
+var FON_ONGLETS = [['terrain', '📱 Terrain'], ['enquetes', '🔎 Enquêtes'], ['oppositions', '⚖️ Oppositions'], ['bornages', '📐 Bornages contradictoires'], ['villages', '🏘 Villages & comités'], ['ayants_droit', '👥 Ayants droit'], ['titres', '📜 Titres'], ['proprietaires', '🏠 Propriétaires'], ['charges', '⛓ Charges & servitudes'], ['exploitations', '🌱 Exploitations'], ['contrats', '📑 Contrats']];
+var FON_GPS_PRECISION_MAX = 20;   /* mètres : au-delà, confirmation demandée */
+var FON_PHOTO_MAX_PX = 1280;
+var FON_BORNE_DOUBLON_M = 1;
+function fonGpsPosition() {
+  return new Promise(function (res, rej) {
+    if (!navigator.geolocation) return rej(new Error('GPS non disponible sur cet appareil.'));
+    navigator.geolocation.getCurrentPosition(function (p) { res({ lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy, alt: p.coords.altitude }); },
+      function (e) { rej(new Error(e && e.code === 1 ? 'Autorisation GPS refusée : activez la localisation pour ce site.' : 'Position indisponible : sortez à découvert et réessayez.')); },
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+  });
+}
+function fonGpsVersBorne(pos, parcelle) {
+  var zone = parcelle.utm_zone || (pos.lng < -6 ? 29 : 30), u = latLngToUtm(pos.lat, pos.lng, zone), r2 = function (v) { return Math.round(v * 100) / 100; };
+  var b = { nom: 'B' + (((parcelle.bornes || []).length) + 1), x: r2(u.E), y: r2(u.N), precision_m: Math.round((pos.acc || 0) * 10) / 10, source: 'gps', le: new Date().toISOString() };
+  if (typeof pos.alt === 'number' && isFinite(pos.alt)) b.z = Math.round(pos.alt * 10) / 10;
+  return b;
+}
+function fonDimsPhoto(w, h, max) { var k = Math.min(1, max / Math.max(w, h)); return [Math.max(1, Math.round(w * k)), Math.max(1, Math.round(h * k))]; }
+function _fonTerrainParcelle() { var id = FON_RURAL.terrainParcelle || ''; return (DATA.parcelles || []).find(function (p) { return p.id === id; }) || null; }
+function fonTerrainChoisir(id) { FON_RURAL.terrainParcelle = id; fonTerrainRender(); }
+async function fonTerrainAjouterBorne() {
+  var p = _fonTerrainParcelle(); if (!p) { toast('Choisissez une parcelle.', 'error'); return false; }
+  var pos; try { pos = await fonGpsPosition(); } catch (e) { toast(e.message, 'error'); return false; }
+  if (pos.acc > FON_GPS_PRECISION_MAX && !confirm('Précision du GPS : ± ' + Math.round(pos.acc) + ' m (au-delà de ' + FON_GPS_PRECISION_MAX + ' m). Utiliser ce point quand même ?')) return false;
+  var b = fonGpsVersBorne(pos, p), proche = (p.bornes || []).some(function (x) { return Math.hypot((x.x || 0) - b.x, (x.y || 0) - b.y) < FON_BORNE_DOUBLON_M; });
+  if (proche) { toast('Point déjà enregistré (moins de ' + FON_BORNE_DOUBLON_M + ' m d\'une borne existante).', 'warning'); return false; }
+  var avant = p.bornes; p.bornes = (p.bornes || []).concat([b]);
+  if (p.bornes.length >= 3) {
+    var chev = fonGeoChevauchements(p);
+    if (chev.length) { p.bornes = avant; toast('Point refusé : le contour recouvrirait ' + chev.map(function (c) { return c.ref; }).join(', ') + '.', 'error', 7000); return false; }
+  }
+  await dbPut('parcelles', p); if (typeof syncToSupabase === 'function') syncToSupabase('pi_parcelles', p);
+  toast('Borne ' + b.nom + ' enregistrée (± ' + b.precision_m + ' m).', 'success'); fonTerrainRender(); return true;
+}
+function fonPhotoCompresser(file) {
+  return new Promise(function (res, rej) {
+    var url = URL.createObjectURL(file), img = new Image();
+    img.onload = function () { var d = fonDimsPhoto(img.naturalWidth, img.naturalHeight, FON_PHOTO_MAX_PX), c = document.createElement('canvas'); c.width = d[0]; c.height = d[1]; c.getContext('2d').drawImage(img, 0, 0, d[0], d[1]); URL.revokeObjectURL(url); res(c.toDataURL('image/jpeg', 0.72)); };
+    img.onerror = function () { URL.revokeObjectURL(url); rej(new Error('Image illisible.')); };
+    img.src = url;
+  });
+}
+async function fonTerrainPhotoTraiter(file) {
+  var p = _fonTerrainParcelle(); if (!p) { toast('Choisissez une parcelle.', 'error'); return false; }
+  if (!file || !/^image\//.test(file.type || '')) { toast('Fichier image attendu.', 'error'); return false; }
+  var pos = null; try { pos = await fonGpsPosition(); } catch (e) { toast('Photo enregistrée sans position GPS : ' + e.message, 'warning', 6000); }
+  var data; try { data = await fonPhotoCompresser(file); } catch (e2) { toast(e2.message, 'error'); return false; }
+  var doc = { id: uid(), entity_type: 'parcelle_photo', entity_id: p.id, name: 'photo-' + p.ref + '-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '') + '.jpg', type: 'image/jpeg', size: Math.round(data.length * 0.75),
+    blob: data, upload_date: today(), description: 'Photo terrain ' + (p.ref || ''), pris_le: new Date().toISOString(), auteur: (APP.currentUser && APP.currentUser.nom) || '—' };
+  if (pos) { doc.lat = pos.lat; doc.lng = pos.lng; doc.precision_m = Math.round(pos.acc * 10) / 10; }
+  await dbPut('documents', doc); if (typeof syncToSupabase === 'function') syncToSupabase('pi_documents', doc);
+  toast('Photo enregistrée' + (pos ? ' avec sa position' : '') + '.', 'success'); fonTerrainRender(); return true;
+}
+function fonTerrainPhoto(input) { var f = input && input.files && input.files[0]; if (input) input.value = ''; return fonTerrainPhotoTraiter(f); }
+
+/* Signature au doigt des riverains (procès-verbal de bornage). */
+var _fonSig = { bornageId: '', index: -1, dessin: false, trace: 0 };
+function fonSignatureOuvrir(bornageId) {
+  var b = (DATA.bornages_fonciers || []).find(function (x) { return x.id === bornageId; }); if (!b) return;
+  if (!(b.convocations || []).length) { toast("Aucun riverain convoqué : ajoutez-les d'abord (✏️).", 'error'); return; }
+  _fonSig.bornageId = bornageId; _fonSig.index = -1; fonSignatureRendre();
+  document.getElementById('modal-fon-signature').classList.add('open'); fonSignatureInit();
+}
+function fonSignatureRendre() {
+  var b = (DATA.bornages_fonciers || []).find(function (x) { return x.id === _fonSig.bornageId; }); if (!b) return;
+  document.getElementById('fon-sig-liste').innerHTML = (b.convocations || []).map(function (c, i) {
+    return '<button type="button" class="btn btn-' + (i === _fonSig.index ? 'primary' : 'secondary') + ' btn-sm" style="margin:2px;" onclick="fonSignatureChoisir(' + i + ')">' + (c.signature ? '✅ ' : '✍ ') + escHtml(c.nom) + ' <small>(' + escHtml(c.qualite || '') + ')</small></button>';
+  }).join('');
+  document.getElementById('fon-sig-zone').style.display = _fonSig.index >= 0 ? 'block' : 'none';
+  fonSignatureEffacer();
+}
+function fonSignatureChoisir(i) { _fonSig.index = i; fonSignatureRendre(); }
+function fonSignatureEffacer() {
+  var cv = document.getElementById('fon-sig-canvas'); if (!cv) return; var g = cv.getContext('2d'); g.clearRect(0, 0, cv.width, cv.height);
+  g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height); _fonSig.trace = 0;
+}
+function fonSignatureInit() {
+  var cv = document.getElementById('fon-sig-canvas'); if (!cv || cv.__init) return; cv.__init = true;
+  var pt = function (e) { var r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; };
+  cv.addEventListener('pointerdown', function (e) { _fonSig.dessin = true; var g = cv.getContext('2d'), p = pt(e); g.lineWidth = 2.5; g.lineCap = 'round'; g.strokeStyle = '#111'; g.beginPath(); g.moveTo(p[0], p[1]); try { cv.setPointerCapture(e.pointerId); } catch (x) {} e.preventDefault(); });
+  cv.addEventListener('pointermove', function (e) { if (!_fonSig.dessin) return; var g = cv.getContext('2d'), p = pt(e); g.lineTo(p[0], p[1]); g.stroke(); _fonSig.trace++; e.preventDefault(); });
+  var fin = function () { _fonSig.dessin = false; }; cv.addEventListener('pointerup', fin); cv.addEventListener('pointercancel', fin);
+}
+/* Nombre de pixels d'encre : une signature vide ou un simple point est refusé. */
+function fonSignatureEncre(cv) {
+  var d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data, n = 0;
+  for (var i = 0; i < d.length; i += 4) if (d[i] < 140) n++;
+  return n;
+}
+async function fonSignatureValider() {
+  var b = (DATA.bornages_fonciers || []).find(function (x) { return x.id === _fonSig.bornageId; }), cv = document.getElementById('fon-sig-canvas');
+  if (!b || _fonSig.index < 0 || !b.convocations[_fonSig.index]) { toast('Choisissez un riverain.', 'error'); return false; }
+  if (fonSignatureEncre(cv) < 60) { toast('Signature trop courte : signez dans le cadre.', 'error'); return false; }
+  var c = b.convocations[_fonSig.index];
+  c.signature = cv.toDataURL('image/png'); c.signe = true; c.present = true; c.signe_le = new Date().toISOString(); c.signe_par_appareil = (navigator.userAgent || '').slice(0, 80);
+  if (!(await fonRuralSauver('bornages', b))) return false;
+  toast('Signature de ' + c.nom + ' enregistrée.', 'success'); _fonSig.index = -1; fonSignatureRendre(); fonRuralRender(); return true;
+}
+
+function fonTerrainRender() {
+  var host = document.getElementById('fon-rural-liste'); if (!host) return;
+  var E = escHtml, p = _fonTerrainParcelle(), attente = (typeof _outboxRead === 'function') ? _outboxRead().length : 0, enLigne = navigator.onLine !== false;
+  document.getElementById('fon-rural-onglets').innerHTML = FON_ONGLETS.map(function (o) { return '<button class="btn btn-' + (o[0] === 'terrain' ? 'primary' : 'secondary') + ' btn-sm" onclick="fonRuralVue(\'' + o[0] + '\')">' + o[1] + '</button> '; }).join('');
+  var opts = '<option value="">— Choisir la parcelle —</option>' + (DATA.parcelles || []).filter(function (x) { return !x.fusionnee_dans && !x.decoupee_dans; }).map(function (x) { return '<option value="' + E(x.id) + '"' + (p && p.id === x.id ? ' selected' : '') + '>' + E(x.ref || x.id) + (fonRegimeParcelle(x) === 'rural' ? ' (rural)' : '') + '</option>'; }).join('');
+  var h = '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;"><span class="badge ' + (enLigne ? 'badge-vert' : 'badge-rouge') + '">' + (enLigne ? '🟢 En ligne' : '🔴 Hors ligne : les saisies sont gardées sur le téléphone') + '</span>'
+    + '<span style="font-size:11px;color:var(--dim);">' + (attente ? '⏳ ' + attente + ' envoi(s) en attente' : '✅ Rien en attente') + '</span></div>'
+    + '<div class="form-group"><label>Parcelle</label><select class="form-control" id="fon-terrain-parcelle" onchange="fonTerrainChoisir(this.value)">' + opts + '</select></div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin:10px 0;">'
+    + '<button class="btn btn-primary" style="min-height:64px;font-size:15px;" ' + (p ? '' : 'disabled ') + 'onclick="fonTerrainAjouterBorne()">📍 Ma position = nouvelle borne</button>'
+    + '<label class="btn btn-primary" style="min-height:64px;font-size:15px;display:flex;align-items:center;justify-content:center;cursor:pointer;' + (p ? '' : 'opacity:.5;pointer-events:none;') + '">📷 Photo géolocalisée<input type="file" accept="image/*" capture="environment" style="display:none;" onchange="fonTerrainPhoto(this)"></label></div>';
+  if (p) {
+    var bs = p.bornes || [];
+    h += '<div class="card-title" style="margin-top:12px;">Bornes (' + bs.length + ')</div><div style="font-size:12px;">' + (bs.length ? bs.slice(-8).map(function (b) { return '<div>' + E(b.nom || '') + ' · E ' + b.x + ' / N ' + b.y + (b.precision_m ? ' · ± ' + b.precision_m + ' m' : '') + (b.source === 'gps' ? ' · GPS' : '') + '</div>'; }).join('') : '<span style="color:var(--dim);">Aucune borne.</span>') + '</div>'
+      + '<div class="card-title" style="margin-top:12px;">Photos</div><div id="fon-terrain-photos" style="display:flex;gap:8px;flex-wrap:wrap;font-size:11px;color:var(--dim);">Chargement…</div>';
+  }
+  host.innerHTML = h;
+  if (p) docsDeEntite('parcelle_photo', p.id, true).then(function (docs) {
+    var el = document.getElementById('fon-terrain-photos'); if (!el) return;
+    docs.sort(function (a, b) { return String(b.pris_le || '').localeCompare(String(a.pris_le || '')); });
+    el.innerHTML = docs.length ? docs.slice(0, 12).map(function (d) { return '<div style="width:96px;"><img src="' + E(d.blob || '') + '" style="width:96px;height:72px;object-fit:cover;border-radius:6px;" alt="photo">' + (d.lat ? '<div>📍 ' + d.lat.toFixed(5) + ', ' + d.lng.toFixed(5) + '</div>' : '<div>sans GPS</div>') + '</div>'; }).join('') : 'Aucune photo.';
+  });
 }
 
 /* ── Topographie : levé, courbes de niveau, coupe ── */

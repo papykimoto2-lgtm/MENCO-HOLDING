@@ -106,8 +106,8 @@ Légende : **E** existant · **A** à adapter · **N** nouveau. Priorité : P1 i
 | FUR-310 | Archivage annuel des dossiers clos, conservation des pièces ≥ 30 ans | A | P2 |
 | FUR-311 | Recherche multicritère : référence, TF, CF, ACD, localité, propriétaire, statut, régime | A | P1 |
 | FUR-312 | Exports PDF et Excel (portefeuille, dossier, tableau de bord) | E | P1 |
-| FUR-313 | Mode hors-ligne pour la saisie terrain rural (PWA, synchronisation différée, résolution de conflits) | N | P2 |
-| FUR-314 | Saisie mobile terrain : photo géolocalisée, point GPS, PV signé au doigt | N | P2 |
+| FUR-313 | Mode hors-ligne pour la saisie terrain rural (PWA, synchronisation différée, résolution de conflits) | E (existant : file d'envoi ; L6 : état affiché) | P2 |
+| FUR-314 | Saisie mobile terrain : photo géolocalisée, point GPS, PV signé au doigt | E (L6) | P2 |
 
 ### 4.5 Cartographie
 
