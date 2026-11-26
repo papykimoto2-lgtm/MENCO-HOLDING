@@ -8,7 +8,8 @@ update attestation_garde.config set pull_restreint = true where id;
 do $$ begin
   if to_regprocedure('public.pull_incremental_v1(jsonb)') is not null then
     revoke execute on function public.pull_incremental_v1(jsonb) from public, anon;
-    grant  execute on function public.pull_incremental_v1(jsonb) to authenticated, service_role;
+    revoke execute on function public.pull_incremental_v1(jsonb) from authenticated;   -- revue L15 : la v1 n'a aucun garde ; seul le wrapper (propriétaire) l'appelle
+    grant  execute on function public.pull_incremental_v1(jsonb) to service_role;
   end if;
 end $$;
 -- Vérification (doit être refusé avec la clé publique, accepté avec un jeton du personnel) :

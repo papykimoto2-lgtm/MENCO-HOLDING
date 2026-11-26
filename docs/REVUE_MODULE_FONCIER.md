@@ -36,7 +36,7 @@ Référence détaillée : `docs/NOTE_DE_CALCUL_FONCIER.md` (générée par `node
 **Corrigé (lot L15)** : voir « L15 — Correctifs de la revue générale » du manuel. Script serveur : `supabase/foncier_correctifs_l15.sql` (+ rejouer `foncier_echeances_serveur.sql` et `foncier_audit_l8.sql`).
 
 **Préparé, non exécuté (décision requise)**
-- `supabase/securite_acces_anon_a_valider.sql` : fonctions `pull_incremental*` lisibles sans connexion, RLS contournée (critique, base en ligne).
+- `supabase/securite_acces_anon_a_valider.sql` : garde inconditionnel dans `pull_incremental`, droits retirés à anon sur la v1 et `pull_documents_meta` (critique, base en ligne) — **préparé, non exécuté**, préalables et recette dans le fichier.
 - 161 tables legacy avec politiques `*_open_rollback` et droits anon complets : à arbitrer.
 
 **Reporté (non traité dans L15)**

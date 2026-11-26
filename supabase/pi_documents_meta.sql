@@ -143,6 +143,11 @@ declare
   rows jsonb;
   leger boolean := coalesce(cursors ->> '_docs_legers', '') = 'oui';
 begin
+  /* Garde inconditionnel (revue L15) : personnel, service_role ou administration directe. Voir securite_acces_anon_a_valider.sql. */
+  if not ( coalesce(auth.jwt() ->> 'role', '') = 'service_role' or coalesce(auth.jwt() ->> 'app_role', '') <> ''
+        or session_user in ('postgres', 'supabase_admin') ) then
+    raise exception 'pull_incremental réservé au personnel connecté' using errcode = '42501';
+  end if;
   if leger then
     result := public.pull_incremental_v1(
       jsonb_set(coalesce(cursors, '{}'::jsonb), '{pi_documents}', '"9999-12-31T00:00:00Z"'::jsonb));
@@ -176,7 +181,8 @@ begin
 end;
 $function$;
 
-grant execute on function public.pull_incremental(jsonb) to anon, authenticated, service_role;
+revoke execute on function public.pull_incremental(jsonb) from public, anon;
+grant execute on function public.pull_incremental(jsonb) to authenticated, service_role;
 notify pgrst, 'reload schema';
 
 -- ── ÉTAPE 6 — VÉRIFICATIONS ─────────────────────────────────────────────────

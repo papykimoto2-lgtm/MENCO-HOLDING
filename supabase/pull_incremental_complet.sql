@@ -63,7 +63,8 @@ begin
 end;
 $function$;
 
-grant execute on function public.pull_incremental(jsonb) to anon, authenticated, service_role;
+revoke execute on function public.pull_incremental(jsonb) from public, anon;   -- revue L15 : plus d'accès anonyme
+grant execute on function public.pull_incremental(jsonb) to authenticated, service_role;
 
 create or replace function public._touch_updated()
 returns trigger language plpgsql set search_path to 'public'
