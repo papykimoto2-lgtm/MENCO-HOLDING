@@ -28,6 +28,8 @@ begin return t::integer; exception when others then return null; end$$;
 create or replace function public.fc__bool_sure(t text) returns boolean language plpgsql immutable set search_path = '' as $$
 begin return t::boolean; exception when others then return null; end$$;
 
+revoke all on function public.fc__date_sure(text), public.fc__int_sure(text), public.fc__bool_sure(text) from public, anon, authenticated;
+
 create or replace function public.fc__plan_alerte(p_jours integer, p_cfg jsonb)
 returns jsonb
 language plpgsql

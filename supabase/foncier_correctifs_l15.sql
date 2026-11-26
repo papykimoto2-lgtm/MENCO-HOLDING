@@ -11,7 +11,8 @@
 --  D. Régime d'une parcelle : un upsert d'un poste sans le champ ne remplace plus le régime existant.
 --  E. Contours : un upsert (INSERT … ON CONFLICT) sur une ligne existante ne touche plus la table des contours : le contrôle se fait à la
 --     phase UPDATE, après le garde « dernier écrit gagne ».
--- Hors de ce script : foncier_echeances_serveur.sql (conversions sûres du cycle d'alertes) et foncier_audit_l8.sql (index) sont à rejouer.
+-- Hors de ce script : foncier_echeances_serveur.sql (conversions sûres du cycle d'alertes) est à rejouer.
+--  F. Index unique des audits sans faille NULL (inclus ci-dessous).
 -- Limite assumée : la RLS accepte tout rôle applicatif ; les règles « administrateur » (dérogation, modification d'un enregistrement clos,
 -- suppression) sont appliquées par l'ERP. Le serveur empêche les contournements structurels (A à E), pas l'usurpation de rôle.
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -136,6 +137,15 @@ begin
       src := replace(src, E'begin\n  actif :=', E'begin\n  -- upsert : phase UPDATE (lot L15) : une ligne existante est contrôlée à la phase UPDATE, après le garde « dernier écrit gagne ».\n  if tg_op = ''INSERT'' and exists (select 1 from public.pi_parcelles p where p.id = new.id) then return new; end if;\n  actif :=');
       if src like '%upsert : phase UPDATE%' then execute src; else raise warning 'fonc_parcelles_geom_garde : motif non trouvé, correctif E non appliqué'; end if;
     end if;
+  end if;
+end$$;
+
+-- ── F. Index unique des audits : sans faille NULL (décision absente = en attente) ──
+do $$ begin
+  if to_regclass('public.pi_audits_fonciers') is not null then
+    drop index if exists public.pi_audits_operation_actif;
+    create unique index pi_audits_operation_actif on public.pi_audits_fonciers ((data ->> 'operation_id'))
+      where coalesce(data ->> 'operation_id', '') <> '' and coalesce(data ->> 'decision', 'en_attente') <> 'no_go';
   end if;
 end$$;
 
