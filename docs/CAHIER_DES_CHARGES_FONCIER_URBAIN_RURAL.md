@@ -108,6 +108,7 @@ Légende : **E** existant · **A** à adapter · **N** nouveau. Priorité : P1 i
 | FUR-312 | Exports PDF et Excel (portefeuille, dossier, tableau de bord) | E | P1 |
 | FUR-313 | Mode hors-ligne pour la saisie terrain rural (PWA, synchronisation différée, résolution de conflits) | E (existant : file d'envoi ; L6 : état affiché) | P2 |
 | FUR-314 | Saisie mobile terrain : photo géolocalisée, point GPS, PV signé au doigt | E (L6) | P2 |
+| FUR-315 | **Audit foncier pré-acquisition** (protocole AUD-FON-MENKO-02, 19 points Go / No-Go, verdict automatique, comité à 3 visas, décision définitive) ; sortie de l'étape « Négociation » conditionnée au GO | E (L8) | P1 |
 
 ### 4.5 Cartographie
 

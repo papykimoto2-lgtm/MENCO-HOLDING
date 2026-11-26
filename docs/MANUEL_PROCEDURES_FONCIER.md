@@ -264,6 +264,22 @@ Limites : les redevances ne génèrent pas encore d'écriture comptable ; les pa
 
 Indicateurs : parcelles et hectares par régime, coût à l'hectare, parcelles par statut, certificats fonciers, ACD et TF, délai moyen par procédure, enquêtes (ouvertes, en retard), oppositions, charges bloquantes, risque élevé, contrats, redevances encaissées et impayées, surface exploitée. Export CSV des alertes.
 
+**Audit foncier pré-acquisition (lot L8)** — Foncier › 2.6 › 🛡 Audit pré-acquisition. Protocole AUD-FON-MENKO-02 : 19 points de contrôle en 4 axes (légitimité coutumière, statut juridique et domanial, technique et topographique, sécurisation contractuelle), dont 13 bloquants (NO-GO) et 6 majeurs.
+
+**Règle d'or** : aucun protocole d'accord définitif avec une chefferie ou une famille, aucun acompte supérieur aux frais de levé, tant que l'audit n'a pas reçu la décision GO du comité. Dans l'ERP, **sortir de l'étape « Négociation » d'une opération (Acquisition & Aménagement Foncier) exige un audit décidé GO** (administrateur + motif pour passer outre, journalisé ; paramètre `fon_audit_obligatoire = false` pour désactiver). Le blocage des décaissements eux-mêmes n'est pas automatisé : il reste une règle de contrôle interne.
+
+| Règle | Détail |
+|---|---|
+| Un audit par opération | Ouvrir depuis la liste ; un nouvel audit n'est possible qu'après un NO-GO |
+| Point « Conforme » | La référence de la pièce justificative est obligatoire ; validateur et date enregistrés |
+| « Non conforme », « Non applicable » | Motif obligatoire. « Non applicable » sur un point bloquant : administrateur (sauf AUD-JUR-05 hors zone rurale) ; impossible pour AUD-JUR-05 en zone rurale |
+| Verdict automatique | NO-GO (un bloquant non conforme) · EN COURS (point à vérifier, ou bloquant en régularisation) · GO AVEC RÉSERVES (un majeur non conforme ou en régularisation) · GO |
+| Décision du comité | GO : verdict GO ou GO avec réserves (motif obligatoire) et 3 visas nommés (chargé de suivi foncier, direction juridique ou notaire, direction générale). NO-GO : motif obligatoire. **La décision est définitive** : points et visas verrouillés |
+| Indices ERP | Pour chaque point, rappel de ce que l'ERP sait déjà (opposition active, certificat foncier, bornes UTM, chevauchement, comité villageois, bornage contradictoire). Ils aident l'auditeur et ne valident jamais un point à sa place |
+| Sorties | Impression (fiche à signer avec les 3 visas) et export CSV aux colonnes du modèle Excel de la checklist |
+
+Différence avec le classeur Excel : le verdict du classeur donne « GO » même si un point bloquant est « en cours de régularisation » ; l'ERP le traite comme « EN COURS ». Base de données : `supabase/foncier_audit_l8.sql` (mêmes règles côté serveur).
+
 **Tableau des étapes de la procédure rurale** (31 étapes ; l'ERP ajoute « Création du dossier » au début et « Clôture » à la fin)
 
 **Rural — Phase 1 : recherche, délimitation et levé de la parcelle**
