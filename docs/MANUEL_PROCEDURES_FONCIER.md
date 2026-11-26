@@ -306,22 +306,37 @@ Les cases du constat de terrain (PV de remise de lot) restent à cocher à la ma
 
 ## L12 — Cohérence des données foncières
 
-Écran **Vue d'ensemble › 🩺 Cohérence des données**. Le contrôle ne modifie rien ; chaque ligne propose sa correction.
+Écran **Vue d'ensemble › 🩺 Cohérence des données**. Principe : le logiciel détecte, établit l'état et propose ; l'utilisateur décide. Le contrôle ne modifie jamais les données.
 
-| Anomalie | Niveau | Correction depuis le logiciel |
+**Ce que fait l'utilisateur sur chaque constat**
+
+| Action | Effet |
+|---|---|
+| Appliquer la proposition | Correction guidée (motif, droit requis, journal) ; constat « corrigé » |
+| Corriger autrement (fiche, lots, procédure) | Au contrôle suivant le constat passe à « disparu au contrôle » |
+| 💬 Observation | Commentaire conservé avec nom et date ; le constat reste ouvert |
+| 📌 Maintenir tel quel | Motif d'au moins 10 caractères ; respecté aux contrôles suivants (administrateur si critique) |
+| 🚫 Contester la détection | Motif d'au moins 10 caractères ; respecté aux contrôles suivants (administrateur si critique) |
+| Rouvrir | Remet le constat à traiter |
+
+Un constat « corrigé » qui réapparaît est rouvert automatiquement. Les décisions et l'historique restent consultables ; « État des incohérences » imprime le registre complet (statut, décision, observations).
+
+**Anomalies détectées**
+
+| Anomalie | Niveau | Proposition du logiciel |
 |---|---|---|
-| Superficie déclarée ≠ contour (≥ 5 % ; ≥ 25 % critique) | À corriger / critique | Aligner sur le contour (motif ; parcelle titrée : administrateur) ou corriger les bornes |
-| Doublon (contours recouverts à ≥ 90 %) | À corriger | Archiver la fiche sans lien dans l'autre (administrateur, motif) ; réversible |
+| Superficie déclarée ≠ contour (≥ 5 % ; ≥ 25 % critique) | À corriger / critique | S'appuie sur la contenance du titre et la somme des lots : aligner la superficie, ou corriger les bornes, ou se reporter au plan du géomètre |
+| Doublon (contours recouverts à ≥ 90 %) | À corriger | Garder la fiche qui porte le plus d'éléments liés, archiver l'autre (réversible) |
 | Parcelle incluse dans une autre | À corriger | Archiver la fiche incluse si aucun lien |
-| Chevauchement partiel | Critique | Corriger les bornes ou déroger (administrateur, motif écrit) |
-| Lot vendu sans souscripteur | Critique | Ouvrir les lots |
-| Terre rurale lotie sans protocole signé | Critique | Ouvrir les protocoles |
-| Opposition active sur terre vendue | Critique | Traiter les oppositions |
-| Titre foncier / ACD sans titre saisi | À corriger | Saisir le titre |
+| Chevauchement partiel | Critique | Corriger les bornes de la fiche la moins fiable ; déroger seulement si le recouvrement est accepté |
+| Lot vendu sans souscripteur | Critique | Rattacher au souscripteur ou repasser « disponible » |
+| Terre rurale lotie sans protocole signé | Critique | Suspendre la vente jusqu'à la signature |
+| Opposition active sur terre vendue | Critique | Informer direction et juridique ; suspendre les remises |
+| Titre foncier / ACD sans titre saisi | À corriger | Saisir le titre ou corriger le statut |
 | Acquisition non comptabilisée | À corriger | Générer l'écriture |
-| Lots plus grands que la parcelle, terre rurale sans ayant droit, superficie ou contour absent | À corriger / à vérifier | Ouvrir l'écran indiqué |
+| Lots plus grands que la parcelle ; terre rurale sans ayant droit ; superficie ou contour absent | À corriger / à vérifier | Pistes indiquées sur la ligne |
 
-Chaque correction est inscrite à l'historique de la parcelle et au journal. « État imprimable » sort la liste pour la revue de direction.
+Le registre est synchronisé avec le cloud (table `pi_constats_coherence_fonciers`, script `supabase/foncier_coherence_l12.sql`).
 
 **Tableau des étapes de la procédure rurale** (31 étapes ; l'ERP ajoute « Création du dossier » au début et « Clôture » à la fin)
 

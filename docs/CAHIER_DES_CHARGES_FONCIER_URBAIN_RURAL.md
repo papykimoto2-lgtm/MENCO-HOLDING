@@ -111,7 +111,7 @@ Légende : **E** existant · **A** à adapter · **N** nouveau. Priorité : P1 i
 | FUR-315 | **Audit foncier pré-acquisition** (protocole AUD-FON-MENKO-02, 19 points Go / No-Go, verdict automatique, comité à 3 visas, décision définitive) ; sortie de l'étape « Négociation » conditionnée au GO | E (L8) | P1 |
 | FUR-316 | **Import Excel** du modèle MENKO V2 (opérations, lots, suivi des dossiers) : analyse avant écriture, rapport, idempotent, ventes à rattacher | E (L9) | P1 |
 | FUR-317 | **Modèles de documents** : protocole de purge des droits coutumiers (conditionné à l'audit GO), PV de remise de lot (conditionné au solde), PV de remise d'ACD | E (L10) | P1 |
-| FUR-318 | **Contrôle de cohérence** : état des incohérences (surface ≠ contour, doublons, inclusions, chevauchements, procédures manquantes, écriture absente) avec correction guidée depuis le logiciel (motif, droit, journal, réversible) | E (L12) | P1 |
+| FUR-318 | **Contrôle de cohérence** : le logiciel détecte les incohérences, établit l'état, propose la correction (appuyée sur les pièces) ; l'utilisateur décide ; corrections, observations, motifs et historique enregistrés (registre synchronisé, décisions respectées, constat corrigé réapparu = rouvert) | E (L12) | P1 |
 
 ### 4.5 Cartographie
 

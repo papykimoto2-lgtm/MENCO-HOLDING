@@ -73,10 +73,56 @@ test('écran : rendu, filtre, impression, badge', async () => {
   const app = await ouvrirApp();
   try {
     await amorcer(app.page);
-    const h = await app.page.evaluate(() => { goTo('foncier'); switchTab('foncier', 'coherence'); return document.getElementById('fon-coherence-root').innerHTML; });
+    await app.page.evaluate(async () => { goTo('foncier'); await fonCoherenceRender(); });
+    const h = await app.page.evaluate(() => document.getElementById('fon-coherence-root').innerHTML);
     assert.match(h, /Cohérence des données foncières/); assert.match(h, /Aligner la superficie sur le contour/); assert.match(h, /Fusionner : archiver/); assert.match(h, /Note de calcul et mode d'emploi — Cohérence/);
-    await app.page.evaluate(() => fonCohFiltrer('critique'));
+    await app.page.evaluate(async () => { fonCohFiltrer('critique'); await new Promise(r => setTimeout(r, 400)); });
     assert.doesNotMatch(await app.page.evaluate(() => document.getElementById('fon-coherence-root').innerHTML), /Doublon probable/);
+    assert.match(await app.page.evaluate(() => document.getElementById('fon-coherence-root').innerHTML), /Proposition du logiciel/);
     assert.ok(Number(await app.page.evaluate(() => document.getElementById('fon-coh-badge').textContent)) > 0);
+  } finally { await app.fermer(); }
+});
+
+test('registre : détection, proposition objective, observation, décision, correction attribuée, disparition, réapparition', async () => {
+  const app = await ouvrirApp();
+  try {
+    await amorcer(app.page);
+    await app.page.evaluate(() => { DATA.parcelles[0].contenance = '10 000'; DATA.constats_coherence_fonciers = []; });
+    await app.page.evaluate(() => fonCoherenceSynchroniser());
+    const reg = () => app.page.evaluate(() => DATA.constats_coherence_fonciers.map(c => ({ cle: c.cle, statut: c.statut, ref: c.reference, prop: c.proposition, obs: c.observations.length, dec: c.decision && c.decision.type, id: c.id })));
+    let r = await reg();
+    assert.ok(r.length >= 8); assert.ok(r.every(c => c.statut === 'ouvert' && /^COH-\d{4}-\d{3}$/.test(c.ref) && c.prop));
+    assert.match(r.filter(c => c.cle === 'superficie_contour|a')[0].prop, /contenance du titre.*confirme le contour/);
+    const n = r.length;
+    await app.page.evaluate(() => fonCoherenceSynchroniser());
+    assert.equal((await reg()).length, n, 'pas de doublon de constat');
+    // observation (n'ferme pas)
+    await app.page.evaluate(() => { window.prompt = () => 'Le géomètre revient la semaine prochaine'; });
+    const idDoublon = r.filter(c => c.cle.startsWith('doublon'))[0].id;
+    await app.page.evaluate(id => fonCohObserver(id), idDoublon);
+    let d = (await reg()).filter(c => c.id === idDoublon)[0]; assert.equal(d.obs, 1); assert.equal(d.statut, 'ouvert');
+    // maintenir : motif trop court refusé, puis accepté
+    await app.page.evaluate(() => { window.prompt = () => 'court'; });
+    await app.page.evaluate(id => fonCohMaintenir(id), idDoublon);
+    assert.equal((await reg()).filter(c => c.id === idDoublon)[0].statut, 'ouvert');
+    await app.page.evaluate(() => { window.prompt = () => 'Deux phases distinctes du même site, contour identique voulu'; });
+    await app.page.evaluate(id => fonCohMaintenir(id), idDoublon);
+    d = (await reg()).filter(c => c.id === idDoublon)[0]; assert.equal(d.statut, 'maintenu'); assert.equal(d.dec, 'maintenu');
+    await app.page.evaluate(() => fonCoherenceSynchroniser());
+    assert.equal((await reg()).filter(c => c.id === idDoublon)[0].statut, 'maintenu', 'décision respectée au contrôle suivant');
+    // correction depuis l'écran : attribuée au constat
+    await app.page.evaluate(() => { window.prompt = () => 'Aligné sur la contenance du titre'; });
+    await app.page.evaluate(() => fonCohAlignerSurface('a'));
+    let s = (await reg()).filter(c => c.cle === 'superficie_contour|a')[0]; assert.equal(s.statut, 'corrige'); assert.equal(s.dec, 'correction');
+    // correction hors écran : disparaît au contrôle
+    await app.page.evaluate(() => { DATA.parcelles.filter(x => x.id === 'p1')[0].statut = 'prospection'; });
+    await app.page.evaluate(() => fonCoherenceSynchroniser());
+    assert.equal((await reg()).filter(c => c.cle === 'titre_manquant|p1')[0].statut, 'resolu_auto');
+    // réapparition → rouvert
+    await app.page.evaluate(() => { DATA.parcelles.filter(x => x.id === 'p1')[0].statut = 'tf_definitif'; });
+    await app.page.evaluate(() => fonCoherenceSynchroniser());
+    assert.equal((await reg()).filter(c => c.cle === 'titre_manquant|p1')[0].statut, 'ouvert');
+    // persistance locale + état imprimable
+    assert.ok(await app.page.evaluate(async () => (await dbGetAll('constats_coherence_fonciers')).length > 0));
   } finally { await app.fermer(); }
 });

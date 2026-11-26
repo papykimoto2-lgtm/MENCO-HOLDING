@@ -810,14 +810,14 @@
 
 ## Cohérence des données  `page:coherence`
 
-**À quoi ça sert.** Repérer ce qui ne colle pas dans vos données foncières et le corriger sans quitter le logiciel.
+**À quoi ça sert.** Le logiciel détecte les incohérences, établit l'état, propose la correction appuyée sur les pièces enregistrées ; l'utilisateur décide et ses corrections, observations et motifs sont conservés.
 
 **Comment faire**
 
-1. Lire les anomalies, critiques en premier.
-2. Cliquer la correction proposée : écran à ouvrir ou correction guidée.
-3. Relancer le contrôle pour vérifier que l'anomalie a disparu.
-4. Imprimer l'état pour la revue de direction.
+1. Lire les constats « À traiter », critiques en premier, avec la proposition du logiciel.
+2. Appliquer la proposition (correction guidée), ou corriger autrement dans la fiche, le lot ou la procédure : le constat disparaît au prochain contrôle.
+3. Ajouter une observation, maintenir tel quel avec un motif, ou contester la détection avec un motif.
+4. Consulter « Décisions et historique » ; imprimer l'état des incohérences pour la revue de direction.
 
 **Calculs**
 
@@ -825,19 +825,21 @@
 |---|---|
 | Aire du contour | formule de Gauss (shoelace) sur les bornes UTM, en m² |
 | Écart de superficie | (aire du contour − superficie déclarée) ÷ superficie déclarée × 100 ; ≥ 5 % à corriger, ≥ 25 % critique |
+| Proposition sur la superficie | le contour est retenu si la contenance du titre ou la somme des lots le confirme à 2 % près ; la superficie déclarée est retenue si elle est confirmée ; sinon renvoi au plan du géomètre |
 | Recouvrement de deux contours | aire commune ÷ aire de chacun ; ≥ 90 % pour les deux = doublon ; ≥ 90 % pour la plus petite seulement = incluse ; sinon chevauchement partiel |
 
 **Règles appliquées**
 
-- Le contrôle ne modifie rien.
-- Alignement de superficie : motif obligatoire ; parcelle titrée = administrateur seul.
-- Fusion d'un doublon : administrateur, motif, uniquement si la fiche archivée n'a aucun élément lié ; réversible (« Rétablir »).
-- Dérogation de chevauchement : administrateur et motif écrit.
-- Chaque correction est inscrite à l'historique de la parcelle et au journal.
+- Le contrôle ne modifie jamais les données ; seul l'utilisateur corrige.
+- Statuts : à traiter, corrigé, disparu au contrôle, maintenu (justifié), détection contestée.
+- Maintenir ou contester : motif d'au moins 10 caractères ; anomalie critique = administrateur.
+- Un constat maintenu ou contesté est respecté aux contrôles suivants ; un constat corrigé qui réapparaît est rouvert.
+- Alignement de superficie : motif ; parcelle titrée = administrateur seul. Archivage d'un doublon : administrateur, motif, aucune pièce liée, réversible. Dérogation : administrateur, motif écrit.
+- Chaque décision porte le nom de l'utilisateur et la date ; tout est inscrit à l'historique du constat et au journal.
 
 **Reçoit de** : Parcelles ; Lots ; Titres ; Comptabilité ; Procédures rurales
 
-**Alimente** : Parcelles (superficie, archivage) ; Comptabilité (écriture d'acquisition) ; Cartographie
+**Alimente** : Registre des constats (cloud) ; Parcelles (superficie, archivage) ; Comptabilité (écriture d'acquisition) ; Revue de direction
 
 ## Parcours foncier  `page:parcours`
 
