@@ -37,7 +37,7 @@ alter table public.pi_proprietaires_fonciers drop constraint if exists pi_propri
 alter table public.pi_proprietaires_fonciers add constraint pi_proprietaires_chk check (
   coalesce(data ->> 'parcelle_id', '') <> '' and length(trim(coalesce(data ->> 'proprietaire', ''))) > 0
   and coalesce(data ->> 'date_debut', '') <> ''
-  and (data ->> 'quote_part')::numeric > 0 and (data ->> 'quote_part')::numeric <= 100
+  and coalesce((data ->> 'quote_part')::numeric, 0) > 0 and coalesce((data ->> 'quote_part')::numeric, 0) <= 100
   and (coalesce(data ->> 'date_fin', '') = '' or data ->> 'date_fin' >= data ->> 'date_debut'));
 
 alter table public.pi_charges_fonciers drop constraint if exists pi_charges_chk;
@@ -53,7 +53,7 @@ alter table public.pi_exploitations_fonciers drop constraint if exists pi_exploi
 alter table public.pi_exploitations_fonciers add constraint pi_exploitations_chk check (
   coalesce(data ->> 'parcelle_id', '') <> ''
   and length(trim(coalesce(data ->> 'exploitant', ''))) > 0 and length(trim(coalesce(data ->> 'culture', ''))) > 0
-  and (data ->> 'superficie_ha')::numeric > 0
+  and coalesce((data ->> 'superficie_ha')::numeric, 0) > 0
   and data ->> 'statut' in ('en_cours', 'terminee')
   and (coalesce(data ->> 'date_fin', '') = '' or coalesce(data ->> 'date_debut', '') = '' or data ->> 'date_fin' >= data ->> 'date_debut'));
 
