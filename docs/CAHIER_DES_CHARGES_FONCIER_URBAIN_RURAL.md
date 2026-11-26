@@ -54,7 +54,7 @@ Légende : **E** existant · **A** à adapter · **N** nouveau. Priorité : P1 i
 | FUR-004 | Superficies : totale, constructible/exploitable, cédée, restante (m² et ha) | A | P1 |
 | FUR-005 | Situation du titre : sans titre, attestation coutumière, lettre d'attribution, CF, ACD, TF provisoire, TF définitif | A | P1 |
 | FUR-006 | Coordonnées polygonales (WGS84 + projection locale UTM 29N), import GeoJSON/KML/CSV | A | P1 |
-| FUR-007 | Contrôle de chevauchement entre parcelles (PostGIS) avec alerte bloquante | N | P1 |
+| FUR-007 | Contrôle de chevauchement entre parcelles (PostGIS) avec alerte bloquante | E (client L2 + serveur PostGIS) | P1 |
 | FUR-008 | Indivision et quote-part promoteur | E | P2 |
 | FUR-009 | Historique des propriétaires (chaîne de propriété datée) | E (L5) | P2 |
 | FUR-010 | Charges et servitudes (hypothèque, litige, servitude, emprise voirie) | E (L5) | P2 |

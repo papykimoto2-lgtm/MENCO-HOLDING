@@ -178,3 +178,13 @@ Un dossier avec trace comptable : **annuler puis archiver**. La suppression effa
 | 1.0 | Octobre 2026 | Création |
 
 Rappel : l'ERP suit la procédure. L'obtention d'un titre relève de l'administration. Fiscalité à valider avec l'expert-comptable.
+
+## Contrôle de chevauchement des contours
+
+L'ERP refuse l'enregistrement d'une parcelle dont le contour recouvre celui d'une autre (tolérance de 0,5 m le long des bords). Le contrôle existe deux fois : dans l'application (message immédiat) et dans la base de données (il tient même depuis un poste en cache ou resynchronisé après une période hors ligne).
+
+- **Dérogation** : réservée à un administrateur, motif obligatoire, elle doit couvrir toutes les parcelles recouvertes. Journalisée.
+- Un enregistrement sans rapport avec le contour (nom, statut, frais…) n'est jamais bloqué par un ancien recouvrement.
+- **Audit** : `select * from fonc_audit_chevauchements();` (SQL Editor) liste les couples de parcelles qui se recouvrent aujourd'hui, à régulariser ou à déroger.
+- Un poste dont l'envoi est refusé par la base voit l'enregistrement rester local ; l'envoi passe en file de quarantaine après plusieurs tentatives.
+- Mise en place : exécuter `supabase/foncier_chevauchement_postgis.sql` sur chaque projet Supabase (après `foncier_urbain_rural_l1.sql`).
