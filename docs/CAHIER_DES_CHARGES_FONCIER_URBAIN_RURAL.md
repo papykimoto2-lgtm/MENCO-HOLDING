@@ -56,8 +56,8 @@ Légende : **E** existant · **A** à adapter · **N** nouveau. Priorité : P1 i
 | FUR-006 | Coordonnées polygonales (WGS84 + projection locale UTM 29N), import GeoJSON/KML/CSV | A | P1 |
 | FUR-007 | Contrôle de chevauchement entre parcelles (PostGIS) avec alerte bloquante | N | P1 |
 | FUR-008 | Indivision et quote-part promoteur | E | P2 |
-| FUR-009 | Historique des propriétaires (chaîne de propriété datée) | N | P2 |
-| FUR-010 | Charges et servitudes (hypothèque, litige, servitude, emprise voirie) | N | P2 |
+| FUR-009 | Historique des propriétaires (chaîne de propriété datée) | E (L5) | P2 |
+| FUR-010 | Charges et servitudes (hypothèque, litige, servitude, emprise voirie) | E (L5) | P2 |
 | FUR-011 | Coût total et valeur patrimoniale calculés automatiquement | E | P1 |
 
 ### 4.2 Procédure urbaine
@@ -79,7 +79,7 @@ Légende : **E** existant · **A** à adapter · **N** nouveau. Priorité : P1 i
 | Id | Exigence | État | Prio |
 |---|---|---|---|
 | FUR-201 | Procédure rurale distincte, 3+ phases : recherche et délimitation, enquête foncière et accord des propriétaires terriens, enquête officielle et certification | E | P1 |
-| FUR-202 | Registre des **ayants droit coutumiers** : famille, chef de terre, héritiers, tuteurs ; lien parcelle ↔ ayants droit avec part | N (stores L1, écran à faire) | P1 |
+| FUR-202 | Registre des **ayants droit coutumiers** : famille, chef de terre, héritiers, tuteurs ; lien parcelle ↔ ayants droit avec part | E (L5) | P1 |
 | FUR-203 | Fiche **village** : chef, comité villageois de gestion foncière (membres, mandat, PV) | E (L3) | P1 |
 | FUR-204 | **Enquête officielle** : nomination du commissaire enquêteur, ouverture, durée (1 mois par défaut, paramétrable), compte à rebours, clôture, observations et oppositions | E (L3) | P1 |
 | FUR-205 | **Oppositions et litiges** : enregistrement, partie adverse, médiation, issue ; suspend la phase suivante | E (L3) | P1 |

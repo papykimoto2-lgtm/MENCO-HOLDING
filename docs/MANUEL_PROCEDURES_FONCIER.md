@@ -226,6 +226,19 @@ Toute modification de paramètre est **annoncée aux équipes** avant applicatio
 - **Désactiver** les contrôles : paramètre `fon_controle_rural = false`.
 - **Base de données** : `supabase/foncier_urbain_rural_l3.sql` (à exécuter sur chaque projet) applique les mêmes règles de forme côté serveur.
 
+**Droits et patrimoine (lot L5)** — Foncier › 2.6 Foncier rural & droits. Valable pour les parcelles urbaines et rurales.
+
+| Vue | Règle |
+|---|---|
+| Propriétaires | Chaîne de propriété datée. Quotes-parts des propriétaires actuels ≤ 100 %. « Transférer » clôt l'ancien et crée le nouveau (origine du droit et référence de l'acte obligatoires) |
+| Charges & servitudes | Hypothèque et saisie exigent une référence. **Active : la cession de la parcelle est bloquée** (administrateur + motif pour passer outre, journalisé). Mainlevée : référence obligatoire |
+| Exploitations | Surfaces en cours cumulées ≤ superficie de la parcelle |
+| Contrats | Brouillon → Activer (génère l'échéancier de redevances) → Encaisser (montant exact + référence) → Résilier (motif). Redevance périodique : date de fin obligatoire. Après un premier encaissement, redevance et période sont figées. Impayés signalés |
+| Ayants droit | Parcelles et part des droits ; total par parcelle ≤ 100 % |
+| Titres | CF, ACD, TF…, numéro unique par type, titre mère (ex. CF → TF) |
+
+Limites : les redevances ne génèrent pas encore d'écriture comptable ; les paiements partiels ne sont pas gérés. Base de données : `supabase/foncier_urbain_rural_l5.sql`.
+
 **Tableau des étapes de la procédure rurale** (31 étapes ; l'ERP ajoute « Création du dossier » au début et « Clôture » à la fin)
 
 **Rural — Phase 1 : recherche, délimitation et levé de la parcelle**
