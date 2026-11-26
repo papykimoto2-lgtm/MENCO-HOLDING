@@ -8582,6 +8582,8 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
               <div class="form-group"></div>
               <div class="form-group"><label>Terrain — Achat / charge (601)</label><input class="form-control" id="cd-terrain-achat" list="dl-plan-comptable" placeholder="601"></div>
               <div class="form-group"><label>Terrain — Contrepartie acquisition<br><span style="font-size:10px;color:var(--blanc-dim);">401 fournisseur (à crédit) ou 521 banque (comptant)</span></label><input class="form-control" id="cd-terrain-contrepartie" list="dl-plan-comptable" placeholder="401"></div>
+              <div class="form-group"><label>Parcelles immobilisées — Terrains<br><span style="font-size:10px;color:var(--blanc-dim);">Classe 22 (ex. 221…)</span></label><input class="form-control" id="cd-parcelle-immo" list="dl-plan-comptable" placeholder="22…"></div>
+              <div class="form-group"><label>Cession d'immobilisation — Valeur comptable<br><span style="font-size:10px;color:var(--blanc-dim);">Compte 81x (ex. 812)</span></label><input class="form-control" id="cd-cession-vnc" list="dl-plan-comptable" placeholder="812"></div>
               <div class="form-group"></div>
             </div>
             <div class="form-section-title" style="margin-top:16px;">🏛️ Titre foncier — honoraires et droits (SYSCOHADA révisé)</div>
@@ -10272,6 +10274,7 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
               <button class="tab-btn" onclick="switchTab('foncier','modeles')" title="Modèles de dossier : délais et responsables par défaut, ordre des étapes"><i>📐</i>Modèles de dossier</button>
               <button class="tab-btn" onclick="switchTab('foncier','intervenants')" title="Répertoire des intervenants et missions confiées"><i>🤝</i>2.3 Intervenants &amp; missions</button>
               <button class="tab-btn" onclick="switchTab('foncier','workflow')" title="Vue synthétique par parcelle : attribution → ACP → ACD → TF → mutation"><i>🧭</i>2.4 Jalons du titre</button>
+              <button class="tab-btn" onclick="switchTab('foncier','rural')" title="Enquête officielle, oppositions, bornage contradictoire, comités villageois"><i>🌾</i>2.6 Foncier rural <span class="tbadge" id="fon-rural-badge" style="display:none;"></span></button>
               <button class="tab-btn" onclick="switchTab('foncier','souscripteurs')" title="Information des souscripteurs : publications, aperçu, demandes"><i>👥</i>2.5 Information souscripteurs</button>
             </div>
           </div>
@@ -10314,6 +10317,7 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
             <select class="filter-select" id="filter-programme-foncier" onchange="renderParcelles()">
               <option value="">Tous programmes</option>
             </select>
+            <button class="btn btn-secondary btn-sm" onclick="backfillAcquisitionsParcelles()" title="Génère les écritures d'acquisition (immobilisation ou stock) des parcelles ayant un traitement comptable">🧾 Compta acquisitions</button>
             <div class="spacer"></div>
             <div class="emp-view-toggle">
               <button type="button" id="parc-vue-grille" onclick="setVueParcelles('grille')">🔳 Grille</button>
@@ -10798,6 +10802,15 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
                 <tbody id="tbody-mutations"></tbody>
               </table>
             </div>
+          </div>
+        </div>
+
+        <div class="tab-pane" id="tab-foncier-rural">
+          <div class="card" style="border:1px solid #2563eb;">
+            <div class="card-title">🌾 Foncier rural — enquête officielle, oppositions, bornage contradictoire, comités villageois</div>
+            <div style="font-size:11px;color:var(--dim);margin-bottom:10px;">Ces enregistrements pilotent la procédure rurale (2.2) : une opposition active suspend la réunion de validation et le certificat foncier ; la clôture de l'enquête exige l'échéance (30 j par défaut) et un bornage contradictoire avec procès-verbal. Dérogation : administrateur, motif obligatoire.</div>
+            <div id="fon-rural-onglets" style="margin-bottom:10px;"></div>
+            <div id="fon-rural-liste"></div>
           </div>
         </div>
 
@@ -17676,11 +17689,13 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
                   <option value="statut">🎨 Coloration : Statut</option>
                   <option value="valeur">💰 Coloration : Valeur estimée</option>
                   <option value="pxm2">📊 Coloration : Prix au m²</option>
+                  <option value="regime">🏘 Coloration : Régime (urbain / rural)</option>
                 </select>
                 <button class="btn btn-secondary btn-sm" id="sig-btn-mesure" onclick="sigToggleMesure()">📏 Mesurer</button>
                 <button class="btn btn-secondary btn-sm" id="sig-btn-dessin" onclick="sigToggleDessin()">✏️ Dessiner parcelle</button>
                 <button class="btn btn-secondary btn-sm" onclick="sigGPS()">📍 Ma position</button>
                 <button class="btn btn-secondary btn-sm" onclick="sigFitAll()">⤢ Tout voir</button>
+                <button class="btn btn-secondary btn-sm" onclick="fonGeoAuditChevauchements()" title="Détecte les parcelles dont les contours se recouvrent">⚠ Chevauchements</button>
                 <label class="filter-select" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="sig-show-lots" checked onchange="sigRenderLots()" style="accent-color:#22c55e;">🏠 Lots (plan de masse)</label>
                 <button class="btn btn-secondary btn-sm" onclick="sigFitLots()">⤢ Zoom lots</button>
               </div>
@@ -21997,6 +22012,14 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
 </div>
 
 <!-- Modal Parcelle Foncière -->
+<div class="modal-overlay" id="modal-fon-rural">
+  <div class="modal modal-lg">
+    <div class="modal-header"><h3 id="fon-rural-titre">Foncier rural</h3><button class="btn btn-secondary btn-icon" onclick="closeModal('modal-fon-rural')">✕</button></div>
+    <div class="modal-body" id="fon-rural-form"></div>
+    <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('modal-fon-rural')">Annuler</button><button class="btn btn-primary" onclick="fonRuralEnregistrer()">Enregistrer</button></div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-parcelle">
   <div class="modal modal-lg modal-xl">
     <div class="modal-header">
@@ -22016,6 +22039,7 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
       <div class="tab-pane active" id="tab-modal-parcelle-identification">
         <div class="form-grid">
           <div class="form-group"><label>Référence interne *</label><input type="text" class="form-control" id="parc-ref" placeholder="EX: PARC-2024-001" oninput="updateParcelleStatusVisuals()"></div>
+          <div class="form-group"><label>Régime foncier *</label><select class="form-control" id="parc-regime"><option value="">— Choisir —</option><option value="urbain">Urbain</option><option value="rural">Rural</option></select></div>
           <div class="form-group"><label>Programme affecté</label><select class="form-control" id="parc-programme"><option value="">— Non affectée —</option></select></div>
           <div class="form-group span-2"><label>📍 Localisation précise *</label><input type="text" class="form-control" id="parc-localisation" placeholder="Quartier, voie, repères..." oninput="updateParcelleStatusVisuals()"></div>
           <div class="form-group"><label>Commune</label><input type="text" class="form-control" id="parc-commune" placeholder="Ex: Cocody, Yopougon..."></div>
@@ -22079,6 +22103,8 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
           <div class="form-group"><label>Frais de mutation (FCFA)</label><input type="number" class="form-control" id="parc-frais-mutation" oninput="calcParcelleTotal();updateParcelleFinSummary()"></div>
           <div class="form-group"><label>Frais de bornage (FCFA)</label><input type="number" class="form-control" id="parc-frais-bornage" oninput="calcParcelleTotal();updateParcelleFinSummary()"></div>
           <div class="form-group"><label>Frais notariaux (FCFA)</label><input type="number" class="form-control" id="parc-frais-notaire" oninput="calcParcelleTotal();updateParcelleFinSummary()"></div>
+          <div class="form-group"><label>Traitement comptable<br><span style="font-size:10px;color:var(--blanc-dim);">Immobilisation (classe 22) ou stock (terrain à vendre). Vide : aucune écriture.</span></label><select class="form-control" id="parc-traitement-compta"><option value="">— Aucune écriture —</option><option value="immobilisation">Immobilisation (terrain)</option><option value="stock">Stock (terrain à vendre)</option></select></div>
+          <div class="form-group"><label>Date d'acquisition</label><input type="date" class="form-control" id="parc-date-acquisition"></div>
           <div class="form-group"><label>Valeur estimée actuelle (FCFA)</label><input type="number" class="form-control" id="parc-valeur-actuelle" oninput="updateParcelleFinSummary()"></div>
           <div class="form-group"><label>Prix de revient total (FCFA)</label><input type="number" class="form-control" id="parc-cout-total" readonly style="color:var(--or);font-weight:bold;"></div>
         </div>
@@ -22109,6 +22135,7 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
             <span style="font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px;font-weight:700;margin-right:2px;">Saisie</span>
             <button class="btn btn-secondary btn-sm" onclick="brnAdd()">+ Borne</button>
             <label class="btn btn-secondary btn-sm" style="cursor:pointer;">📥 Import CSV<input type="file" accept=".csv,.txt" style="display:none;" onchange="brnImportBornesCSV(this)"></label>
+            <label class="btn btn-secondary btn-sm" style="cursor:pointer;" title="Contour d'un polygone, coordonnées longitude/latitude">🗺 Import GeoJSON/KML<input type="file" accept=".geojson,.json,.kml" style="display:none;" onchange="fonGeoImporter(this)"></label>
             <label class="btn btn-secondary btn-sm" style="cursor:pointer;">📐 Import DXF/DWG<input type="file" accept=".dxf,.dwg" style="display:none;" onchange="brnImportDXF(this)"></label>
             <button class="btn btn-secondary btn-sm" onclick="grefOpen()">📍 Géoréférencer un plan</button>
             <label class="btn btn-primary btn-sm" for="parc-scan-dossier-input" style="cursor:pointer;background:var(--vert,#1A6B3A);border-color:var(--vert,#1A6B3A);">📄 Scanner dossier</label>
@@ -25067,6 +25094,8 @@ var DATA = {
   notifications_foncieres: [],
   pieces_foncieres: [],
   groupes_fonciers: [],
+  villages_fonciers: [], ayants_droit_fonciers: [], titres_fonciers: [],
+  enquetes_fonciers: [], oppositions_fonciers: [], bornages_fonciers: [],
   /* v147 — Circuit budgétaire complet : budget prévisionnel annuel par
      division/compte, validé par le DG, décrémenté par les Demandes d'Achat
      validées, avec transferts de ligne à ligne */
@@ -25079,7 +25108,7 @@ var DATA = {
    INDEXEDDB
 ────────────────────────────────────────────────────── */
 var DB_NAME = 'ImmoSuiteDB';
-var DB_VERSION = 167; /* v167: index 'entity_id' et 'entity_type' sur le store 'documents' (lecture des fichiers d'une fiche sans charger toute la table). Migration additive. v166: v166: stores 'smq_enjeux', 'smq_parties' — contexte de l’organisme et parties intéressées (ISO 9001 §4.1, §4.2). Migration additive; tables cloud : supabase/pi_smq.sql. */ /* v165: store 'smq_evaluations' — évaluations de compétences (matrice des compétences du SMQ, ISO 9001 §7.2). Migration additive; table cloud : supabase/pi_smq.sql. */ /* v164: stores 'smq_politiques', 'smq_objectifs', 'smq_risques' — politique qualité, objectifs qualité, registre des risques et opportunités. Migration additive; tables cloud : supabase/pi_smq.sql. */ /* v163: store 'smq_revues' — revues de direction du SMQ (entrées, sorties, décisions). Migration additive; table cloud : supabase/pi_smq.sql. */ /* v162: store 'smq_audits' — audits internes du SMQ (programme, constats, rapport). Migration additive; table cloud : supabase/pi_smq.sql. */ /* v161: stores 'smq_documents', 'smq_nc', 'smq_reclamations', 'smq_satisfaction' — SMQ (maîtrise documentaire, non-conformités, réclamations, satisfaction). Migration additive; tables cloud : supabase/pi_smq.sql. */ /* v160: store 'groupes_fonciers' — groupes de mutation (plusieurs dossiers individuels traités ensemble). Local uniquement. Migration additive.
+var DB_VERSION = 169; /* v169: stores 'enquetes_fonciers', 'oppositions_fonciers', 'bornages_fonciers' — Foncier rural, lot L3 (enquête officielle, oppositions, bornage contradictoire); tables cloud : supabase/foncier_urbain_rural_l3.sql. Migration additive. */ /* v168: stores 'villages_fonciers', 'ayants_droit_fonciers', 'titres_fonciers' + champ 'regime' (urbain/rural) sur les parcelles — Foncier urbain et rural, lot L1; tables cloud : supabase/foncier_urbain_rural_l1.sql. Migration additive. */ /* v167: index 'entity_id' et 'entity_type' sur le store 'documents' (lecture des fichiers d'une fiche sans charger toute la table). Migration additive. v166: v166: stores 'smq_enjeux', 'smq_parties' — contexte de l’organisme et parties intéressées (ISO 9001 §4.1, §4.2). Migration additive; tables cloud : supabase/pi_smq.sql. */ /* v165: store 'smq_evaluations' — évaluations de compétences (matrice des compétences du SMQ, ISO 9001 §7.2). Migration additive; table cloud : supabase/pi_smq.sql. */ /* v164: stores 'smq_politiques', 'smq_objectifs', 'smq_risques' — politique qualité, objectifs qualité, registre des risques et opportunités. Migration additive; tables cloud : supabase/pi_smq.sql. */ /* v163: store 'smq_revues' — revues de direction du SMQ (entrées, sorties, décisions). Migration additive; table cloud : supabase/pi_smq.sql. */ /* v162: store 'smq_audits' — audits internes du SMQ (programme, constats, rapport). Migration additive; table cloud : supabase/pi_smq.sql. */ /* v161: stores 'smq_documents', 'smq_nc', 'smq_reclamations', 'smq_satisfaction' — SMQ (maîtrise documentaire, non-conformités, réclamations, satisfaction). Migration additive; tables cloud : supabase/pi_smq.sql. */ /* v160: store 'groupes_fonciers' — groupes de mutation (plusieurs dossiers individuels traités ensemble). Local uniquement. Migration additive.
                           v159: v159: store 'pieces_foncieres' — Foncier Connect, pièces jointes par étape (promoteur et souscripteur). Local uniquement : pièces d'identité et titres, jamais synchronisées. Migration additive.
                           v158: v158: store 'notifications_foncieres' — Foncier Connect phase 4, notifications et relances (local, sans table Supabase). Migration additive.
                           v157: stores 'publications_foncieres' et 'demandes_fonciers' — Foncier Connect phase 3, information du souscripteur (locaux, sans table Supabase). Migration additive.
@@ -25244,6 +25273,8 @@ var ALL_STORES = [
   /* v154 — Bordereaux de transmission des pièces de caisse au Gérant (visa final) */
   'bordereaux_caisse',
   'dossiers_fonciers','evenements_fonciers','intervenants_fonciers','missions_foncieres','publications_foncieres','demandes_fonciers','notifications_foncieres','pieces_foncieres','groupes_fonciers',
+  'villages_fonciers','ayants_droit_fonciers','titres_fonciers',
+  'enquetes_fonciers','oppositions_fonciers','bornages_fonciers',
   /* v147 — Circuit budgétaire : DA + transferts */
   'fiches_engagement_depense', 'transferts_budgetaires',
   /* [FIX] Demandes de versement du portail souscripteur — n'était même pas
@@ -27836,6 +27867,12 @@ var SUPA_STORE_MAP = [
   ['pi_demandes_fonciers', 'demandes_fonciers'],
   ['pi_notifications_foncieres', 'notifications_foncieres'],
   ['pi_groupes_fonciers', 'groupes_fonciers'],
+  ['pi_villages_fonciers', 'villages_fonciers'],
+  ['pi_ayants_droit_fonciers', 'ayants_droit_fonciers'],
+  ['pi_titres_fonciers', 'titres_fonciers'],
+  ['pi_enquetes_fonciers', 'enquetes_fonciers'],
+  ['pi_oppositions_fonciers', 'oppositions_fonciers'],
+  ['pi_bornages_fonciers', 'bornages_fonciers'],
   ['pi_pieces_foncieres', 'pieces_foncieres'],   /* métadonnées seulement : les fichiers sont dans le bucket privé « pieces-foncieres » (supabase/foncier_pieces_stockage.sql) */
   ['pi_bordereaux_caisse', 'bordereaux_caisse'],
   ['pi_users',           'users'],
@@ -32154,6 +32191,7 @@ function switchTab(context, tab) {
   if (context==='juridique' && tab==='contentieux' && typeof ctxActualiserAuto==='function') ctxActualiserAuto();
   // Hook scan pointage
   if (context==='foncier' && tab==='fisc' && typeof fiscInit==='function') { fiscInit(); }
+  if (context==='foncier' && tab==='rural' && typeof fonRuralRender==='function') fonRuralRender();
   if (context==='foncier' && tab==='dossiers' && typeof fcRender==='function') fcRender();
   if (context==='foncier' && tab==='intervenants' && typeof fcRenderIntervenants==='function') fcRenderIntervenants();
   if (context==='foncier' && tab==='souscripteurs' && typeof fcRenderSouscripteurs==='function') fcRenderSouscripteurs();
@@ -43040,7 +43078,7 @@ var LIBELLES_COMPTES_DEFAUT = {
   tva_deductible_travaux:'TVA déductible — Travaux', retenue_garantie:'Retenue de garantie', avance_fournisseur:'Avance fournisseur',
   cession_produit:'Cession foncière — Produit', amort_dotation:'Amortissements — Dotation', amort_cumul:'Amortissements — Cumul',
   titre_honoraires_notaire:'Titre foncier — Honoraires notaire (charge)', titre_honoraires_geometre:'Titre foncier — Honoraires géomètre-expert (charge)', titre_droits_enregistrement:"Titre foncier — Droits d'enregistrement / mutation (charge)", titre_frais_actes:"Titre foncier — Frais d'actes et formalités (charge)", titre_fournisseurs:'Titre foncier — Fournisseurs (notaire, géomètre, Trésor)', titre_avances_souscripteur:'Titre foncier — Frais avancés pour le souscripteur (à refacturer)', terrain_produit:'Terrain — Produit (vente)', terrain_tva_collectee:'Terrain — TVA collectée', terrain_stock:'Terrain — Stock',
-  terrain_variation:'Terrain — Variation de stock', terrain_achat:'Terrain — Achat / charge', terrain_contrepartie:'Terrain — Contrepartie acquisition',
+  terrain_variation:'Terrain — Variation de stock', terrain_achat:'Terrain — Achat / charge', terrain_contrepartie:'Terrain — Contrepartie acquisition', parcelle_immo:'Parcelles immobilisées — Terrains', cession_vnc:'Cession d\'immobilisation — Valeur comptable',
   frais_bancaires:'Frais bancaires — Charge', vente_lot_produit:'Vente lots/appartements — Produit', compte_courant_associe:'Compte courant associé / partenaire',
   stock_lots_variation:'Stock lots (part entreprise) — Variation', stock_lots_compte:'Stock lots (part entreprise) — Compte de stock',
   chantier_immo_encours:'Chantier — Immobilisation en cours', chantier_materiaux:'Chantier — Achats matériaux', chantier_sous_traitance:'Chantier — Sous-traitance / location matériel',
@@ -43226,6 +43264,8 @@ function loadComptesDefaut() {
   var _tv2=document.getElementById('cd-terrain-variation'); if(_tv2)_tv2.value=cd.terrain_variation|| '';
   var _ta=document.getElementById('cd-terrain-achat'); if(_ta)_ta.value=cd.terrain_achat|| '';
   var _tc=document.getElementById('cd-terrain-contrepartie'); if(_tc)_tc.value=cd.terrain_contrepartie|| '';
+  var _pi=document.getElementById('cd-parcelle-immo'); if(_pi)_pi.value=cd.parcelle_immo|| '';
+  var _cv=document.getElementById('cd-cession-vnc'); if(_cv)_cv.value=cd.cession_vnc|| '';
   document.getElementById('cd-amort-dotation').value = cd.amort_dotation || '';
   document.getElementById('cd-amort-cumul').value = cd.amort_cumul || '';
   var _fb=document.getElementById('cd-frais-bancaires'); if(_fb)_fb.value=cd.frais_bancaires|| '';
@@ -45196,6 +45236,8 @@ async function saveComptesDefaut() {
     terrain_variation:   (document.getElementById('cd-terrain-variation')||{}).value ? document.getElementById('cd-terrain-variation').value.trim() : '',
     terrain_achat:       (document.getElementById('cd-terrain-achat')||{}).value ? document.getElementById('cd-terrain-achat').value.trim() : '',
     terrain_contrepartie:(document.getElementById('cd-terrain-contrepartie')||{}).value ? document.getElementById('cd-terrain-contrepartie').value.trim() : '',
+    parcelle_immo:       (document.getElementById('cd-parcelle-immo')||{}).value ? document.getElementById('cd-parcelle-immo').value.trim() : '',
+    cession_vnc:         (document.getElementById('cd-cession-vnc')||{}).value ? document.getElementById('cd-cession-vnc').value.trim() : '',
     amort_dotation:      document.getElementById('cd-amort-dotation').value.trim() || '',
     amort_cumul:         document.getElementById('cd-amort-cumul').value.trim() || '',
     frais_bancaires:      (document.getElementById('cd-frais-bancaires')||{}).value ? document.getElementById('cd-frais-bancaires').value.trim() : '',
@@ -56347,7 +56389,7 @@ var STORE_MODULE = {
   af_operations:'Acquisition & Amenagement Foncier',
   af_agents:'Acquisition & Amenagement Foncier',
   af_relances:'Acquisition & Amenagement Foncier',
-  parcelles:'Foncier', terrains:'Foncier', dossiers_fonciers:'Foncier', evenements_fonciers:'Foncier', intervenants_fonciers:'Foncier', missions_foncieres:'Foncier', publications_foncieres:'Foncier', demandes_fonciers:'Foncier', notifications_foncieres:'Foncier', pieces_foncieres:'Foncier', groupes_fonciers:'Foncier',
+  parcelles:'Foncier', terrains:'Foncier', dossiers_fonciers:'Foncier', evenements_fonciers:'Foncier', intervenants_fonciers:'Foncier', missions_foncieres:'Foncier', publications_foncieres:'Foncier', demandes_fonciers:'Foncier', notifications_foncieres:'Foncier', pieces_foncieres:'Foncier', groupes_fonciers:'Foncier', villages_fonciers:'Foncier', ayants_droit_fonciers:'Foncier', titres_fonciers:'Foncier', enquetes_fonciers:'Foncier', oppositions_fonciers:'Foncier', bornages_fonciers:'Foncier',
   /* [FIX] 'Conges' ne correspond à AUCUNE entrée de ALL_MODULES (le module
      réel s'appelle 'Conges RH') — userPeut() traite donc toute écriture sur
      conges_rh comme "non restreinte" quel que soit le droit configuré :
@@ -62242,7 +62284,7 @@ function lancerAuditIntegrite(){
       tva_deductible_travaux:'TVA déductible — Travaux', retenue_garantie:'Retenue de garantie', avance_fournisseur:'Avance fournisseur',
       cession_produit:'Cession foncière — Produit', amort_dotation:'Amortissements — Dotation', amort_cumul:'Amortissements — Cumul',
       titre_honoraires_notaire:'Titre foncier — Honoraires notaire (charge)', titre_honoraires_geometre:'Titre foncier — Honoraires géomètre-expert (charge)', titre_droits_enregistrement:"Titre foncier — Droits d'enregistrement / mutation (charge)", titre_frais_actes:"Titre foncier — Frais d'actes et formalités (charge)", titre_fournisseurs:'Titre foncier — Fournisseurs (notaire, géomètre, Trésor)', titre_avances_souscripteur:'Titre foncier — Frais avancés pour le souscripteur (à refacturer)', terrain_produit:'Terrain — Produit (vente)', terrain_tva_collectee:'Terrain — TVA collectée', terrain_stock:'Terrain — Stock',
-      terrain_variation:'Terrain — Variation de stock', terrain_achat:'Terrain — Achat / charge', terrain_contrepartie:'Terrain — Contrepartie acquisition'
+      terrain_variation:'Terrain — Variation de stock', terrain_achat:'Terrain — Achat / charge', terrain_contrepartie:'Terrain — Contrepartie acquisition', parcelle_immo:'Parcelles immobilisées — Terrains', cession_vnc:'Cession d\'immobilisation — Valeur comptable'
     };
     Object.keys(libelles).forEach(function(key){
       var code = cd[key];
@@ -65343,6 +65385,15 @@ async function fcChangerStatutEtape(dossierId, code, statut, o) {
       derogation = true;
     }
   }
+  if (d.type_procedure === 'immatriculation_rurale' && (FC_STATUTS_ACTIFS.indexOf(statut) !== -1 || statut === 'termine') && fonRuralControleActif()) {
+    var rb = fonRuralBloquants(d, code);
+    if (rb.length) {
+      if (!o.derogation_rural) return { ok: false, rural: true, erreur: 'Contrôle foncier rural : ' + rb.join(' ; ') + '.' };
+      if (!motif) return { ok: false, erreur: 'Une dérogation au contrôle foncier rural exige un motif.' };
+      if (!fcEstAdmin()) return { ok: false, erreur: 'Seul un administrateur peut déroger au contrôle foncier rural.' };
+      derogation = true;
+    }
+  }
   if (code === 'preparation_dossier_admin' && statut === 'termine') {
     var restants = fcControlesRestants(d);
     if (restants.length) {
@@ -65872,6 +65923,7 @@ async function fcStatutAvecDerogations(id, code, statut, motif) {
     var fait = false;
     if (r.dependance && !opts.derogation_ordre) fait = await essai('derogation_ordre', r.erreur + "\n\nPasser outre l'ordre des étapes (motif obligatoire, journalisé) ?", "Motif de la dérogation à l'ordre des étapes :");
     else if (r.phase && fcEstAdmin() && !opts.derogation_phase) fait = await essai('derogation_phase', r.erreur + '\n\nDéroger par décision d\'administrateur (motif obligatoire, journalisé) ?', 'Motif de la dérogation à la procédure coutumière et technique :');
+    else if (r.rural && fcEstAdmin() && !opts.derogation_rural) fait = await essai('derogation_rural', r.erreur + '\n\nDéroger par décision d\'administrateur (motif obligatoire, journalisé) ?', 'Motif de la dérogation au contrôle foncier rural :');
     else if (r.completude && !opts.derogation_completude) fait = await essai('derogation_completude', r.erreur + '\n\nClôturer quand même par dérogation (motif obligatoire, journalisée) ?', 'Motif de la dérogation au contrôle de clôture :');
     else if ((r.justificatif_manquant || r.controles_restants || r.etapes_restantes) && !opts.derogation) fait = await essai('derogation', r.erreur + '\n\nTerminer quand même par dérogation (motif obligatoire, journalisée) ?', 'Motif de la dérogation :');
     if (!fait) break;
@@ -73514,6 +73566,7 @@ async function cesResilierConfirmer(){
       compte:cptProduit, compte_debit:cptProduit, compte_credit:cptTiers, montant:c.prix_cession, type:'produit', created_at:dat };
     DATA.ecritures.push(ecrAnnul); await dbPut('ecritures', ecrAnnul); if (typeof syncToSupabase==='function') syncToSupabase('pi_ecritures', ecrAnnul);
   }
+  await contrepasserSortieCessionParcelle(c);   /* L4 : la parcelle revient à l'actif ou au stock */
   /* 2) Répartition de la part réellement encaissée (60/100%) */
   if (rembourse > 0) {
     var compteDette = requireCompteDefaut('resiliation_dette');
@@ -75943,6 +75996,11 @@ function _sigBuildBI(actives){
     var lg=it.map(function(x){return '<span style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;"><span style="width:10px;height:10px;border-radius:2px;background:'+SIG_STATUT_COLORS[x[0]]+';display:inline-block;"></span>'+x[1]+'</span>';}).join('');
     return {mode:mode,colorMap:colorMap,legend:'🎨 '+lg};
   }
+  if(mode==='regime'){
+    actives.forEach(function(p){ colorMap[p.id]=FON_REGIME_COULEURS[fonRegimeParcelle(p)]; });
+    var lgR=['urbain','rural'].map(function(r){ return '<span style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;"><span style="width:10px;height:10px;border-radius:2px;background:'+FON_REGIME_COULEURS[r]+';"></span>'+(r==='urbain'?'Urbain':'Rural')+'</span>'; }).join('');
+    return {mode:mode,colorMap:colorMap,legend:'🏘 '+lgR};
+  }
   var ramp=['#1e40af','#0891b2','#22c55e','#f59e0b','#ef4444'], arr=[];
   actives.forEach(function(p){ var e=_sigEstimerParcelle(p); if(!e)return; var v=mode==='pxm2'?e.pxm2:e.valeur; valById[p.id]=v; arr.push(v); });
   if(!arr.length) return {mode:mode,colorMap:colorMap,legend:'⚠️ Aucune donnée comparable pour estimer la '+(mode==='pxm2'?'valeur au m²':'valeur')+' (saisissez des cessions/ventes de terrain).'};
@@ -76043,7 +76101,7 @@ function sigRenderParcelles(){
 
         var sup=p.superficie?(p.superficie/10000).toFixed(4)+' ha':'—';
         var per=_sigPerimM(path);
-        poly.bindPopup('<strong>'+escHtml(p.ref||p.id)+'</strong><br>'+escHtml(p.localisation||p.commune||'')+'<br>Statut : '+st+'<br>Superficie : '+sup+'<br>Périmètre : '+Math.round(per)+' m'+(p.affectation?'<br>Affectation : '+escHtml(p.affectation):'')+(p.systeme_geodesique?'<br>Réf. : '+escHtml(p.systeme_geodesique):'')
+        poly.bindPopup('<strong>'+escHtml(p.ref||p.id)+'</strong><br>'+escHtml(p.localisation||p.commune||'')+'<br>Statut : '+st+'<br>Régime : '+(fonRegimeParcelle(p)==='rural'?'Rural':'Urbain')+'<br>Superficie : '+sup+'<br>Périmètre : '+Math.round(per)+' m'+(p.affectation?'<br>Affectation : '+escHtml(p.affectation):'')+(p.systeme_geodesique?'<br>Réf. : '+escHtml(p.systeme_geodesique):'')
           + (_indiv
               ? '<div style="margin-top:6px;padding:6px 8px;background:rgba(184,115,51,.15);border-left:3px solid #B87333;border-radius:4px;font-size:11px;line-height:1.6;">'
                 + '<strong>🤝 Parcelle en indivision</strong><br>'
@@ -97218,6 +97276,7 @@ function renderParcelles() {
         + '</div>'
         + '<div class="emp-card-tags">'
         +   '<span class="badge ' + (PARC_STAT_MAP[p.statut]||'badge-bleu') + ' emp-chip">' + escHtml((p.statut||'').replace(/_/g,' ')) + '</span>'
+        +   '<span class="badge ' + (fonRegimeParcelle(p) === 'rural' ? 'badge-bleu' : 'badge-rouge') + ' emp-chip">' + (fonRegimeParcelle(p) === 'rural' ? 'Rural' : 'Urbain') + '</span>'
         +   (p.type_titre ? '<span class="badge badge-neutre emp-chip">' + escHtml(p.type_titre) + '</span>' : '')
         +   '<span class="badge badge-neutre emp-chip">🏗 ' + escHtml(progNom) + '</span>'
         + '</div>'
@@ -97231,6 +97290,9 @@ function renderParcelles() {
   }
 }
 
+/* Régime d'une parcelle : valeur enregistrée, sinon 'urbain' (parcelles antérieures au lot L1, migrées en base par foncier_urbain_rural_l1.sql). */
+function fonRegimeParcelle(p) { return (p && (p.regime === 'rural' || p.regime === 'urbain')) ? p.regime : (p ? 'urbain' : ''); }
+
 function openParcelle(id) {
   APP.editingId = id || null;
   populateAllERP();
@@ -97240,13 +97302,13 @@ function openParcelle(id) {
       var fields = { 'parc-ref':p.ref,'parc-localisation':p.localisation,'parc-commune':p.commune,'parc-sous-prefecture':p.sous_prefecture,
         'parc-sf-totale':p.superficie,'parc-superficie-const':p.superficie_const,'parc-description':p.description,
         'parc-type-titre':p.type_titre,'parc-num-titre':p.num_titre,'parc-date-titre':p.date_titre,'parc-notaire':p.notaire,
-        'parc-vendeur':p.vendeur,'parc-date-bornage':p.date_bornage,'parc-statut':p.statut,'parc-risque':p.risque,'parc-obs-jur':p.obs_jur,
+        'parc-regime':fonRegimeParcelle(p),'parc-traitement-compta':p.traitement_compta,'parc-date-acquisition':p.date_acquisition,'parc-vendeur':p.vendeur,'parc-date-bornage':p.date_bornage,'parc-statut':p.statut,'parc-risque':p.risque,'parc-obs-jur':p.obs_jur,
         'parc-prix-acq':p.prix_acq,'parc-frais-mutation':p.frais_mutation,'parc-frais-bornage':p.frais_bornage,'parc-frais-notaire':p.frais_notaire,
         'parc-valeur-actuelle':p.valeur_actuelle,'parc-programme':p.programme_id };
       Object.keys(fields).forEach(function(fid) { var el=document.getElementById(fid); if(el) el.value = fields[fid]||''; });
     }
   } else {
-    ['parc-ref','parc-localisation','parc-commune','parc-sous-prefecture','parc-sf-totale','parc-superficie-const','parc-description','parc-num-titre','parc-notaire','parc-vendeur','parc-obs-jur','parc-prix-acq','parc-frais-mutation','parc-frais-bornage','parc-frais-notaire','parc-valeur-actuelle','parc-cout-total'].forEach(function(fid){ var el=document.getElementById(fid);if(el)el.value=''; });
+    ['parc-ref','parc-regime','parc-traitement-compta','parc-date-acquisition','parc-localisation','parc-commune','parc-sous-prefecture','parc-sf-totale','parc-superficie-const','parc-description','parc-num-titre','parc-notaire','parc-vendeur','parc-obs-jur','parc-prix-acq','parc-frais-mutation','parc-frais-bornage','parc-frais-notaire','parc-valeur-actuelle','parc-cout-total'].forEach(function(fid){ var el=document.getElementById(fid);if(el)el.value=''; });
     var statusEl = document.getElementById('parc-statut'); if (statusEl) statusEl.value = 'prospection';
     var risqueEl = document.getElementById('parc-risque'); if (risqueEl) risqueEl.value = 'faible';
   }
@@ -97261,11 +97323,13 @@ function openParcelle(id) {
 async function saveParcelle() {
   var ref = document.getElementById('parc-ref').value.trim();
   if (!ref) { toast('Référence obligatoire.', 'error'); return; }
+  var regime = (document.getElementById('parc-regime')||{}).value || '';
+  if (regime !== 'urbain' && regime !== 'rural') { toast('Régime foncier obligatoire (urbain ou rural).', 'error'); return; }
   var coutTot = ['parc-prix-acq','parc-frais-mutation','parc-frais-bornage','parc-frais-notaire'].reduce(function(s,id){ return s+(parseFloat(document.getElementById(id).value)||0); }, 0);
   var existing = APP.editingId ? DATA.parcelles.find(function(x){return x.id===APP.editingId;}) : null;
   var p = {
     id: APP.editingId || uid(),
-    ref: ref, localisation: document.getElementById('parc-localisation').value.trim(),
+    ref: ref, regime: regime, traitement_compta: (document.getElementById('parc-traitement-compta')||{}).value || '', date_acquisition: (document.getElementById('parc-date-acquisition')||{}).value || '', localisation: document.getElementById('parc-localisation').value.trim(),
     commune: document.getElementById('parc-commune').value.trim(),
     sous_prefecture: document.getElementById('parc-sous-prefecture').value.trim(),
     utm_zone: parseInt((document.getElementById('parc-utm-zone')||{}).value)||30,
@@ -97302,10 +97366,30 @@ async function saveParcelle() {
     budget_terrassement: (typeof _terrBudgetState!=='undefined' && _terrBudgetState && _terrBudgetState._saved) ? {P:_terrBudgetState.P,Kc:_terrBudgetState.Kc,foi:_terrBudgetState.foi,cut:_terrBudgetState.cut,fill:_terrBudgetState.fill,area:_terrBudgetState.area,lignes:_terrBudgetState.lignes,totaux:_terrBudgetState._tot} : ((existing&&existing.budget_terrassement)||null),
     created_at: (existing && existing.created_at) ? existing.created_at : today()
   };
+  /* Foncier L2 : un contour ne doit pas recouvrir celui d'une autre parcelle. Blocage ; dérogation motivée réservée à l'administrateur. */
+  var _chev = fonGeoChevauchements(p);
+  if (_chev.length) {
+    var _liste = _chev.map(function(c){ return c.ref + ' (≈ ' + c.aire + ' m²)'; }).join(', ');
+    if (!hasRole('admin')) { toast('Chevauchement avec ' + _liste + ' : enregistrement bloqué. Corriger les bornes ou demander une dérogation à un administrateur.', 'error'); return; }
+    var _motif = prompt('Chevauchement détecté avec : ' + _liste + '\n\nDérogation administrateur — motif obligatoire :');
+    if (!_motif || !_motif.trim()) return;
+    p.derogation_chevauchement = { motif: _motif.trim(), par: (APP.currentUser && APP.currentUser.nom) || '—', le: today(), avec: _chev.map(function(c){ return c.id; }) };
+    logAction('FONCIER_CHEVAUCHEMENT_DEROGATION', p.ref + ' ↔ ' + _liste + ' — ' + _motif.trim());
+  }
   if (APP.editingId) { var idx=DATA.parcelles.findIndex(function(x){return x.id===APP.editingId;}); if(idx>=0)DATA.parcelles[idx]=p; }
   else DATA.parcelles.push(p);
   await dbPut('parcelles', p);
   if (typeof syncToSupabase==='function') syncToSupabase('pi_parcelles', p);
+  /* L4 : écriture d'acquisition (immobilisation ou stock) si un traitement comptable est choisi. Ne bloque jamais l'enregistrement de la parcelle. */
+  try {
+    if (fonTraitementCompta(p) || (existing && fonTraitementCompta(existing))) {
+      var _droitC = !(typeof userPeutSurStore === 'function' && typeof STORE_MODULE !== 'undefined' && STORE_MODULE.ecritures) || userPeutSurStore('ecritures', 'c');
+      if (!_droitC) toast("Parcelle enregistrée ; écriture d'acquisition non générée (droit Comptabilité requis).", 'warning', 6000);
+      else { var _ra = await comptabiliserAcquisitionParcelle(p);
+        if (_ra.verrou) toast("Écriture d'acquisition non modifiée : " + _ra.verrou + '. Passez une écriture corrective.', 'warning', 7000);
+        else if (_ra.ecriture) toast('Acquisition comptabilisée (' + _ra.ecriture.ref + ').', 'success'); }
+    }
+  } catch (_eA) { if (!/COMPTE_(DEFAUT_MANQUANT|NON_CONFORME)/.test(String(_eA && _eA.message))) console.error(_eA); }
 
   /* Synchronisation temps réel vers Acquisition & Aménagement Foncier si une
      opération est liée (filiation parcelle → opération). */
@@ -116357,6 +116441,313 @@ function fonLoadCadastreBornes(id) {
   brnRender();
 }
 
+/* ═══ Foncier urbain et rural — lot L2 : géométrie, import, chevauchements, carte par régime ═══
+   Tout se calcule en mètres (UTM). Tolérance : un recouvrement plus étroit que 2 × FON_GEO_TOL_M
+   (bruit de levé, bornes voisines) n'est pas signalé. Surface de recouvrement = estimation par échantillonnage. */
+var FON_GEO_TOL_M = 0.5;
+var FON_REGIME_COULEURS = { urbain: '#dc2626', rural: '#2563eb' };
+
+function fonGeoMetres(path, zone) {
+  return path.map(function (q) { var u = latLngToUtm(q[0], q[1], zone); return [u.E, u.N]; });
+}
+function fonGeoBbox(poly) {
+  var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  poly.forEach(function (p) { if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1]; });
+  return { x0: x0, y0: y0, x1: x1, y1: y1 };
+}
+function fonGeoDansPoly(pt, poly) {
+  var dedans = false;
+  for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    var a = poly[i], b = poly[j];
+    if ((a[1] > pt[1]) !== (b[1] > pt[1]) && pt[0] < (b[0] - a[0]) * (pt[1] - a[1]) / (b[1] - a[1]) + a[0]) dedans = !dedans;
+  }
+  return dedans;
+}
+function fonGeoDistBord(pt, poly) {
+  var min = Infinity;
+  for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    var a = poly[j], b = poly[i], dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy;
+    var t = l2 ? Math.max(0, Math.min(1, ((pt[0] - a[0]) * dx + (pt[1] - a[1]) * dy) / l2)) : 0;
+    var d = Math.hypot(pt[0] - (a[0] + t * dx), pt[1] - (a[1] + t * dy));
+    if (d < min) min = d;
+  }
+  return min;
+}
+/* Aire (m²) de la zone commune à A et B, hors bande de tolérance le long des bords. 0 = pas de chevauchement. */
+function fonGeoChevauchement(A, B, tol) {
+  tol = (tol === undefined) ? FON_GEO_TOL_M : tol;
+  if (!A || !B || A.length < 3 || B.length < 3) return 0;
+  var a = fonGeoBbox(A), b = fonGeoBbox(B);
+  var x0 = Math.max(a.x0, b.x0), x1 = Math.min(a.x1, b.x1), y0 = Math.max(a.y0, b.y0), y1 = Math.min(a.y1, b.y1);
+  var w = x1 - x0, h = y1 - y0;
+  if (w <= 2 * tol || h <= 2 * tol) return 0;
+  var pas = Math.max(tol, Math.sqrt(w * h / 20000)), n = 0;
+  for (var x = x0 + pas / 2; x < x1; x += pas) {
+    for (var y = y0 + pas / 2; y < y1; y += pas) {
+      var pt = [x, y];
+      if (fonGeoDansPoly(pt, A) && fonGeoDansPoly(pt, B) && fonGeoDistBord(pt, A) >= tol && fonGeoDistBord(pt, B) >= tol) n++;
+    }
+  }
+  return n * pas * pas;
+}
+/* Parcelles actives dont le contour recouvre celui de p. */
+function fonGeoChevauchements(p) {
+  var path = _sigParcellePath(p);
+  if (!path || path.length < 3) return [];
+  var zone = latLngToUtm(path[0][0], path[0][1]).zone, A = fonGeoMetres(path, zone), res = [];
+  _sigParcellesActives().forEach(function (o) {
+    if (o.id === p.id) return;
+    var po = _sigParcellePath(o);
+    if (!po || po.length < 3) return;
+    var aire = fonGeoChevauchement(A, fonGeoMetres(po, zone));
+    if (aire > 0) res.push({ id: o.id, ref: o.ref || o.id, regime: fonRegimeParcelle(o), aire: Math.round(aire) });
+  });
+  return res;
+}
+/* Audit de tout le portefeuille : liste des couples de parcelles qui se recouvrent. */
+function fonGeoAuditChevauchements() {
+  var vus = {}, couples = [];
+  _sigParcellesActives().forEach(function (p) {
+    fonGeoChevauchements(p).forEach(function (c) {
+      var k = [p.id, c.id].sort().join('|'); if (vus[k]) return; vus[k] = 1;
+      couples.push((p.ref || p.id) + ' ↔ ' + c.ref + ' (≈ ' + c.aire + ' m²)');
+    });
+  });
+  if (!couples.length) { toast('Aucun chevauchement détecté.', 'success'); return couples; }
+  toast(couples.length + ' chevauchement(s) : ' + couples.slice(0, 5).join(' · ') + (couples.length > 5 ? ' …' : ''), 'error');
+  return couples;
+}
+
+/* Lecture d'un contour GeoJSON ou KML → { pts: [[lat, lng], …] } (anneau fermé retiré) ou { erreur }. */
+function fonGeoParse(texte, nomFichier) {
+  var ext = String(nomFichier || '').toLowerCase().replace(/^.*\./, ''), coords = null;
+  try {
+    if (ext === 'kml' || /^\s*(<\?xml|<kml)/i.test(texte)) {
+      var m = String(texte).match(/<coordinates[^>]*>([\s\S]*?)<\/coordinates>/i);
+      if (!m) return { erreur: 'Aucune géométrie (balise coordinates) dans le KML.' };
+      coords = m[1].trim().split(/\s+/).map(function (s) { var v = s.split(',').map(Number); return [v[0], v[1]]; });
+    } else {
+      var g = JSON.parse(texte);
+      if (g.type === 'FeatureCollection') { var f = (g.features || []).filter(function (x) { return x.geometry && /Polygon/.test(x.geometry.type); })[0]; g = f || null; }
+      if (g && g.type === 'Feature') g = g.geometry;
+      if (!g || !/Polygon/.test(g.type)) return { erreur: 'Aucun polygone dans le GeoJSON.' };
+      coords = g.type === 'Polygon' ? g.coordinates[0] : g.coordinates[0][0];
+    }
+  } catch (e) { return { erreur: 'Fichier illisible : ' + e.message }; }
+  var pts = (coords || []).map(function (c) { return [c[1], c[0]]; });
+  if (pts.some(function (q) { return !isFinite(q[0]) || !isFinite(q[1]) || Math.abs(q[0]) > 90 || Math.abs(q[1]) > 180; })) return { erreur: 'Coordonnées invalides (attendu : longitude, latitude).' };
+  if (pts.length > 1 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]) pts.pop();
+  if (pts.length < 3) return { erreur: 'Contour trop court : 3 sommets minimum.' };
+  return { pts: pts };
+}
+function fonGeoImporter(input) {
+  var f = input && input.files && input.files[0]; if (!f) return;
+  var rd = new FileReader();
+  rd.onload = function () {
+    var r = fonGeoParse(String(rd.result || ''), f.name);
+    input.value = '';
+    if (r.erreur) { toast(r.erreur, 'error'); return; }
+    if (_brnList.length && !confirm('Remplacer les ' + _brnList.length + ' bornes actuelles par les ' + r.pts.length + ' sommets du fichier ?')) return;
+    var zone = r.pts[0][1] < -6 ? 29 : 30, zEl = document.getElementById('parc-utm-zone'); if (zEl) zEl.value = String(zone);
+    _brnList = r.pts.map(function (q, i) { var u = latLngToUtm(q[0], q[1], zone); return { nom: 'B' + (i + 1), x: Math.round(u.E * 100) / 100, y: Math.round(u.N * 100) / 100 }; });
+    brnRender();
+    toast(r.pts.length + ' bornes importées (UTM ' + zone + 'N).', 'success');
+  };
+  rd.readAsText(f);
+}
+
+/* ═══ Foncier urbain et rural — lot L3 : enquête officielle, oppositions, bornage contradictoire, comités villageois ═══
+   Stores : enquetes_fonciers, oppositions_fonciers, bornages_fonciers, villages_fonciers (comité dans village.comite).
+   Contrôles appliqués aux étapes de la procédure rurale (désactivables : DATA.params.fon_controle_rural = false) :
+   · opposition active  → réunion de validation et certificat foncier bloqués ;
+   · ouverture d'enquête → une enquête officielle doit être enregistrée ;
+   · clôture d'enquête   → durée écoulée (30 j par défaut) + bornage contradictoire réalisé, riverains présents, PV.
+   Dérogation : administrateur, motif obligatoire, journalisée. */
+var FON_RURAL_CERT = ['rur_reunion_validation', 'rur_certificat_foncier'];
+var FON_ENQUETE_JOURS = 30;
+function fonRuralControleActif() { return ((DATA.params || {}).fon_controle_rural) !== false; }
+function fonEnqueteFin(dateOuv, jours) {
+  var t = Date.parse(String(dateOuv || '') + 'T00:00:00Z'); if (isNaN(t)) return '';
+  return new Date(t + Math.max(1, parseInt(jours, 10) || FON_ENQUETE_JOURS) * 864e5).toISOString().slice(0, 10);
+}
+function fonDuDossier(liste, d) { return (liste || []).filter(function (x) { return x.dossier_id === d.id || (!x.dossier_id && x.parcelle_id && x.parcelle_id === d.parcelle_id); }); }
+function fonEnquetesDossier(d) { return fonDuDossier(DATA.enquetes_fonciers, d); }
+function fonBornagesDossier(d) { return fonDuDossier(DATA.bornages_fonciers, d); }
+function fonOppositionsActives(d) {
+  return fonDuDossier(DATA.oppositions_fonciers, d).filter(function (o) { return o.statut === 'ouverte' || o.statut === 'en_mediation'; });
+}
+/* Motifs de blocage d'une étape rurale (tableau vide = rien ne s'oppose). */
+function fonRuralBloquants(d, code, aujourd) {
+  var r = []; aujourd = aujourd || fcAuj();
+  if (FON_RURAL_CERT.indexOf(code) !== -1) {
+    var op = fonOppositionsActives(d);
+    if (op.length) r.push(op.length + ' opposition(s) active(s) (' + op.slice(0, 3).map(function (o) { return o.reference || o.opposant; }).join(', ') + ') : la phase de certification est suspendue');
+  }
+  var ouv = fonEnquetesDossier(d).filter(function (e) { return e.statut === 'ouverte' || e.statut === 'cloturee'; });
+  if (code === 'rur_ouverture_enquete' && !ouv.length) r.push("aucune enquête officielle ouverte n'est enregistrée (Foncier › 2.6 Foncier rural)");
+  if (code === 'rur_cloture_enquete') {
+    if (!ouv.length) r.push("aucune enquête officielle n'est enregistrée");
+    else if (!ouv.some(function (e) { return e.statut === 'cloturee' || aujourd >= e.date_fin_prevue; })) {
+      var fin = ouv.map(function (e) { return e.date_fin_prevue; }).sort()[0];
+      r.push("l'enquête dure jusqu'au " + fin + ' (' + Math.ceil((Date.parse(fin) - Date.parse(aujourd)) / 864e5) + ' j restants)');
+    }
+    if (!fonBornagesDossier(d).some(function (b) { return b.statut === 'realise' && b.pv_ref && (b.convocations || []).some(function (c) { return c.present; }); }))
+      r.push('aucun bornage contradictoire réalisé avec riverain présent et procès-verbal');
+  }
+  return r;
+}
+
+var FON_RURAL = { vue: 'enquetes' };
+function _fonParcOpts() { return [['', '— Choisir —']].concat((DATA.parcelles || []).filter(function (p) { return !p.fusionnee_dans && !p.decoupee_dans; }).map(function (p) { return [p.id, (p.ref || p.id) + (fonRegimeParcelle(p) === 'rural' ? ' (rural)' : '')]; })); }
+function _fonVillOpts() { return [['', '— Aucun —']].concat((DATA.villages_fonciers || []).map(function (v) { return [v.id, v.nom + (v.sous_prefecture ? ' · ' + v.sous_prefecture : '')]; })); }
+function _fonDossOpts() { return [['', '— Aucun —']].concat((DATA.dossiers_fonciers || []).filter(function (d) { return d.type_procedure === 'immatriculation_rurale'; }).map(function (d) { return [d.id, d.reference || d.id]; })); }
+var FON_RURAL_TYPES = {
+  enquetes: { store: 'enquetes_fonciers', pre: 'ENQ', lib: 'Enquête officielle', champs: [
+    { k: 'parcelle_id', l: 'Parcelle', t: 'select', o: _fonParcOpts, req: 1 }, { k: 'dossier_id', l: 'Dossier foncier', t: 'select', o: _fonDossOpts },
+    { k: 'village_id', l: 'Village', t: 'select', o: _fonVillOpts }, { k: 'commissaire', l: 'Commissaire enquêteur', t: 'text', req: 1 },
+    { k: 'date_ouverture', l: "Date d'ouverture", t: 'date' }, { k: 'duree_jours', l: 'Durée (jours)', t: 'number', def: FON_ENQUETE_JOURS },
+    { k: 'statut', l: 'Statut', t: 'select', o: [['planifiee', 'Planifiée'], ['ouverte', 'Ouverte']], def: 'planifiee' }, { k: 'observations', l: 'Observations', t: 'textarea' }] },
+  oppositions: { store: 'oppositions_fonciers', pre: 'OPP', lib: 'Opposition', champs: [
+    { k: 'parcelle_id', l: 'Parcelle', t: 'select', o: _fonParcOpts, req: 1 }, { k: 'dossier_id', l: 'Dossier foncier', t: 'select', o: _fonDossOpts },
+    { k: 'opposant', l: 'Opposant', t: 'text', req: 1 }, { k: 'qualite', l: 'Qualité', t: 'select', o: [['riverain', 'Riverain'], ['famille', 'Famille / ayant droit'], ['village', 'Village / comité'], ['autre', 'Autre']], def: 'riverain' },
+    { k: 'date_depot', l: 'Date de dépôt', t: 'date', def: 'today' }, { k: 'motif', l: 'Motif', t: 'textarea', req: 1 }] },
+  bornages: { store: 'bornages_fonciers', pre: 'BRN', lib: 'Bornage contradictoire', champs: [
+    { k: 'parcelle_id', l: 'Parcelle', t: 'select', o: _fonParcOpts, req: 1 }, { k: 'dossier_id', l: 'Dossier foncier', t: 'select', o: _fonDossOpts },
+    { k: 'date', l: 'Date du bornage', t: 'date', req: 1 }, { k: 'lieu', l: 'Lieu de rendez-vous', t: 'text' }, { k: 'geometre', l: 'Géomètre-expert', t: 'text' },
+    { k: 'pv_ref', l: 'Référence du procès-verbal signé', t: 'text' },
+    { k: 'convocations', l: 'Riverains (une ligne : Nom ; Qualité ; présent oui/non ; signé oui/non)', t: 'convocations' }] },
+  villages: { store: 'villages_fonciers', pre: 'VIL', lib: 'Village et comité villageois', champs: [
+    { k: 'nom', l: 'Village', t: 'text', req: 1 }, { k: 'sous_prefecture', l: 'Sous-préfecture', t: 'text' }, { k: 'departement', l: 'Département', t: 'text' },
+    { k: 'chef', l: 'Chef de village', t: 'text' }, { k: 'chef_tel', l: 'Contact du chef', t: 'text' },
+    { k: 'comite_mandat_debut', l: 'Comité : début de mandat', t: 'date' }, { k: 'comite_mandat_fin', l: 'Comité : fin de mandat', t: 'date' },
+    { k: 'comite_pv', l: 'Comité : PV de désignation', t: 'text' }, { k: 'comite_membres', l: 'Membres du comité (une ligne : Nom ; Fonction)', t: 'membres' }] }
+};
+function _fonLignes(txt) { return String(txt || '').split('\n').map(function (l) { return l.trim(); }).filter(Boolean); }
+function _fonOui(s) { return /^(oui|o|yes|y|1|x)$/i.test(String(s || '').trim()); }
+function fonParseConvocations(txt) { return _fonLignes(txt).map(function (l) { var p = l.split(';').map(function (s) { return s.trim(); }); return { nom: p[0] || '', qualite: p[1] || 'riverain', present: _fonOui(p[2]), signe: _fonOui(p[3]) }; }).filter(function (c) { return c.nom; }); }
+function fonParseMembres(txt) { return _fonLignes(txt).map(function (l) { var p = l.split(';').map(function (s) { return s.trim(); }); return { nom: p[0] || '', fonction: p[1] || '' }; }).filter(function (m) { return m.nom; }); }
+function _fonValeurChamp(kind, rec, c) {
+  if (kind === 'villages' && c.k.indexOf('comite_') === 0) { var cm = (rec && rec.comite) || {}, kc = c.k.slice(7); return kc === 'membres' ? (cm.membres || []).map(function (m) { return m.nom + ' ; ' + m.fonction; }).join('\n') : (cm[kc] || ''); }
+  if (c.t === 'convocations') return ((rec && rec.convocations) || []).map(function (x) { return x.nom + ' ; ' + x.qualite + ' ; ' + (x.present ? 'oui' : 'non') + ' ; ' + (x.signe ? 'oui' : 'non'); }).join('\n');
+  var v = rec ? rec[c.k] : undefined;
+  if (v === undefined || v === null || v === '') v = (c.def === 'today') ? fcAuj() : (c.def !== undefined ? c.def : '');
+  return v;
+}
+function fonRuralOuvrir(kind, id) {
+  var T = FON_RURAL_TYPES[kind], rec = id ? (DATA[T.store] || []).find(function (x) { return x.id === id; }) : null;
+  FON_RURAL.edit = { kind: kind, id: id || null };
+  document.getElementById('fon-rural-titre').textContent = (id ? 'Modifier : ' : 'Nouveau : ') + T.lib;
+  document.getElementById('fon-rural-form').innerHTML = '<div class="form-grid">' + T.champs.map(function (c) {
+    var v = _fonValeurChamp(kind, rec, c), fid = 'fonr-' + c.k, lab = '<label>' + escHtml(c.l) + (c.req ? ' *' : '') + '</label>', span = (c.t === 'textarea' || c.t === 'convocations' || c.t === 'membres') ? ' span-2' : '';
+    var ch;
+    if (c.t === 'select') { var os = typeof c.o === 'function' ? c.o() : c.o; ch = '<select class="form-control" id="' + fid + '">' + os.map(function (o) { return '<option value="' + escHtml(o[0]) + '"' + (String(o[0]) === String(v) ? ' selected' : '') + '>' + escHtml(o[1]) + '</option>'; }).join('') + '</select>'; }
+    else if (c.t === 'textarea' || c.t === 'convocations' || c.t === 'membres') ch = '<textarea class="form-control" id="' + fid + '" rows="' + (c.t === 'textarea' ? 3 : 5) + '">' + escHtml(v) + '</textarea>';
+    else ch = '<input class="form-control" id="' + fid + '" type="' + (c.t === 'date' ? 'date' : c.t === 'number' ? 'number' : 'text') + '" value="' + escHtml(v) + '">';
+    return '<div class="form-group' + span + '">' + lab + ch + '</div>';
+  }).join('') + '</div>';
+  document.getElementById('modal-fon-rural').classList.add('open');
+}
+async function fonRuralSauver(kind, rec) {
+  if (!fcDroitEcriture()) { toast('Votre profil ne permet pas de modifier le module Foncier.', 'error'); return false; }
+  var T = FON_RURAL_TYPES[kind]; if (!DATA[T.store]) DATA[T.store] = [];
+  var i = DATA[T.store].findIndex(function (x) { return x.id === rec.id; });
+  if (i >= 0) DATA[T.store][i] = rec; else DATA[T.store].push(rec);
+  try { await fcDb(T.store, rec, { forceRole: true }); } catch (e) { toast('Écriture refusée : ' + e.message, 'error'); return false; }
+  return true;
+}
+async function _fonJournal(rec, texte) {
+  var d = rec.dossier_id ? fcDossier(rec.dossier_id) : null; if (!d) return;
+  try { await fcEvenement(d, '', 'rural', texte); } catch (e) { /* le journal du dossier ne doit pas bloquer la saisie */ }
+}
+async function fonRuralEnregistrer() {
+  var ed = FON_RURAL.edit; if (!ed) return;
+  var kind = ed.kind, T = FON_RURAL_TYPES[kind], ex = ed.id ? (DATA[T.store] || []).find(function (x) { return x.id === ed.id; }) : null;
+  var rec = ex ? JSON.parse(JSON.stringify(ex)) : { id: uid(), created_at: today() }, comite = rec.comite || {};
+  for (var n = 0; n < T.champs.length; n++) {
+    var c = T.champs[n], el = document.getElementById('fonr-' + c.k), v = el ? el.value.trim() : '';
+    if (c.req && !v) { toast('« ' + c.l + ' » est obligatoire.', 'error'); return; }
+    if (c.t === 'number') v = parseFloat(v) || 0;
+    if (c.t === 'convocations') rec.convocations = fonParseConvocations(v);
+    else if (kind === 'villages' && c.k.indexOf('comite_') === 0) { var kk = c.k.slice(7); if (kk === 'membres') comite.membres = fonParseMembres(v); else comite[kk] = v; }
+    else rec[c.k] = v;
+  }
+  if (kind === 'villages') rec.comite = comite;
+  if (kind === 'enquetes') {
+    rec.duree_jours = rec.duree_jours > 0 ? rec.duree_jours : FON_ENQUETE_JOURS;
+    if (rec.statut === 'ouverte' && !rec.date_ouverture) { toast("Date d'ouverture obligatoire pour une enquête ouverte.", 'error'); return; }
+    rec.date_fin_prevue = fonEnqueteFin(rec.date_ouverture, rec.duree_jours);
+    if (ex && ex.statut === 'cloturee') rec.statut = 'cloturee';
+  }
+  if (kind === 'oppositions' && !ex) rec.statut = 'ouverte';
+  if (kind === 'bornages' && !ex) rec.statut = 'convoque';
+  if (!ex) rec.reference = prochaineRefListe(DATA[T.store] || [], T.pre + '-' + new Date().getFullYear() + '-', 3, 'reference');
+  rec.modifie_par = (APP.currentUser && APP.currentUser.nom) || '—';
+  if (!(await fonRuralSauver(kind, rec))) return;
+  if (!ex && kind !== 'villages') await _fonJournal(rec, T.lib + ' ' + rec.reference + ' enregistrée');
+  closeModal('modal-fon-rural'); fonRuralRender(); toast(T.lib + ' enregistrée.', 'success');
+}
+async function fonRuralAction(kind, id, action) {
+  var T = FON_RURAL_TYPES[kind], rec = (DATA[T.store] || []).find(function (x) { return x.id === id; }); if (!rec) return;
+  var motif;
+  if (kind === 'enquetes' && action === 'ouvrir') { if (!rec.date_ouverture) rec.date_ouverture = fcAuj(); rec.statut = 'ouverte'; rec.date_fin_prevue = fonEnqueteFin(rec.date_ouverture, rec.duree_jours); }
+  else if (kind === 'enquetes' && action === 'cloturer') {
+    if (fcAuj() < rec.date_fin_prevue) {
+      if (!fcEstAdmin()) { toast("Clôture avant l'échéance du " + rec.date_fin_prevue + ' : réservée à un administrateur (motif obligatoire).', 'error'); return; }
+      motif = prompt("Clôture avant l'échéance du " + rec.date_fin_prevue + ' — motif obligatoire :'); if (!motif || !motif.trim()) return; rec.derogation_motif = motif.trim();
+    }
+    rec.statut = 'cloturee'; rec.date_cloture = fcAuj();
+  }
+  else if (kind === 'oppositions' && action === 'mediation') { motif = prompt('Note de médiation :'); if (!motif || !motif.trim()) return; rec.statut = 'en_mediation'; (rec.mediation = rec.mediation || []).push({ date: fcAuj(), note: motif.trim() }); }
+  else if (kind === 'oppositions' && (action === 'levee' || action === 'rejetee' || action === 'jugee')) {
+    motif = prompt('Issue (obligatoire) — ' + (action === 'levee' ? "opposition levée, accord de l'opposant" : action === 'rejetee' ? 'opposition rejetée' : 'décision de justice') + ' :'); if (!motif || !motif.trim()) return;
+    rec.statut = action; rec.issue = motif.trim(); rec.date_issue = fcAuj();
+  }
+  else if (kind === 'bornages' && action === 'realise') {
+    if (!rec.pv_ref) { toast('Renseignez la référence du procès-verbal signé avant de valider le bornage.', 'error'); return; }
+    if (!(rec.convocations || []).some(function (c) { return c.present; })) { toast('Aucun riverain présent : bornage non contradictoire.', 'error'); return; }
+    rec.statut = 'realise';
+  }
+  else if (kind === 'bornages' && action === 'annule') { motif = prompt("Motif de l'annulation :"); if (!motif || !motif.trim()) return; rec.statut = 'annule'; rec.motif_annulation = motif.trim(); }
+  else return;
+  if (!(await fonRuralSauver(kind, rec))) return;
+  await _fonJournal(rec, T.lib + ' ' + rec.reference + ' : ' + action + (rec.issue ? ' — ' + rec.issue : ''));
+  fonRuralRender();
+}
+function fonRuralVue(v) { FON_RURAL.vue = v; fonRuralRender(); }
+function _fonParcRef(id) { var p = (DATA.parcelles || []).find(function (x) { return x.id === id; }); return p ? (p.ref || p.id) : '—'; }
+function _fonBtn(label, js, cls) { return '<button class="btn btn-secondary btn-sm' + (cls ? ' ' + cls : '') + '" onclick="' + js + '">' + label + '</button> '; }
+function fonRuralRender() {
+  var host = document.getElementById('fon-rural-liste'); if (!host) return;
+  var vue = FON_RURAL.vue, T = FON_RURAL_TYPES[vue], liste = DATA[T.store] || [], aujourd = fcAuj();
+  var onglets = [['enquetes', '🔎 Enquêtes'], ['oppositions', '⚖️ Oppositions'], ['bornages', '📐 Bornages contradictoires'], ['villages', '🏘 Villages & comités']];
+  var nbOpp = (DATA.oppositions_fonciers || []).filter(function (o) { return o.statut === 'ouverte' || o.statut === 'en_mediation'; }).length;
+  document.getElementById('fon-rural-onglets').innerHTML = onglets.map(function (o) { return '<button class="btn btn-' + (o[0] === vue ? 'primary' : 'secondary') + ' btn-sm" onclick="fonRuralVue(\'' + o[0] + '\')">' + o[1] + (o[0] === 'oppositions' && nbOpp ? ' <span class="tbadge">' + nbOpp + '</span>' : '') + '</button> '; }).join('')
+    + '<button class="btn btn-primary btn-sm" style="float:right;" onclick="fonRuralOuvrir(\'' + vue + '\')">+ ' + escHtml(T.lib) + '</button>';
+  var E = escHtml, lignes = liste.slice().sort(function (a, b) { return String(b.created_at || '').localeCompare(String(a.created_at || '')); }).map(function (r) {
+    var cells, act = _fonBtn('✏️', 'fonRuralOuvrir(\'' + vue + '\',\'' + r.id + '\')');
+    if (vue === 'enquetes') {
+      var reste = r.statut === 'ouverte' ? Math.ceil((Date.parse(r.date_fin_prevue) - Date.parse(aujourd)) / 864e5) : null;
+      cells = [r.reference, _fonParcRef(r.parcelle_id), E(r.commissaire || '—'), E((r.date_ouverture || '—') + ' → ' + (r.date_fin_prevue || '—')), r.statut === 'ouverte' ? (reste > 0 ? '⏳ ' + reste + ' j restants' : '✅ échéance atteinte') : E(r.statut)];
+      if (r.statut === 'planifiee') act += _fonBtn('▶ Ouvrir', 'fonRuralAction(\'enquetes\',\'' + r.id + '\',\'ouvrir\')');
+      if (r.statut === 'ouverte') act += _fonBtn('■ Clôturer', 'fonRuralAction(\'enquetes\',\'' + r.id + '\',\'cloturer\')');
+    } else if (vue === 'oppositions') {
+      cells = [r.reference, _fonParcRef(r.parcelle_id), E(r.opposant), E(r.motif || ''), r.statut === 'ouverte' || r.statut === 'en_mediation' ? '🔴 ' + E(r.statut.replace('_', ' ')) : '🟢 ' + E(r.statut) + (r.issue ? ' — ' + E(r.issue) : '')];
+      if (r.statut === 'ouverte' || r.statut === 'en_mediation') act += _fonBtn('🤝 Médiation', 'fonRuralAction(\'oppositions\',\'' + r.id + '\',\'mediation\')') + _fonBtn('Lever', 'fonRuralAction(\'oppositions\',\'' + r.id + '\',\'levee\')') + _fonBtn('Rejeter', 'fonRuralAction(\'oppositions\',\'' + r.id + '\',\'rejetee\')') + _fonBtn('Jugée', 'fonRuralAction(\'oppositions\',\'' + r.id + '\',\'jugee\')');
+    } else if (vue === 'bornages') {
+      var cv = r.convocations || [];
+      cells = [r.reference, _fonParcRef(r.parcelle_id), E(r.date || '—'), cv.filter(function (c) { return c.present; }).length + ' / ' + cv.length + ' présents', E(r.pv_ref || 'PV manquant') + ' · ' + E(r.statut)];
+      if (r.statut === 'convoque') act += _fonBtn('✅ Réalisé', 'fonRuralAction(\'bornages\',\'' + r.id + '\',\'realise\')') + _fonBtn('Annuler', 'fonRuralAction(\'bornages\',\'' + r.id + '\',\'annule\')');
+    } else {
+      var cm = r.comite || {};
+      cells = [r.reference || '—', E(r.nom), E(r.sous_prefecture || '—'), E(r.chef || '—'), (cm.membres || []).length + ' membre(s) · mandat jusqu\'au ' + E(cm.mandat_fin || '—') + ((cm.mandat_fin && cm.mandat_fin < aujourd) ? ' ⚠ expiré' : '')];
+    }
+    return '<tr>' + cells.map(function (c) { return '<td>' + c + '</td>'; }).join('') + '<td style="white-space:nowrap;">' + act + '</td></tr>';
+  });
+  var heads = { enquetes: ['Réf.', 'Parcelle', 'Commissaire', 'Période', 'Statut'], oppositions: ['Réf.', 'Parcelle', 'Opposant', 'Motif', 'Statut'], bornages: ['Réf.', 'Parcelle', 'Date', 'Présence', 'PV / statut'], villages: ['Réf.', 'Village', 'Sous-préfecture', 'Chef', 'Comité villageois'] }[vue];
+  host.innerHTML = '<div class="table-wrap"><table><thead><tr>' + heads.concat(['']).map(function (h) { return '<th>' + h + '</th>'; }).join('') + '</tr></thead><tbody>'
+    + (lignes.length ? lignes.join('') : '<tr><td colspan="6" style="text-align:center;color:var(--dim);padding:18px;">Aucun enregistrement.</td></tr>') + '</tbody></table></div>';
+}
+
 /* ── Topographie : levé, courbes de niveau, coupe ── */
 var _topoPoints = [];
 var _brnShowContours = false;
@@ -126589,12 +126980,118 @@ function cesCoutStockPrevu() {
 function cesVerrouEcritures(c, dateNouvelle) {
   return ecrsVerrouillees((DATA.ecritures || []).filter(function(e){ return e.cession_id === c.id; }), dateNouvelle);
 }
+/* ═══ Foncier urbain et rural — lot L4 : comptabilité SYSCOHADA des parcelles (acquisition et sortie) ═══
+   Choix par parcelle (champ « Traitement comptable ») : 'immobilisation' (compte 22x) ou 'stock' (terrain destiné à la vente).
+   Vide = aucune écriture (comportement historique, aucune parcelle existante n'est touchée).
+   Acquisition : le coût d'entrée = prix + frais de mutation + bornage + notaire (frais accessoires incorporés au coût).
+     Immobilisation : D 22x Terrains (une ligne par composante) / C contrepartie (401/521).
+     Stock          : D 601 Achat / C contrepartie, puis D stock (3xx) / C variation de stock (603x).
+   Sortie à la cession (proportionnelle à la superficie cédée) :
+     Immobilisation : D 81x Valeur comptable des cessions / C 22x.   Stock : D variation de stock / C stock.
+   Les numéros de compte sont ceux du plan paramétré (Paramètres › Comptes par défaut) ; la CLASSE est contrôlée.
+   Une écriture visée ou dans un exercice clos n'est jamais modifiée. Numéros de sous-comptes : à valider par l'expert-comptable. */
+var FON_COMPTA_CLASSES = { parcelle_immo: ['22', 'Terrains (classe 22)'], terrain_stock: ['3', 'Stocks (classe 3)'], cession_vnc: ['81', 'Valeur comptable des cessions (81)'], terrain_achat: ['60', 'Achats (60)'], terrain_variation: ['603', 'Variations de stocks (603)'] };
+function fonTraitementCompta(p) { return p && (p.traitement_compta === 'immobilisation' || p.traitement_compta === 'stock') ? p.traitement_compta : ''; }
+function fonCoutAcquisition(p) {
+  var N = function (v) { return parseFloat(v) || 0; };
+  var comp = [['Prix d\'acquisition', N(p.prix_acq)], ['Frais de mutation', N(p.frais_mutation)], ['Frais de bornage', N(p.frais_bornage)], ['Frais notariaux', N(p.frais_notaire)]].filter(function (c) { return c[1] > 0; });
+  return { composantes: comp, total: comp.reduce(function (s, c) { return s + c[1]; }, 0) };
+}
+/* Compte par défaut dont la classe est contrôlée (écriture non conforme refusée, jamais « hasardeuse »). */
+function fonCompteConforme(cle) {
+  var code = requireCompteDefaut(cle), r = FON_COMPTA_CLASSES[cle];
+  if (r && String(code).indexOf(r[0]) !== 0) { toast('⚠️ Compte « ' + code + ' » non conforme pour « ' + r[1] + ' » : corrigez Paramètres › Comptes par défaut.', 'error', 7000); throw new Error('COMPTE_NON_CONFORME:' + cle); }
+  return code;
+}
+async function _fonPoserEcriture(id, obj) {
+  var exist = (DATA.ecritures || []).find(function (e) { return e.id === id; });
+  if (exist) {
+    if (ecrEstValidee(exist)) return { ecriture: exist, verrou: 'écriture visée' };
+    var v = ecrsVerrouillees([exist], obj.date); if (v) return { ecriture: exist, verrou: v };
+  } else { var v2 = ecrsVerrouillees([], obj.date); if (v2) return { verrou: v2 }; }
+  var e = Object.assign({}, exist || {}, obj, { id: id });
+  var i = DATA.ecritures.findIndex(function (x) { return x.id === id; });
+  if (i >= 0) DATA.ecritures[i] = e; else DATA.ecritures.push(e);
+  await dbPut('ecritures', e);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', e);
+  return { ecriture: e };
+}
+async function _fonRetirerEcriture(id) {
+  var exist = (DATA.ecritures || []).find(function (e) { return e.id === id; });
+  if (!exist) return { retire: false };
+  if (ecrEstValidee(exist) || ecrsVerrouillees([exist])) return { retire: false, verrou: true };
+  await deleteRecord('ecritures', id, { skipIntegrity: true });
+  return { retire: true };
+}
+function _fonLigne(compte, sens, montant, libelle) { return { compte: compte, sens: sens, montant: montant, libelle: libelle }; }
+/* Écriture d'acquisition d'une parcelle (idempotente : id ecr_acq_parcelle_<id>). */
+async function comptabiliserAcquisitionParcelle(p) {
+  if (!DATA.ecritures) DATA.ecritures = [];
+  var id = 'ecr_acq_parcelle_' + p.id, mode = fonTraitementCompta(p), cout = fonCoutAcquisition(p);
+  if (!mode || cout.total <= 0) { var r0 = await _fonRetirerEcriture(id); return { ok: true, ecriture: null, retire: r0.retire, verrou: r0.verrou }; }
+  var cContre = requireCompteDefaut('terrain_contrepartie'), lib = 'Acquisition parcelle ' + (p.ref || p.id) + (p.commune ? ' — ' + p.commune : ''), lignes = [], cptDeb, cptCred;
+  if (mode === 'immobilisation') {
+    var cImmo = fonCompteConforme('parcelle_immo');
+    cout.composantes.forEach(function (c) { lignes.push(_fonLigne(cImmo, 'D', c[1], c[0] + ' — ' + lib)); });
+    lignes.push(_fonLigne(cContre, 'C', cout.total, 'Contrepartie acquisition — ' + lib));
+    cptDeb = cImmo; cptCred = cContre;
+  } else {
+    var cStock = fonCompteConforme('terrain_stock'), cAchat = fonCompteConforme('terrain_achat'), cVar = fonCompteConforme('terrain_variation');
+    lignes.push(_fonLigne(cAchat, 'D', cout.total, 'Achat terrain (frais accessoires inclus) — ' + lib), _fonLigne(cContre, 'C', cout.total, 'Contrepartie acquisition — ' + lib),
+      _fonLigne(cStock, 'D', cout.total, 'Entrée en stock — ' + lib), _fonLigne(cVar, 'C', cout.total, 'Variation de stock — ' + lib));
+    cptDeb = cStock; cptCred = cContre;
+  }
+  var prog = (DATA.programmes || []).find(function (x) { return x.id === p.programme_id; });
+  var res = await _fonPoserEcriture(id, { ref: 'ACQ-' + (p.ref || p.id), date: p.date_acquisition || p.created_at || today(), piece: 'ACQ-' + (p.ref || ''), libelle: lib, lignes: lignes,
+    compte_debit: cptDeb, compte_credit: cptCred, montant: cout.total, division: (prog && prog.division_id) || '', type: 'actif', journal: 'OD', _auto: 'acquisition_parcelle_' + mode, parcelle_id: p.id, created_at: today() });
+  if (res.verrou) return { ok: false, verrou: res.verrou, ecriture: res.ecriture || null };
+  return { ok: true, ecriture: res.ecriture };
+}
+/* Sortie de la parcelle à la cession, au prorata de la superficie cédée. Retourne le montant sorti. */
+async function comptabiliserSortieCessionParcelle(c) {
+  var id = 'ecr_ces_sortie_parc_' + c.id;
+  var p = (c.source_key && c.source_key.indexOf('parcelle:') === 0) ? (DATA.parcelles || []).find(function (x) { return x.id === c.source_key.slice(9); }) : null, mode = p ? fonTraitementCompta(p) : '';
+  var opStk = p && p.operation_id ? (DATA.af_operations || []).find(function (x) { return x.id === p.operation_id; }) : null;
+  if (!mode || (opStk && opStk.cout_revient_unitaire > 0)) { await _fonRetirerEcriture(id); return 0; }   /* opération à coût de revient unitaire : sortie déjà gérée par cesGenererEcriture */
+  var sup = parseFloat(p.superficie) || 0, cedee = parseFloat(c.superficie) || 0, cout = fonCoutAcquisition(p).total;
+  var montant = (sup > 0 && cedee > 0 && cout > 0) ? Math.round(cout * Math.min(1, cedee / sup)) : 0;
+  if (montant <= 0) { await _fonRetirerEcriture(id); return 0; }
+  var d, k, lib = 'Sortie de parcelle ' + (p.ref || p.id) + ' (' + cedee + ' m² sur ' + sup + ') — ' + (c.acquereur || '');
+  if (mode === 'immobilisation') { d = fonCompteConforme('cession_vnc'); k = fonCompteConforme('parcelle_immo'); }
+  else { d = fonCompteConforme('terrain_variation'); k = fonCompteConforme('terrain_stock'); }
+  var res = await _fonPoserEcriture(id, { ref: 'SORT-' + (c.dossier || c.id), date: c.date || today(), piece: 'CESSION', libelle: lib,
+    lignes: [_fonLigne(d, 'D', montant, lib), _fonLigne(k, 'C', montant, lib)], compte_debit: d, compte_credit: k, montant: montant, type: 'actif', journal: 'OD',
+    _auto: 'sortie_parcelle_' + mode, cession_id: c.id, parcelle_id: p.id, source: 'cession_fonciere', created_at: today() });
+  if (res.verrou) toast('Sortie de parcelle non modifiée : ' + res.verrou + '. Passez une écriture corrective.', 'warning', 7000);
+  return montant;
+}
+/* Annule la sortie d'une cession résiliée (contre-passation : l'écriture d'origine est conservée). */
+async function contrepasserSortieCessionParcelle(c) {
+  var orig = (DATA.ecritures || []).find(function (e) { return e.id === 'ecr_ces_sortie_parc_' + c.id; }); if (!orig) return null;
+  var id = 'ecr_ces_sortie_parc_annul_' + c.id; if ((DATA.ecritures || []).some(function (e) { return e.id === id; })) return null;
+  var e = { id: id, ref: 'ANNUL-' + orig.ref, date: today(), piece: 'RESIL-' + (c.dossier || c.id), libelle: 'Résiliation — annulation ' + orig.libelle,
+    lignes: (orig.lignes || []).map(function (l) { return _fonLigne(l.compte, l.sens === 'D' ? 'C' : 'D', l.montant, 'Annulation — ' + (l.libelle || '')); }),
+    compte_debit: orig.compte_credit, compte_credit: orig.compte_debit, montant: orig.montant, type: 'actif', journal: 'OD', _auto: 'annul_sortie_parcelle', cession_id: c.id, parcelle_id: orig.parcelle_id, created_at: today() };
+  DATA.ecritures.push(e); await dbPut('ecritures', e); if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', e);
+  return e;
+}
+async function backfillAcquisitionsParcelles() {
+  var cibles = (DATA.parcelles || []).filter(function (p) { return fonTraitementCompta(p) && fonCoutAcquisition(p).total > 0 && !(DATA.ecritures || []).some(function (e) { return e.id === 'ecr_acq_parcelle_' + p.id; }); });
+  if (!cibles.length) { toast('Aucune acquisition de parcelle à comptabiliser.', 'success'); return; }
+  if (!confirm(cibles.length + " acquisition(s) de parcelle à comptabiliser (immobilisation ou stock, selon le traitement choisi). Continuer ?")) return;
+  var n = 0, ko = 0;
+  for (var i = 0; i < cibles.length; i++) { try { var r = await comptabiliserAcquisitionParcelle(cibles[i]); if (r.ok && r.ecriture) n++; else ko++; } catch (e) { ko++; break; } }
+  if (typeof buildBalance === 'function') buildBalance();
+  toast(n + ' acquisition(s) comptabilisée(s)' + (ko ? ' · ' + ko + ' non traitée(s) (compte non paramétré ou période verrouillée)' : '') + '.', ko ? 'warning' : 'success');
+}
+
 async function cesGenererEcriture(c) {
   if (!DATA.ecritures) DATA.ecritures = [];
   var an=(c.date||today()).slice(0,4);
   var cptTiers = (typeof crecCompte === 'function') ? crecCompte() : requireCompteDefaut('client_foncier');
   var cptProduit = requireCompteDefaut('cession_produit');
   var _divCes = (c.source_key && c.source_key.indexOf('parcelle:') === 0) ? _resolveDivisionEcriture('parcelle', c.source_key.slice(9)) : '';   /* [Cloisonnement] */
+  await comptabiliserSortieCessionParcelle(c);   /* L4 : sortie d'immobilisation (VNC) ou de stock, si la parcelle a un traitement comptable */
   var trouve = function(id){ return (DATA.ecritures||[]).find(function(e){ return e.id === id; }); };
   var poser = async function(id, exist, obj) {
     if (exist && ecrEstValidee(exist)) return exist;                 /* pièce visée : intacte */
