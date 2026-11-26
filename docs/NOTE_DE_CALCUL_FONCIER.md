@@ -39,7 +39,7 @@
 
 - Contour : tolérance de chevauchement 0,5 m ; recouvrement refusé (dérogation administrateur motivée possible).
 - Un contour de moins de 3 bornes n'est pas contrôlé.
-- Régime rural ou urbain déduit du statut du titre et de la localisation.
+- Régime (urbain ou rural) : choisi et obligatoire à l'enregistrement ; il pilote les contrôles et le parcours. L'import Excel MENKO V2 (lotissements) crée des parcelles urbaines : à reclasser en rural si besoin.
 
 **Reçoit de** : Import Excel (opération → parcelle mère) ; Négociation (Acquisition & Aménagement Foncier)
 
@@ -238,7 +238,7 @@
 
 **Règles appliquées**
 
-- Taux modifiables dans les paramètres selon la loi de finances en vigueur.
+- Taux saisis à l'écran (4 % et 0,4 % par défaut) et mémorisés sur ce poste : à resaisir sur chaque poste et à faire valider selon la loi de finances en vigueur.
 
 **Reçoit de** : Parcelles ; Cessions
 
@@ -282,7 +282,7 @@
 | Calcul | Formule |
 |---|---|
 | Marge de cession | prix de cession − coût de revient de la parcelle |
-| Sortie comptable | valeur nette comptable × superficie cédée ÷ superficie totale |
+| Sortie comptable | coût d'acquisition (4 composantes) × superficie cédée ÷ superficie totale ; immobilisation : D 81x / C 22x ; stock : D 603x / C 3x. Produit de la vente : 82x (immobilisation) ou 70x (stock) |
 | Reste à encaisser | prix de cession − montant encaissé |
 
 **Règles appliquées**
@@ -483,7 +483,7 @@
 
 **Règles appliquées**
 
-- Précision du GPS affichée ; au-delà de 10 m, le point est signalé.
+- Précision du GPS affichée ; au-delà de 20 m, une confirmation est demandée.
 
 **Reçoit de** : —
 

@@ -48,12 +48,12 @@ Légende : **E** existant · **A** à adapter · **N** nouveau. Priorité : P1 i
 
 | Id | Exigence | État | Prio |
 |---|---|---|---|
-| FUR-001 | Champ **régime** obligatoire : `urbain` / `rural` (pilote la procédure, les écrans et les contrôles) | N | P1 |
+| FUR-001 | Champ **régime** obligatoire : `urbain` / `rural` (pilote la procédure, les écrans et les contrôles). Import Excel MENKO V2 (lotissements) : parcelles créées en urbain | N | P1 |
 | FUR-002 | Référence interne unique (PARC-AAAA-NNN) | E | P1 |
 | FUR-003 | Localisation : région, département, sous-préfecture, commune, village/quartier, îlot, lot | A | P1 |
 | FUR-004 | Superficies : totale, constructible/exploitable, cédée, restante (m² et ha) | A | P1 |
 | FUR-005 | Situation du titre : sans titre, attestation coutumière, lettre d'attribution, CF, ACD, TF provisoire, TF définitif | A | P1 |
-| FUR-006 | Coordonnées polygonales (WGS84 + projection locale UTM 29N), import GeoJSON/KML/CSV | A | P1 |
+| FUR-006 | Coordonnées polygonales (WGS84 + projection locale UTM : zone 30N par défaut, 29N à l'ouest du méridien 6° O), import GeoJSON/KML/CSV | A | P1 |
 | FUR-007 | Contrôle de chevauchement entre parcelles (PostGIS) avec alerte bloquante | E (client L2 + serveur PostGIS) | P1 |
 | FUR-008 | Indivision et quote-part promoteur | E | P2 |
 | FUR-009 | Historique des propriétaires (chaîne de propriété datée) | E (L5) | P2 |
@@ -81,7 +81,7 @@ Légende : **E** existant · **A** à adapter · **N** nouveau. Priorité : P1 i
 | FUR-201 | Procédure rurale distincte, 3+ phases : recherche et délimitation, enquête foncière et accord des propriétaires terriens, enquête officielle et certification | E | P1 |
 | FUR-202 | Registre des **ayants droit coutumiers** : famille, chef de terre, héritiers, tuteurs ; lien parcelle ↔ ayants droit avec part | E (L5) | P1 |
 | FUR-203 | Fiche **village** : chef, comité villageois de gestion foncière (membres, mandat, PV) | E (L3) | P1 |
-| FUR-204 | **Enquête officielle** : nomination du commissaire enquêteur, ouverture, durée (1 mois par défaut, paramétrable), compte à rebours, clôture, observations et oppositions | E (L3) | P1 |
+| FUR-204 | **Enquête officielle** : nomination du commissaire enquêteur, ouverture, durée (30 jours par défaut, paramétrable), compte à rebours, clôture, observations et oppositions | E (L3) | P1 |
 | FUR-205 | **Oppositions et litiges** : enregistrement, partie adverse, médiation, issue ; suspend la phase suivante | E (L3) | P1 |
 | FUR-206 | Bornage contradictoire : convocation des riverains, PV signé, présences, PV | E (L3) | P1 |
 | FUR-207 | Réunion de validation (sous-préfet) : date, PV, décision, pièces | E | P1 |
@@ -115,6 +115,7 @@ Légende : **E** existant · **A** à adapter · **N** nouveau. Priorité : P1 i
 | FUR-319 | **Moteur d'impression, de modification et de suppression** sur tous les écrans fonciers : fiche et liste imprimables, export CSV, historique des modifications (avant/après/motif), enregistrement clos modifiable par administrateur avec motif, suppression contrôlée (administrateur, motif, règles par type, trace, garde-fou serveur) | E (L13) | P1 |
 | FUR-320 | **Classeur Excel MENKO produit par le logiciel** : modèle vierge (mêmes feuilles, listes déroulantes, volets figés) et état à jour rempli depuis la base (opérations, lots, souscripteurs, encaissements, suivi des titres) + synthèse et état des parcelles ; ré-importable sans doublon | E (L14) | P1 |
 | FUR-321 | **Nouveau / ajusté mis en évidence** dans Paramètres › Manuels & flux : pastille verte (nouveau) ou orange (ajusté) sur les manuels, les diagrammes et les étapes ; panneau de synthèse ; précision que l'immatriculation urbaine est inchangée et que la rurale garde ses étapes | E (L15) | P2 |
+| FUR-322 | **Correctifs de la revue générale** (serveur : champs obligatoires, retours en arrière interdits, régime et contours sur upsert, cycle d'alertes robuste ; client : signatures de bornage, statuts à l'import, clés d'export, performance de la cohérence, échéancier des contrats, comptes de produit de cession 82x / 70x, ergonomie mobile et accessibilité) | E (L15) | P1 |
 
 ### 4.5 Cartographie
 
@@ -130,13 +131,13 @@ Légende : **E** existant · **A** à adapter · **N** nouveau. Priorité : P1 i
 | Id | Exigence | État | Prio |
 |---|---|---|---|
 | FUR-501 | Acquisition : terrain en **immobilisation** (compte 22) ou **stock** de terrains à lotir (compte 31 / 38 selon politique) ; frais d'acquisition rattachés au coût | A | P1 |
-| FUR-502 | Frais de purge coutumière, bornage, notaire, droits d'enregistrement et conservation foncière incorporés au coût de revient | A | P1 |
-| FUR-503 | Cession : écriture automatique tiers / produit de cession (classe 7) / sortie de stock ou VNC, marge calculée | E | P1 |
+| FUR-502 | Coût d'acquisition = prix + frais de mutation + frais de bornage + frais notariaux (frais accessoires incorporés). Indemnités de purge, droits d'enregistrement et conservation foncière : portés en charges (titre) ; incorporation éventuelle au coût à trancher avec l'expert-comptable | E (L4) | P1 |
+| FUR-503 | Cession : écriture automatique tiers / produit de cession (82x pour une immobilisation, 70x pour un stock de terrains ; classe contrôlée) / sortie de stock ou VNC, marge calculée | E | P1 |
 | FUR-504 | Refacturation des frais du titre : débours en compte de tiers, jamais en produit | E | P1 |
 | FUR-505 | Échéancier acquéreur, encaissements, relances par niveaux | E | P1 |
 | FUR-506 | Comptes par défaut paramétrables ; écriture bloquée si compte manquant | E | P1 |
 | FUR-507 | Pas de suppression d'écriture validée ; contre-passation uniquement | E | P1 |
-| FUR-508 | Taux fiscaux paramétrables par année (enregistrement 4 %, conservation 0,4 %, etc.) à faire valider par l'expert-comptable | E | P1 |
+| FUR-508 | Taux fiscaux (enregistrement 4 %, conservation 0,4 %) saisis au poste et mémorisés sur le navigateur ; paramétrage partagé par année : **non réalisé** ; taux à faire valider par l'expert-comptable | E (partiel) | P2 |
 
 > Les numéros de comptes et la politique stock/immobilisation sont à confirmer avec l'expert-comptable avant mise en production.
 

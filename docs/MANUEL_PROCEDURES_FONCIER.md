@@ -396,6 +396,20 @@ Dans **Paramètres › Manuels & flux**, un panneau « Foncier — ce qui est no
 | 🟠 AJUSTÉ | Aménagement Foncier — opération d'acquisition | Sortie de « Négociation » : audit GO exigé | L8 |
 | 🟠 AJUSTÉ | Paramètres › Comptes par défaut | Comptes terrain (immobilisation, stock, achat, variation, contrepartie, valeur comptable des cessions), classes contrôlées | L4 |
 
+## L15 — Correctifs de la revue générale
+
+| Domaine | Correction |
+|---|---|
+| Serveur | Champs obligatoires (statut, type) sur les tables foncières ; protocole signé non déverrouillable ; retour en arrière interdit sur les états clos ; régime et contours préservés lors d'un enregistrement périmé ; cycle d'alertes qui ne s'arrête plus sur une donnée mal formée |
+| Bornage | Modifier la fiche conserve les signatures au doigt ; retirer un signataire est refusé |
+| Import / export | Un statut de parcelle avancé n'est jamais rétrogradé ; écriture refusée signalée ; clés d'import attribuées à l'export (ré-import sans doublon) ; code de lot sans « undefined » |
+| Cohérence | Analyse rapide (index par parcelle, boîtes englobantes) ; contrôles sérialisés ; décision « maintenu » rouverte si la gravité augmente |
+| Contrats | Échéancier recalculé tant qu'aucune redevance n'est encaissée |
+| Comptabilité | Produit de cession : compte 82x (immobilisation) ou 70x (stock), classe contrôlée ; deux comptes dédiés dans Paramètres › Comptes par défaut |
+| Parcours | Terre urbaine sans audit : purge « sans objet » (plus de faux blocage) |
+| Ergonomie | « Commencer ici : Parcours foncier » ; Tableau de bord inexistant retiré ; 2.5 avant 2.6 ; tableaux défilants sur mobile ; pastilles numérotées et lisibles ; statuts accentués ; états vides avec bouton ; suppression visible aux seuls administrateurs ; libellés « CSV », « Annuler le bornage » ; retour au Parcours après un module extérieur |
+| Sécurité des exports | CSV : cellules commençant par = + @ neutralisées |
+
 **Tableau des étapes de la procédure rurale** (31 étapes ; l'ERP ajoute « Création du dossier » au début et « Clôture » à la fin)
 
 **Rural — Phase 1 : recherche, délimitation et levé de la parcelle**
