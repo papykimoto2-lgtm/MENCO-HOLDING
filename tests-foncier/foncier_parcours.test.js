@@ -104,3 +104,18 @@ test('navigation : note injectée, bandeau d\'étape, parcours rendu, note compl
     assert.match(r.tout, /Carte des interconnexions/); assert.match(r.tout, /Protocoles de purge/);
   } finally { await app.fermer(); }
 });
+
+test('manuels : GUI-FNC référencé, tous les flux Foncier existent et se rendent, PDF présents', async () => {
+  const app = await ouvrirApp();
+  try {
+    const r = await app.page.evaluate(() => {
+      var man = MANUELS_CATALOGUE.filter(function (m) { return m.module === 'Foncier'; }), manque = [], html = {};
+      man.forEach(function (m) { (m.flux || []).forEach(function (k) { if (!MANUELS_FLUX[k]) manque.push(m.ref + ':' + k); else html[k] = manuelsFluxHtml(MANUELS_FLUX[k]).length; }); });
+      var dansPhase = MANUELS_PHASES.filter(function (p) { return p.refs.indexOf('GUI-FNC') !== -1; }).length;
+      return { refs: man.map(function (m) { return m.ref; }), manque: manque, rendus: Object.keys(html).length, dansPhase: dansPhase, fichiers: man.map(function (m) { return m.fichier; }) };
+    });
+    assert.ok(r.refs.indexOf('GUI-FNC') !== -1); assert.deepEqual(r.manque, []); assert.ok(r.rendus >= 9); assert.ok(r.dansPhase >= 1);
+    const fs = require('fs'), path = require('path');
+    r.fichiers.forEach(f => assert.ok(fs.existsSync(path.join(__dirname, '..', 'docs', f + '.pdf')) && fs.existsSync(path.join(__dirname, '..', 'docs', f + '.md')), f));
+  } finally { await app.fermer(); }
+});
