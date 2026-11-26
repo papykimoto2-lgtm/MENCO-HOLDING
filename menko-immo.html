@@ -8582,6 +8582,8 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
               <div class="form-group"></div>
               <div class="form-group"><label>Terrain — Achat / charge (601)</label><input class="form-control" id="cd-terrain-achat" list="dl-plan-comptable" placeholder="601"></div>
               <div class="form-group"><label>Terrain — Contrepartie acquisition<br><span style="font-size:10px;color:var(--blanc-dim);">401 fournisseur (à crédit) ou 521 banque (comptant)</span></label><input class="form-control" id="cd-terrain-contrepartie" list="dl-plan-comptable" placeholder="401"></div>
+              <div class="form-group"><label>Parcelles immobilisées — Terrains<br><span style="font-size:10px;color:var(--blanc-dim);">Classe 22 (ex. 221…)</span></label><input class="form-control" id="cd-parcelle-immo" list="dl-plan-comptable" placeholder="22…"></div>
+              <div class="form-group"><label>Cession d'immobilisation — Valeur comptable<br><span style="font-size:10px;color:var(--blanc-dim);">Compte 81x (ex. 812)</span></label><input class="form-control" id="cd-cession-vnc" list="dl-plan-comptable" placeholder="812"></div>
               <div class="form-group"></div>
             </div>
             <div class="form-section-title" style="margin-top:16px;">🏛️ Titre foncier — honoraires et droits (SYSCOHADA révisé)</div>
@@ -10315,6 +10317,7 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
             <select class="filter-select" id="filter-programme-foncier" onchange="renderParcelles()">
               <option value="">Tous programmes</option>
             </select>
+            <button class="btn btn-secondary btn-sm" onclick="backfillAcquisitionsParcelles()" title="Génère les écritures d'acquisition (immobilisation ou stock) des parcelles ayant un traitement comptable">🧾 Compta acquisitions</button>
             <div class="spacer"></div>
             <div class="emp-view-toggle">
               <button type="button" id="parc-vue-grille" onclick="setVueParcelles('grille')">🔳 Grille</button>
@@ -22100,6 +22103,8 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
           <div class="form-group"><label>Frais de mutation (FCFA)</label><input type="number" class="form-control" id="parc-frais-mutation" oninput="calcParcelleTotal();updateParcelleFinSummary()"></div>
           <div class="form-group"><label>Frais de bornage (FCFA)</label><input type="number" class="form-control" id="parc-frais-bornage" oninput="calcParcelleTotal();updateParcelleFinSummary()"></div>
           <div class="form-group"><label>Frais notariaux (FCFA)</label><input type="number" class="form-control" id="parc-frais-notaire" oninput="calcParcelleTotal();updateParcelleFinSummary()"></div>
+          <div class="form-group"><label>Traitement comptable<br><span style="font-size:10px;color:var(--blanc-dim);">Immobilisation (classe 22) ou stock (terrain à vendre). Vide : aucune écriture.</span></label><select class="form-control" id="parc-traitement-compta"><option value="">— Aucune écriture —</option><option value="immobilisation">Immobilisation (terrain)</option><option value="stock">Stock (terrain à vendre)</option></select></div>
+          <div class="form-group"><label>Date d'acquisition</label><input type="date" class="form-control" id="parc-date-acquisition"></div>
           <div class="form-group"><label>Valeur estimée actuelle (FCFA)</label><input type="number" class="form-control" id="parc-valeur-actuelle" oninput="updateParcelleFinSummary()"></div>
           <div class="form-group"><label>Prix de revient total (FCFA)</label><input type="number" class="form-control" id="parc-cout-total" readonly style="color:var(--or);font-weight:bold;"></div>
         </div>
@@ -43073,7 +43078,7 @@ var LIBELLES_COMPTES_DEFAUT = {
   tva_deductible_travaux:'TVA déductible — Travaux', retenue_garantie:'Retenue de garantie', avance_fournisseur:'Avance fournisseur',
   cession_produit:'Cession foncière — Produit', amort_dotation:'Amortissements — Dotation', amort_cumul:'Amortissements — Cumul',
   titre_honoraires_notaire:'Titre foncier — Honoraires notaire (charge)', titre_honoraires_geometre:'Titre foncier — Honoraires géomètre-expert (charge)', titre_droits_enregistrement:"Titre foncier — Droits d'enregistrement / mutation (charge)", titre_frais_actes:"Titre foncier — Frais d'actes et formalités (charge)", titre_fournisseurs:'Titre foncier — Fournisseurs (notaire, géomètre, Trésor)', titre_avances_souscripteur:'Titre foncier — Frais avancés pour le souscripteur (à refacturer)', terrain_produit:'Terrain — Produit (vente)', terrain_tva_collectee:'Terrain — TVA collectée', terrain_stock:'Terrain — Stock',
-  terrain_variation:'Terrain — Variation de stock', terrain_achat:'Terrain — Achat / charge', terrain_contrepartie:'Terrain — Contrepartie acquisition',
+  terrain_variation:'Terrain — Variation de stock', terrain_achat:'Terrain — Achat / charge', terrain_contrepartie:'Terrain — Contrepartie acquisition', parcelle_immo:'Parcelles immobilisées — Terrains', cession_vnc:'Cession d\'immobilisation — Valeur comptable',
   frais_bancaires:'Frais bancaires — Charge', vente_lot_produit:'Vente lots/appartements — Produit', compte_courant_associe:'Compte courant associé / partenaire',
   stock_lots_variation:'Stock lots (part entreprise) — Variation', stock_lots_compte:'Stock lots (part entreprise) — Compte de stock',
   chantier_immo_encours:'Chantier — Immobilisation en cours', chantier_materiaux:'Chantier — Achats matériaux', chantier_sous_traitance:'Chantier — Sous-traitance / location matériel',
@@ -43259,6 +43264,8 @@ function loadComptesDefaut() {
   var _tv2=document.getElementById('cd-terrain-variation'); if(_tv2)_tv2.value=cd.terrain_variation|| '';
   var _ta=document.getElementById('cd-terrain-achat'); if(_ta)_ta.value=cd.terrain_achat|| '';
   var _tc=document.getElementById('cd-terrain-contrepartie'); if(_tc)_tc.value=cd.terrain_contrepartie|| '';
+  var _pi=document.getElementById('cd-parcelle-immo'); if(_pi)_pi.value=cd.parcelle_immo|| '';
+  var _cv=document.getElementById('cd-cession-vnc'); if(_cv)_cv.value=cd.cession_vnc|| '';
   document.getElementById('cd-amort-dotation').value = cd.amort_dotation || '';
   document.getElementById('cd-amort-cumul').value = cd.amort_cumul || '';
   var _fb=document.getElementById('cd-frais-bancaires'); if(_fb)_fb.value=cd.frais_bancaires|| '';
@@ -45229,6 +45236,8 @@ async function saveComptesDefaut() {
     terrain_variation:   (document.getElementById('cd-terrain-variation')||{}).value ? document.getElementById('cd-terrain-variation').value.trim() : '',
     terrain_achat:       (document.getElementById('cd-terrain-achat')||{}).value ? document.getElementById('cd-terrain-achat').value.trim() : '',
     terrain_contrepartie:(document.getElementById('cd-terrain-contrepartie')||{}).value ? document.getElementById('cd-terrain-contrepartie').value.trim() : '',
+    parcelle_immo:       (document.getElementById('cd-parcelle-immo')||{}).value ? document.getElementById('cd-parcelle-immo').value.trim() : '',
+    cession_vnc:         (document.getElementById('cd-cession-vnc')||{}).value ? document.getElementById('cd-cession-vnc').value.trim() : '',
     amort_dotation:      document.getElementById('cd-amort-dotation').value.trim() || '',
     amort_cumul:         document.getElementById('cd-amort-cumul').value.trim() || '',
     frais_bancaires:      (document.getElementById('cd-frais-bancaires')||{}).value ? document.getElementById('cd-frais-bancaires').value.trim() : '',
@@ -62275,7 +62284,7 @@ function lancerAuditIntegrite(){
       tva_deductible_travaux:'TVA déductible — Travaux', retenue_garantie:'Retenue de garantie', avance_fournisseur:'Avance fournisseur',
       cession_produit:'Cession foncière — Produit', amort_dotation:'Amortissements — Dotation', amort_cumul:'Amortissements — Cumul',
       titre_honoraires_notaire:'Titre foncier — Honoraires notaire (charge)', titre_honoraires_geometre:'Titre foncier — Honoraires géomètre-expert (charge)', titre_droits_enregistrement:"Titre foncier — Droits d'enregistrement / mutation (charge)", titre_frais_actes:"Titre foncier — Frais d'actes et formalités (charge)", titre_fournisseurs:'Titre foncier — Fournisseurs (notaire, géomètre, Trésor)', titre_avances_souscripteur:'Titre foncier — Frais avancés pour le souscripteur (à refacturer)', terrain_produit:'Terrain — Produit (vente)', terrain_tva_collectee:'Terrain — TVA collectée', terrain_stock:'Terrain — Stock',
-      terrain_variation:'Terrain — Variation de stock', terrain_achat:'Terrain — Achat / charge', terrain_contrepartie:'Terrain — Contrepartie acquisition'
+      terrain_variation:'Terrain — Variation de stock', terrain_achat:'Terrain — Achat / charge', terrain_contrepartie:'Terrain — Contrepartie acquisition', parcelle_immo:'Parcelles immobilisées — Terrains', cession_vnc:'Cession d\'immobilisation — Valeur comptable'
     };
     Object.keys(libelles).forEach(function(key){
       var code = cd[key];
@@ -73557,6 +73566,7 @@ async function cesResilierConfirmer(){
       compte:cptProduit, compte_debit:cptProduit, compte_credit:cptTiers, montant:c.prix_cession, type:'produit', created_at:dat };
     DATA.ecritures.push(ecrAnnul); await dbPut('ecritures', ecrAnnul); if (typeof syncToSupabase==='function') syncToSupabase('pi_ecritures', ecrAnnul);
   }
+  await contrepasserSortieCessionParcelle(c);   /* L4 : la parcelle revient à l'actif ou au stock */
   /* 2) Répartition de la part réellement encaissée (60/100%) */
   if (rembourse > 0) {
     var compteDette = requireCompteDefaut('resiliation_dette');
@@ -97292,13 +97302,13 @@ function openParcelle(id) {
       var fields = { 'parc-ref':p.ref,'parc-localisation':p.localisation,'parc-commune':p.commune,'parc-sous-prefecture':p.sous_prefecture,
         'parc-sf-totale':p.superficie,'parc-superficie-const':p.superficie_const,'parc-description':p.description,
         'parc-type-titre':p.type_titre,'parc-num-titre':p.num_titre,'parc-date-titre':p.date_titre,'parc-notaire':p.notaire,
-        'parc-regime':fonRegimeParcelle(p),'parc-vendeur':p.vendeur,'parc-date-bornage':p.date_bornage,'parc-statut':p.statut,'parc-risque':p.risque,'parc-obs-jur':p.obs_jur,
+        'parc-regime':fonRegimeParcelle(p),'parc-traitement-compta':p.traitement_compta,'parc-date-acquisition':p.date_acquisition,'parc-vendeur':p.vendeur,'parc-date-bornage':p.date_bornage,'parc-statut':p.statut,'parc-risque':p.risque,'parc-obs-jur':p.obs_jur,
         'parc-prix-acq':p.prix_acq,'parc-frais-mutation':p.frais_mutation,'parc-frais-bornage':p.frais_bornage,'parc-frais-notaire':p.frais_notaire,
         'parc-valeur-actuelle':p.valeur_actuelle,'parc-programme':p.programme_id };
       Object.keys(fields).forEach(function(fid) { var el=document.getElementById(fid); if(el) el.value = fields[fid]||''; });
     }
   } else {
-    ['parc-ref','parc-regime','parc-localisation','parc-commune','parc-sous-prefecture','parc-sf-totale','parc-superficie-const','parc-description','parc-num-titre','parc-notaire','parc-vendeur','parc-obs-jur','parc-prix-acq','parc-frais-mutation','parc-frais-bornage','parc-frais-notaire','parc-valeur-actuelle','parc-cout-total'].forEach(function(fid){ var el=document.getElementById(fid);if(el)el.value=''; });
+    ['parc-ref','parc-regime','parc-traitement-compta','parc-date-acquisition','parc-localisation','parc-commune','parc-sous-prefecture','parc-sf-totale','parc-superficie-const','parc-description','parc-num-titre','parc-notaire','parc-vendeur','parc-obs-jur','parc-prix-acq','parc-frais-mutation','parc-frais-bornage','parc-frais-notaire','parc-valeur-actuelle','parc-cout-total'].forEach(function(fid){ var el=document.getElementById(fid);if(el)el.value=''; });
     var statusEl = document.getElementById('parc-statut'); if (statusEl) statusEl.value = 'prospection';
     var risqueEl = document.getElementById('parc-risque'); if (risqueEl) risqueEl.value = 'faible';
   }
@@ -97319,7 +97329,7 @@ async function saveParcelle() {
   var existing = APP.editingId ? DATA.parcelles.find(function(x){return x.id===APP.editingId;}) : null;
   var p = {
     id: APP.editingId || uid(),
-    ref: ref, regime: regime, localisation: document.getElementById('parc-localisation').value.trim(),
+    ref: ref, regime: regime, traitement_compta: (document.getElementById('parc-traitement-compta')||{}).value || '', date_acquisition: (document.getElementById('parc-date-acquisition')||{}).value || '', localisation: document.getElementById('parc-localisation').value.trim(),
     commune: document.getElementById('parc-commune').value.trim(),
     sous_prefecture: document.getElementById('parc-sous-prefecture').value.trim(),
     utm_zone: parseInt((document.getElementById('parc-utm-zone')||{}).value)||30,
@@ -97370,6 +97380,16 @@ async function saveParcelle() {
   else DATA.parcelles.push(p);
   await dbPut('parcelles', p);
   if (typeof syncToSupabase==='function') syncToSupabase('pi_parcelles', p);
+  /* L4 : écriture d'acquisition (immobilisation ou stock) si un traitement comptable est choisi. Ne bloque jamais l'enregistrement de la parcelle. */
+  try {
+    if (fonTraitementCompta(p) || (existing && fonTraitementCompta(existing))) {
+      var _droitC = !(typeof userPeutSurStore === 'function' && typeof STORE_MODULE !== 'undefined' && STORE_MODULE.ecritures) || userPeutSurStore('ecritures', 'c');
+      if (!_droitC) toast("Parcelle enregistrée ; écriture d'acquisition non générée (droit Comptabilité requis).", 'warning', 6000);
+      else { var _ra = await comptabiliserAcquisitionParcelle(p);
+        if (_ra.verrou) toast("Écriture d'acquisition non modifiée : " + _ra.verrou + '. Passez une écriture corrective.', 'warning', 7000);
+        else if (_ra.ecriture) toast('Acquisition comptabilisée (' + _ra.ecriture.ref + ').', 'success'); }
+    }
+  } catch (_eA) { if (!/COMPTE_(DEFAUT_MANQUANT|NON_CONFORME)/.test(String(_eA && _eA.message))) console.error(_eA); }
 
   /* Synchronisation temps réel vers Acquisition & Aménagement Foncier si une
      opération est liée (filiation parcelle → opération). */
@@ -126960,12 +126980,118 @@ function cesCoutStockPrevu() {
 function cesVerrouEcritures(c, dateNouvelle) {
   return ecrsVerrouillees((DATA.ecritures || []).filter(function(e){ return e.cession_id === c.id; }), dateNouvelle);
 }
+/* ═══ Foncier urbain et rural — lot L4 : comptabilité SYSCOHADA des parcelles (acquisition et sortie) ═══
+   Choix par parcelle (champ « Traitement comptable ») : 'immobilisation' (compte 22x) ou 'stock' (terrain destiné à la vente).
+   Vide = aucune écriture (comportement historique, aucune parcelle existante n'est touchée).
+   Acquisition : le coût d'entrée = prix + frais de mutation + bornage + notaire (frais accessoires incorporés au coût).
+     Immobilisation : D 22x Terrains (une ligne par composante) / C contrepartie (401/521).
+     Stock          : D 601 Achat / C contrepartie, puis D stock (3xx) / C variation de stock (603x).
+   Sortie à la cession (proportionnelle à la superficie cédée) :
+     Immobilisation : D 81x Valeur comptable des cessions / C 22x.   Stock : D variation de stock / C stock.
+   Les numéros de compte sont ceux du plan paramétré (Paramètres › Comptes par défaut) ; la CLASSE est contrôlée.
+   Une écriture visée ou dans un exercice clos n'est jamais modifiée. Numéros de sous-comptes : à valider par l'expert-comptable. */
+var FON_COMPTA_CLASSES = { parcelle_immo: ['22', 'Terrains (classe 22)'], terrain_stock: ['3', 'Stocks (classe 3)'], cession_vnc: ['81', 'Valeur comptable des cessions (81)'], terrain_achat: ['60', 'Achats (60)'], terrain_variation: ['603', 'Variations de stocks (603)'] };
+function fonTraitementCompta(p) { return p && (p.traitement_compta === 'immobilisation' || p.traitement_compta === 'stock') ? p.traitement_compta : ''; }
+function fonCoutAcquisition(p) {
+  var N = function (v) { return parseFloat(v) || 0; };
+  var comp = [['Prix d\'acquisition', N(p.prix_acq)], ['Frais de mutation', N(p.frais_mutation)], ['Frais de bornage', N(p.frais_bornage)], ['Frais notariaux', N(p.frais_notaire)]].filter(function (c) { return c[1] > 0; });
+  return { composantes: comp, total: comp.reduce(function (s, c) { return s + c[1]; }, 0) };
+}
+/* Compte par défaut dont la classe est contrôlée (écriture non conforme refusée, jamais « hasardeuse »). */
+function fonCompteConforme(cle) {
+  var code = requireCompteDefaut(cle), r = FON_COMPTA_CLASSES[cle];
+  if (r && String(code).indexOf(r[0]) !== 0) { toast('⚠️ Compte « ' + code + ' » non conforme pour « ' + r[1] + ' » : corrigez Paramètres › Comptes par défaut.', 'error', 7000); throw new Error('COMPTE_NON_CONFORME:' + cle); }
+  return code;
+}
+async function _fonPoserEcriture(id, obj) {
+  var exist = (DATA.ecritures || []).find(function (e) { return e.id === id; });
+  if (exist) {
+    if (ecrEstValidee(exist)) return { ecriture: exist, verrou: 'écriture visée' };
+    var v = ecrsVerrouillees([exist], obj.date); if (v) return { ecriture: exist, verrou: v };
+  } else { var v2 = ecrsVerrouillees([], obj.date); if (v2) return { verrou: v2 }; }
+  var e = Object.assign({}, exist || {}, obj, { id: id });
+  var i = DATA.ecritures.findIndex(function (x) { return x.id === id; });
+  if (i >= 0) DATA.ecritures[i] = e; else DATA.ecritures.push(e);
+  await dbPut('ecritures', e);
+  if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', e);
+  return { ecriture: e };
+}
+async function _fonRetirerEcriture(id) {
+  var exist = (DATA.ecritures || []).find(function (e) { return e.id === id; });
+  if (!exist) return { retire: false };
+  if (ecrEstValidee(exist) || ecrsVerrouillees([exist])) return { retire: false, verrou: true };
+  await deleteRecord('ecritures', id, { skipIntegrity: true });
+  return { retire: true };
+}
+function _fonLigne(compte, sens, montant, libelle) { return { compte: compte, sens: sens, montant: montant, libelle: libelle }; }
+/* Écriture d'acquisition d'une parcelle (idempotente : id ecr_acq_parcelle_<id>). */
+async function comptabiliserAcquisitionParcelle(p) {
+  if (!DATA.ecritures) DATA.ecritures = [];
+  var id = 'ecr_acq_parcelle_' + p.id, mode = fonTraitementCompta(p), cout = fonCoutAcquisition(p);
+  if (!mode || cout.total <= 0) { var r0 = await _fonRetirerEcriture(id); return { ok: true, ecriture: null, retire: r0.retire, verrou: r0.verrou }; }
+  var cContre = requireCompteDefaut('terrain_contrepartie'), lib = 'Acquisition parcelle ' + (p.ref || p.id) + (p.commune ? ' — ' + p.commune : ''), lignes = [], cptDeb, cptCred;
+  if (mode === 'immobilisation') {
+    var cImmo = fonCompteConforme('parcelle_immo');
+    cout.composantes.forEach(function (c) { lignes.push(_fonLigne(cImmo, 'D', c[1], c[0] + ' — ' + lib)); });
+    lignes.push(_fonLigne(cContre, 'C', cout.total, 'Contrepartie acquisition — ' + lib));
+    cptDeb = cImmo; cptCred = cContre;
+  } else {
+    var cStock = fonCompteConforme('terrain_stock'), cAchat = fonCompteConforme('terrain_achat'), cVar = fonCompteConforme('terrain_variation');
+    lignes.push(_fonLigne(cAchat, 'D', cout.total, 'Achat terrain (frais accessoires inclus) — ' + lib), _fonLigne(cContre, 'C', cout.total, 'Contrepartie acquisition — ' + lib),
+      _fonLigne(cStock, 'D', cout.total, 'Entrée en stock — ' + lib), _fonLigne(cVar, 'C', cout.total, 'Variation de stock — ' + lib));
+    cptDeb = cStock; cptCred = cContre;
+  }
+  var prog = (DATA.programmes || []).find(function (x) { return x.id === p.programme_id; });
+  var res = await _fonPoserEcriture(id, { ref: 'ACQ-' + (p.ref || p.id), date: p.date_acquisition || p.created_at || today(), piece: 'ACQ-' + (p.ref || ''), libelle: lib, lignes: lignes,
+    compte_debit: cptDeb, compte_credit: cptCred, montant: cout.total, division: (prog && prog.division_id) || '', type: 'actif', journal: 'OD', _auto: 'acquisition_parcelle_' + mode, parcelle_id: p.id, created_at: today() });
+  if (res.verrou) return { ok: false, verrou: res.verrou, ecriture: res.ecriture || null };
+  return { ok: true, ecriture: res.ecriture };
+}
+/* Sortie de la parcelle à la cession, au prorata de la superficie cédée. Retourne le montant sorti. */
+async function comptabiliserSortieCessionParcelle(c) {
+  var id = 'ecr_ces_sortie_parc_' + c.id;
+  var p = (c.source_key && c.source_key.indexOf('parcelle:') === 0) ? (DATA.parcelles || []).find(function (x) { return x.id === c.source_key.slice(9); }) : null, mode = p ? fonTraitementCompta(p) : '';
+  var opStk = p && p.operation_id ? (DATA.af_operations || []).find(function (x) { return x.id === p.operation_id; }) : null;
+  if (!mode || (opStk && opStk.cout_revient_unitaire > 0)) { await _fonRetirerEcriture(id); return 0; }   /* opération à coût de revient unitaire : sortie déjà gérée par cesGenererEcriture */
+  var sup = parseFloat(p.superficie) || 0, cedee = parseFloat(c.superficie) || 0, cout = fonCoutAcquisition(p).total;
+  var montant = (sup > 0 && cedee > 0 && cout > 0) ? Math.round(cout * Math.min(1, cedee / sup)) : 0;
+  if (montant <= 0) { await _fonRetirerEcriture(id); return 0; }
+  var d, k, lib = 'Sortie de parcelle ' + (p.ref || p.id) + ' (' + cedee + ' m² sur ' + sup + ') — ' + (c.acquereur || '');
+  if (mode === 'immobilisation') { d = fonCompteConforme('cession_vnc'); k = fonCompteConforme('parcelle_immo'); }
+  else { d = fonCompteConforme('terrain_variation'); k = fonCompteConforme('terrain_stock'); }
+  var res = await _fonPoserEcriture(id, { ref: 'SORT-' + (c.dossier || c.id), date: c.date || today(), piece: 'CESSION', libelle: lib,
+    lignes: [_fonLigne(d, 'D', montant, lib), _fonLigne(k, 'C', montant, lib)], compte_debit: d, compte_credit: k, montant: montant, type: 'actif', journal: 'OD',
+    _auto: 'sortie_parcelle_' + mode, cession_id: c.id, parcelle_id: p.id, source: 'cession_fonciere', created_at: today() });
+  if (res.verrou) toast('Sortie de parcelle non modifiée : ' + res.verrou + '. Passez une écriture corrective.', 'warning', 7000);
+  return montant;
+}
+/* Annule la sortie d'une cession résiliée (contre-passation : l'écriture d'origine est conservée). */
+async function contrepasserSortieCessionParcelle(c) {
+  var orig = (DATA.ecritures || []).find(function (e) { return e.id === 'ecr_ces_sortie_parc_' + c.id; }); if (!orig) return null;
+  var id = 'ecr_ces_sortie_parc_annul_' + c.id; if ((DATA.ecritures || []).some(function (e) { return e.id === id; })) return null;
+  var e = { id: id, ref: 'ANNUL-' + orig.ref, date: today(), piece: 'RESIL-' + (c.dossier || c.id), libelle: 'Résiliation — annulation ' + orig.libelle,
+    lignes: (orig.lignes || []).map(function (l) { return _fonLigne(l.compte, l.sens === 'D' ? 'C' : 'D', l.montant, 'Annulation — ' + (l.libelle || '')); }),
+    compte_debit: orig.compte_credit, compte_credit: orig.compte_debit, montant: orig.montant, type: 'actif', journal: 'OD', _auto: 'annul_sortie_parcelle', cession_id: c.id, parcelle_id: orig.parcelle_id, created_at: today() };
+  DATA.ecritures.push(e); await dbPut('ecritures', e); if (typeof syncToSupabase === 'function') syncToSupabase('pi_ecritures', e);
+  return e;
+}
+async function backfillAcquisitionsParcelles() {
+  var cibles = (DATA.parcelles || []).filter(function (p) { return fonTraitementCompta(p) && fonCoutAcquisition(p).total > 0 && !(DATA.ecritures || []).some(function (e) { return e.id === 'ecr_acq_parcelle_' + p.id; }); });
+  if (!cibles.length) { toast('Aucune acquisition de parcelle à comptabiliser.', 'success'); return; }
+  if (!confirm(cibles.length + " acquisition(s) de parcelle à comptabiliser (immobilisation ou stock, selon le traitement choisi). Continuer ?")) return;
+  var n = 0, ko = 0;
+  for (var i = 0; i < cibles.length; i++) { try { var r = await comptabiliserAcquisitionParcelle(cibles[i]); if (r.ok && r.ecriture) n++; else ko++; } catch (e) { ko++; break; } }
+  if (typeof buildBalance === 'function') buildBalance();
+  toast(n + ' acquisition(s) comptabilisée(s)' + (ko ? ' · ' + ko + ' non traitée(s) (compte non paramétré ou période verrouillée)' : '') + '.', ko ? 'warning' : 'success');
+}
+
 async function cesGenererEcriture(c) {
   if (!DATA.ecritures) DATA.ecritures = [];
   var an=(c.date||today()).slice(0,4);
   var cptTiers = (typeof crecCompte === 'function') ? crecCompte() : requireCompteDefaut('client_foncier');
   var cptProduit = requireCompteDefaut('cession_produit');
   var _divCes = (c.source_key && c.source_key.indexOf('parcelle:') === 0) ? _resolveDivisionEcriture('parcelle', c.source_key.slice(9)) : '';   /* [Cloisonnement] */
+  await comptabiliserSortieCessionParcelle(c);   /* L4 : sortie d'immobilisation (VNC) ou de stock, si la parcelle a un traitement comptable */
   var trouve = function(id){ return (DATA.ecritures||[]).find(function(e){ return e.id === id; }); };
   var poser = async function(id, exist, obj) {
     if (exist && ecrEstValidee(exist)) return exist;                 /* pièce visée : intacte */
