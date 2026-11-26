@@ -865,6 +865,13 @@
 
 **Alimente** : Fiche 360°
 
+## Imprimer, modifier, supprimer (tous les écrans du 2.6)
+
+- Imprimer : « 🖨 » sur chaque ligne (fiche avec parcelle, historique des modifications et signatures) ; « Imprimer la liste » et « Excel (CSV) » en haut de l'écran. Protocoles, PV et audits gardent leur édition dédiée.
+- Modifier : « ✏️ ». Un enregistrement clos (enquête clôturée, opposition traitée, bornage réalisé, charge levée, contrat résilié, exploitation terminée, propriétaire sorti) n'est modifiable que par un administrateur, avec motif de 10 caractères au moins. Un document signé n'est plus modifiable.
+- Chaque modification est tracée : champ, valeur avant, valeur après, utilisateur, date, motif ; elle figure sur la fiche imprimée.
+- Supprimer : « 🗑 », administrateur seul, motif obligatoire. Refusé si l'élément est signé, clos, jugé, encaissé ou référencé ailleurs. La suppression laisse une trace complète (copie de l'enregistrement) dans l'historique de la parcelle et le journal ; le serveur applique les mêmes interdits.
+
 ## Carte des interconnexions
 
 | De | Vers | Ce qui circule |

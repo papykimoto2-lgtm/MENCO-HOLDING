@@ -338,6 +338,24 @@ Un constat « corrigé » qui réapparaît est rouvert automatiquement. Les déc
 
 Le registre est synchronisé avec le cloud (table `pi_constats_coherence_fonciers`, script `supabase/foncier_coherence_l12.sql`).
 
+## L13 — Imprimer, modifier, supprimer
+
+Valable pour tous les écrans de **2.6 Droits & procédure foncière** (enquêtes, oppositions, bornages, villages, ayants droit, titres, propriétaires, charges, exploitations, contrats, audits, protocoles, PV).
+
+| Besoin | Comment | Règle |
+|---|---|---|
+| Imprimer une fiche | « 🖨 » sur la ligne | Parcelle, champs, échéancier / chaîne de propriété, historique des modifications, blocs de signature. Protocoles, PV et audits gardent leur gabarit |
+| Imprimer ou exporter la liste | « Imprimer la liste », « Excel (CSV) » | La liste complète de l'écran, en-tête daté |
+| Imprimer le parcours, la fiche 360° | « 🖨 » dans les écrans correspondants | |
+| Modifier | « ✏️ » | Chaque changement est tracé (champ, avant, après, utilisateur, date, motif) |
+| Modifier un enregistrement clos | « ✏️ » | Administrateur, motif de 10 caractères au moins. Clos = enquête clôturée, opposition traitée, bornage réalisé, charge levée, contrat résilié, exploitation terminée, propriétaire sorti |
+| Modifier un document signé | — | Impossible : imprimer ou ouvrir un nouveau document |
+| Supprimer | « 🗑 » | Administrateur, motif obligatoire |
+
+**Suppression refusée** si l'élément est : signé (protocole, PV) ; clôturé ou traité (enquête, opposition, bornage, charge levée) ; encaissé (contrat) ; décidé (audit) ; référencé (village avec ayants droit, protocoles ou enquêtes ; ayant droit couvert par un protocole signé ; dernier titre justifiant le statut ; propriétaire de la chaîne ; opposition en médiation). Le serveur applique les mêmes interdits (`supabase/foncier_suppression_l13.sql`). Les constats de cohérence ne se suppriment pas.
+
+**Trace d'une suppression** : copie de l'enregistrement dans l'historique de la parcelle et dans le journal, avec le nom, la date et le motif.
+
 **Tableau des étapes de la procédure rurale** (31 étapes ; l'ERP ajoute « Création du dossier » au début et « Clôture » à la fin)
 
 **Rural — Phase 1 : recherche, délimitation et levé de la parcelle**

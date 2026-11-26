@@ -22052,7 +22052,7 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
   <div class="modal modal-lg">
     <div class="modal-header"><h3 id="fon-fiche-titre">Fiche 360°</h3><button class="btn btn-secondary btn-icon" onclick="closeModal('modal-fon-fiche')">✕</button></div>
     <div class="modal-body" id="fon-fiche-corps"></div>
-    <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('modal-fon-fiche')">Fermer</button></div>
+    <div class="modal-footer"><button class="btn btn-secondary" id="fon-fiche-imprimer" onclick="fonFiche360Imprimer(window._fonFicheId)">🖨 Imprimer</button><button class="btn btn-secondary" onclick="closeModal('modal-fon-fiche')">Fermer</button></div>
   </div>
 </div>
 
@@ -43430,7 +43430,7 @@ var MANUELS_CATALOGUE = [
   { ref:'PRO-FLX',     titre:"Gestion des flux de la caisse souscripteurs (encaissement, remise, transfert, écarts)", module:'Caisse', fichier:'MANUEL_FLUX_CAISSE_SOUSCRIPTEURS', flux:['flx_souscripteur','caisse_remise'] },
   { ref:'PRO-COMPTA',  titre:"Comptabilité (écriture, clôture, export)", module:'Comptabilité', fichier:'MANUEL_COMPTABILITE', flux:['compta_cycle','compta_correction'] },
   { ref:'PRO-REA',    titre:"Réapprovisionnement des caisses", module:'Caisse', fichier:'MANUEL_REAPPRO', flux:['rea_cycle'] },
-  { ref:'PRO-FON',     titre:"Foncier : sécurisation du titre et coordination des démarches", module:'Foncier', fichier:'MANUEL_PROCEDURES_FONCIER', flux:['fon_parcours','fon_dossier','fon_rural','fon_audit_purge','fon_publicite','fon_remise','fon_import','fon_coherence'] },
+  { ref:'PRO-FON',     titre:"Foncier : sécurisation du titre et coordination des démarches", module:'Foncier', fichier:'MANUEL_PROCEDURES_FONCIER', flux:['fon_parcours','fon_dossier','fon_rural','fon_audit_purge','fon_publicite','fon_remise','fon_import','fon_coherence','fon_gestion'] },
   { ref:'GUI-FON',     titre:"Foncier : manuel d'utilisation", module:'Foncier', fichier:'MANUEL_FONCIER', flux:['fon_dossier'] },
   { ref:'PRO-PTF',     titre:"Portefeuille foncier : acquisition, financement, mutation, cession", module:'Foncier', fichier:'MANUEL_PORTEFEUILLE_FONCIER', flux:['fon_portefeuille','fon_recouvrement'] },
   { ref:'GUI-FNC',     titre:"Foncier : note de calcul par onglet et interconnexions", module:'Foncier', fichier:'NOTE_DE_CALCUL_FONCIER', flux:['fon_parcours'] }
@@ -44049,6 +44049,11 @@ var MANUELS_FLUX = {
     { a:'Service foncier', t:'Ouvrir Foncier › Vue d\'ensemble › Cohérence des données ; traiter les constats critiques d\'abord', d:[['Appliquer la proposition','Correction guidée (motif, droit, journal) → constat corrigé'],['Corriger autrement','Fiche, lots ou procédure → constat disparu au prochain contrôle'],['Commenter','Observation conservée, constat ouvert'],['Maintenir tel quel','Motif obligatoire (administrateur si critique)'],['Contester la détection','Motif obligatoire (administrateur si critique)']] },
     { a:'Système', t:'Constat maintenu ou contesté : respecté aux contrôles suivants ; constat corrigé qui réapparaît : rouvert' },
     { a:'Direction', t:'Imprimer l\'état des incohérences (statuts, décisions, observations) pour la revue' }
+  ]},
+  fon_gestion: { titre:"Imprimer, modifier, supprimer un enregistrement foncier", ref:'PRO-FON', etapes:[
+    { a:'Utilisateur', t:'Imprimer : « 🖨 » sur la ligne (fiche avec parcelle, historique et signatures) ; « Imprimer la liste » ou « Excel (CSV) » en haut de l\'écran' },
+    { a:'Utilisateur', t:'Modifier : « ✏️ »', d:[['Enregistrement ouvert','Modification tracée (champ, avant, après, qui, quand)'],['Enregistrement clos','Administrateur + motif (10 caractères) ; tracé'],['Document signé','Non modifiable : imprimer ou ouvrir un nouveau document']] },
+    { a:'Administrateur', t:'Supprimer : « 🗑 » + motif obligatoire', d:[['Signé, clos, jugé, encaissé, décidé ou référencé','Refusé (le serveur applique le même interdit)'],['Sinon','Supprimé ; copie de l\'enregistrement conservée dans l\'historique de la parcelle et le journal']] }
   ]},
   fon_dossier: { titre:"Dossier foncier : ouverture à clôture", ref:'PRO-FON', etapes:[
     { a:'Resp. dossier', t:'PRO-01 · Ouvrir le dossier global (responsable obligatoire ; pas de doublon actif)' },
@@ -116729,6 +116734,7 @@ function _fonValeurChamp(kind, rec, c) {
 function fonRuralOuvrir(kind, id) {
   var T = FON_RURAL_TYPES[kind], rec = id ? (DATA[T.store] || []).find(function (x) { return x.id === id; }) : null;
   if (rec && (kind === 'protocoles' || kind === 'pv_lot' || kind === 'pv_acd') && (rec.statut === 'signe' || rec.statut === 'reitere')) { toast('Document signé : il n\'est plus modifiable (imprimez-le ou ouvrez un nouveau document).', 'error', 6000); return; }
+  if (rec) { var _vm = fonRuralVerrouModif(kind, rec); if (_vm.bloque) { toast(_vm.msg, 'error', 6000); return; } }
   FON_RURAL.edit = { kind: kind, id: id || null };
   document.getElementById('fon-rural-titre').textContent = (id ? 'Modifier : ' : 'Nouveau : ') + T.lib;
   document.getElementById('fon-rural-form').innerHTML = '<div class="form-grid">' + T.champs.map(function (c) {
@@ -116779,6 +116785,7 @@ async function fonRuralEnregistrer() {
   var _errP = fonDroitsPreparer(kind, rec, ex); if (_errP) { toast(_errP, 'error'); return; }
   var _errV = fonDroitsValider(kind, rec, ex); if (_errV) { toast(_errV, 'error'); return; }
   if (!ex) rec.reference = prochaineRefListe(DATA[T.store] || [], T.pre + '-' + new Date().getFullYear() + '-', 3, 'reference');
+  if (ex && !fonRuralTracerModif(kind, ex, rec)) return;
   rec.modifie_par = (APP.currentUser && APP.currentUser.nom) || '—';
   if (!(await fonRuralSauver(kind, rec))) return;
   if (!ex && kind !== 'villages') await _fonJournal(rec, T.lib + ' ' + rec.reference + ' enregistrée');
@@ -116845,7 +116852,7 @@ function fonRuralRender() {
       cells = [r.reference || '—', E(r.nom), E(r.sous_prefecture || '—'), E(r.chef || '—'), (cm.membres || []).length + ' membre(s) · mandat jusqu\'au ' + E(cm.mandat_fin || '—') + ((cm.mandat_fin && cm.mandat_fin < aujourd) ? ' ⚠ expiré' : '')];
     }
     else { var _x = fonDroitsLigne(vue, r, aujourd); cells = _x.cells; act += _x.act; }
-    return '<tr>' + cells.map(function (c) { return '<td>' + c + '</td>'; }).join('') + '<td style="white-space:nowrap;">' + act + '</td></tr>';
+    return '<tr>' + cells.map(function (c) { return '<td>' + c + '</td>'; }).join('') + '<td style="white-space:nowrap;">' + act + _fonBtnsMoteur(vue, r) + '</td></tr>';
   });
   var heads = FON_DROITS_HEADS[vue] || { enquetes: ['Réf.', 'Parcelle', 'Commissaire', 'Période', 'Statut'], oppositions: ['Réf.', 'Parcelle', 'Opposant', 'Motif', 'Statut'], bornages: ['Réf.', 'Parcelle', 'Date', 'Présence', 'PV / statut'], villages: ['Réf.', 'Village', 'Sous-préfecture', 'Chef', 'Comité villageois'] }[vue];
   host.innerHTML = '<div class="table-wrap"><table><thead><tr>' + heads.concat(['']).map(function (h) { return '<th>' + h + '</th>'; }).join('') + '</tr></thead><tbody>'
@@ -117488,7 +117495,7 @@ function fonAuditRender() {
   var E = escHtml, liste = (DATA.audits_fonciers || []).slice().sort(function (x, y) { return String(y.created_at || '').localeCompare(String(x.created_at || '')); });
   host.innerHTML = '<div style="font-size:11px;color:var(--dim);margin-bottom:8px;">Règle d\'or : aucun protocole d\'accord définitif avec une chefferie ou une famille, aucun acompte supérieur aux frais de levé, tant que les 19 points ne sont pas audités et validés. La sortie de l\'étape « Négociation » d\'une opération exige un audit décidé GO.</div>'
     + '<div class="table-wrap"><table><thead><tr><th>Réf.</th><th>Projet</th><th>Village</th><th>Zone</th><th>Conformité</th><th>Verdict</th><th>Décision</th><th></th></tr></thead><tbody>'
-    + (liste.length ? liste.map(function (a) { var v = fonAuditVerdict(a); return '<tr><td>' + E(a.reference || '') + '</td><td>' + E(a.code_projet || '—') + '</td><td>' + E(a.village || '—') + '</td><td>' + E(a.zone) + '</td><td>' + v.conformes + ' / ' + v.total + '</td><td>' + E(v.libelle.split(' (')[0]) + '</td><td>' + (a.decision && a.decision !== 'en_attente' ? '<b>' + E(a.decision.toUpperCase()) + '</b>' : 'en attente') + '</td><td>' + _fonBtn('Ouvrir', 'fonAuditOuvrir(\'' + a.id + '\')') + '</td></tr>'; }).join('') : '<tr><td colspan="8" style="text-align:center;color:var(--dim);padding:18px;">Aucun audit.</td></tr>') + '</tbody></table></div>';
+    + (liste.length ? liste.map(function (a) { var v = fonAuditVerdict(a); return '<tr><td>' + E(a.reference || '') + '</td><td>' + E(a.code_projet || '—') + '</td><td>' + E(a.village || '—') + '</td><td>' + E(a.zone) + '</td><td>' + v.conformes + ' / ' + v.total + '</td><td>' + E(v.libelle.split(' (')[0]) + '</td><td>' + (a.decision && a.decision !== 'en_attente' ? '<b>' + E(a.decision.toUpperCase()) + '</b>' : 'en attente') + '</td><td>' + _fonBtn('Ouvrir', 'fonAuditOuvrir(\'' + a.id + '\')') + _fonBtnsMoteur('audits', a) + '</td></tr>'; }).join('') : '<tr><td colspan="8" style="text-align:center;color:var(--dim);padding:18px;">Aucun audit.</td></tr>') + '</tbody></table></div>';
 }
 
 /* ═══ Foncier urbain et rural — lot L9 : import Excel « MENKO ERP Foncier V2 » (opérations, lots, suivi des dossiers de titre) ═══
@@ -118240,6 +118247,7 @@ function fonFiche360Html(p) {
 }
 function fonFiche360(parcelleId) {
   var p = (DATA.parcelles || []).filter(function (x) { return x.id === parcelleId; })[0]; if (!p) return;
+  window._fonFicheId = p.id; var _bi = document.getElementById('fon-fiche-imprimer'); if (_bi) _bi.style.display = '';
   document.getElementById('fon-fiche-titre').textContent = 'Fiche 360° — ' + (p.ref || p.nom || p.id);
   document.getElementById('fon-fiche-corps').innerHTML = fonFiche360Html(p);
   document.getElementById('modal-fon-fiche').classList.add('open');
@@ -118355,6 +118363,7 @@ function fonNoteHtml(cle) {
     var ex = c[2] ? _fonEx(c[2]) : '';
     return '<tr><td style="border:1px solid #ddd;padding:3px 6px;width:22%;"><b>' + E(c[0]) + '</b></td><td style="border:1px solid #ddd;padding:3px 6px;">' + E(c[1]) + (ex ? '<br><i>Exemple sur vos données : ' + E(ex) + '</i>' : '') + '</td></tr>'; }).join('') + '</tbody></table>';
   if (n.regles.length) h += '<b>Règles appliquées</b>' + ul(n.regles);
+  if (cle.indexOf('rural:') === 0 && FON_RURAL_IMPRIMABLES.indexOf(cle.slice(6)) !== -1) h += '<b>Imprimer, modifier, supprimer</b>' + ul(FON_MOTEUR_REGLES);
   if (n.amont.length || n.aval.length) h += '<div style="display:flex;gap:16px;flex-wrap:wrap;"><div><b>⬅ Reçoit de</b>' + ul(n.amont.length ? n.amont : ['—']) + '</div><div><b>➡ Alimente</b>' + ul(n.aval.length ? n.aval : ['—']) + '</div></div>';
   return h + '</div>';
 }
@@ -118380,6 +118389,7 @@ function fonNoteInjecter(tab) {
 }
 function fonCarteLiens() {
   var E = escHtml;
+  var _bj = document.getElementById('fon-fiche-imprimer'); if (_bj) _bj.style.display = 'none';
   document.getElementById('fon-fiche-titre').textContent = 'Interconnexions — Foncier et ERP';
   document.getElementById('fon-fiche-corps').innerHTML = '<div style="font-size:12px;margin-bottom:6px;">Chaque ligne : ce qui circule d\'un écran vers un autre. « Ouvrir » va à l\'écran source.</div><table style="width:100%;border-collapse:collapse;font-size:11.5px;"><thead><tr><th style="text-align:left;">De</th><th style="text-align:left;">Vers</th><th style="text-align:left;">Ce qui circule</th><th></th></tr></thead><tbody>'
     + FON_LIENS.map(function (l) { return '<tr><td style="border-top:1px solid #ddd;padding:3px 4px;"><b>' + E(l[0]) + '</b></td><td style="border-top:1px solid #ddd;padding:3px 4px;">' + E(l[1]) + '</td><td style="border-top:1px solid #ddd;padding:3px 4px;">' + E(l[2]) + '</td><td style="border-top:1px solid #ddd;"><button class="btn btn-secondary btn-sm" onclick="closeModal(\'modal-fon-fiche\');fonAller(\'' + l[3] + '\')">›</button></td></tr>'; }).join('') + '</tbody></table>';
@@ -118421,7 +118431,7 @@ function fonBandeauHtml(vue) {
     var r = rendu.apply(this, arguments), vue = FON_RURAL.vue;
     try {
       var old = document.getElementById('fon-rural-onglets'), m = old && old.innerHTML.match(/<button[^>]*float:right[^>]*>[\s\S]*?<\/button>/);
-      if (old) old.innerHTML = m ? m[0] : '';
+      if (old) old.innerHTML = (m ? m[0] : '') + _fonBtnsListe(vue);
       document.getElementById('fon-rural-nav').innerHTML = fonOngletsHtml(vue);
       document.getElementById('fon-rural-banniere').innerHTML = fonBandeauHtml(vue);
       document.getElementById('fon-rural-note').innerHTML = fonNotePanneau('rural:' + vue);
@@ -118448,7 +118458,7 @@ function fonParcoursRender() {
       + '</td><td style="border-top:1px solid #ddd;padding:4px;"><b>' + pr + ' %</b></td><td style="border-top:1px solid #ddd;padding:4px;"><button class="btn btn-secondary btn-sm" onclick="fonFiche360(\'' + E(p.id) + '\')">Fiche 360°</button></td></tr>'; }).join('');
   root.innerHTML = '<div class="card"><div class="card-title">🧭 Parcours foncier — de l\'identification de la terre à la remise des titres</div>'
     + '<div style="font-size:12px;color:var(--dim);">Chaque terre franchit 9 étapes. Les pastilles : <span style="color:#16a34a;">● fait</span> <span style="color:#f59e0b;">● en cours</span> <span style="color:#dc2626;">● bloqué</span> <span style="color:#94a3b8;">● à faire</span> <span style="color:#cbd5e1;">● sans objet</span>. Survolez une pastille pour lire ce qui manque.</div>'
-    + entonnoir + '<h4 style="margin:10px 0 4px;">À faire maintenant</h4>' + liste
+    + '<div style="margin:6px 0;"><button class="btn btn-secondary btn-sm" onclick="fonParcoursImprimer()">🖨 Imprimer le parcours</button></div>' + entonnoir + '<h4 style="margin:10px 0 4px;">À faire maintenant</h4>' + liste
     + '<h4 style="margin:12px 0 4px;">Toutes les terres</h4>' + (lignes ? '<table style="width:100%;border-collapse:collapse;font-size:12px;"><tbody>' + lignes + '</tbody></table>' : '<div style="color:var(--dim);font-size:12px;">Aucune parcelle active.</div>')
     + '<div style="margin-top:10px;">' + fonNotePanneau('page:parcours') + '</div></div>';
 }
@@ -118757,6 +118767,169 @@ function fonCohPropositionSurface(p, aire, sup) {
   if (proche(lots, sup)) return 'La somme des lots (' + fm(lots) + ') confirme la superficie déclarée : corriger les bornes.';
   return 'Aucune pièce enregistrée ne tranche (contenance du titre, lots) : se reporter au plan du géomètre avant de modifier la superficie ou les bornes.';
 }
+
+/* ═══ Foncier — lot L13 : moteur d'impression, de modification et de suppression des modules fonciers ═══
+   · Impression : fiche de chaque enregistrement (gabarit unique, avec parcelle, historique des modifications, signatures), liste imprimable, export Excel (CSV).
+     Les protocoles / PV (gabarits MENKO) et les audits gardent leur propre édition.
+   · Modification : un enregistrement clos (enquête clôturée, opposition jugée, bornage réalisé, charge levée, contrat résilié, exploitation terminée, propriétaire sorti)
+     n'est modifiable que par un administrateur, avec motif ; chaque modification est tracée (champ, avant, après, qui, quand, motif).
+   · Suppression : administrateur, motif obligatoire, refusée si l'élément est signé, clos, jugé ou référencé ; trace complète dans l'historique de la parcelle et le journal ;
+     garde-fou serveur en plus (supabase/foncier_suppression_l13.sql). */
+var FON_RURAL_IMPRIMABLES = ['enquetes', 'oppositions', 'bornages', 'villages', 'ayants_droit', 'titres', 'proprietaires', 'charges', 'exploitations', 'contrats', 'audits', 'protocoles', 'pv_lot', 'pv_acd'];
+var FON_SIGNATURES = { enquetes: ['Commissaire enquêteur', 'Chef de village'], oppositions: ['Opposant', 'Représentant MENKO'], bornages: ['Géomètre', 'Riverains présents', 'Représentant MENKO'], villages: ['Chef de village', 'Représentant MENKO'], ayants_droit: ['Ayant droit', 'Chef de village'], titres: ['Service foncier'], proprietaires: ['Propriétaire', 'Représentant MENKO'], charges: ['Bénéficiaire', 'Service foncier'], exploitations: ['Exploitant', 'Service foncier'], contrats: ['Partie', 'Représentant MENKO'] };
+function _fonRec(kind, id) { var T = FON_RURAL_TYPES[kind]; return T ? (DATA[T.store] || []).filter(function (x) { return x.id === id; })[0] : null; }
+function _fonValLib(kind, rec, c) {
+  var v = _fonValeurChamp(kind, rec, c);
+  if (c.t === 'select') { var os = typeof c.o === 'function' ? c.o() : c.o, o = (os || []).filter(function (x) { return String(x[0]) === String(v); })[0]; return o ? o[1] : String(v == null ? '' : v); }
+  return String(v == null ? '' : v);
+}
+function fonLibelleParcelle(id) { var p = (DATA.parcelles || []).filter(function (x) { return x.id === id; })[0]; return p ? (p.ref || p.id) + (p.commune ? ' — ' + p.commune : '') + (p.superficie ? ' (' + _fonCohF(p.superficie) + ' m²)' : '') : ''; }
+
+/* ── Modification : clos = administrateur + motif ; diff tracé ── */
+function fonRuralClos(kind, r) {
+  if (!r) return '';
+  if (kind === 'enquetes' && r.statut === 'cloturee') return 'enquête clôturée';
+  if (kind === 'oppositions' && ['levee', 'rejetee', 'jugee'].indexOf(r.statut) !== -1) return 'opposition ' + r.statut.replace('ee', 'ée').replace('jugée', 'jugée');
+  if (kind === 'bornages' && r.statut === 'realise') return 'bornage réalisé';
+  if (kind === 'charges' && r.statut === 'levee') return 'charge levée';
+  if (kind === 'contrats' && r.statut === 'resilie') return 'contrat résilié';
+  if (kind === 'exploitations' && r.statut === 'terminee') return 'exploitation terminée';
+  if (kind === 'proprietaires' && r.date_fin) return 'propriétaire sorti';
+  return '';
+}
+function fonRuralVerrouModif(kind, r) {
+  if ((kind === 'protocoles' || kind === 'pv_lot' || kind === 'pv_acd') && (r.statut === 'signe' || r.statut === 'reitere')) return { bloque: true, msg: 'Document signé : non modifiable (imprimez-le ou ouvrez un nouveau document).' };
+  var clos = fonRuralClos(kind, r);
+  if (clos && !fcEstAdmin()) return { bloque: true, msg: 'Enregistrement clos (' + clos + ') : modification réservée à un administrateur, avec motif.' };
+  return { bloque: false, clos: clos };
+}
+function fonRuralDiff(kind, avant, apres) {
+  var T = FON_RURAL_TYPES[kind], out = [];
+  T.champs.forEach(function (c) {
+    var a = _fonValLib(kind, avant, c), b = _fonValLib(kind, apres, c);
+    if (String(a) !== String(b)) out.push({ k: c.k, l: c.l, avant: a, apres: b });
+  });
+  return out;
+}
+/* Trace : appelée par fonRuralEnregistrer avant l'écriture. Renvoie false si le motif exigé manque. */
+function fonRuralTracerModif(kind, ex, rec) {
+  var d = fonRuralDiff(kind, ex, rec); if (!d.length) return true;
+  var verrou = fonRuralVerrouModif(kind, ex), motif = '';
+  if (verrou.bloque) { toast(verrou.msg, 'error'); return false; }
+  if (verrou.clos) { motif = prompt('Modification d\'un enregistrement clos (' + verrou.clos + ') — motif obligatoire :'); if (!motif || motif.trim().length < 10) { toast('Motif obligatoire (10 caractères minimum).', 'error'); return false; } motif = motif.trim(); }
+  rec.historique_modifs = (ex.historique_modifs || []).concat([{ le: new Date().toISOString(), par: (APP.currentUser && APP.currentUser.nom) || '—', motif: motif, champs: d }]).slice(-100);
+  return true;
+}
+
+/* ── Impression ── */
+function _fonEnteteImpr(titre, sous) {
+  var soc = (typeof APP !== 'undefined' && APP.params && (APP.params.societe_nom || APP.params.nom_societe)) || 'MENKO HOLDING';
+  return '<div style="display:flex;justify-content:space-between;border-bottom:2px solid #8a5a1c;padding-bottom:6px;margin-bottom:12px;"><div><div style="font-size:11px;color:#666;">' + escHtml(soc) + ' — Foncier</div><h1 style="margin:2px 0;font-size:20px;">' + escHtml(titre) + '</h1>' + (sous ? '<div style="font-size:12px;color:#444;">' + sous + '</div>' : '') + '</div><div style="font-size:11px;text-align:right;color:#666;">Édité le ' + escHtml(fcAuj()) + '<br>par ' + escHtml((APP.currentUser && APP.currentUser.nom) || '—') + '</div></div>';
+}
+function fonRuralFicheHtml(kind, r) {
+  var T = FON_RURAL_TYPES[kind], E = escHtml, N = function (v) { return parseFloat(v) || 0; };
+  var ligne = function (l, v) { return '<tr><td style="width:30%;border:1px solid #ccc;padding:4px 8px;background:#f6f1e8;"><b>' + E(l) + '</b></td><td style="border:1px solid #ccc;padding:4px 8px;white-space:pre-wrap;">' + E(v) + '</td></tr>'; };
+  var h = _fonEnteteImpr(T.lib + ' ' + (r.reference || ''), 'Statut : <b>' + E(r.statut || '—') + '</b>' + (r.parcelle_id ? ' · Parcelle : <b>' + E(fonLibelleParcelle(r.parcelle_id)) + '</b>' : ''));
+  h += '<table style="width:100%;border-collapse:collapse;font-size:12.5px;margin-bottom:10px;">' + ligne('Référence', r.reference || '—') + T.champs.map(function (c) { var v = _fonValLib(kind, r, c); return v === '' ? '' : ligne(c.l, v); }).join('') + ligne('Enregistrée le', r.created_at || '—') + ligne('Dernière modification par', r.modifie_par || '—') + '</table>';
+  if (kind === 'contrats' && (r.echeances || []).length) h += '<h3>Échéancier</h3><table style="width:100%;border-collapse:collapse;font-size:12px;"><tr><th>Date</th><th>Montant</th><th>Statut</th><th>Référence du paiement</th></tr>' + r.echeances.map(function (e) { return '<tr><td style="border:1px solid #ccc;padding:3px 6px;">' + E(e.date) + '</td><td style="border:1px solid #ccc;padding:3px 6px;text-align:right;">' + E(_fonCohF(e.montant)) + ' F</td><td style="border:1px solid #ccc;padding:3px 6px;">' + (e.statut === 'paye' ? 'payée le ' + E(e.date_paiement || '') : 'à payer') + '</td><td style="border:1px solid #ccc;padding:3px 6px;">' + E(e.reference || '') + '</td></tr>'; }).join('') + '</table>';
+  if (kind === 'oppositions' && (r.mediation || []).length) h += '<h3>Médiation</h3><ul>' + r.mediation.map(function (m) { return '<li>' + E(m.date || '') + ' — ' + E(m.note || m.texte || '') + '</li>'; }).join('') + '</ul>';
+  if (kind === 'proprietaires') { var ch = (DATA.proprietaires_fonciers || []).filter(function (x) { return x.parcelle_id === r.parcelle_id; }).sort(function (a, b) { return String(a.date_debut).localeCompare(String(b.date_debut)); }); h += '<h3>Chaîne de propriété de la parcelle</h3><table style="width:100%;border-collapse:collapse;font-size:12px;"><tr><th>Propriétaire</th><th>Quote-part</th><th>Du</th><th>Au</th></tr>' + ch.map(function (x) { return '<tr><td style="border:1px solid #ccc;padding:3px 6px;">' + E(x.proprietaire) + '</td><td style="border:1px solid #ccc;padding:3px 6px;">' + (x.quote_part || 100) + ' %</td><td style="border:1px solid #ccc;padding:3px 6px;">' + E(x.date_debut || '') + '</td><td style="border:1px solid #ccc;padding:3px 6px;">' + E(x.date_fin || 'actuel') + '</td></tr>'; }).join('') + '</table>'; }
+  var hm = r.historique_modifs || [];
+  if (hm.length) h += '<h3>Historique des modifications</h3><table style="width:100%;border-collapse:collapse;font-size:11px;"><tr><th>Date</th><th>Par</th><th>Champ</th><th>Avant</th><th>Après</th><th>Motif</th></tr>' + hm.map(function (m) { return m.champs.map(function (c, i) { return '<tr><td style="border:1px solid #ccc;padding:3px 5px;">' + (i ? '' : E(String(m.le).slice(0, 16).replace('T', ' '))) + '</td><td style="border:1px solid #ccc;padding:3px 5px;">' + (i ? '' : E(m.par)) + '</td><td style="border:1px solid #ccc;padding:3px 5px;">' + E(c.l) + '</td><td style="border:1px solid #ccc;padding:3px 5px;">' + E(c.avant) + '</td><td style="border:1px solid #ccc;padding:3px 5px;">' + E(c.apres) + '</td><td style="border:1px solid #ccc;padding:3px 5px;">' + (i ? '' : E(m.motif || '')) + '</td></tr>'; }).join(''); }).join('') + '</table>';
+  h += '<div style="display:flex;gap:24px;margin-top:36px;">' + (FON_SIGNATURES[kind] || ['Service foncier']).map(function (s) { return '<div style="flex:1;border-top:1px solid #333;padding-top:4px;font-size:12px;">' + E(s) + '<br><span style="color:#888;">Nom, date et signature</span></div>'; }).join('') + '</div>';
+  return '<div style="font-family:Arial,sans-serif;">' + h + '</div>';
+}
+function fonRuralImprimerFiche(kind, id) {
+  var T = FON_RURAL_TYPES[kind], r = _fonRec(kind, id); if (!T || !r) return '';
+  if (kind === 'protocoles' || kind === 'pv_lot' || kind === 'pv_acd') return fonDocImprimer(kind, id);
+  if (kind === 'audits') return fonAuditImprimer(id);
+  var html = fonRuralFicheHtml(kind, r); openPrintPreview(html, T.lib + ' ' + (r.reference || ''), false); return html;
+}
+function _fonListeColonnes(kind) {
+  var T = FON_RURAL_TYPES[kind];
+  return [{ l: 'Référence', f: function (r) { return r.reference || ''; } }].concat(T.champs.filter(function (c) { return c.t !== 'textarea' && c.t !== 'convocations' && c.t !== 'membres' && c.t !== 'parcelles_parts'; }).slice(0, 6).map(function (c) { return { l: c.l, f: function (r) { return _fonValLib(kind, r, c); } }; }))
+    .concat([{ l: 'Statut', f: function (r) { return r.statut || ''; } }]);
+}
+function _fonListeDonnees(kind) { var T = FON_RURAL_TYPES[kind]; return (DATA[T.store] || []).filter(T.filtre || function () { return true; }).slice().sort(function (a, b) { return String(a.reference || '').localeCompare(String(b.reference || '')); }); }
+function fonRuralListeHtml(kind) {
+  var T = FON_RURAL_TYPES[kind], E = escHtml, col = _fonListeColonnes(kind), lig = _fonListeDonnees(kind);
+  return '<div style="font-family:Arial,sans-serif;">' + _fonEnteteImpr('Liste — ' + T.lib, lig.length + ' enregistrement(s)') + '<table style="width:100%;border-collapse:collapse;font-size:11px;"><tr>' + col.map(function (c) { return '<th style="border:1px solid #999;padding:4px 6px;background:#f6f1e8;text-align:left;">' + E(c.l) + '</th>'; }).join('') + '</tr>'
+    + lig.map(function (r) { return '<tr>' + col.map(function (c) { return '<td style="border:1px solid #ccc;padding:3px 6px;">' + E(c.f(r)) + '</td>'; }).join('') + '</tr>'; }).join('') + '</table></div>';
+}
+function fonRuralImprimerListe(kind) { var html = fonRuralListeHtml(kind); openPrintPreview(html, 'Liste — ' + FON_RURAL_TYPES[kind].lib, true); return html; }
+function fonRuralCsv(kind) {
+  var col = _fonListeColonnes(kind), q = function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""').replace(/[\r\n]+/g, ' ') + '"'; };
+  return '﻿' + [col.map(function (c) { return q(c.l); }).join(';')].concat(_fonListeDonnees(kind).map(function (r) { return col.map(function (c) { return q(c.f(r)); }).join(';'); })).join('\r\n');
+}
+function fonRuralExporterCsv(kind) {
+  var blob = new Blob([fonRuralCsv(kind)], { type: 'text/csv;charset=utf-8' }), a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'foncier_' + kind + '_' + fcAuj() + '.csv'; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+function fonParcoursImprimer() {
+  var E = escHtml, l = _sigParcellesActives();
+  var h = '<div style="font-family:Arial,sans-serif;">' + _fonEnteteImpr('Parcours foncier', l.length + ' terre(s) suivie(s)') + '<table style="width:100%;border-collapse:collapse;font-size:10.5px;"><tr><th style="border:1px solid #999;padding:3px;text-align:left;">Parcelle</th>' + FON_ETAPES.map(function (e) { return '<th style="border:1px solid #999;padding:3px;">' + e.n + '</th>'; }).join('') + '<th style="border:1px solid #999;padding:3px;">%</th><th style="border:1px solid #999;padding:3px;text-align:left;">Prochaine étape</th></tr>'
+    + l.map(function (p) { var et = fonParcoursParcelle(p), nx = fonParcoursSuivante(et); return '<tr><td style="border:1px solid #ccc;padding:3px;">' + E(p.ref || p.id) + '</td>' + et.map(function (e) { return '<td style="border:1px solid #ccc;padding:3px;text-align:center;">' + FON_ETATS[e.etat][0] + '</td>'; }).join('') + '<td style="border:1px solid #ccc;padding:3px;text-align:right;">' + fonParcoursProgression(et) + '</td><td style="border:1px solid #ccc;padding:3px;">' + (nx ? E(fonEtape(nx.id).titre + ' — ' + nx.detail) : 'Terminé') + '</td></tr>'; }).join('')
+    + '</table><p style="font-size:10px;color:#666;margin-top:8px;">' + FON_ETAPES.map(function (e) { return e.n + ' = ' + E(e.titre); }).join(' · ') + ' — ✅ fait · 🔶 en cours · ⛔ bloqué · ⚪ à faire · ➖ sans objet</p></div>';
+  openPrintPreview(h, 'Parcours foncier', true); return h;
+}
+function fonFiche360Imprimer(parcelleId) {
+  var p = (DATA.parcelles || []).filter(function (x) { return x.id === parcelleId; })[0]; if (!p) return '';
+  var h = '<div style="font-family:Arial,sans-serif;">' + _fonEnteteImpr('Fiche parcelle 360° — ' + (p.ref || p.id), escHtml(p.localisation || '')) + fonFiche360Html(p).replace(/<button[\s\S]*?<\/button>/g, '') + '</div>';
+  openPrintPreview(h, 'Fiche parcelle ' + (p.ref || p.id), false); return h;
+}
+
+/* ── Suppression contrôlée ── */
+function fonRuralSuppressionBloquee(kind, r) {
+  var raisons = [], D = function (s) { return DATA[s] || []; }, pid = r.parcelle_id;
+  if ((kind === 'protocoles' || kind === 'pv_lot' || kind === 'pv_acd') && (r.statut === 'signe' || r.statut === 'reitere')) raisons.push('document signé');
+  if (kind === 'enquetes' && r.statut === 'cloturee') raisons.push('enquête clôturée (pièce de la procédure)');
+  if (kind === 'oppositions') { if (['levee', 'rejetee', 'jugee'].indexOf(r.statut) !== -1) raisons.push('opposition traitée (' + r.statut + ') : à conserver'); else if ((r.mediation || []).length) raisons.push('médiation en cours de consignation'); }
+  if (kind === 'bornages' && r.statut === 'realise') raisons.push('bornage réalisé (procès-verbal)');
+  if (kind === 'villages') {
+    var n1 = D('ayants_droit_fonciers').filter(function (a) { return a.village_id === r.id; }).length, n2 = D('protocoles_purge_fonciers').filter(function (x) { return x.village_id === r.id; }).length, n3 = D('enquetes_fonciers').filter(function (x) { return x.village_id === r.id; }).length;
+    if (n1) raisons.push(n1 + ' ayant(s) droit rattaché(s)'); if (n2) raisons.push(n2 + ' protocole(s)'); if (n3) raisons.push(n3 + ' enquête(s)');
+  }
+  if (kind === 'ayants_droit') { var sig = D('protocoles_purge_fonciers').filter(function (x) { return (x.statut === 'signe' || x.statut === 'reitere') && (r.parcelles || []).some(function (y) { return y.parcelle_id === x.parcelle_id; }); }).length; if (sig) raisons.push('parcelle(s) couverte(s) par un protocole signé'); }
+  if (kind === 'titres') { var p = D('parcelles').filter(function (x) { return x.id === pid; })[0], autres = D('titres_fonciers').filter(function (t) { return t.parcelle_id === pid && t.id !== r.id; }).length; if (p && (p.statut === 'tf_definitif' || p.statut === 'acd') && !autres) raisons.push('dernier titre justifiant le statut « ' + p.statut + ' » de la parcelle'); }
+  if (kind === 'proprietaires') { if (r.date_fin) raisons.push('propriétaire sorti : maillon de la chaîne de propriété'); if (D('proprietaires_fonciers').some(function (x) { return x.parcelle_id === pid && x.id !== r.id && String(x.date_debut) > String(r.date_debut); })) raisons.push('des propriétaires postérieurs existent'); if (D('cessions_foncieres').some(function (c) { return c.source_key === 'parcelle:' + pid; })) raisons.push('cession enregistrée sur la parcelle'); }
+  if (kind === 'charges' && r.statut === 'levee') raisons.push('charge levée (mainlevée à conserver)');
+  if (kind === 'contrats') { if (r.statut === 'resilie') raisons.push('contrat résilié'); if ((r.echeances || []).some(function (e) { return e.statut === 'paye'; })) raisons.push('échéance(s) déjà encaissée(s)'); }
+  if (kind === 'audits') {
+    if (r.decision && r.decision !== 'en_attente') raisons.push('décision ' + String(r.decision).toUpperCase() + ' prise');
+    var op = r.operation_id; if (D('protocoles_purge_fonciers').some(function (x) { return (op && x.operation_id === op) || (pid && x.parcelle_id === pid); })) raisons.push('protocole rattaché');
+  }
+  return raisons;
+}
+async function fonRuralSupprimer(kind, id) {
+  var T = FON_RURAL_TYPES[kind], r = _fonRec(kind, id); if (!T || !r) return false;
+  if (!fcEstAdmin()) { toast('Suppression réservée à un administrateur.', 'error'); return false; }
+  var bloque = fonRuralSuppressionBloquee(kind, r);
+  if (bloque.length) { toast('Suppression impossible : ' + bloque.join(' ; ') + '.', 'error', 8000); return false; }
+  var motif = prompt('Supprimer ' + T.lib + ' ' + (r.reference || '') + ' ?\nCette action est définitive (une trace complète est conservée).\n\nMotif obligatoire :');
+  if (!motif || motif.trim().length < 10) { if (motif !== null) toast('Motif obligatoire (10 caractères minimum).', 'error'); return false; }
+  motif = motif.trim();
+  var snap = JSON.stringify(r), qui = (APP.currentUser && APP.currentUser.nom) || '—';
+  var p = r.parcelle_id ? (DATA.parcelles || []).filter(function (x) { return x.id === r.parcelle_id; })[0] : null;
+  if (p) { _sigLogHist(p, 'Suppression', T.lib + ' ' + (r.reference || '') + ' supprimé(e) par ' + qui + ' — ' + motif + ' — copie : ' + snap.slice(0, 1800)); try { await fcDb('parcelles', p, { forceRole: true }); if (typeof syncToSupabase === 'function') syncToSupabase('pi_parcelles', p); } catch (e) { toast('Trace sur la parcelle impossible : ' + e.message, 'error'); return false; } }
+  await logAction('FONCIER_SUPPRESSION', T.lib + ' ' + (r.reference || r.id) + ' — ' + motif + ' — ' + snap.slice(0, 4000));
+  DATA[T.store] = (DATA[T.store] || []).filter(function (x) { return x.id !== id; });
+  await dbDelete(T.store, id);
+  var tab = (SUPA_STORE_MAP.filter(function (x) { return x[1] === T.store; })[0] || [])[0]; if (tab && typeof deleteFromSupabase === 'function') deleteFromSupabase(tab, id);
+  toast(T.lib + ' supprimé(e).', 'success'); fonRuralRender(); return true;
+}
+function _fonBtnsMoteur(kind, r) {
+  var doc = (kind === 'protocoles' || kind === 'pv_lot' || kind === 'pv_acd');
+  return (doc ? '' : _fonBtn('🖨', 'fonRuralImprimerFiche(\'' + kind + '\',\'' + r.id + '\')', '" title="Imprimer la fiche')) + _fonBtn('🗑', 'fonRuralSupprimer(\'' + kind + '\',\'' + r.id + '\')', '" title="Supprimer (administrateur, motif obligatoire)');
+}
+function _fonBtnsListe(vue) {
+  return FON_RURAL_IMPRIMABLES.indexOf(vue) === -1 ? '' : '<span style="float:right;margin-right:6px;">' + _fonBtn('🖨 Imprimer la liste', 'fonRuralImprimerListe(\'' + vue + '\')') + _fonBtn('⬇ Excel (CSV)', 'fonRuralExporterCsv(\'' + vue + '\')') + '</span>';
+}
+var FON_MOTEUR_REGLES = [
+  'Imprimer : « 🖨 » sur chaque ligne (fiche avec parcelle, historique des modifications et signatures) ; « Imprimer la liste » et « Excel (CSV) » en haut de l\'écran. Protocoles, PV et audits gardent leur édition dédiée.',
+  'Modifier : « ✏️ ». Un enregistrement clos (enquête clôturée, opposition traitée, bornage réalisé, charge levée, contrat résilié, exploitation terminée, propriétaire sorti) n\'est modifiable que par un administrateur, avec motif de 10 caractères au moins. Un document signé n\'est plus modifiable.',
+  'Chaque modification est tracée : champ, valeur avant, valeur après, utilisateur, date, motif ; elle figure sur la fiche imprimée.',
+  'Supprimer : « 🗑 », administrateur seul, motif obligatoire. Refusé si l\'élément est signé, clos, jugé, encaissé ou référencé ailleurs. La suppression laisse une trace complète (copie de l\'enregistrement) dans l\'historique de la parcelle et le journal ; le serveur applique les mêmes interdits.'
+];
 
 /* ── Topographie : levé, courbes de niveau, coupe ── */
 var _topoPoints = [];
