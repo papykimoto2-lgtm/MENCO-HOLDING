@@ -32211,6 +32211,7 @@ function switchTab(context, tab) {
   if (context==='juridique' && tab==='contentieux' && typeof ctxActualiserAuto==='function') ctxActualiserAuto();
   // Hook scan pointage
   if (context==='foncier' && tab==='fisc' && typeof fiscInit==='function') { fiscInit(); }
+  if (context==='foncier' && typeof fonAlertesBadge==='function') { try { fonAlertesBadge(); } catch (e) {} }
   if (context==='foncier' && tab==='rural' && typeof fonRuralRender==='function') fonRuralRender();
   if (context==='foncier' && tab==='dossiers' && typeof fcRender==='function') fcRender();
   if (context==='foncier' && tab==='intervenants' && typeof fcRenderIntervenants==='function') fcRenderIntervenants();
@@ -116742,6 +116743,7 @@ function _fonParcRef(id) { var p = (DATA.parcelles || []).find(function (x) { re
 function _fonBtn(label, js, cls) { return '<button class="btn btn-secondary btn-sm' + (cls ? ' ' + cls : '') + '" onclick="' + js + '">' + label + '</button> '; }
 function fonRuralRender() {
   var host = document.getElementById('fon-rural-liste'); if (!host) return;
+  if (FON_RURAL.vue === 'pilotage') { fonPilotageRender(); return fonAlertesBadge(); }
   if (FON_RURAL.vue === 'terrain') return fonTerrainRender();
   var vue = FON_RURAL.vue, T = FON_RURAL_TYPES[vue], liste = DATA[T.store] || [], aujourd = fcAuj();
   var onglets = FON_ONGLETS;
@@ -116965,7 +116967,7 @@ async function fonDroitsAction(kind, rec, action) {
 /* ═══ Foncier urbain et rural — lot L6 : saisie terrain sur téléphone (GPS, photos géolocalisées, signature au doigt) ═══
    Le mode hors-ligne existe déjà : écritures locales (IndexedDB) + file d'envoi (outbox) rejouée au retour du réseau.
    Ce lot ajoute les gestes terrain : point GPS → borne, photo compressée et géolocalisée, signature des riverains sur le procès-verbal. */
-var FON_ONGLETS = [['terrain', '📱 Terrain'], ['enquetes', '🔎 Enquêtes'], ['oppositions', '⚖️ Oppositions'], ['bornages', '📐 Bornages contradictoires'], ['villages', '🏘 Villages & comités'], ['ayants_droit', '👥 Ayants droit'], ['titres', '📜 Titres'], ['proprietaires', '🏠 Propriétaires'], ['charges', '⛓ Charges & servitudes'], ['exploitations', '🌱 Exploitations'], ['contrats', '📑 Contrats']];
+var FON_ONGLETS = [['pilotage', '📊 Pilotage & alertes'], ['terrain', '📱 Terrain'], ['enquetes', '🔎 Enquêtes'], ['oppositions', '⚖️ Oppositions'], ['bornages', '📐 Bornages contradictoires'], ['villages', '🏘 Villages & comités'], ['ayants_droit', '👥 Ayants droit'], ['titres', '📜 Titres'], ['proprietaires', '🏠 Propriétaires'], ['charges', '⛓ Charges & servitudes'], ['exploitations', '🌱 Exploitations'], ['contrats', '📑 Contrats']];
 var FON_GPS_PRECISION_MAX = 20;   /* mètres : au-delà, confirmation demandée */
 var FON_PHOTO_MAX_PX = 1280;
 var FON_BORNE_DOUBLON_M = 1;
@@ -117087,6 +117089,106 @@ function fonTerrainRender() {
     docs.sort(function (a, b) { return String(b.pris_le || '').localeCompare(String(a.pris_le || '')); });
     el.innerHTML = docs.length ? docs.slice(0, 12).map(function (d) { return '<div style="width:96px;"><img src="' + E(d.blob || '') + '" style="width:96px;height:72px;object-fit:cover;border-radius:6px;" alt="photo">' + (d.lat ? '<div>📍 ' + d.lat.toFixed(5) + ', ' + d.lng.toFixed(5) + '</div>' : '<div>sans GPS</div>') + '</div>'; }).join('') : 'Aucune photo.';
   });
+}
+
+/* ═══ Foncier urbain et rural — lot L7 : pilotage (indicateurs du cahier §8) et alertes d'échéance ═══ */
+function fonJours(a, b) { return Math.round((Date.parse(b) - Date.parse(a)) / 864e5); }
+var FON_NIVEAUX = { rouge: 0, orange: 1, info: 2 };
+/* Alertes : une ligne par situation à traiter. niveau : rouge (urgent), orange (à traiter), info (à anticiper). */
+function fonAlertes(aujourd) {
+  aujourd = aujourd || fcAuj(); var out = [], N = function (v) { return parseFloat(v) || 0; };
+  var add = function (niveau, vue, ref, texte) { out.push({ niveau: niveau, vue: vue, ref: ref || '', texte: texte }); };
+  (DATA.enquetes_fonciers || []).forEach(function (e) {
+    if (e.statut !== 'ouverte' || !e.date_fin_prevue) return;
+    var j = fonJours(e.date_fin_prevue, aujourd);
+    if (j >= 0) add(j > 15 ? 'rouge' : 'orange', 'enquetes', e.reference, 'Enquête ' + (e.reference || '') + ' (' + _fonParcRef(e.parcelle_id) + ') : ' + (j === 0 ? "échéance aujourd'hui" : 'échéance dépassée de ' + j + ' j') + ', à clôturer.');
+    else if (j >= -7) add('info', 'enquetes', e.reference, 'Enquête ' + (e.reference || '') + ' (' + _fonParcRef(e.parcelle_id) + ') : échéance dans ' + (-j) + ' j.');
+  });
+  (DATA.oppositions_fonciers || []).forEach(function (o) {
+    if (o.statut !== 'ouverte' && o.statut !== 'en_mediation') return;
+    var j = o.date_depot ? fonJours(o.date_depot, aujourd) : 0;
+    if (j > 30) add(j > 90 ? 'rouge' : 'orange', 'oppositions', o.reference, 'Opposition ' + (o.reference || '') + ' (' + _fonParcRef(o.parcelle_id) + ', ' + (o.opposant || '') + ') active depuis ' + j + ' j : certification suspendue.');
+  });
+  (DATA.bornages_fonciers || []).forEach(function (b) {
+    if (b.statut === 'convoque' && b.date && b.date < aujourd) add('orange', 'bornages', b.reference, 'Bornage ' + (b.reference || '') + ' (' + _fonParcRef(b.parcelle_id) + ') prévu le ' + b.date + ' : non constaté.');
+  });
+  (DATA.villages_fonciers || []).forEach(function (v) {
+    var fin = v.comite && v.comite.mandat_fin; if (!fin) return;
+    if (fin < aujourd) add('orange', 'villages', v.reference, 'Comité villageois de ' + v.nom + ' : mandat expiré le ' + fin + '.');
+    else if (fonJours(aujourd, fin) <= 30) add('info', 'villages', v.reference, 'Comité villageois de ' + v.nom + ' : mandat expire le ' + fin + '.');
+  });
+  (DATA.contrats_fonciers || []).forEach(function (c) {
+    if (c.statut !== 'actif') return;
+    var imp = fonContratImpayes(c, aujourd), somme = imp.reduce(function (s, e) { return s + N(e.montant); }, 0);
+    if (imp.length) add('rouge', 'contrats', c.reference, 'Contrat ' + (c.reference || '') + ' (' + (c.partie || '') + ') : ' + imp.length + ' redevance(s) impayée(s), ' + fmtF(somme) + ' F.');
+    if (c.date_fin && c.date_fin < aujourd) add('orange', 'contrats', c.reference, 'Contrat ' + (c.reference || '') + ' échu le ' + c.date_fin + ' : renouveler ou résilier.');
+  });
+  (DATA.charges_fonciers || []).forEach(function (c) {
+    if (c.statut === 'active' && c.date_fin && c.date_fin < aujourd) add('info', 'charges', c.reference, 'Charge ' + (c.type || '') + ' ' + (c.reference || '') + ' (' + _fonParcRef(c.parcelle_id) + ') : date de fin dépassée, vérifier la mainlevée.');
+  });
+  return out.sort(function (a, b) { return FON_NIVEAUX[a.niveau] - FON_NIVEAUX[b.niveau]; });
+}
+/* Indicateurs de pilotage (cahier §8). */
+function fonPilotageIndicateurs(aujourd) {
+  aujourd = aujourd || fcAuj(); var N = function (v) { return parseFloat(v) || 0; }, ha = function (m2) { return Math.round(N(m2) / 100) / 100; };
+  var parc = _sigParcellesActives(), r = { regimes: {}, statuts: {}, titres: {}, procedures: {}, enquetes: { ouvertes: 0, cloturees: 0, en_retard: 0 }, oppositions: { actives: 0, levees: 0, total: 0 },
+    contrats: { actifs: 0, impayes_nb: 0, impayes_montant: 0, encaisse: 0 }, exploitation_ha: 0, charges_bloquantes: 0, risque_eleve: 0 };
+  parc.forEach(function (p) {
+    var g = fonRegimeParcelle(p), x = r.regimes[g] = r.regimes[g] || { n: 0, ha: 0, cout: 0 };
+    x.n++; x.ha += N(p.superficie) / 10000; x.cout += N(p.cout_total) || (N(p.prix_acq) + N(p.frais_mutation) + N(p.frais_bornage) + N(p.frais_notaire));
+    var st = p.statut || 'prospection'; r.statuts[st] = (r.statuts[st] || 0) + 1; if (p.risque === 'eleve') r.risque_eleve++;
+  });
+  Object.keys(r.regimes).forEach(function (g) { var x = r.regimes[g]; x.cout_ha = x.ha > 0 ? Math.round(x.cout / x.ha) : 0; x.ha = Math.round(x.ha * 100) / 100; });
+  (DATA.titres_fonciers || []).forEach(function (t) { r.titres[t.type] = (r.titres[t.type] || 0) + 1; });
+  (DATA.dossiers_fonciers || []).forEach(function (d) {
+    var t = d.type_procedure || '—', x = r.procedures[t] = r.procedures[t] || { ouverts: 0, clos: 0, jours: 0 };
+    if (d.statut === 'cloture') { x.clos++; if (d.date_ouverture && d.date_cloture) x.jours += Math.max(0, fonJours(d.date_ouverture, d.date_cloture)); } else if (d.statut !== 'annule') x.ouverts++;
+  });
+  Object.keys(r.procedures).forEach(function (t) { var x = r.procedures[t]; x.delai_moyen = x.clos ? Math.round(x.jours / x.clos) : null; });
+  (DATA.enquetes_fonciers || []).forEach(function (e) { if (e.statut === 'ouverte') { r.enquetes.ouvertes++; if (e.date_fin_prevue && aujourd >= e.date_fin_prevue) r.enquetes.en_retard++; } else if (e.statut === 'cloturee') r.enquetes.cloturees++; });
+  (DATA.oppositions_fonciers || []).forEach(function (o) { r.oppositions.total++; if (o.statut === 'ouverte' || o.statut === 'en_mediation') r.oppositions.actives++; else if (o.statut === 'levee') r.oppositions.levees++; });
+  (DATA.contrats_fonciers || []).forEach(function (c) {
+    if (c.statut === 'actif') r.contrats.actifs++;
+    (c.echeances || []).forEach(function (e) { if (e.statut === 'paye') r.contrats.encaisse += N(e.montant); else if (c.statut === 'actif' && e.date < aujourd) { r.contrats.impayes_nb++; r.contrats.impayes_montant += N(e.montant); } });
+  });
+  (DATA.exploitations_fonciers || []).forEach(function (e) { if (e.statut === 'en_cours') r.exploitation_ha += N(e.superficie_ha); });
+  r.exploitation_ha = Math.round(r.exploitation_ha * 100) / 100;
+  r.charges_bloquantes = (DATA.charges_fonciers || []).filter(function (c) { return c.statut === 'active' && FON_CHARGES_BLOQUANTES.indexOf(c.type) !== -1; }).length;
+  return r;
+}
+function fonAlertesBadge() {
+  var b = document.getElementById('fon-rural-badge'); if (!b) return 0;
+  var n = fonAlertes().filter(function (a) { return a.niveau !== 'info'; }).length;
+  b.textContent = n; b.style.display = n ? 'inline-block' : 'none'; return n;
+}
+function fonPilotageExporter() {
+  var q = function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; };
+  var rows = [['Niveau', 'Vue', 'Référence', 'Alerte'].map(q).join(';')].concat(fonAlertes().map(function (a) { return [a.niveau, a.vue, a.ref, a.texte].map(q).join(';'); }));
+  var blob = new Blob(['﻿' + rows.join('\n')], { type: 'text/csv;charset=utf-8' }), a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'foncier_alertes_' + fcAuj() + '.csv'; a.click(); toast('Alertes exportées.', 'success');
+}
+function fonPilotageRender() {
+  var host = document.getElementById('fon-rural-liste'); if (!host) return;
+  document.getElementById('fon-rural-onglets').innerHTML = FON_ONGLETS.map(function (o) { return '<button class="btn btn-' + (o[0] === 'pilotage' ? 'primary' : 'secondary') + ' btn-sm" onclick="fonRuralVue(\'' + o[0] + '\')">' + o[1] + '</button> '; }).join('');
+  var E = escHtml, k = fonPilotageIndicateurs(), al = fonAlertes(), F = function (v) { return (typeof fmtF === 'function') ? fmtF(v) : v; };
+  var kpi = function (l, v, c, sub) { return '<div style="background:var(--fond2);border-radius:8px;padding:10px 12px;border-top:3px solid ' + (c || 'var(--or)') + ';"><div style="font-size:11px;color:var(--dim);">' + E(l) + '</div><div style="font-size:20px;font-weight:700;">' + v + '</div>' + (sub ? '<div style="font-size:10px;color:var(--dim);">' + sub + '</div>' : '') + '</div>'; };
+  var u = k.regimes.urbain || { n: 0, ha: 0, cout_ha: 0 }, ru = k.regimes.rural || { n: 0, ha: 0, cout_ha: 0 };
+  var h = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:14px;">'
+    + kpi('Parcelles urbaines', u.n, '#dc2626', u.ha + ' ha · ' + F(u.cout_ha) + ' F/ha') + kpi('Parcelles rurales', ru.n, '#2563eb', ru.ha + ' ha · ' + F(ru.cout_ha) + ' F/ha')
+    + kpi('Enquêtes ouvertes', k.enquetes.ouvertes, '#2563eb', k.enquetes.en_retard + ' à clôturer · ' + k.enquetes.cloturees + ' closes') + kpi('Oppositions actives', k.oppositions.actives, k.oppositions.actives ? '#dc2626' : '#22c55e', k.oppositions.levees + ' levées / ' + k.oppositions.total)
+    + kpi('Certificats fonciers', k.titres.certificat_foncier || 0, '#2563eb') + kpi('ACD / TF définitifs', (k.titres.acd || 0) + ' / ' + (k.titres.tf_definitif || 0), '#dc2626')
+    + kpi('Charges bloquantes', k.charges_bloquantes, k.charges_bloquantes ? '#dc2626' : '#22c55e', 'hypothèques et saisies actives') + kpi('Risque élevé', k.risque_eleve, k.risque_eleve ? '#dc2626' : '#22c55e', 'parcelles')
+    + kpi('Contrats actifs', k.contrats.actifs, '#8b5cf6', F(k.contrats.encaisse) + ' F encaissés') + kpi('Redevances impayées', k.contrats.impayes_nb, k.contrats.impayes_nb ? '#dc2626' : '#22c55e', F(k.contrats.impayes_montant) + ' F')
+    + kpi('Surface exploitée', k.exploitation_ha + ' ha', '#22c55e') + '</div>';
+  h += '<div class="card-title">🔔 Alertes (' + al.length + ')' + '<button class="btn btn-secondary btn-sm" style="float:right;" onclick="fonPilotageExporter()">⬇ CSV</button></div>';
+  var pastille = { rouge: '🔴', orange: '🟠', info: '🔵' };
+  h += al.length ? al.map(function (a) { return '<div style="padding:6px 0;border-bottom:1px solid var(--bord);font-size:12px;cursor:pointer;" onclick="fonRuralVue(\'' + a.vue + '\')">' + pastille[a.niveau] + ' ' + E(a.texte) + '</div>'; }).join('') : '<div style="color:var(--dim);font-size:12px;padding:8px 0;">✅ Aucune alerte.</div>';
+  var pr = Object.keys(k.procedures);
+  h += '<div class="card-title" style="margin-top:16px;">Dossiers par procédure</div><div class="table-wrap"><table><thead><tr><th>Procédure</th><th>Ouverts</th><th>Clos</th><th>Délai moyen</th></tr></thead><tbody>'
+    + (pr.length ? pr.map(function (t) { var x = k.procedures[t]; return '<tr><td>' + E((typeof FC_PROCEDURES !== 'undefined' && FC_PROCEDURES[t]) || t) + '</td><td>' + x.ouverts + '</td><td>' + x.clos + '</td><td>' + (x.delai_moyen == null ? '—' : x.delai_moyen + ' j') + '</td></tr>'; }).join('') : '<tr><td colspan="4" style="color:var(--dim);">Aucun dossier.</td></tr>') + '</tbody></table></div>';
+  var st = Object.keys(k.statuts);
+  h += '<div class="card-title" style="margin-top:16px;">Parcelles par statut</div><div style="font-size:12px;">' + (st.length ? st.map(function (s) { return '<span class="badge badge-neutre" style="margin:2px;">' + E(s.replace(/_/g, ' ')) + ' : ' + k.statuts[s] + '</span>'; }).join('') : '—') + '</div>';
+  host.innerHTML = h;
 }
 
 /* ── Topographie : levé, courbes de niveau, coupe ── */

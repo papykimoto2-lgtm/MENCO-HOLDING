@@ -251,6 +251,19 @@ Limites : les redevances ne génèrent pas encore d'écriture comptable ; les pa
 - Le GPS exige l'autorisation de localisation du navigateur pour ce site.
 - Une précision de 3 à 5 m est normale à découvert ; sous couvert végétal, elle se dégrade.
 
+**Pilotage et alertes (lot L7)** — Foncier › 2.6 › 📊 Pilotage & alertes. Le badge de l'onglet 2.6 compte les alertes rouges et orange.
+
+| Alerte | Seuil |
+|---|---|
+| Enquête à clôturer | Orange à l'échéance ; rouge au-delà de 15 jours de retard ; info 7 jours avant |
+| Opposition active | Orange après 30 jours ; rouge après 90 jours |
+| Bornage convoqué | Orange si la date est passée sans constat |
+| Comité villageois | Orange si le mandat est expiré ; info 30 jours avant |
+| Contrat | Rouge si redevance impayée ; orange si échu |
+| Charge active | Info si sa date de fin est dépassée (vérifier la mainlevée) |
+
+Indicateurs : parcelles et hectares par régime, coût à l'hectare, parcelles par statut, certificats fonciers, ACD et TF, délai moyen par procédure, enquêtes (ouvertes, en retard), oppositions, charges bloquantes, risque élevé, contrats, redevances encaissées et impayées, surface exploitée. Export CSV des alertes.
+
 **Tableau des étapes de la procédure rurale** (31 étapes ; l'ERP ajoute « Création du dossier » au début et « Clôture » à la fin)
 
 **Rural — Phase 1 : recherche, délimitation et levé de la parcelle**
