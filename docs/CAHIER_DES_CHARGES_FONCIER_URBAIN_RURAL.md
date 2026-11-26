@@ -79,11 +79,11 @@ Légende : **E** existant · **A** à adapter · **N** nouveau. Priorité : P1 i
 | Id | Exigence | État | Prio |
 |---|---|---|---|
 | FUR-201 | Procédure rurale distincte, 3+ phases : recherche et délimitation, enquête foncière et accord des propriétaires terriens, enquête officielle et certification | E | P1 |
-| FUR-202 | Registre des **ayants droit coutumiers** : famille, chef de terre, héritiers, tuteurs ; lien parcelle ↔ ayants droit avec part | N | P1 |
-| FUR-203 | Fiche **village** : chef, comité villageois de gestion foncière (membres, mandat, PV) | N | P1 |
-| FUR-204 | **Enquête officielle** : nomination du commissaire enquêteur, ouverture, durée (1 mois par défaut, paramétrable), compte à rebours, clôture, observations et oppositions | A | P1 |
-| FUR-205 | **Oppositions et litiges** : enregistrement, partie adverse, médiation, issue ; suspend la phase suivante | N | P1 |
-| FUR-206 | Bornage contradictoire : convocation des riverains, PV signé, présences, plan | A | P1 |
+| FUR-202 | Registre des **ayants droit coutumiers** : famille, chef de terre, héritiers, tuteurs ; lien parcelle ↔ ayants droit avec part | N (stores L1, écran à faire) | P1 |
+| FUR-203 | Fiche **village** : chef, comité villageois de gestion foncière (membres, mandat, PV) | E (L3) | P1 |
+| FUR-204 | **Enquête officielle** : nomination du commissaire enquêteur, ouverture, durée (1 mois par défaut, paramétrable), compte à rebours, clôture, observations et oppositions | E (L3) | P1 |
+| FUR-205 | **Oppositions et litiges** : enregistrement, partie adverse, médiation, issue ; suspend la phase suivante | E (L3) | P1 |
+| FUR-206 | Bornage contradictoire : convocation des riverains, PV signé, présences, PV | E (L3) | P1 |
 | FUR-207 | Réunion de validation (sous-préfet) : date, PV, décision, pièces | E | P1 |
 | FUR-208 | Suivi du **certificat foncier** : n°, date, titulaire, validité ; passage CF → TF | A | P1 |
 | FUR-209 | Usage et mise en valeur : culture, superficie plantée, exploitant, bail/contrat (métayage, location, concession) | N | P2 |

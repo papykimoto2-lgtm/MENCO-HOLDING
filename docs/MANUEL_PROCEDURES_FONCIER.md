@@ -211,6 +211,21 @@ Toute modification de paramètre est **annoncée aux équipes** avant applicatio
 **Contrôles** : une étape ne démarre ni ne se termine avant ses étapes préalables **[bloquant]**, sauf dérogation motivée du responsable du dossier (journalisée) ; la clôture du dossier exige le **retrait du titre foncier** ; étape à justificatif : preuve obligatoire. « Terminé » ne signifie pas « accordé » : la décision de l'administration (certificat, titre) se prouve par le document officiel reçu.
 **Preuve** : événement « Dossier ouvert » ; événement par changement de statut ; pièces jointes ; certificat foncier et titre foncier archivés au dossier. **Délais** : les délais indiqués sont des valeurs indicatives de l'ERP (total 618 jours), à ajuster dans Modèles de dossier ; la procédure ne fixe aucun délai, hors l'enquête villageoise d'un mois.
 
+**Contrôles ruraux (lot L3)** — Foncier › 2.6 Foncier rural. Appliqués automatiquement aux étapes de la procédure rurale :
+
+| Étape | Condition pour la démarrer ou la terminer |
+|---|---|
+| Ouverture de l'enquête | Une enquête officielle est enregistrée (statut ouverte) |
+| Clôture de l'enquête | Échéance atteinte (30 jours par défaut, réglable par enquête) **et** bornage contradictoire réalisé, procès-verbal référencé, au moins un riverain présent |
+| Réunion de validation, certificat foncier | Aucune opposition active (ouverte ou en médiation) sur la parcelle |
+
+- **Opposition** : enregistrer motif et opposant ; issue obligatoire pour la lever, la rejeter ou la marquer jugée. Tant qu'elle est active, la certification est suspendue.
+- **Clôture d'enquête avant l'échéance** : administrateur, motif obligatoire.
+- **Dérogation** à un contrôle : administrateur, motif obligatoire, journalisée dans le dossier.
+- **Comité villageois** : fiche du village (chef, membres, mandat, PV de désignation) ; un mandat expiré est signalé.
+- **Désactiver** les contrôles : paramètre `fon_controle_rural = false`.
+- **Base de données** : `supabase/foncier_urbain_rural_l3.sql` (à exécuter sur chaque projet) applique les mêmes règles de forme côté serveur.
+
 **Tableau des étapes de la procédure rurale** (31 étapes ; l'ERP ajoute « Création du dossier » au début et « Clôture » à la fin)
 
 **Rural — Phase 1 : recherche, délimitation et levé de la parcelle**
