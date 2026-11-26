@@ -44,7 +44,7 @@ test('impression : fiche de chaque type, liste et CSV', async () => {
     // boutons présents sur l'écran + liste
     await app.page.evaluate(() => { goTo('foncier'); switchTab('foncier', 'rural'); fonRuralVue('enquetes'); });
     const h = await app.page.evaluate(() => document.getElementById('fon-rural-liste').innerHTML + document.getElementById('fon-rural-onglets').innerHTML);
-    assert.match(h, /fonRuralSupprimer\('enquetes'/); assert.match(h, /Imprimer la liste/); assert.match(h, /Excel \(CSV\)/); assert.match(h, /Nouvelle|Enquête officielle/);
+    assert.match(h, /fonRuralSupprimer\('enquetes'/); assert.match(h, /Imprimer la liste/); assert.match(h, /CSV/); assert.match(h, /Nouvelle|Enquête officielle/);
   } finally { await app.fermer(); }
 });
 

@@ -87,7 +87,7 @@ create trigger pi_audits_decision_definitive before update on public.pi_audits_f
   for each row execute function public.fonc_audit_decision_definitive();
 
 create unique index if not exists pi_audits_operation_actif on public.pi_audits_fonciers ((data ->> 'operation_id'))
-  where coalesce(data ->> 'operation_id', '') <> '' and data ->> 'decision' <> 'no_go';
+  where coalesce(data ->> 'operation_id', '') <> '' and coalesce(data ->> 'decision', 'en_attente') <> 'no_go';
 create index if not exists pi_audits_parcelle on public.pi_audits_fonciers ((data ->> 'parcelle_id'));
 
 do $$ begin

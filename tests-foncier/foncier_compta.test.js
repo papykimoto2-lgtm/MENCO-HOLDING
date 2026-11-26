@@ -7,7 +7,7 @@ after(fermerNavigateur);
 async function amorcer(page, cd) {
   await page.evaluate(function (cd) {
     DATA.params.comptes_defaut = Object.assign({}, DATA.params.comptes_defaut, { terrain_contrepartie: '401', parcelle_immo: '221', cession_vnc: '812', terrain_stock: '335', terrain_achat: '601', terrain_variation: '6031',
-      client_foncier: '4111', cession_produit: '822' }, cd || {});
+      client_foncier: '4111', cession_produit: '822', cession_produit_immo: '822', cession_produit_stock: '701' }, cd || {});
     DATA.ecritures = []; DATA.cessions_foncieres = []; DATA.af_operations = [];
     DATA.parcelles = [{ id: 'pc1', ref: 'PARC-1', commune: 'Grand-Lahou', superficie: 10000, prix_acq: 8000000, frais_mutation: 500000, frais_bornage: 300000, frais_notaire: 200000, traitement_compta: 'immobilisation', date_acquisition: '2026-03-10' }];
     window.__eq = function (e) { const L = e.lignes, D = L.filter(function (l) { return l.sens === 'D'; }).reduce(function (s, l) { return s + l.montant; }, 0), C = L.filter(function (l) { return l.sens === 'C'; }).reduce(function (s, l) { return s + l.montant; }, 0); return D === C; };
@@ -158,5 +158,31 @@ test('résiliation : la sortie est contre-passée une seule fois, l\'écriture d
       return { annul: a.lignes.map(function (l) { return l.sens + l.compte + ':' + l.montant; }), second: b, origine: orig.lignes.length, eq: __eq(a) };
     });
     assert.deepEqual(r.annul, ['C812:4500000', 'D221:4500000']); assert.equal(r.second, null); assert.equal(r.origine, 2); assert.equal(r.eq, true);
+  } finally { await app.fermer(); }
+});
+
+test('produit de cession : 82x pour une immobilisation, 70x pour un stock ; compte générique de mauvaise classe refusé', async () => {
+  const app = await ouvrirApp();
+  try {
+    await amorcer(app.page, { cession_produit: '701', cession_produit_immo: '', cession_produit_stock: '' });
+    const r = await app.page.evaluate(async function () {
+      const c = function (id) { return { id: id, source_key: 'parcelle:pc1', superficie: 1000, prix_cession: 1000000, montant_encaisse: 0, date: '2026-06-01', acquereur: 'X', designation: 'd' }; };
+      const produit = function (id) { const e = DATA.ecritures.find(function (x) { return x.id === 'ecr_ces_vente_' + id; }); return e ? e.compte_credit : null; };
+      const out = {};
+      // immobilisation avec seulement le compte générique 701 : classe 82 attendue → refus
+      try { await cesGenererEcriture(c('a')); out.generique = 'accepté'; } catch (e) { out.generique = String(e.message); }
+      // immobilisation avec compte dédié 822 → crédit 822
+      DATA.params.comptes_defaut.cession_produit_immo = '822'; await cesGenererEcriture(c('b')); out.immo = produit('b');
+      // dédié mal classé (701) pour une immobilisation → refus
+      DATA.params.comptes_defaut.cession_produit_immo = '701'; try { await cesGenererEcriture(c('c')); out.mauvais = 'accepté'; } catch (e) { out.mauvais = String(e.message); }
+      // stock : générique 701 (classe 70) accepté ; dédié 822 refusé
+      DATA.parcelles[0].traitement_compta = 'stock'; await cesGenererEcriture(c('d')); out.stock = produit('d');
+      DATA.params.comptes_defaut.cession_produit_stock = '822'; try { await cesGenererEcriture(c('e')); out.stockMauvais = 'accepté'; } catch (e) { out.stockMauvais = String(e.message); }
+      // sans traitement comptable : comportement historique (compte générique)
+      DATA.parcelles[0].traitement_compta = ''; await cesGenererEcriture(c('f')); out.sans = produit('f');
+      return out;
+    });
+    assert.match(r.generique, /COMPTE_NON_CONFORME:cession_produit_immo/); assert.equal(r.immo, '822'); assert.match(r.mauvais, /COMPTE_NON_CONFORME:cession_produit_immo/);
+    assert.equal(r.stock, '701'); assert.match(r.stockMauvais, /COMPTE_NON_CONFORME:cession_produit_stock/); assert.equal(r.sans, '701');
   } finally { await app.fermer(); }
 });

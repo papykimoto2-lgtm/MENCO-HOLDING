@@ -30,3 +30,19 @@ Date : 2026-11-26. Périmètre : lots L1–L11. Méthode : parcours d'une terre 
 - **Qui alimente qui** : « 🔗 Carte des interconnexions ».
 
 Référence détaillée : `docs/NOTE_DE_CALCUL_FONCIER.md` (générée par `node tools/gen_note_calcul_foncier.js`).
+
+## Revue générale du 2026-11-26 (4 agents : sécurité SQL, code, métier SYSCOHADA, UX) — suite donnée
+
+**Corrigé (lot L15)** : voir « L15 — Correctifs de la revue générale » du manuel. Script serveur : `supabase/foncier_correctifs_l15.sql` (+ rejouer `foncier_echeances_serveur.sql` et `foncier_audit_l8.sql`).
+
+**Préparé, non exécuté (décision requise)**
+- `supabase/securite_acces_anon_a_valider.sql` : fonctions `pull_incremental*` lisibles sans connexion, RLS contournée (critique, base en ligne).
+- 161 tables legacy avec politiques `*_open_rollback` et droits anon complets : à arbitrer.
+
+**Reporté (non traité dans L15)**
+- Règles « administrateur » appliquées seulement par l'ERP (la RLS accepte tout rôle applicatif) ; dépôt de fichiers du portail : métadonnées non vérifiées ; souscripteur pouvant réécrire sa demande ; consultation de pièce portail non journalisée.
+- Effets de bord écrits avant l'enregistrement du document (signature d'un protocole ou d'un PV, transfert de propriété) : atomicité à revoir.
+- Plafond de décompression avant contrôle dans le lecteur .xlsx ; ids dans les attributs `onclick` (non exploitable avec des ids locaux).
+- Comptabilité : coût d'acquisition sans purge ni droits du titre ; un seul compte de contrepartie (401 / 481) ; taux fiscaux partagés par année.
+- Procédure : deux bornages « contradictoires » (enquête, cadastre) à distinguer ; définition unique d'ADU.
+- Ergonomie : saisies par `prompt()` natif, titres h1 à h3 des volets, doublons de libellés (« Pilotage », « Titres »), cartes empilées sur mobile (les tableaux défilent).

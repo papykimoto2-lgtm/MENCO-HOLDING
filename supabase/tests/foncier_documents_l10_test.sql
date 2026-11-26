@@ -10,7 +10,7 @@ do $$ begin
 end $$;
 create schema auth;
 create function auth.jwt() returns jsonb language sql stable as $$ select '{}'::jsonb $$;
-create function public.pi_foncier_touch() returns trigger language plpgsql as $$ begin new.updated_at := now(); return new; end$$;
+create or replace function public.pi_foncier_touch() returns trigger language plpgsql as $$ begin new.updated_at := now(); return new; end$$;
 create table public.pi_audits_fonciers (id text primary key, data jsonb not null default '{}', updated_at timestamptz default now(), scope_id text);
 create table public.pi_programmes (id text primary key, data jsonb not null default '{}', updated_at timestamptz default now(), scope_id text);
 insert into public.pi_programmes values ('prog1', '{"ref_import":"OP-BING-01"}');

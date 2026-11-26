@@ -20,6 +20,14 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 create extension if not exists pg_cron with schema pg_catalog;
 
+-- Conversions sûres (lot L15) : une valeur mal formée dans les paramètres ou une étape ne doit jamais arrêter tout le cycle d'alertes.
+create or replace function public.fc__date_sure(t text) returns date language plpgsql immutable set search_path = '' as $$
+begin return t::date; exception when others then return null; end$$;
+create or replace function public.fc__int_sure(t text) returns integer language plpgsql immutable set search_path = '' as $$
+begin return t::integer; exception when others then return null; end$$;
+create or replace function public.fc__bool_sure(t text) returns boolean language plpgsql immutable set search_path = '' as $$
+begin return t::boolean; exception when others then return null; end$$;
+
 create or replace function public.fc__plan_alerte(p_jours integer, p_cfg jsonb)
 returns jsonb
 language plpgsql
@@ -28,18 +36,18 @@ set search_path = ''
 as $fn$
 declare
   v_seuil integer;
-  v_esc   integer := coalesce((p_cfg ->> 'escalade_apres')::integer, 0);
+  v_esc   integer := coalesce(public.fc__int_sure(p_cfg ->> 'escalade_apres'), 0);
 begin
   if p_jours > 0 then
-    v_seuil := (select min(s::integer) from jsonb_array_elements_text(coalesce(p_cfg -> 'avant', '[]'::jsonb)) s where p_jours <= s::integer);
+    v_seuil := (select min(public.fc__int_sure(s)) from jsonb_array_elements_text(coalesce(p_cfg -> 'avant', '[]'::jsonb)) s where p_jours <= public.fc__int_sure(s));
     if v_seuil is null then return null; end if;
     return jsonb_build_object('niveau', 'avant', 'seuil', v_seuil);
   elsif p_jours = 0 then
-    if coalesce((p_cfg ->> 'jour')::boolean, false) then return jsonb_build_object('niveau', 'jour', 'seuil', 0); end if;
+    if coalesce(public.fc__bool_sure(p_cfg ->> 'jour'), false) then return jsonb_build_object('niveau', 'jour', 'seuil', 0); end if;
     return null;
   end if;
   if v_esc > 0 and -p_jours >= v_esc then return jsonb_build_object('niveau', 'escalade', 'seuil', v_esc); end if;
-  v_seuil := (select max(s::integer) from jsonb_array_elements_text(coalesce(p_cfg -> 'apres', '[]'::jsonb)) s where -p_jours >= s::integer);
+  v_seuil := (select max(public.fc__int_sure(s)) from jsonb_array_elements_text(coalesce(p_cfg -> 'apres', '[]'::jsonb)) s where -p_jours >= public.fc__int_sure(s));
   if v_seuil is null then return null; end if;
   return jsonb_build_object('niveau', 'apres', 'seuil', v_seuil);
 end
@@ -72,8 +80,8 @@ declare
   v_n integer := 0; v_canal text; v_cle text; v_now text := to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
   v_liste text[] := '{}';
 begin
-  if p_dest_type = 'user' and coalesce((p_canaux ->> 'interne')::boolean, true) then v_liste := array_append(v_liste, 'interne'::text); end if;
-  if coalesce(p_email, '') <> '' and coalesce((p_canaux ->> 'email')::boolean, true) and (p_dest_type <> 'user' or p_urgent) then v_liste := array_append(v_liste, 'email'::text); end if;
+  if p_dest_type = 'user' and coalesce(public.fc__bool_sure(p_canaux ->> 'interne'), true) then v_liste := array_append(v_liste, 'interne'::text); end if;
+  if coalesce(p_email, '') <> '' and coalesce(public.fc__bool_sure(p_canaux ->> 'email'), true) and (p_dest_type <> 'user' or p_urgent) then v_liste := array_append(v_liste, 'email'::text); end if;
   foreach v_canal in array v_liste loop
     v_cle := p_dedup || '|' || coalesce(nullif(p_dest_id, ''), p_email) || '|' || v_canal;
     if exists (select 1 from public.pi_notifications_foncieres where data ->> 'dedup' = v_cle) then continue; end if;
@@ -124,7 +132,8 @@ begin
       and coalesce(e.val ->> 'statut', '') not in ('termine', 'rejete', 'annule')
   loop
     v_type := case when (r.val ->> 'statut') in ('attente_administration', 'attente_decision') then 'administratif' else 'interne' end;
-    v_jours := (r.val ->> 'date_cible')::date - p_aujourdhui;
+    v_jours := public.fc__date_sure(r.val ->> 'date_cible') - p_aujourdhui;
+    if v_jours is null then continue; end if;
     v_plan := public.fc__plan_alerte(v_jours, v_cfg -> v_type);
     if v_plan is null then continue; end if;
     v_alertes := v_alertes + 1;
@@ -152,7 +161,8 @@ begin
     where coalesce(m.data ->> 'statut', '') in ('envoyee', 'acceptee', 'en_cours', 'attente_informations', 'livrable_soumis', 'en_verification', 'a_corriger')
       and coalesce(m.data ->> '_deleted', '') <> 'true' and coalesce(m.data ->> 'echeance', '') ~ '^\d{4}-\d{2}-\d{2}$'
   loop
-    v_jours := (r.m ->> 'echeance')::date - p_aujourdhui;
+    v_jours := public.fc__date_sure(r.m ->> 'echeance') - p_aujourdhui;
+    if v_jours is null then continue; end if;
     v_plan := public.fc__plan_alerte(v_jours, v_cfg -> 'mission');
     if v_plan is null then continue; end if;
     v_alertes := v_alertes + 1;
