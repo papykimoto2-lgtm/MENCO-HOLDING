@@ -135,7 +135,7 @@ Légende : **E** existant · **A** à adapter · **N** nouveau. Priorité : P1 i
 
 ## 5. Modèle de données (cible)
 
-Tables nouvelles ou étendues, préfixe `foncier_`. Toutes avec : `id uuid pk`, `organisation_id`, `created_at`, `created_by`, `updated_at`, `deleted_at`.
+**Convention retenue (lot L1)** : format uniforme de l'ERP `pi_*` (`id text`, `data jsonb`, `updated_at`, `scope_id`), une base par client, pas d'`organisation_id`. Les noms ci-dessous sont logiques ; tables réelles : `pi_villages_fonciers`, `pi_ayants_droit_fonciers` (lien parcelles dans `data.parcelles`), `pi_titres_fonciers`. Les tables typées (PostGIS) arrivent au lot L2.
 
 | Table | Rôle |
 |---|---|
