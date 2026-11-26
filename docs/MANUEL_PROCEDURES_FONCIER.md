@@ -297,6 +297,13 @@ Différence avec le classeur Excel : le verdict du classeur donne « GO » même
 
 Les cases du constat de terrain (PV de remise de lot) restent à cocher à la main sur le site. Base de données : `supabase/foncier_documents_l10.sql` (après `foncier_audit_l8.sql`). À faire valider par un juriste : les textes des modèles sont ceux fournis, repris tels quels.
 
+## L11 — Parcours guidé, fiche 360°, notes de calcul
+
+- **Parcours foncier** (Vue d'ensemble) : 9 étapes par terre. Pastille verte fait, orange en cours, rouge bloqué, grise à faire. Survol = ce qui manque. « À faire maintenant » classe les blocages d'abord.
+- **Fiche 360°** : clic sur la référence d'une parcelle dans les listes 2.6 ou dans le parcours. Chaque bloc a un bouton « Ouvrir ».
+- **Note de calcul** : volet bleu replié en tête de chaque onglet ; « Note complète du module » l'imprime ; « Carte des interconnexions » liste les flux entre écrans et modules.
+- **Navigation 2.6** : boutons regroupés par étape ; le bandeau donne l'étape, son but, et les boutons précédent / suivant.
+
 **Tableau des étapes de la procédure rurale** (31 étapes ; l'ERP ajoute « Création du dossier » au début et « Clôture » à la fin)
 
 **Rural — Phase 1 : recherche, délimitation et levé de la parcelle**
