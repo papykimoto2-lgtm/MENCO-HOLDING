@@ -304,6 +304,25 @@ Les cases du constat de terrain (PV de remise de lot) restent à cocher à la ma
 - **Note de calcul** : volet bleu replié en tête de chaque onglet ; « Note complète du module » l'imprime ; « Carte des interconnexions » liste les flux entre écrans et modules.
 - **Navigation 2.6** : boutons regroupés par étape ; le bandeau donne l'étape, son but, et les boutons précédent / suivant.
 
+## L12 — Cohérence des données foncières
+
+Écran **Vue d'ensemble › 🩺 Cohérence des données**. Le contrôle ne modifie rien ; chaque ligne propose sa correction.
+
+| Anomalie | Niveau | Correction depuis le logiciel |
+|---|---|---|
+| Superficie déclarée ≠ contour (≥ 5 % ; ≥ 25 % critique) | À corriger / critique | Aligner sur le contour (motif ; parcelle titrée : administrateur) ou corriger les bornes |
+| Doublon (contours recouverts à ≥ 90 %) | À corriger | Archiver la fiche sans lien dans l'autre (administrateur, motif) ; réversible |
+| Parcelle incluse dans une autre | À corriger | Archiver la fiche incluse si aucun lien |
+| Chevauchement partiel | Critique | Corriger les bornes ou déroger (administrateur, motif écrit) |
+| Lot vendu sans souscripteur | Critique | Ouvrir les lots |
+| Terre rurale lotie sans protocole signé | Critique | Ouvrir les protocoles |
+| Opposition active sur terre vendue | Critique | Traiter les oppositions |
+| Titre foncier / ACD sans titre saisi | À corriger | Saisir le titre |
+| Acquisition non comptabilisée | À corriger | Générer l'écriture |
+| Lots plus grands que la parcelle, terre rurale sans ayant droit, superficie ou contour absent | À corriger / à vérifier | Ouvrir l'écran indiqué |
+
+Chaque correction est inscrite à l'historique de la parcelle et au journal. « État imprimable » sort la liste pour la revue de direction.
+
 **Tableau des étapes de la procédure rurale** (31 étapes ; l'ERP ajoute « Création du dossier » au début et « Clôture » à la fin)
 
 **Rural — Phase 1 : recherche, délimitation et levé de la parcelle**

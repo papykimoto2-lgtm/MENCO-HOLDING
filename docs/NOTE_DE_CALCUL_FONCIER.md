@@ -808,6 +808,37 @@
 
 **Alimente** : Clôture du dossier
 
+## Cohérence des données  `page:coherence`
+
+**À quoi ça sert.** Repérer ce qui ne colle pas dans vos données foncières et le corriger sans quitter le logiciel.
+
+**Comment faire**
+
+1. Lire les anomalies, critiques en premier.
+2. Cliquer la correction proposée : écran à ouvrir ou correction guidée.
+3. Relancer le contrôle pour vérifier que l'anomalie a disparu.
+4. Imprimer l'état pour la revue de direction.
+
+**Calculs**
+
+| Calcul | Formule |
+|---|---|
+| Aire du contour | formule de Gauss (shoelace) sur les bornes UTM, en m² |
+| Écart de superficie | (aire du contour − superficie déclarée) ÷ superficie déclarée × 100 ; ≥ 5 % à corriger, ≥ 25 % critique |
+| Recouvrement de deux contours | aire commune ÷ aire de chacun ; ≥ 90 % pour les deux = doublon ; ≥ 90 % pour la plus petite seulement = incluse ; sinon chevauchement partiel |
+
+**Règles appliquées**
+
+- Le contrôle ne modifie rien.
+- Alignement de superficie : motif obligatoire ; parcelle titrée = administrateur seul.
+- Fusion d'un doublon : administrateur, motif, uniquement si la fiche archivée n'a aucun élément lié ; réversible (« Rétablir »).
+- Dérogation de chevauchement : administrateur et motif écrit.
+- Chaque correction est inscrite à l'historique de la parcelle et au journal.
+
+**Reçoit de** : Parcelles ; Lots ; Titres ; Comptabilité ; Procédures rurales
+
+**Alimente** : Parcelles (superficie, archivage) ; Comptabilité (écriture d'acquisition) ; Cartographie
+
 ## Parcours foncier  `page:parcours`
 
 **À quoi ça sert.** Suivre chaque terre de l'identification à la remise des titres.

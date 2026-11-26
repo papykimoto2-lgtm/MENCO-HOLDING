@@ -72,7 +72,7 @@ test('notes : chaque onglet et chaque vue 2.6 a sa note complète ; liens valide
     await amorcer(app.page);
     const r = await app.page.evaluate(() => {
       var manque = [], vides = [], cibles = [];
-      var tabs = Array.prototype.map.call(document.querySelectorAll('[id^="tab-foncier-"]'), function (e) { return e.id.replace('tab-foncier-', ''); }).filter(function (t) { return t !== 'rural' && t !== 'parcours' && t !== 'dashboard'; });
+      var tabs = Array.prototype.map.call(document.querySelectorAll('[id^="tab-foncier-"]'), function (e) { return e.id.replace('tab-foncier-', ''); }).filter(function (t) { return t !== 'rural' && t !== 'parcours' && t !== 'dashboard' && t !== 'coherence'; });
       tabs.forEach(function (t) { if (!FON_NOTES['tab:' + t]) manque.push('tab:' + t); });
       FON_ONGLETS.forEach(function (o) { if (!FON_NOTES['rural:' + o[0]]) manque.push('rural:' + o[0]); });
       if (!FON_NOTES['page:parcours']) manque.push('page:parcours');
