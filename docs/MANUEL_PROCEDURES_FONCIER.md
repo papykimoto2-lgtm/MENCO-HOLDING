@@ -375,6 +375,27 @@ Valable pour tous les écrans de **2.6 Droits & procédure foncière** (enquête
 
 **Ré-import sans doublon.** Clé d'une opération : référence d'import, à défaut référence de la parcelle liée. Clé d'un lot : référence d'import, à défaut opération + îlot + numéro. L'état exporté se ré-importe donc avec « mise à jour » partout et aucune création ; un lot déjà rattaché à un souscripteur garde son statut et son prix. Les lots sans programme ne sont pas exportés (le nombre figure dans la synthèse).
 
+## Ce qui est nouveau, ce qui est ajusté
+
+Dans **Paramètres › Manuels & flux**, un panneau « Foncier — ce qui est nouveau, ce qui est ajusté » et des marques de couleur sur les diagrammes : 🟢 **NOUVEAU** (vert) = procédure ou diagramme créé ; 🟠 **AJUSTÉ** (orange) = procédure existante dont le comportement change ; sans marque = inchangé.
+
+**Procédures d'immatriculation.** Aucune nouvelle procédure d'immatriculation n'a été créée. L'immatriculation **urbaine** (ACD → titre foncier) est inchangée. L'immatriculation **rurale** (AFOR, 31 étapes) garde ses étapes et reçoit un contrôle foncier rural (🟠).
+
+| Marque | Procédure | Ce qui change | Lots |
+|---|---|---|---|
+| 🟢 NOUVEAU | Parcours foncier : les 9 étapes d'une terre | Suivi de chaque terre de l'identification à la remise | L11 |
+| 🟢 NOUVEAU | Audit pré-acquisition et protocole de purge | 19 points Go / No-Go, protocole, annexes, réitération | L8, L10 |
+| 🟢 NOUVEAU | Enquête, bornage et oppositions | Registres de la phase de publicité | L3 |
+| 🟢 NOUVEAU | Remise du lot et de l'ACD | PV de remise | L10 |
+| 🟢 NOUVEAU | Classeur Excel MENKO : export du logiciel et import | Modèle vierge, état à jour, ré-import sans doublon | L9, L14 |
+| 🟢 NOUVEAU | Contrôle de cohérence des données foncières | Constats, propositions, décisions de l'utilisateur | L12 |
+| 🟢 NOUVEAU | Imprimer, modifier, supprimer un enregistrement foncier | Moteur d'impression, historique, suppression contrôlée | L13 |
+| 🟠 AJUSTÉ | Immatriculation rurale (31 étapes) | Étapes inchangées ; contrôle foncier rural (enquête enregistrée, bornage contradictoire, opposition active suspend la certification) ; dérogation administrateur + motif | L3 |
+| 🟠 AJUSTÉ | Portefeuille foncier — acquisition | Régime obligatoire ; chevauchement refusé ; écriture d'acquisition SYSCOHADA si traitement comptable | L1, L2, L4 |
+| 🟠 AJUSTÉ | Portefeuille foncier — cession | Charge active = cession bloquée ; sortie de la parcelle au prorata ; contre-passation à la résiliation | L4, L5 |
+| 🟠 AJUSTÉ | Aménagement Foncier — opération d'acquisition | Sortie de « Négociation » : audit GO exigé | L8 |
+| 🟠 AJUSTÉ | Paramètres › Comptes par défaut | Comptes terrain (immobilisation, stock, achat, variation, contrepartie, valeur comptable des cessions), classes contrôlées | L4 |
+
 **Tableau des étapes de la procédure rurale** (31 étapes ; l'ERP ajoute « Création du dossier » au début et « Clôture » à la fin)
 
 **Rural — Phase 1 : recherche, délimitation et levé de la parcelle**
