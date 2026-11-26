@@ -116753,6 +116753,7 @@ function _fonBtn(label, js, cls) { return '<button class="btn btn-secondary btn-
 function fonRuralRender() {
   var host = document.getElementById('fon-rural-liste'); if (!host) return;
   if (FON_RURAL.vue === 'audits') return fonAuditRender();
+  if (FON_RURAL.vue === 'import') return fonImportRender();
   if (FON_RURAL.vue === 'pilotage') { fonPilotageRender(); return fonAlertesBadge(); }
   if (FON_RURAL.vue === 'terrain') return fonTerrainRender();
   var vue = FON_RURAL.vue, T = FON_RURAL_TYPES[vue], liste = DATA[T.store] || [], aujourd = fcAuj();
@@ -117136,6 +117137,11 @@ function fonAlertes(aujourd) {
   (DATA.charges_fonciers || []).forEach(function (c) {
     if (c.statut === 'active' && c.date_fin && c.date_fin < aujourd) add('info', 'charges', c.reference, 'Charge ' + (c.type || '') + ' ' + (c.reference || '') + ' (' + _fonParcRef(c.parcelle_id) + ') : date de fin dépassée, vérifier la mainlevée.');
   });
+  (DATA.lots || []).forEach(function (l) {
+    var sv = l.suivi_titre; if (sv && sv.motif_blocage && sv.motif_blocage !== 'Aucun blocage' && !sv.date_remise_client) add('orange', 'import', l.ref_import || '', 'Lot ' + (l.ref_import || l.numero) + ' : dossier de titre bloqué — ' + sv.motif_blocage + '.');
+  });
+  var aRattacher = (DATA.lots || []).filter(function (l) { return l.import_vente && l.import_vente.statut_commercial === 'Vendu' && !_fonImpClientDuLot(l); }).length;
+  if (aRattacher) add('info', 'import', '', aRattacher + ' lot(s) vendu(s) importé(s) à rattacher à leur souscripteur (Clients).');
   return out.sort(function (a, b) { return FON_NIVEAUX[a.niveau] - FON_NIVEAUX[b.niveau]; });
 }
 /* Indicateurs de pilotage (cahier §8). */
@@ -117415,6 +117421,338 @@ function fonAuditRender() {
     + '<div class="table-wrap"><table><thead><tr><th>Réf.</th><th>Projet</th><th>Village</th><th>Zone</th><th>Conformité</th><th>Verdict</th><th>Décision</th><th></th></tr></thead><tbody>'
     + (liste.length ? liste.map(function (a) { var v = fonAuditVerdict(a); return '<tr><td>' + E(a.reference || '') + '</td><td>' + E(a.code_projet || '—') + '</td><td>' + E(a.village || '—') + '</td><td>' + E(a.zone) + '</td><td>' + v.conformes + ' / ' + v.total + '</td><td>' + E(v.libelle.split(' (')[0]) + '</td><td>' + (a.decision && a.decision !== 'en_attente' ? '<b>' + E(a.decision.toUpperCase()) + '</b>' : 'en attente') + '</td><td>' + _fonBtn('Ouvrir', 'fonAuditOuvrir(\'' + a.id + '\')') + '</td></tr>'; }).join('') : '<tr><td colspan="8" style="text-align:center;color:var(--dim);padding:18px;">Aucun audit.</td></tr>') + '</tbody></table></div>';
 }
+
+/* ═══ Foncier urbain et rural — lot L9 : import Excel « MENKO ERP Foncier V2 » (opérations, lots, suivi des dossiers de titre) ═══
+   Lecteur .xlsx intégré (ZIP + XML, aucune bibliothèque externe, fonctionne hors ligne). Analyse complète AVANT toute écriture :
+   rapport ligne par ligne, rien n'est créé tant que vous ne confirmez pas. Idempotent : une clé d'import (id_operation, id_lot_menko)
+   retrouve l'enregistrement existant, ré-importer met à jour sans doublon.
+   · Opération → programme (lotissement) + parcelle mère (régime urbain) + titre mère si un n° de TF est donné ;
+   · Lot → lot terrain du programme ; un lot « Vendu » n'est PAS marqué vendu (le statut vient des versements du souscripteur) : il est
+     listé « vente à rattacher » avec acquéreur, prix et taux ; les lots hors vente (part villageoise, équipement, litige) restent réservés ;
+   · Suivi du dossier → fiche de suivi du titre portée par le lot (lot.suivi_titre). */
+var FON_IMPORT_FEUILLES = {
+  operations: { nom: 'MENKO_OPERATIONS', cle: 'id_operation', requis: ['id_operation', 'nom_programme', 'commune_localite', 'superficie_totale_m2'] },
+  lots: { nom: 'MENKO_LOTS', cle: 'id_lot_menko', requis: ['id_lot_menko', 'id_operation', 'num_lot', 'superficie_m2'] },
+  workflow: { nom: 'MENKO_WORKFLOW_DOSSIERS', cle: 'id_dossier_menko', requis: ['id_dossier_menko', 'id_lot_menko', 'type_procedure'] }
+};
+var FON_IMPORT_LISTES = {
+  statut_purge_coutumiere: ['Non démarrée', 'En négociation chefferie', 'Protocole signé', 'En cours', 'Finalisée', 'Litige coutumier'],
+  affectation_urbanisme: ['Habitation Individuelle', 'Habitation Collective', 'Commercial / Bureaux', 'Équipement Public / École', 'Espace Vert / Voirie', 'Zone Industrielle'],
+  origine_propriete: ['Part Aménageur', 'Part Villageoise', 'Réserve État / Équipement', 'Litige / Gelé', 'Non Commercialisable (Part Village)', 'Non Commercialisable (Équipement)'],
+  statut_commercial: ['Disponible', 'Option', 'Réservé', 'Vendu', 'Non Commercialisable (Part Village)', 'Non Commercialisable (Équipement)', 'Litige / Gelé'],
+  statut_juridique_lot: ['Parcelle Brute', 'Attestation Villageoise (ADU)', 'Lotissement Approuvé', 'En cours Morcellement', 'TF Parcellaire Créé', 'ACD Délivré', 'Muté Acquéreur', 'Domaine Public / Réserve MCLU', 'Réserve Domaniale'],
+  urbaniste_validation_plan: ['En attente étude', 'Projet esquissé', 'Validé et Signé (ONUCI)', 'Rejeté / À reprendre'],
+  geometre_dossier_tech: ['Non commandé', 'Levé terrain en cours', 'Visé et Géoréférencé', 'Rejeté Cadastre'],
+  statut_instruction_mclu: ['Non déposé', 'En cours d\'instruction', 'Enquête Commodo', 'Rejet / Complément', 'Validé / Transmis Conservation', 'Arrêté / ACD Signé'],
+  motif_blocage: ['Aucun blocage', 'Attente visa Urbaniste (ONUCI)', 'Attente dossier Géomètre', 'Chevauchement / Superposition', 'Opposition villageoise', 'Pièce client manquante', 'Retard paiement client (<30%)', 'Attente signature administration']
+};
+
+/* ── Lecteur .xlsx (ZIP + XML) ── */
+function _fonZipLire(buf) {
+  var dv = new DataView(buf), u8 = new Uint8Array(buf), n = u8.length, e = -1;
+  for (var i = n - 22; i >= Math.max(0, n - 65557); i--) { if (dv.getUint32(i, true) === 0x06054b50) { e = i; break; } }
+  if (e < 0) throw new Error("Ce fichier n'est pas un classeur Excel (.xlsx).");
+  var nb = dv.getUint16(e + 10, true), off = dv.getUint32(e + 16, true), entrees = {}, td = new TextDecoder();
+  if (nb > 200) throw new Error('Classeur anormal (trop de parties).');
+  for (var k = 0; k < nb; k++) {
+    if (dv.getUint32(off, true) !== 0x02014b50) throw new Error('Classeur corrompu (répertoire central).');
+    var meth = dv.getUint16(off + 10, true), csz = dv.getUint32(off + 20, true), usz = dv.getUint32(off + 24, true), ln = dv.getUint16(off + 28, true), xl = dv.getUint16(off + 30, true), cl = dv.getUint16(off + 32, true), lh = dv.getUint32(off + 42, true);
+    var nom = td.decode(u8.subarray(off + 46, off + 46 + ln));
+    if (usz > 30 * 1024 * 1024) throw new Error('Classeur anormal (partie trop volumineuse).');
+    entrees[nom] = { meth: meth, csz: csz, usz: usz, lh: lh }; off += 46 + ln + xl + cl;
+  }
+  return { u8: u8, dv: dv, entrees: entrees };
+}
+async function _fonZipPartie(z, nom) {
+  var en = z.entrees[nom]; if (!en) return null;
+  if (z.dv.getUint32(en.lh, true) !== 0x04034b50) throw new Error('Classeur corrompu (' + nom + ').');
+  var ds = en.lh + 30 + z.dv.getUint16(en.lh + 26, true) + z.dv.getUint16(en.lh + 28, true), data = z.u8.subarray(ds, ds + en.csz);
+  if (en.meth === 0) return new TextDecoder().decode(data);
+  if (en.meth !== 8) throw new Error('Compression non prise en charge (' + en.meth + ').');
+  if (typeof DecompressionStream === 'undefined') throw new Error('Navigateur trop ancien pour lire un .xlsx : utilisez une version récente de Chrome, Edge, Safari ou Firefox.');
+  var flux = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw')), buf = await new Response(flux).arrayBuffer();
+  if (buf.byteLength > 30 * 1024 * 1024) throw new Error('Classeur anormal (partie trop volumineuse).');
+  return new TextDecoder().decode(buf);
+}
+function _fonXml(txt) { var d = new DOMParser().parseFromString(txt, 'application/xml'); if (d.getElementsByTagName('parsererror').length) throw new Error('XML illisible dans le classeur.'); return d; }
+function _fonColIndex(ref) { var m = /^([A-Z]+)/.exec(ref || ''), c = 0; if (!m) return -1; for (var i = 0; i < m[1].length; i++) c = c * 26 + (m[1].charCodeAt(i) - 64); return c - 1; }
+function fonExcelSerialVersDate(v) { if (!(v > 0)) return ''; var d = new Date(Math.round((v - 25569) * 864e5)); return isNaN(d) ? '' : d.toISOString().slice(0, 10); }
+/* Lit un .xlsx : { feuilles: { nom: [[valeurs…], …] } }. Dates Excel converties en AAAA-MM-JJ. */
+async function fonXlsxLire(buf) {
+  var z = _fonZipLire(buf), wb = await _fonZipPartie(z, 'xl/workbook.xml'); if (!wb) throw new Error("Ce fichier n'est pas un classeur Excel (.xlsx).");
+  var rels = _fonXml(await _fonZipPartie(z, 'xl/_rels/workbook.xml.rels')), cibles = {};
+  Array.prototype.forEach.call(rels.getElementsByTagName('Relationship'), function (r) { cibles[r.getAttribute('Id')] = r.getAttribute('Target'); });
+  var ss = [], sst = await _fonZipPartie(z, 'xl/sharedStrings.xml');
+  if (sst) Array.prototype.forEach.call(_fonXml(sst).getElementsByTagName('si'), function (si) { ss.push(Array.prototype.map.call(si.getElementsByTagName('t'), function (t) { return t.textContent; }).join('')); });
+  var datesStyles = {}, sty = await _fonZipPartie(z, 'xl/styles.xml');
+  if (sty) {
+    var sd = _fonXml(sty), fmts = {}; Array.prototype.forEach.call(sd.getElementsByTagName('numFmt'), function (f) { fmts[f.getAttribute('numFmtId')] = f.getAttribute('formatCode') || ''; });
+    var xfs = sd.getElementsByTagName('cellXfs')[0]; if (xfs) Array.prototype.forEach.call(xfs.getElementsByTagName('xf'), function (xf, i) {
+      var id = parseInt(xf.getAttribute('numFmtId'), 10), code = fmts[id] || '';
+      if ((id >= 14 && id <= 22) || (id >= 45 && id <= 47) || (code && /[dy]/i.test(code.replace(/"[^"]*"|\[[^\]]*\]|\\./g, '')))) datesStyles[i] = true;
+    });
+  }
+  var res = { feuilles: {} }, feuilles = _fonXml(wb).getElementsByTagName('sheet');
+  for (var i = 0; i < feuilles.length; i++) {
+    var f = feuilles[i], rid = f.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id') || f.getAttribute('r:id'), cible = cibles[rid]; if (!cible) continue;
+    var chemin = cible.charAt(0) === '/' ? cible.slice(1) : 'xl/' + cible, xml = await _fonZipPartie(z, chemin); if (!xml) continue;
+    var rows = [], max = 0;
+    Array.prototype.forEach.call(_fonXml(xml).getElementsByTagName('row'), function (row) {
+      var ri = parseInt(row.getAttribute('r'), 10) - 1; if (!(ri >= 0) || ri > 50000) return; var cur = rows[ri] = rows[ri] || [];
+      Array.prototype.forEach.call(row.getElementsByTagName('c'), function (c) {
+        var ci = _fonColIndex(c.getAttribute('r')); if (ci < 0 || ci > 200) return;
+        var t = c.getAttribute('t'), v = c.getElementsByTagName('v')[0], val = '';
+        if (t === 's') val = v ? (ss[parseInt(v.textContent, 10)] || '') : '';
+        else if (t === 'inlineStr') val = Array.prototype.map.call(c.getElementsByTagName('t'), function (x) { return x.textContent; }).join('');
+        else if (t === 'str' || t === 'e') val = v ? v.textContent : '';
+        else if (t === 'b') val = v && v.textContent === '1' ? 'VRAI' : 'FAUX';
+        else if (v && v.textContent !== '') { var num = parseFloat(v.textContent); val = datesStyles[parseInt(c.getAttribute('s'), 10)] ? fonExcelSerialVersDate(num) : num; }
+        cur[ci] = val; if (ci + 1 > max) max = ci + 1;
+      });
+    });
+    for (var r = 0; r < rows.length; r++) { rows[r] = rows[r] || []; for (var c2 = 0; c2 < max; c2++) if (rows[r][c2] === undefined) rows[r][c2] = ''; }
+    res.feuilles[f.getAttribute('name')] = rows;
+  }
+  return res;
+}
+/* Lignes de données d'une feuille : trouve la ligne d'en-têtes techniques (contenant la clé), saute la ligne de libellés. */
+function fonImportLignes(rows, def) {
+  var h = -1; for (var i = 0; i < Math.min(rows.length, 10); i++) { if ((rows[i] || []).some(function (c) { return String(c).trim() === def.cle; })) { h = i; break; } }
+  if (h < 0) return null;
+  var ent = rows[h].map(function (c) { return String(c).trim(); }), out = [];
+  for (var r = h + 1; r < rows.length; r++) {
+    var row = rows[r] || [], o = { _ligne: r + 1 }, vide = true;
+    ent.forEach(function (k, j) { if (!k) return; var v = row[j]; v = typeof v === 'string' ? v.trim() : (v === undefined ? '' : v); o[k] = v; if (v !== '') vide = false; });
+    if (vide) continue;
+    if (r === h + 1 && /^ID\b/i.test(String(o[def.cle] || ''))) continue;   /* ligne de libellés lisibles */
+    out.push(o);
+  }
+  return { entetes: ent, lignes: out };
+}
+/* ── Analyse (aucune écriture) ── */
+function _fonImpNorm(s) { return String(s == null ? '' : s).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[’‘`´]/g, "'").replace(/\s+/g, ' ').trim().toLowerCase(); }
+function _fonImpListe(liste, v) { var n = _fonImpNorm(v); for (var i = 0; i < liste.length; i++) if (_fonImpNorm(liste[i]) === n) return liste[i]; return null; }
+function _fonImpNum(v) { if (typeof v === 'number') return isFinite(v) ? v : null; var s = String(v == null ? '' : v).replace(/[\s ]/g, '').replace(',', '.'); return s !== '' && /^-?\d+(\.\d+)?$/.test(s) ? parseFloat(s) : null; }
+function _fonImpDate(v) { if (v === '' || v == null) return ''; var s = String(v).trim(), m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s) || null; if (!m) { var f = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s); if (f) m = [0, f[3], f[2], f[1]]; } if (!m) return null; var d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])); return d.getUTCFullYear() === +m[1] && d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[3] ? m[1] + '-' + m[2] + '-' + m[3] : null; }
+var FON_IMPORT_HORS_VENTE = ['Part Villageoise', 'Réserve État / Équipement', 'Litige / Gelé', 'Non Commercialisable (Part Village)', 'Non Commercialisable (Équipement)'];
+var FON_IMPORT_CHRONO = [['date_visa_urbaniste', 'visa de l\'urbaniste'], ['date_visa_geometre', 'visa du géomètre'], ['date_depot_guf', 'dépôt au GUF'], ['date_bornage_cadastre', 'bornage cadastre'], ['date_publication_jo', 'publication au JO'], ['date_creation_tf_acd', 'création du TF / ACD'], ['notaire_transmission_date', 'transmission au notaire'], ['date_remise_client', 'remise au client']];
+function fonImportAnalyser(classeur) {
+  var pb = [], R = { operations: [], lots: [], workflow: [], feuilles: {}, problemes: pb };
+  var P = function (feuille, ligne, champ, niveau, msg, row) { pb.push({ feuille: feuille, ligne: ligne, champ: champ, niveau: niveau, msg: msg }); if (niveau === 'erreur' && row) row._erreur = true; };
+  var noms = Object.keys(classeur.feuilles || {});
+  Object.keys(FON_IMPORT_FEUILLES).forEach(function (k) {
+    var def = FON_IMPORT_FEUILLES[k], nom = noms.filter(function (n) { return n.trim().toUpperCase() === def.nom; })[0], lues = nom ? fonImportLignes(classeur.feuilles[nom], def) : null;
+    R.feuilles[k] = { trouvee: !!lues, nom: def.nom, nb: lues ? lues.lignes.length : 0 };
+    if (!lues) { if (k !== 'workflow') P(def.nom, 0, '', 'erreur', 'Feuille « ' + def.nom + ' » absente ou sans ligne d\'en-têtes (colonne ' + def.cle + ').'); return; }
+    var manque = def.requis.filter(function (c) { return lues.entetes.indexOf(c) === -1; });
+    if (manque.length) { P(def.nom, 0, manque.join(', '), 'erreur', 'Colonnes obligatoires absentes : ' + manque.join(', ') + '.'); return; }
+    R[k] = lues.lignes;
+  });
+  var COLS = { operations: ['id_operation', 'nom_programme', 'commune_localite', 'village_concerne', 'statut_purge_coutumiere', 'ref_guide_villageois', 'urbaniste_agree', 'num_agrement_urbaniste', 'date_depot_plan_lotissement', 'date_enquete_commodo', 'ref_arrete_approbation', 'date_arrete_approbation', 'geometre_agree', 'num_agrement_geometre', 'num_tf_mere', 'superficie_totale_m2', 'quote_part_amenageur_pct', 'quote_part_village_pct', 'notaire_operation'],
+    lots: ['id_lot_menko', 'id_operation', 'num_ilot', 'num_lot', 'superficie_m2', 'affectation_urbanisme', 'origine_propriete', 'statut_commercial', 'statut_juridique_lot', 'num_tf_parcellaire', 'code_client_menko', 'nom_acquereur', 'prix_cession_fcfa', 'taux_encaissement_pct', 'eligible_morcellement', 'coordonnees_utm_x', 'coordonnees_utm_y', 'observations_terrain'],
+    workflow: ['id_dossier_menko', 'id_lot_menko', 'type_procedure', 'urbaniste_validation_plan', 'date_visa_urbaniste', 'geometre_dossier_tech', 'date_visa_geometre', 'num_recepisse_guf', 'date_depot_guf', 'statut_instruction_mclu', 'date_bornage_cadastre', 'date_publication_jo', 'date_creation_tf_acd', 'num_titre_final', 'notaire_transmission_date', 'date_remise_client', 'motif_blocage', 'commentaire_suivi'] };
+  ['operations', 'lots', 'workflow'].forEach(function (k) { (R[k] || []).forEach(function (row) { COLS[k].forEach(function (c) { if (row[c] === undefined) row[c] = ''; }); }); });   /* colonnes facultatives absentes du classeur = vides */
+  var ops = R.operations, lots = R.lots, wf = R.workflow, vus;
+  var opsParId = {}, lotsParId = {}, progExist = function (id) { return (DATA.programmes || []).find(function (p) { return p.ref_import === id; }); }, lotExist = function (id) { return (DATA.lots || []).find(function (l) { return l.ref_import === id; }); };
+  var liste = function (S, row, champ, cle) { var v = row[champ]; if (v === '' || v == null) return ''; var ok = _fonImpListe(FON_IMPORT_LISTES[cle || champ], v); if (ok === null) P(S, row._ligne, champ, 'erreur', 'Valeur « ' + v + ' » hors liste (' + FON_IMPORT_LISTES[cle || champ].join(' · ') + ').', row); return ok || ''; };
+  var date = function (S, row, champ) { var d = _fonImpDate(row[champ]); if (d === null) { P(S, row._ligne, champ, 'erreur', 'Date invalide « ' + row[champ] + ' » (AAAA-MM-JJ attendu).', row); return ''; } return d; };
+  var SO = FON_IMPORT_FEUILLES.operations.nom, SL = FON_IMPORT_FEUILLES.lots.nom, SW = FON_IMPORT_FEUILLES.workflow.nom;
+  vus = {};
+  ops.forEach(function (o) {
+    var id = String(o.id_operation).trim(); o.id_operation = id;
+    if (!id) P(SO, o._ligne, 'id_operation', 'erreur', 'Identifiant obligatoire.', o); else if (vus[id]) P(SO, o._ligne, 'id_operation', 'erreur', 'Identifiant en double (déjà ligne ' + vus[id] + ').', o); else { vus[id] = o._ligne; opsParId[id] = o; }
+    if (!String(o.nom_programme).trim()) P(SO, o._ligne, 'nom_programme', 'erreur', 'Nom du programme obligatoire.', o);
+    if (!String(o.commune_localite).trim()) P(SO, o._ligne, 'commune_localite', 'erreur', 'Commune obligatoire.', o);
+    o._sup = _fonImpNum(o.superficie_totale_m2); if (!(o._sup > 0)) P(SO, o._ligne, 'superficie_totale_m2', 'erreur', 'Superficie totale (m²) obligatoire et supérieure à 0.', o);
+    if (o.statut_purge_coutumiere === '') P(SO, o._ligne, 'statut_purge_coutumiere', 'avertissement', 'Statut de purge non renseigné.'); else o._purge = liste(SO, o, 'statut_purge_coutumiere');
+    var qa = _fonImpNum(o.quote_part_amenageur_pct), qv = _fonImpNum(o.quote_part_village_pct);
+    if ((o.quote_part_amenageur_pct !== '' && qa === null) || (o.quote_part_village_pct !== '' && qv === null)) P(SO, o._ligne, 'quote_part', 'erreur', 'Quote-part non numérique.', o);
+    else if (qa !== null && qv !== null) { if (qa < 0 || qv < 0 || Math.abs(qa + qv - 100) > 0.01) P(SO, o._ligne, 'quote_part', 'erreur', 'Quotes-parts aménageur + village = ' + (qa + qv) + ' % (100 % attendus).', o); }
+    else P(SO, o._ligne, 'quote_part', 'avertissement', 'Quote-part aménageur ou village non renseignée.');
+    o._qa = qa; o._qv = qv;
+    ['date_depot_plan_lotissement', 'date_enquete_commodo', 'date_arrete_approbation'].forEach(function (c) { o['_' + c] = date(SO, o, c); });
+    var d1 = o._date_depot_plan_lotissement, d2 = o._date_enquete_commodo, d3 = o._date_arrete_approbation;
+    if (d1 && d2 && d2 < d1) P(SO, o._ligne, 'date_enquete_commodo', 'avertissement', 'Enquête commodo antérieure au dépôt du plan de lotissement.');
+    if (d2 && d3 && d3 < d2) P(SO, o._ligne, 'date_arrete_approbation', 'avertissement', 'Arrêté d\'approbation antérieur à l\'enquête commodo.');
+    if (d3 && !String(o.ref_arrete_approbation).trim()) P(SO, o._ligne, 'ref_arrete_approbation', 'avertissement', 'Date d\'arrêté sans numéro d\'arrêté.');
+    if (String(o.urbaniste_agree).trim() && !String(o.num_agrement_urbaniste).trim()) P(SO, o._ligne, 'num_agrement_urbaniste', 'avertissement', 'Urbaniste sans numéro d\'agrément.');
+    if (String(o.geometre_agree).trim() && !String(o.num_agrement_geometre).trim()) P(SO, o._ligne, 'num_agrement_geometre', 'avertissement', 'Géomètre sans numéro d\'agrément.');
+    o._tf = /^TF[\s-]?\d+/i.test(String(o.num_tf_mere).trim()) ? String(o.num_tf_mere).trim() : '';
+    o._existe = progExist(id) ? 'maj' : 'creation';
+  });
+  vus = {}; var cleLot = {}, sommeOp = {};
+  lots.forEach(function (l) {
+    var id = String(l.id_lot_menko).trim(); l.id_lot_menko = id; l.id_operation = String(l.id_operation).trim();
+    if (!id) P(SL, l._ligne, 'id_lot_menko', 'erreur', 'Identifiant obligatoire.', l); else if (vus[id]) P(SL, l._ligne, 'id_lot_menko', 'erreur', 'Identifiant en double (déjà ligne ' + vus[id] + ').', l); else { vus[id] = l._ligne; lotsParId[id] = l; }
+    if (!opsParId[l.id_operation] && !progExist(l.id_operation)) P(SL, l._ligne, 'id_operation', 'erreur', 'Opération « ' + l.id_operation + ' » introuvable (ni dans le fichier, ni dans l\'ERP).', l);
+    var num = String(l.num_lot).trim(); l.num_lot = num; if (!num) P(SL, l._ligne, 'num_lot', 'erreur', 'Numéro de lot obligatoire.', l);
+    var k = l.id_operation + '|' + String(l.num_ilot).trim() + '|' + num; if (num) { if (cleLot[k]) P(SL, l._ligne, 'num_lot', 'erreur', 'Îlot ' + l.num_ilot + ' / lot ' + num + ' en double (ligne ' + cleLot[k] + ').', l); else cleLot[k] = l._ligne; }
+    l._sup = _fonImpNum(l.superficie_m2); if (!(l._sup > 0)) P(SL, l._ligne, 'superficie_m2', 'erreur', 'Superficie (m²) obligatoire et supérieure à 0.', l); else sommeOp[l.id_operation] = (sommeOp[l.id_operation] || 0) + l._sup;
+    l._affect = liste(SL, l, 'affectation_urbanisme'); l._origine = liste(SL, l, 'origine_propriete'); l._statutCom = liste(SL, l, 'statut_commercial'); l._juridique = liste(SL, l, 'statut_juridique_lot');
+    l._prix = l.prix_cession_fcfa === '' ? 0 : _fonImpNum(l.prix_cession_fcfa); if (l._prix === null || l._prix < 0) { P(SL, l._ligne, 'prix_cession_fcfa', 'erreur', 'Prix de cession invalide.', l); l._prix = 0; }
+    l._taux = l.taux_encaissement_pct === '' ? 0 : _fonImpNum(l.taux_encaissement_pct); if (l._taux === null || l._taux < 0 || l._taux > 100) { P(SL, l._ligne, 'taux_encaissement_pct', 'erreur', 'Taux d\'encaissement hors de 0 à 100 %.', l); l._taux = 0; }
+    var elig = _fonImpNorm(l.eligible_morcellement); if (elig && elig !== 'oui' && elig !== 'non') P(SL, l._ligne, 'eligible_morcellement', 'erreur', 'Oui ou Non attendu.', l);
+    else if (elig === 'oui' && l._taux < 30) P(SL, l._ligne, 'eligible_morcellement', 'avertissement', 'Éligible au morcellement mais taux d\'encaissement < 30 %.');
+    var x = _fonImpNum(l.coordonnees_utm_x), y = _fonImpNum(l.coordonnees_utm_y);
+    if ((l.coordonnees_utm_x !== '' && x === null) || (l.coordonnees_utm_y !== '' && y === null)) P(SL, l._ligne, 'coordonnees_utm', 'erreur', 'Coordonnées UTM non numériques.', l);
+    else if (x !== null && y !== null) { if (x < 100000 || x > 900000 || y < 400000 || y > 1300000) P(SL, l._ligne, 'coordonnees_utm', 'erreur', 'Coordonnées UTM hors de la Côte d\'Ivoire (E ' + x + ' / N ' + y + ').', l); }
+    else if (x !== null || y !== null) P(SL, l._ligne, 'coordonnees_utm', 'avertissement', 'Une seule coordonnée UTM renseignée.');
+    l._x = x; l._y = y;
+    var horsVente = FON_IMPORT_HORS_VENTE.indexOf(l._origine) !== -1 || FON_IMPORT_HORS_VENTE.indexOf(l._statutCom) !== -1;
+    if (horsVente && (l._statutCom === 'Vendu' || l._statutCom === 'Disponible' || l._statutCom === 'Option' || l._statutCom === 'Réservé')) P(SL, l._ligne, 'statut_commercial', 'erreur', 'Lot non commercialisable (' + (l._origine || l._statutCom) + ') déclaré « ' + l._statutCom + ' ».', l);
+    l._horsVente = horsVente;
+    if (l._statutCom === 'Vendu') {
+      if (!String(l.nom_acquereur).trim()) P(SL, l._ligne, 'nom_acquereur', 'erreur', 'Lot vendu sans acquéreur.', l);
+      if (!(l._prix > 0)) P(SL, l._ligne, 'prix_cession_fcfa', 'erreur', 'Lot vendu sans prix de cession.', l);
+      if (!String(l.code_client_menko).trim()) P(SL, l._ligne, 'code_client_menko', 'avertissement', 'Lot vendu sans code client.');
+    } else if (l._statutCom === 'Disponible' && (String(l.nom_acquereur).trim() || l._taux > 0)) P(SL, l._ligne, 'statut_commercial', 'avertissement', 'Lot disponible mais acquéreur ou taux d\'encaissement renseigné.');
+    l._existe = lotExist(id) ? 'maj' : 'creation';
+  });
+  Object.keys(sommeOp).forEach(function (id) { var o = opsParId[id]; if (o && o._sup > 0 && sommeOp[id] > o._sup * 1.0001) P(SO, o._ligne, 'superficie_totale_m2', 'erreur', 'Les lots de l\'opération totalisent ' + Math.round(sommeOp[id]) + ' m², au-delà de la superficie totale (' + o._sup + ' m²).', o); });
+  lots.forEach(function (l) { if (!l._erreur && opsParId[l.id_operation] && opsParId[l.id_operation]._erreur) P(SL, l._ligne, 'id_operation', 'erreur', 'Opération « ' + l.id_operation + ' » en erreur : lot non importable.', l); });
+  vus = {}; var parLot = {};
+  wf.forEach(function (w) {
+    var id = String(w.id_dossier_menko).trim(); w.id_dossier_menko = id; w.id_lot_menko = String(w.id_lot_menko).trim();
+    if (!id) P(SW, w._ligne, 'id_dossier_menko', 'erreur', 'Identifiant obligatoire.', w); else if (vus[id]) P(SW, w._ligne, 'id_dossier_menko', 'erreur', 'Identifiant en double (déjà ligne ' + vus[id] + ').', w); else vus[id] = w._ligne;
+    if (!lotsParId[w.id_lot_menko] && !lotExist(w.id_lot_menko)) P(SW, w._ligne, 'id_lot_menko', 'erreur', 'Lot « ' + w.id_lot_menko + ' » introuvable (ni dans le fichier, ni dans l\'ERP).', w);
+    else if (lotsParId[w.id_lot_menko] && lotsParId[w.id_lot_menko]._erreur) P(SW, w._ligne, 'id_lot_menko', 'erreur', 'Lot « ' + w.id_lot_menko + ' » en erreur : suivi non importable.', w);
+    if (parLot[w.id_lot_menko]) P(SW, w._ligne, 'id_lot_menko', 'erreur', 'Un seul dossier de suivi par lot (déjà ligne ' + parLot[w.id_lot_menko] + ').', w); else parLot[w.id_lot_menko] = w._ligne;
+    if (!String(w.type_procedure).trim()) P(SW, w._ligne, 'type_procedure', 'erreur', 'Type de procédure obligatoire.', w);
+    w._urb = liste(SW, w, 'urbaniste_validation_plan'); w._geo = liste(SW, w, 'geometre_dossier_tech'); w._mclu = liste(SW, w, 'statut_instruction_mclu'); w._blocage = liste(SW, w, 'motif_blocage');
+    FON_IMPORT_CHRONO.forEach(function (c) { w['_' + c[0]] = date(SW, w, c[0]); });
+    var prec = null; FON_IMPORT_CHRONO.forEach(function (c) { var d = w['_' + c[0]]; if (!d) return; if (prec && d < prec[1]) P(SW, w._ligne, c[0], 'avertissement', 'Date (' + c[1] + ') antérieure à ' + prec[0] + '.'); prec = [c[1], d]; });
+    if (w._date_depot_guf && !String(w.num_recepisse_guf).trim()) P(SW, w._ligne, 'num_recepisse_guf', 'avertissement', 'Dépôt au GUF daté sans numéro de récépissé.');
+    if (String(w.num_titre_final).trim() && !w._date_creation_tf_acd) P(SW, w._ligne, 'date_creation_tf_acd', 'avertissement', 'Titre final sans date d\'obtention.');
+    if (w._date_remise_client && !String(w.num_titre_final).trim()) P(SW, w._ligne, 'num_titre_final', 'erreur', 'Remise au client sans titre final.', w);
+    w._existe = (lotsParId[w.id_lot_menko] ? lotsParId[w.id_lot_menko]._existe : 'maj');
+  });
+  var cnt = function (a) { return { total: a.length, erreurs: a.filter(function (r) { return r._erreur; }).length, valides: a.filter(function (r) { return !r._erreur; }).length, creations: a.filter(function (r) { return !r._erreur && r._existe === 'creation'; }).length, maj: a.filter(function (r) { return !r._erreur && r._existe === 'maj'; }).length }; };
+  R.stats = { operations: cnt(ops), lots: cnt(lots), workflow: cnt(wf), erreurs: pb.filter(function (p) { return p.niveau === 'erreur'; }).length, avertissements: pb.filter(function (p) { return p.niveau === 'avertissement'; }).length };
+  R.ventes = lots.filter(function (l) { return !l._erreur && l._statutCom === 'Vendu'; });
+  return R;
+}
+/* ── Écriture (après confirmation) ── */
+function _fonImpStatutParcelle(o) {
+  if (o._purge === 'Litige coutumier') return 'contentieux';
+  if (o._tf) return 'tf_definitif';
+  return o._purge === 'Non démarrée' || !o._purge ? 'prospection' : 'negociation';
+}
+function _fonImpClientDuLot(lot) { return (DATA.clients || []).some(function (c) { return c.lot_id === lot.id || (c.lots_ids || c.lot_ids || []).indexOf(lot.id) !== -1; }); }
+async function _fonImpEcrire(store, table, obj) { await dbPut(store, obj); if (typeof syncToSupabase === 'function') syncToSupabase(table, obj); }
+async function fonImportAppliquer(R, opts) {
+  opts = opts || {};
+  if (!fcDroitEcriture()) return { ok: false, erreur: 'Votre profil ne permet pas de modifier le module Foncier.' };
+  if (R.stats.erreurs && !opts.ignorerErreurs) return { ok: false, erreur: R.stats.erreurs + ' erreur(s) : corrigez le fichier, ou cochez « importer les lignes valides ».' };
+  var res = { programmes: { crees: 0, maj: 0 }, parcelles: { crees: 0, maj: 0 }, titres: 0, lots: { crees: 0, maj: 0, statut_conserve: 0 }, suivis: 0, ventes: [], ignorees: 0 };
+  if (!DATA.programmes) DATA.programmes = []; if (!DATA.parcelles) DATA.parcelles = []; if (!DATA.lots) DATA.lots = [];
+  var progDe = {}, parcDe = {};
+  for (var i = 0; i < R.operations.length; i++) {
+    var o = R.operations[i]; if (o._erreur) { res.ignorees++; continue; }
+    var loc = String(o.commune_localite).trim() + (String(o.village_concerne).trim() ? ' — ' + String(o.village_concerne).trim() : '');
+    var menko = { statut_purge: o._purge || '', ref_guide_villageois: o.ref_guide_villageois, urbaniste: o.urbaniste_agree, num_agrement_urbaniste: o.num_agrement_urbaniste, date_depot_plan: o._date_depot_plan_lotissement,
+      date_enquete_commodo: o._date_enquete_commodo, ref_arrete_approbation: o.ref_arrete_approbation, date_arrete_approbation: o._date_arrete_approbation, geometre: o.geometre_agree, num_agrement_geometre: o.num_agrement_geometre,
+      tf_mere: o.num_tf_mere, quote_part_amenageur_pct: o._qa, quote_part_village_pct: o._qv, notaire: o.notaire_operation };
+    var parc = (DATA.parcelles || []).find(function (p) { return p.ref === o.id_operation && p.import_excel; }) || (DATA.parcelles || []).find(function (p) { return p.ref === o.id_operation; });
+    var prog = (DATA.programmes || []).find(function (p) { return p.ref_import === o.id_operation; });
+    var nbLots = R.lots.filter(function (l) { return l.id_operation === o.id_operation && !l._erreur; }).length;
+    if (!parc) { parc = { id: uid(), ref: o.id_operation, regime: 'urbain', utm_zone: 30, statut: 'prospection', risque: 'faible', traitement_compta: '', created_at: today(), import_excel: true }; res.parcelles.crees++; DATA.parcelles.push(parc); } else res.parcelles.maj++;
+    parc.localisation = String(o.village_concerne).trim() || parc.localisation || loc; parc.commune = String(o.commune_localite).trim(); parc.superficie = o._sup; parc.statut_purge = o._purge || '';
+    if (parc.statut !== 'affecte') parc.statut = _fonImpStatutParcelle(o);
+    if (o._tf) { parc.type_titre = 'tf_definitif'; parc.num_titre = o._tf; }
+    if (!prog) { prog = { id: uid(), ref_import: o.id_operation, statut: 'etude', created_at: today() }; res.programmes.crees++; DATA.programmes.push(prog); } else res.programmes.maj++;
+    prog.nom = String(o.nom_programme).trim(); prog.localisation = loc; prog.nature = 'lotissement'; prog.parcelle_id = parc.id; prog.nb_lots = nbLots || prog.nb_lots || 0; prog.menko = menko;
+    if (!prog.description) prog.description = 'Importé du modèle Excel MENKO (' + o.id_operation + ').';
+    parc.programme_id = prog.id;
+    await _fonImpEcrire('parcelles', 'pi_parcelles', parc); await _fonImpEcrire('programmes', 'pi_programmes', prog);
+    progDe[o.id_operation] = prog; parcDe[o.id_operation] = parc;
+    if (o._tf && !(DATA.titres_fonciers || []).some(function (t) { return t.type === 'tf_definitif' && String(t.numero || '').trim().toLowerCase() === o._tf.toLowerCase(); })) {
+      var T = FON_RURAL_TYPES.titres, titre = { id: uid(), created_at: today(), parcelle_id: parc.id, regime: 'urbain', type: 'tf_definitif', numero: o._tf, source: 'import_excel', modifie_par: (APP.currentUser && APP.currentUser.nom) || '—' };
+      titre.reference = prochaineRefListe(DATA[T.store] || [], T.pre + '-' + new Date().getFullYear() + '-', 3, 'reference');
+      if (await fonRuralSauver('titres', titre)) res.titres++;
+    }
+  }
+  var lotDe = {};
+  for (var j = 0; j < R.lots.length; j++) {
+    var l = R.lots[j]; if (l._erreur) { res.ignorees++; continue; }
+    var prog2 = progDe[l.id_operation] || (DATA.programmes || []).find(function (p) { return p.ref_import === l.id_operation; }); if (!prog2) { res.ignorees++; continue; }
+    var parc2 = parcDe[l.id_operation] || (DATA.parcelles || []).find(function (p) { return p.id === prog2.parcelle_id; });
+    var lot = (DATA.lots || []).find(function (x) { return x.ref_import === l.id_lot_menko; });
+    var neuf = !lot; if (neuf) { lot = { id: uid(), ref_import: l.id_lot_menko, created_at: today(), nature: 'terrain', type: 'Lot' }; DATA.lots.push(lot); res.lots.crees++; } else res.lots.maj++;
+    lot.programme_id = prog2.id; if (parc2) lot.parcelle_id = parc2.id; lot.numero = l.num_lot; lot.ilot = String(l.num_ilot).trim(); lot.surface = l._sup;
+    lot.origine_propriete = l._origine; lot.affectation = l._affect; lot.statut_juridique = l._juridique; lot.eligible_morcellement = _fonImpNorm(l.eligible_morcellement) === 'oui';
+    if (l._x !== null && l._y !== null) { lot.coord_utm_x = l._x; lot.coord_utm_y = l._y; }
+    if (/^TF[\s-]?\d+/i.test(String(l.num_tf_parcellaire).trim())) lot.num_tf_parcellaire = String(l.num_tf_parcellaire).trim();
+    lot.observations_terrain = String(l.observations_terrain || '').trim(); lot.hors_vente = !!l._horsVente;
+    var vendu = _fonImpClientDuLot(lot);
+    if (!neuf && vendu) res.lots.statut_conserve++;                        /* un souscripteur est déjà rattaché : statut et prix viennent de ses versements */
+    else {
+      lot.statut = l._horsVente ? 'reserve' : (l._statutCom === 'Disponible' ? 'disponible' : 'reserve');
+      if (l._prix > 0) lot.prix = l._prix;
+      if (['Vendu', 'Option', 'Réservé'].indexOf(l._statutCom) !== -1) lot.import_vente = { statut_commercial: l._statutCom, acquereur: String(l.nom_acquereur).trim(), code_client: String(l.code_client_menko).trim(), prix: l._prix, taux_encaissement_pct: l._taux };
+      else delete lot.import_vente;
+    }
+    if (l._statutCom === 'Vendu' && !vendu) res.ventes.push({ lot: (lot.ilot ? 'Îlot ' + lot.ilot + ' · ' : '') + 'lot ' + lot.numero, operation: l.id_operation, acquereur: String(l.nom_acquereur).trim(), code_client: String(l.code_client_menko).trim(), prix: l._prix, taux: l._taux });
+    lot.notes = [l.nom_acquereur ? 'Acquéreur (import) : ' + l.nom_acquereur : '', l.code_client_menko ? 'Client ' + l.code_client_menko : '', lot.observations_terrain].filter(Boolean).join(' · ');
+    await _fonImpEcrire('lots', 'pi_lots', lot); lotDe[l.id_lot_menko] = lot;
+  }
+  for (var k = 0; k < R.workflow.length; k++) {
+    var w = R.workflow[k]; if (w._erreur) { res.ignorees++; continue; }
+    var lot2 = lotDe[w.id_lot_menko] || (DATA.lots || []).find(function (x) { return x.ref_import === w.id_lot_menko; }); if (!lot2) { res.ignorees++; continue; }
+    lot2.suivi_titre = { id_dossier: w.id_dossier_menko, type_procedure: w.type_procedure, urbaniste_validation_plan: w._urb, date_visa_urbaniste: w._date_visa_urbaniste, geometre_dossier_tech: w._geo, date_visa_geometre: w._date_visa_geometre,
+      num_recepisse_guf: w.num_recepisse_guf, date_depot_guf: w._date_depot_guf, statut_instruction_mclu: w._mclu, date_bornage_cadastre: w._date_bornage_cadastre, date_publication_jo: w._date_publication_jo,
+      date_creation_tf_acd: w._date_creation_tf_acd, num_titre_final: w.num_titre_final, notaire_transmission_date: w._notaire_transmission_date, date_remise_client: w._date_remise_client,
+      motif_blocage: w._blocage, commentaire_suivi: String(w.commentaire_suivi || '').trim(), importe_le: today() };
+    if (/^(TF|ACD)[\s-]?\d+/i.test(String(w.num_titre_final).trim()) && !lot2.num_tf_parcellaire) lot2.num_tf_parcellaire = String(w.num_titre_final).trim();
+    await _fonImpEcrire('lots', 'pi_lots', lot2); res.suivis++;
+  }
+  try { logAction('FONCIER_IMPORT_EXCEL', 'Programmes +' + res.programmes.crees + '/' + res.programmes.maj + ' maj · lots +' + res.lots.crees + '/' + res.lots.maj + ' maj · suivis ' + res.suivis + ' · ignorées ' + res.ignorees); } catch (e) {}
+  if (typeof renderLots === 'function') try { renderLots(); } catch (e2) {}
+  if (typeof renderParcelles === 'function') try { renderParcelles(); } catch (e3) {}
+  res.ok = true; return res;
+}
+/* ── Écran ── */
+var FON_IMPORT = { rapport: null, fichier: '', resultat: null };
+async function fonImportFichier(input) {
+  var f = input && input.files && input.files[0]; if (!f) return; if (input) input.value = '';
+  if (!/\.xlsx$/i.test(f.name)) { toast('Fichier .xlsx attendu (modèle MENKO ERP Foncier V2).', 'error'); return; }
+  if (f.size > 15 * 1024 * 1024) { toast('Fichier trop volumineux (15 Mo maximum).', 'error'); return; }
+  try { var buf = await f.arrayBuffer(), c = await fonXlsxLire(buf); FON_IMPORT.rapport = fonImportAnalyser(c); FON_IMPORT.fichier = f.name; FON_IMPORT.resultat = null; }
+  catch (e) { toast('Lecture impossible : ' + (e && e.message || e), 'error', 8000); return; }
+  fonImportRender();
+}
+async function fonImportLancer() {
+  var R = FON_IMPORT.rapport; if (!R) return; var ign = !!(document.getElementById('fon-imp-ign') || {}).checked;
+  var n = R.stats.operations.valides + R.stats.lots.valides + R.stats.workflow.valides;
+  if (!confirm('Importer ' + R.stats.operations.valides + ' opération(s), ' + R.stats.lots.valides + ' lot(s) et ' + R.stats.workflow.valides + ' suivi(s) de dossier' + (R.stats.erreurs ? ' (' + (R.stats.operations.erreurs + R.stats.lots.erreurs + R.stats.workflow.erreurs) + ' ligne(s) en erreur ignorée(s))' : '') + ' ?')) return;
+  var r = await fonImportAppliquer(R, { ignorerErreurs: ign });
+  if (!r.ok) { toast(r.erreur, 'error', 8000); return; }
+  FON_IMPORT.resultat = r; toast('Import terminé : ' + r.lots.crees + ' lot(s) créé(s), ' + r.lots.maj + ' mis à jour.', 'success'); fonImportRender();
+}
+function _fonCsvGen(entetes, lignes) { var q = function (x) { return '"' + String(x == null ? '' : x).replace(/"/g, '""') + '"'; }; return '﻿' + [entetes.map(q).join(';')].concat(lignes.map(function (l) { return l.map(q).join(';'); })).join('\n'); }
+function _fonTelecharger(nom, csv) { var b = new Blob([csv], { type: 'text/csv;charset=utf-8' }), a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = nom; a.click(); }
+function fonImportRapportCsv() { var R = FON_IMPORT.rapport; if (R) _fonTelecharger('import_rapport_' + fcAuj() + '.csv', _fonCsvGen(['Feuille', 'Ligne Excel', 'Champ', 'Gravité', 'Message'], R.problemes.map(function (p) { return [p.feuille, p.ligne, p.champ, p.niveau, p.msg]; }))); }
+function fonImportVentesCsv() { var r = FON_IMPORT.resultat; if (r) _fonTelecharger('ventes_a_rattacher_' + fcAuj() + '.csv', _fonCsvGen(['Lot', 'Opération', 'Acquéreur', 'Code client', 'Prix de cession (FCFA)', 'Taux d\'encaissement (%)'], r.ventes.map(function (v) { return [v.lot, v.operation, v.acquereur, v.code_client, v.prix, v.taux]; }))); }
+function fonImportRender() {
+  var host = document.getElementById('fon-rural-liste'); if (!host) return;
+  document.getElementById('fon-rural-onglets').innerHTML = FON_ONGLETS.map(function (o) { return '<button class="btn btn-' + (o[0] === 'import' ? 'primary' : 'secondary') + ' btn-sm" onclick="fonRuralVue(\'' + o[0] + '\')">' + o[1] + '</button> '; }).join('');
+  var E = escHtml, R = FON_IMPORT.rapport, res = FON_IMPORT.resultat;
+  var h = '<div style="font-size:12px;color:var(--dim);margin-bottom:10px;">Importez le classeur <b>Modele_Import_MENKO_ERP_Foncier_V2.xlsx</b> (feuilles MENKO_OPERATIONS, MENKO_LOTS, MENKO_WORKFLOW_DOSSIERS). Le fichier est d\'abord <b>analysé</b> : rien n\'est écrit avant votre confirmation. Ré-importer le même fichier met à jour sans créer de doublon.</div>'
+    + '<label class="btn btn-primary" style="cursor:pointer;">📥 Choisir le fichier Excel<input type="file" accept=".xlsx" style="display:none;" onchange="fonImportFichier(this)"></label>';
+  if (R) {
+    var S = R.stats, carte = function (t, s) { return '<div style="background:var(--fond2);border-radius:8px;padding:10px 12px;border-top:3px solid ' + (s.erreurs ? '#dc2626' : '#16a34a') + ';"><div style="font-size:11px;color:var(--dim);">' + t + '</div><div style="font-size:18px;font-weight:700;">' + s.valides + ' / ' + s.total + '</div><div style="font-size:10px;color:var(--dim);">' + s.creations + ' à créer · ' + s.maj + ' à mettre à jour · ' + s.erreurs + ' en erreur</div></div>'; };
+    h += ' <span style="font-size:12px;margin-left:8px;">' + E(FON_IMPORT.fichier) + '</span><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin:12px 0;">' + carte('Opérations', S.operations) + carte('Lots', S.lots) + carte('Suivi des dossiers', S.workflow) + '</div>';
+    if (R.ventes.length) h += '<div style="padding:8px 10px;border-left:4px solid #f59e0b;background:var(--fond2);font-size:12px;margin-bottom:10px;">⚠ <b>' + R.ventes.length + ' lot(s) vendu(s)</b> : le statut « vendu » d\'un lot vient des versements du souscripteur. Ces lots seront importés <b>réservés</b>, avec l\'acquéreur, le prix et le taux en mémoire ; créez ensuite le souscripteur (Clients) en le rattachant au lot.</div>';
+    h += '<div class="card-title">Contrôles (' + S.erreurs + ' erreur(s), ' + S.avertissements + ' avertissement(s))<button class="btn btn-secondary btn-sm" style="float:right;" onclick="fonImportRapportCsv()">⬇ Rapport CSV</button></div>';
+    h += R.problemes.length ? '<div class="table-wrap" style="max-height:34vh;overflow:auto;"><table style="font-size:11px;"><thead><tr><th></th><th>Feuille</th><th>Ligne</th><th>Champ</th><th>Message</th></tr></thead><tbody>' + R.problemes.slice(0, 300).map(function (p) { return '<tr><td>' + (p.niveau === 'erreur' ? '🔴' : '🟠') + '</td><td>' + E(p.feuille) + '</td><td>' + p.ligne + '</td><td>' + E(p.champ) + '</td><td>' + E(p.msg) + '</td></tr>'; }).join('') + '</tbody></table></div>' + (R.problemes.length > 300 ? '<div style="font-size:11px;color:var(--dim);">… ' + (R.problemes.length - 300) + ' autre(s) dans le rapport CSV.</div>' : '') : '<div style="color:#16a34a;font-size:12px;padding:6px 0;">✅ Aucun problème détecté.</div>';
+    var nb = S.operations.valides + S.lots.valides + S.workflow.valides;
+    h += '<div style="margin-top:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">' + (S.erreurs ? '<label style="font-size:12px;"><input type="checkbox" id="fon-imp-ign"> Importer quand même les lignes valides (les lignes en erreur sont ignorées)</label>' : '')
+      + '<button class="btn btn-primary" ' + (nb ? '' : 'disabled ') + 'onclick="fonImportLancer()">✅ Importer</button></div>';
+  }
+  if (res) h += '<div class="card-title" style="margin-top:16px;">Résultat de l\'import</div><div style="font-size:12px;line-height:1.7;">Programmes : ' + res.programmes.crees + ' créé(s), ' + res.programmes.maj + ' mis à jour · Parcelles mères : ' + res.parcelles.crees + ' / ' + res.parcelles.maj + ' · Titres mères : ' + res.titres + '<br>Lots : ' + res.lots.crees + ' créé(s), ' + res.lots.maj + ' mis à jour (' + res.lots.statut_conserve + ' statut conservé : souscripteur déjà rattaché) · Suivis de dossier : ' + res.suivis + ' · Lignes ignorées : ' + res.ignorees + '</div>'
+    + (res.ventes.length ? '<div class="card-title" style="margin-top:10px;">Ventes à rattacher (' + res.ventes.length + ')<button class="btn btn-secondary btn-sm" style="float:right;" onclick="fonImportVentesCsv()">⬇ CSV</button></div><div class="table-wrap"><table style="font-size:11px;"><thead><tr><th>Lot</th><th>Opération</th><th>Acquéreur</th><th>Code client</th><th>Prix</th><th>Taux</th></tr></thead><tbody>' + res.ventes.map(function (v) { return '<tr><td>' + E(v.lot) + '</td><td>' + E(v.operation) + '</td><td>' + E(v.acquereur) + '</td><td>' + E(v.code_client) + '</td><td>' + fmtF(v.prix) + ' F</td><td>' + v.taux + ' %</td></tr>'; }).join('') + '</tbody></table></div>' : '');
+  host.innerHTML = h;
+}
+FON_ONGLETS.push(['import', '📥 Import Excel']);
 
 /* ── Topographie : levé, courbes de niveau, coupe ── */
 var _topoPoints = [];
