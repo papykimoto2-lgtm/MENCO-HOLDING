@@ -304,6 +304,58 @@ Les cases du constat de terrain (PV de remise de lot) restent à cocher à la ma
 - **Note de calcul** : volet bleu replié en tête de chaque onglet ; « Note complète du module » l'imprime ; « Carte des interconnexions » liste les flux entre écrans et modules.
 - **Navigation 2.6** : boutons regroupés par étape ; le bandeau donne l'étape, son but, et les boutons précédent / suivant.
 
+## L12 — Cohérence des données foncières
+
+Écran **Vue d'ensemble › 🩺 Cohérence des données**. Principe : le logiciel détecte, établit l'état et propose ; l'utilisateur décide. Le contrôle ne modifie jamais les données.
+
+**Ce que fait l'utilisateur sur chaque constat**
+
+| Action | Effet |
+|---|---|
+| Appliquer la proposition | Correction guidée (motif, droit requis, journal) ; constat « corrigé » |
+| Corriger autrement (fiche, lots, procédure) | Au contrôle suivant le constat passe à « disparu au contrôle » |
+| 💬 Observation | Commentaire conservé avec nom et date ; le constat reste ouvert |
+| 📌 Maintenir tel quel | Motif d'au moins 10 caractères ; respecté aux contrôles suivants (administrateur si critique) |
+| 🚫 Contester la détection | Motif d'au moins 10 caractères ; respecté aux contrôles suivants (administrateur si critique) |
+| Rouvrir | Remet le constat à traiter |
+
+Un constat « corrigé » qui réapparaît est rouvert automatiquement. Les décisions et l'historique restent consultables ; « État des incohérences » imprime le registre complet (statut, décision, observations).
+
+**Anomalies détectées**
+
+| Anomalie | Niveau | Proposition du logiciel |
+|---|---|---|
+| Superficie déclarée ≠ contour (≥ 5 % ; ≥ 25 % critique) | À corriger / critique | S'appuie sur la contenance du titre et la somme des lots : aligner la superficie, ou corriger les bornes, ou se reporter au plan du géomètre |
+| Doublon (contours recouverts à ≥ 90 %) | À corriger | Garder la fiche qui porte le plus d'éléments liés, archiver l'autre (réversible) |
+| Parcelle incluse dans une autre | À corriger | Archiver la fiche incluse si aucun lien |
+| Chevauchement partiel | Critique | Corriger les bornes de la fiche la moins fiable ; déroger seulement si le recouvrement est accepté |
+| Lot vendu sans souscripteur | Critique | Rattacher au souscripteur ou repasser « disponible » |
+| Terre rurale lotie sans protocole signé | Critique | Suspendre la vente jusqu'à la signature |
+| Opposition active sur terre vendue | Critique | Informer direction et juridique ; suspendre les remises |
+| Titre foncier / ACD sans titre saisi | À corriger | Saisir le titre ou corriger le statut |
+| Acquisition non comptabilisée | À corriger | Générer l'écriture |
+| Lots plus grands que la parcelle ; terre rurale sans ayant droit ; superficie ou contour absent | À corriger / à vérifier | Pistes indiquées sur la ligne |
+
+Le registre est synchronisé avec le cloud (table `pi_constats_coherence_fonciers`, script `supabase/foncier_coherence_l12.sql`).
+
+## L13 — Imprimer, modifier, supprimer
+
+Valable pour tous les écrans de **2.6 Droits & procédure foncière** (enquêtes, oppositions, bornages, villages, ayants droit, titres, propriétaires, charges, exploitations, contrats, audits, protocoles, PV).
+
+| Besoin | Comment | Règle |
+|---|---|---|
+| Imprimer une fiche | « 🖨 » sur la ligne | Parcelle, champs, échéancier / chaîne de propriété, historique des modifications, blocs de signature. Protocoles, PV et audits gardent leur gabarit |
+| Imprimer ou exporter la liste | « Imprimer la liste », « Excel (CSV) » | La liste complète de l'écran, en-tête daté |
+| Imprimer le parcours, la fiche 360° | « 🖨 » dans les écrans correspondants | |
+| Modifier | « ✏️ » | Chaque changement est tracé (champ, avant, après, utilisateur, date, motif) |
+| Modifier un enregistrement clos | « ✏️ » | Administrateur, motif de 10 caractères au moins. Clos = enquête clôturée, opposition traitée, bornage réalisé, charge levée, contrat résilié, exploitation terminée, propriétaire sorti |
+| Modifier un document signé | — | Impossible : imprimer ou ouvrir un nouveau document |
+| Supprimer | « 🗑 » | Administrateur, motif obligatoire |
+
+**Suppression refusée** si l'élément est : signé (protocole, PV) ; clôturé ou traité (enquête, opposition, bornage, charge levée) ; encaissé (contrat) ; décidé (audit) ; référencé (village avec ayants droit, protocoles ou enquêtes ; ayant droit couvert par un protocole signé ; dernier titre justifiant le statut ; propriétaire de la chaîne ; opposition en médiation). Le serveur applique les mêmes interdits (`supabase/foncier_suppression_l13.sql`). Les constats de cohérence ne se suppriment pas.
+
+**Trace d'une suppression** : copie de l'enregistrement dans l'historique de la parcelle et dans le journal, avec le nom, la date et le motif.
+
 **Tableau des étapes de la procédure rurale** (31 étapes ; l'ERP ajoute « Création du dossier » au début et « Clôture » à la fin)
 
 **Rural — Phase 1 : recherche, délimitation et levé de la parcelle**

@@ -808,6 +808,39 @@
 
 **Alimente** : Clôture du dossier
 
+## Cohérence des données  `page:coherence`
+
+**À quoi ça sert.** Le logiciel détecte les incohérences, établit l'état, propose la correction appuyée sur les pièces enregistrées ; l'utilisateur décide et ses corrections, observations et motifs sont conservés.
+
+**Comment faire**
+
+1. Lire les constats « À traiter », critiques en premier, avec la proposition du logiciel.
+2. Appliquer la proposition (correction guidée), ou corriger autrement dans la fiche, le lot ou la procédure : le constat disparaît au prochain contrôle.
+3. Ajouter une observation, maintenir tel quel avec un motif, ou contester la détection avec un motif.
+4. Consulter « Décisions et historique » ; imprimer l'état des incohérences pour la revue de direction.
+
+**Calculs**
+
+| Calcul | Formule |
+|---|---|
+| Aire du contour | formule de Gauss (shoelace) sur les bornes UTM, en m² |
+| Écart de superficie | (aire du contour − superficie déclarée) ÷ superficie déclarée × 100 ; ≥ 5 % à corriger, ≥ 25 % critique |
+| Proposition sur la superficie | le contour est retenu si la contenance du titre ou la somme des lots le confirme à 2 % près ; la superficie déclarée est retenue si elle est confirmée ; sinon renvoi au plan du géomètre |
+| Recouvrement de deux contours | aire commune ÷ aire de chacun ; ≥ 90 % pour les deux = doublon ; ≥ 90 % pour la plus petite seulement = incluse ; sinon chevauchement partiel |
+
+**Règles appliquées**
+
+- Le contrôle ne modifie jamais les données ; seul l'utilisateur corrige.
+- Statuts : à traiter, corrigé, disparu au contrôle, maintenu (justifié), détection contestée.
+- Maintenir ou contester : motif d'au moins 10 caractères ; anomalie critique = administrateur.
+- Un constat maintenu ou contesté est respecté aux contrôles suivants ; un constat corrigé qui réapparaît est rouvert.
+- Alignement de superficie : motif ; parcelle titrée = administrateur seul. Archivage d'un doublon : administrateur, motif, aucune pièce liée, réversible. Dérogation : administrateur, motif écrit.
+- Chaque décision porte le nom de l'utilisateur et la date ; tout est inscrit à l'historique du constat et au journal.
+
+**Reçoit de** : Parcelles ; Lots ; Titres ; Comptabilité ; Procédures rurales
+
+**Alimente** : Registre des constats (cloud) ; Parcelles (superficie, archivage) ; Comptabilité (écriture d'acquisition) ; Revue de direction
+
 ## Parcours foncier  `page:parcours`
 
 **À quoi ça sert.** Suivre chaque terre de l'identification à la remise des titres.
@@ -831,6 +864,13 @@
 **Reçoit de** : Tous les onglets
 
 **Alimente** : Fiche 360°
+
+## Imprimer, modifier, supprimer (tous les écrans du 2.6)
+
+- Imprimer : « 🖨 » sur chaque ligne (fiche avec parcelle, historique des modifications et signatures) ; « Imprimer la liste » et « Excel (CSV) » en haut de l'écran. Protocoles, PV et audits gardent leur édition dédiée.
+- Modifier : « ✏️ ». Un enregistrement clos (enquête clôturée, opposition traitée, bornage réalisé, charge levée, contrat résilié, exploitation terminée, propriétaire sorti) n'est modifiable que par un administrateur, avec motif de 10 caractères au moins. Un document signé n'est plus modifiable.
+- Chaque modification est tracée : champ, valeur avant, valeur après, utilisateur, date, motif ; elle figure sur la fiche imprimée.
+- Supprimer : « 🗑 », administrateur seul, motif obligatoire. Refusé si l'élément est signé, clos, jugé, encaissé ou référencé ailleurs. La suppression laisse une trace complète (copie de l'enregistrement) dans l'historique de la parcelle et le journal ; le serveur applique les mêmes interdits.
 
 ## Carte des interconnexions
 
