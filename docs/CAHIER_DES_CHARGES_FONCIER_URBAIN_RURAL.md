@@ -109,6 +109,8 @@ Légende : **E** existant · **A** à adapter · **N** nouveau. Priorité : P1 i
 | FUR-313 | Mode hors-ligne pour la saisie terrain rural (PWA, synchronisation différée, résolution de conflits) | E (existant : file d'envoi ; L6 : état affiché) | P2 |
 | FUR-314 | Saisie mobile terrain : photo géolocalisée, point GPS, PV signé au doigt | E (L6) | P2 |
 | FUR-315 | **Audit foncier pré-acquisition** (protocole AUD-FON-MENKO-02, 19 points Go / No-Go, verdict automatique, comité à 3 visas, décision définitive) ; sortie de l'étape « Négociation » conditionnée au GO | E (L8) | P1 |
+| FUR-316 | **Import Excel** du modèle MENKO V2 (opérations, lots, suivi des dossiers) : analyse avant écriture, rapport, idempotent, ventes à rattacher | E (L9) | P1 |
+| FUR-317 | **Modèles de documents** : protocole de purge des droits coutumiers (conditionné à l'audit GO), PV de remise de lot (conditionné au solde), PV de remise d'ACD | E (L10) | P1 |
 
 ### 4.5 Cartographie
 

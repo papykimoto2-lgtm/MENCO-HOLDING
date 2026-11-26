@@ -280,6 +280,23 @@ Indicateurs : parcelles et hectares par régime, coût à l'hectare, parcelles p
 
 Différence avec le classeur Excel : le verdict du classeur donne « GO » même si un point bloquant est « en cours de régularisation » ; l'ERP le traite comme « EN COURS ». Base de données : `supabase/foncier_audit_l8.sql` (mêmes règles côté serveur).
 
+**Import Excel du modèle MENKO V2 (lot L9)** — Foncier › 2.6 › 📥 Import Excel. Charge les feuilles MENKO_OPERATIONS, MENKO_LOTS et MENKO_WORKFLOW_DOSSIERS. Le fichier est d'abord analysé (rapport ligne par ligne, rien d'écrit) puis importé après confirmation ; ré-importer met à jour sans doublon (clés id_operation, id_lot_menko).
+
+- Opération → programme (lotissement) + parcelle mère urbaine + titre mère (si un n° de TF est donné). Lot → lot terrain. Suivi du dossier → fiche de suivi du titre portée par le lot.
+- **Un lot « Vendu » est importé réservé** : le statut « vendu » vient des versements du souscripteur. Le rapport liste ces ventes à rattacher (acquéreur, prix, taux) ; créez ensuite le souscripteur dans Clients en le rattachant au lot.
+- Les lots hors vente (part villageoise, équipement, litige) restent réservés et marqués hors vente. Un lot déjà rattaché à un souscripteur garde statut et prix.
+- Contrôles : identifiants uniques, opération et lot existants, listes de valeurs, dates, quotes-parts = 100 %, lots ≤ superficie de l'opération, UTM en Côte d'Ivoire, non commercialisable déclaré vendu, remise au client sans titre final. Option « importer les lignes valides ».
+
+**Modèles de documents MENKO (lot L10)** — Foncier › 2.6 › 📜 Protocoles de purge, 🏡 PV remise de lot, 🔑 PV remise d'ACD. Les trois modèles Word sont intégrés : préremplis depuis l'ERP, contrôlés, imprimables.
+
+| Document | Règles |
+|---|---|
+| Protocole de purge (PRT-PURGE) | Audit pré-acquisition **décidé GO** exigé (administrateur + motif pour passer outre). Tranches = 100 %, part villageoise obligatoire (clé de répartition, AUD-FIN-01). Signature subordonnée aux **5 annexes** ; elle met à jour l'opération (statut de négociation) et la parcelle (« Protocole signé »). Réitération notariée suivie (n° d'acte obligatoire). Signé : non modifiable |
+| PV de remise de lot (MOD-PV-LOT-01) | Solde acquitté exigé (administrateur + motif pour passer outre) ; souscripteur rattaché au lot ; attestation de solde reprise du souscripteur. La remise signée est portée par le lot |
+| PV de remise d'ACD (MOD-PV-ACD-02) | Au moins une pièce originale cochée avec sa référence officielle ; préremplissage depuis le suivi du titre (ACD, TF, notaire, géomètre). La remise signée alimente le lot et, au choix, le dossier de titre individuel (décharge définitive) |
+
+Les cases du constat de terrain (PV de remise de lot) restent à cocher à la main sur le site. Base de données : `supabase/foncier_documents_l10.sql` (après `foncier_audit_l8.sql`). À faire valider par un juriste : les textes des modèles sont ceux fournis, repris tels quels.
+
 **Tableau des étapes de la procédure rurale** (31 étapes ; l'ERP ajoute « Création du dossier » au début et « Clôture » à la fin)
 
 **Rural — Phase 1 : recherche, délimitation et levé de la parcelle**
