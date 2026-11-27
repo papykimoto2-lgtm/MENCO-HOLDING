@@ -117038,10 +117038,14 @@ function fonPersonnesGroupes() {
   var pers = _fonPersonnesActives(), cles = Object.keys(g);
   return cles.map(function (k) {
     var G = g[k], freq = {}; G.sources.forEach(function (o) { freq[o.nom.trim()] = (freq[o.nom.trim()] || 0) + 1; });
-    G.noms = Object.keys(freq).sort(function (a, b) { return freq[b] - freq[a]; });
-    G.nature = G.sources[0].nature; G.contact = (G.sources.filter(function (o) { return o.contact; })[0] || {}).contact || ''; G.village_id = (G.sources.filter(function (o) { return o.village_id; })[0] || {}).village_id || '';
+    var _acc = function (x) { return /[^\x00-\x7f]/.test(x) ? 1 : 0; }, _maj = function (x) { return x === x.toUpperCase() ? 1 : 0; }, _civ = function (x) { return /^(m|mr|mme|mlle|monsieur|madame)\.?\s+/i.test(x) ? 1 : 0; };
+    G.noms = Object.keys(freq).sort(function (a, b) { return (freq[b] - freq[a]) || (_civ(a) - _civ(b)) || (_acc(b) - _acc(a)) || (_maj(a) - _maj(b)) || (a.length - b.length); });
+    var _nat = G.sources.map(function (o) { return o.nature; }).filter(function (n) { return n && n !== 'personne'; })[0];
+    G.nature = /^\s*famille\b/i.test(G.noms[0]) ? 'famille' : (_nat || 'personne'); G.contact = (G.sources.filter(function (o) { return o.contact; })[0] || {}).contact || ''; G.village_id = (G.sources.filter(function (o) { return o.village_id; })[0] || {}).village_id || '';
     G.personne = pers.filter(function (p) { return fonNormNom(p.nom) === k; })[0] || null;
     G.nonLies = G.sources.filter(function (o) { return !o.lie || !(DATA.personnes_fonciers || []).some(function (p) { return p.id === o.lie && !p.fusionnee_dans; }); });
+    var _sites = {}; G.sources.forEach(function (o) { if (o.parent) _sites[o.parent.id] = 1; });
+    G.homonymes = Object.keys(_sites).length > 1 && k.split(' ').length <= 2;   /* nom court présent sur plusieurs sites : peut être deux personnes */
     G.proches = cles.filter(function (k2) { return k2 !== k && k.length >= 8 && k2.length >= 8 && _fonLev(k, k2) <= 2; }).map(function (k2) { return g[k2] ? (g[k2].sources[0].nom) : k2; });
     return G;
   }).filter(function (G) { return G.nonLies.length; }).sort(function (a, b) { return b.sources.length - a.sources.length; });
@@ -117064,14 +117068,15 @@ async function fonPersonnesCreerEtLier(cle) {
   var G = fonPersonnesGroupes().filter(function (x) { return x.cle === cle; })[0]; if (!G) return 0;
   var per = G.personne;
   if (!per) {
-    per = { id: uid(), created_at: today(), nom: G.noms[0], nature: FON_PERS_NATURES[G.nature] ? G.nature : 'personne', contact: G.contact, village_id: G.village_id, cni: '', observations: 'Créée par rapprochement (' + G.sources.length + ' saisie(s)).' };
+    per = { id: uid(), created_at: today(), nom: G.noms[0].replace(/^\s*(m|mr|mme|mlle|monsieur|madame)\.?\s+/i, '').trim(), nature: FON_PERS_NATURES[G.nature] ? G.nature : 'personne', contact: G.contact, village_id: G.village_id, cni: '', observations: 'Créée par rapprochement (' + G.sources.length + ' saisie(s)).' };
     per.reference = prochaineRefListe(DATA.personnes_fonciers || [], 'PER-' + new Date().getFullYear() + '-', 3, 'reference');
     if (!(await fonRuralSauver('personnes', per))) return 0;
   }
   return await _fonPersonnesLier(G.nonLies, per.id);
 }
 async function fonPersonnesToutCreer() {
-  var n = 0, cles = fonPersonnesGroupes().map(function (g) { return g.cle; });
+  /* Les noms proches (fautes de frappe possibles) sont laissés à la vérification : jamais créés ni fusionnés automatiquement. */
+  var n = 0, cles = fonPersonnesGroupes().filter(function (g) { return !g.proches.length && !g.homonymes; }).map(function (g) { return g.cle; });
   for (var i = 0; i < cles.length; i++) n += await fonPersonnesCreerEtLier(cles[i]);
   try { logAction('FONCIER_PERSONNES_RAPPROCHEMENT', cles.length + ' personne(s), ' + n + ' lien(s)'); } catch (e) {}
   toast(cles.length + ' personne(s) rapprochée(s), ' + n + ' lien(s) créé(s).', 'success'); fonRapprochementOuvrir(); fonRuralRender();
@@ -117081,9 +117086,9 @@ function fonRapprochementOuvrir() {
   var E = escHtml, G = fonPersonnesGroupes(), bj = document.getElementById('fon-fiche-imprimer'); if (bj) bj.style.display = 'none';
   document.getElementById('fon-fiche-titre').textContent = '🔗 Rapprochement des personnes et familles';
   document.getElementById('fon-fiche-corps').innerHTML = '<div style="font-size:12px;margin-bottom:8px;">Une même personne saisie à plusieurs endroits est regroupée. « Créer et lier » ajoute la personne au référentiel et relie chaque saisie ; les anciens textes ne sont pas modifiés. Les noms proches (⚠) sont à vérifier puis à fusionner.</div>'
-    + (G.length ? '<div style="margin-bottom:8px;">' + _fonBtn('✅ Tout créer et lier (' + G.length + ')', 'fonPersonnesToutCreer()', 'btn-primary') + '</div>'
+    + (G.length ? '<div style="margin-bottom:8px;">' + _fonBtn('✅ Tout créer et lier (' + G.filter(function (g) { return !g.proches.length && !g.homonymes; }).length + ')', 'fonPersonnesToutCreer()', 'btn-primary') + (G.some(function (g) { return g.proches.length || g.homonymes; }) ? ' <small>Les lignes ⚠ (noms proches ou homonymes possibles) restent à vérifier une par une.</small>' : '') + '</div>'
       + '<div class="table-wrap"><table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr><th>Nom</th><th>Saisies</th><th>État</th><th></th></tr></thead><tbody>' + G.map(function (g) {
-        return '<tr><td style="border-top:1px solid #ddd;padding:4px;"><b>' + E(g.noms[0]) + '</b>' + (g.noms.length > 1 ? '<br><small>variantes : ' + E(g.noms.slice(1).join(' · ')) + '</small>' : '') + (g.proches.length ? '<br><small>⚠ proche de : ' + E(g.proches.slice(0, 3).join(' · ')) + '</small>' : '') + '</td>'
+        return '<tr><td style="border-top:1px solid #ddd;padding:4px;"><b>' + E(g.noms[0]) + '</b>' + (g.noms.length > 1 ? '<br><small>variantes : ' + E(g.noms.slice(1).join(' · ')) + '</small>' : '') + (g.proches.length ? '<br><small>⚠ proche de : ' + E(g.proches.slice(0, 3).join(' · ')) + '</small>' : '') + (g.homonymes ? '<br><small>⚠ nom court sur plusieurs sites : homonymes possibles</small>' : '') + '</td>'
           + '<td style="border-top:1px solid #ddd;padding:4px;"><small>' + g.sources.length + ' : ' + E(g.sources.slice(0, 4).map(function (o) { return o.ou; }).join(' ; ')) + (g.sources.length > 4 ? ' …' : '') + '</small></td>'
           + '<td style="border-top:1px solid #ddd;padding:4px;">' + (g.personne ? 'déjà au référentiel (' + E(g.personne.reference || '') + ')' : 'à créer') + '</td>'
           + '<td style="border-top:1px solid #ddd;padding:4px;">' + _fonBtn(g.personne ? 'Lier' : 'Créer et lier', 'fonPersonnesGroupeUI(\'' + E(g.cle).replace(/'/g, "\\'") + '\')') + '</td></tr>'; }).join('') + '</tbody></table></div>'
