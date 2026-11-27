@@ -119055,9 +119055,97 @@ async function fonRuralSupprimer(kind, id) {
   var tab = (SUPA_STORE_MAP.filter(function (x) { return x[1] === T.store; })[0] || [])[0]; if (tab && typeof deleteFromSupabase === 'function') deleteFromSupabase(tab, id);
   toast(T.lib + ' supprimé(e).', 'success'); fonRuralRender(); return true;
 }
+/* ── Pièces jointes de chaque fiche foncière rurale (ajout, modification, remplacement, suppression motivée) ──
+   Mêmes stockage privé, empreinte et versions que les pièces d'étape : etape_code = « fiche:<type>:<id> ». Rien n'est effacé : une suppression retire la pièce de la liste et reste au journal. */
+var FON_FICHE_MAX = 20, FON_FICHE_SEL = null;
+function fonFicheCode(kind, id) { return 'fiche:' + kind + ':' + id; }
+function fonFichePieces(kind, id, tout) {
+  var c = fonFicheCode(kind, id);
+  return (DATA.pieces_foncieres || []).filter(function (p) { return p.etape_code === c && (tout || (!p.retire && !p.remplacee_par)); }).sort(function (a, b) { return String(a.depose_le).localeCompare(String(b.depose_le)); });
+}
+function _fonFicheRec(kind, id) { var T = FON_RURAL_TYPES[kind]; return T ? (DATA[T.store] || []).find(function (x) { return x.id === id; }) || null : null; }
+function _fonFicheTrace(kind, id, texte) {
+  var rec = _fonFicheRec(kind, id); try { if (rec) _fonJournal(rec, texte); } catch (e) { /* non bloquant */ }
+  try { logAction('FONCIER_PIECE_FICHE', texte); } catch (e) {}
+}
+function fonFicheOuvrir(kind, id) {
+  FON_FICHE_SEL = { kind: kind, id: id };
+  var T = FON_RURAL_TYPES[kind], rec = _fonFicheRec(kind, id), E = escHtml, liste = fonFichePieces(kind, id, true);
+  var bj = document.getElementById('fon-fiche-imprimer'); if (bj) bj.style.display = 'none';
+  document.getElementById('fon-fiche-titre').textContent = '📎 Pièces jointes — ' + T.lib + ' ' + ((rec && (rec.reference || rec.nom)) || '');
+  document.getElementById('fon-fiche-corps').innerHTML = (liste.length ? liste.map(function (p) {
+    return '<div style="padding:6px 0;border-bottom:1px solid var(--bord,#eee);font-size:12px;' + (p.retire ? 'opacity:.55;' : '') + '">' + (p.retire ? E(p.nom) : fcLienPiece(p)) + (p.version > 1 ? ' (v' + p.version + ')' : '')
+      + ' · ' + E((p.depose_par && p.depose_par.nom) || '—') + ' · ' + E(String(p.depose_le).slice(0, 10)) + (p.note ? '<div style="color:var(--dim);">' + E(p.note) + '</div>' : '')
+      + (p.retire ? ' — <b>supprimée</b> : ' + E(p.retire_motif)
+        : (p.remplacee_par ? ' <i>(version remplacée)</i>' : ' ' + _fonBtn('✏️ Modifier', 'fonFicheModifier(\'' + p.id + '\')') + _fonBtn('🔄 Remplacer le fichier', 'fonFicheRemplacer(\'' + p.id + '\')') + _fonBtn('🗑 Supprimer', 'fonFicheRetirer(\'' + p.id + '\')', 'btn-danger'))) + '</div>';
+  }).join('') : '<div style="color:var(--dim);font-size:12px;">Aucune pièce sur cette fiche.</div>')
+    + '<div class="filters-bar" style="align-items:end;margin-top:10px;"><div class="form-group"><label>Fichier (PDF, JPG, PNG)</label><input type="file" id="fonf-fichier" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*"></div>'
+    + '<div class="form-group"><label>Note (facultative)</label><input class="form-control" id="fonf-note" maxlength="500"></div>'
+    + '<button class="btn btn-primary btn-sm" onclick="fonFicheJoindre()">Joindre</button></div>';
+  document.getElementById('modal-fon-fiche').classList.add('open');
+}
+function _fonFicheRafraichir() { if (FON_FICHE_SEL) fonFicheOuvrir(FON_FICHE_SEL.kind, FON_FICHE_SEL.id); try { fonRuralRender(); } catch (e) {} }
+async function fonFicheJoindre() {
+  var s = FON_FICHE_SEL; if (!s) return;
+  if (!fcDroitEcriture()) { toast('Votre profil ne permet pas de modifier le module Foncier.', 'error'); return; }
+  var inp = document.getElementById('fonf-fichier'); if (!inp || !inp.files[0]) { toast('Choisissez un fichier.', 'error'); return; }
+  if (fonFichePieces(s.kind, s.id).length >= FON_FICHE_MAX) { toast('Nombre maximal de pièces atteint pour cette fiche.', 'error'); return; }
+  var f; try { f = await fcLireFichier(inp.files[0]); } catch (e) { toast(e.message, 'error'); return; }
+  var err = fcValiderFichier(f); if (err) { toast(err, 'error'); return; }
+  var rec = _fonFicheRec(s.kind, s.id), a = fcActeur(), m = fcMetaPiece(f);
+  var p = { id: uid(), dossier_id: (rec && rec.dossier_id) || '', etape_code: fonFicheCode(s.kind, s.id), nom: m.nom, type: m.type, taille: m.taille, contenu: m.contenu,
+    note: String(document.getElementById('fonf-note').value || '').trim().slice(0, 500), depose_par: { role: 'promoteur', id: a.id, nom: a.nom }, client_id: '', visibilite: 'interne', source: '', statut: 'jointe',
+    depose_le: new Date().toISOString(), retire: false, retire_motif: '' };
+  var meta = await fcMetaDoc(p, { categorie: 'autre', confidentialite: 'normale' }, fcOrganisationPromoteur()); if (meta.erreur) { toast(meta.erreur, 'error'); return; }
+  Object.assign(p, meta);
+  try { await fcDb('pieces_foncieres', p, { forceRole: true }); } catch (e) { toast('Écriture refusée : ' + e.message, 'error'); return; }
+  (DATA.pieces_foncieres = DATA.pieces_foncieres || []).push(p);
+  _fonFicheTrace(s.kind, s.id, 'Pièce jointe à ' + FON_RURAL_TYPES[s.kind].lib + ' ' + ((rec && rec.reference) || s.id) + ' : ' + p.nom);
+  toast('Pièce jointe.', 'success'); _fonFicheRafraichir();
+}
+async function fonFicheModifier(id) {
+  var p = fcPiece(id); if (!p || p.retire || p.remplacee_par) return;
+  if (!fcDroitEcriture()) { toast('Votre profil ne permet pas de modifier le module Foncier.', 'error'); return; }
+  var nom = prompt('Nom du document :', p.nom); if (nom === null) return; nom = nom.trim().slice(0, 160); if (!nom) { toast('Le nom est obligatoire.', 'error'); return; }
+  var note = prompt('Note (facultative) :', p.note || ''); if (note === null) return;
+  var avant = p.nom; p.nom = nom; p.note = note.trim().slice(0, 500); p.modifie_par = fcActeur().nom; p.modifie_le = new Date().toISOString();
+  try { await fcDb('pieces_foncieres', p, { forceRole: true }); } catch (e) { toast('Écriture refusée : ' + e.message, 'error'); return; }
+  var c = p.etape_code.split(':'); _fonFicheTrace(c[1], c.slice(2).join(':'), 'Pièce « ' + avant + ' » modifiée' + (avant !== nom ? ' → « ' + nom + ' »' : ''));
+  toast('Pièce modifiée.', 'success'); _fonFicheRafraichir();
+}
+function fonFicheRemplacer(id) {
+  var p = fcPiece(id); if (!p || p.retire || p.remplacee_par) return;
+  var i = document.createElement('input'); i.type = 'file'; i.accept = '.pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*';
+  i.onchange = async function () {
+    if (!i.files[0]) return;
+    if (!fcDroitEcriture()) { toast('Votre profil ne permet pas de modifier le module Foncier.', 'error'); return; }
+    var f; try { f = await fcLireFichier(i.files[0]); } catch (e) { toast(e.message, 'error'); return; }
+    var err = fcValiderFichier(f); if (err) { toast(err, 'error'); return; }
+    var a = fcActeur(), m = fcMetaPiece(f);
+    var n = { id: uid(), dossier_id: p.dossier_id, etape_code: p.etape_code, nom: m.nom, type: m.type, taille: m.taille, contenu: m.contenu, note: p.note || '',
+      depose_par: { role: 'promoteur', id: a.id, nom: a.nom }, client_id: '', visibilite: 'interne', source: '', statut: 'jointe', depose_le: new Date().toISOString(), retire: false, retire_motif: '' };
+    var meta = await fcMetaDoc(n, { categorie: p.categorie, confidentialite: p.confidentialite }, p.organisation || fcOrganisationPromoteur()); if (meta.erreur) { toast(meta.erreur, 'error'); return; }
+    Object.assign(n, meta, { document_id: p.document_id || p.id, version: (p.version || 1) + 1 }); p.remplacee_par = n.id;
+    try { await fcDb('pieces_foncieres', n, { forceRole: true }); await fcDb('pieces_foncieres', p, { forceRole: true }); } catch (e) { p.remplacee_par = ''; toast('Écriture refusée : ' + e.message, 'error'); return; }
+    DATA.pieces_foncieres.push(n);
+    var c = p.etape_code.split(':'); _fonFicheTrace(c[1], c.slice(2).join(':'), 'Nouvelle version (v' + n.version + ') de « ' + p.nom + ' » : ' + n.nom);
+    toast('Fichier remplacé (l\'ancienne version reste conservée).', 'success'); _fonFicheRafraichir();
+  };
+  i.click();
+}
+async function fonFicheRetirer(id) {
+  var p = fcPiece(id); if (!p || p.retire) return;
+  if (!fcDroitEcriture()) { toast('Votre profil ne permet pas de modifier le module Foncier.', 'error'); return; }
+  var m = prompt('Motif de la suppression (obligatoire). La pièce est retirée de la liste mais conservée au journal :'); if (!m || !m.trim()) { if (m !== null) toast('Motif obligatoire.', 'error'); return; }
+  p.retire = true; p.retire_motif = m.trim(); p.retire_par = fcActeur().nom; p.retire_le = new Date().toISOString();
+  try { await fcDb('pieces_foncieres', p, { forceRole: true }); } catch (e) { p.retire = false; toast('Écriture refusée : ' + e.message, 'error'); return; }
+  var c = p.etape_code.split(':'); _fonFicheTrace(c[1], c.slice(2).join(':'), 'Pièce « ' + p.nom + ' » supprimée — ' + p.retire_motif);
+  toast('Pièce supprimée (conservée au journal).', 'success'); _fonFicheRafraichir();
+}
 function _fonBtnsMoteur(kind, r) {
   var doc = (kind === 'protocoles' || kind === 'pv_lot' || kind === 'pv_acd');
-  return (doc ? '' : _fonBtn('🖨', 'fonRuralImprimerFiche(\'' + kind + '\',\'' + r.id + '\')', '" title="Imprimer la fiche" aria-label="Imprimer la fiche'))
+  return _fonBtn('📎' + (fonFichePieces(kind, r.id).length ? ' ' + fonFichePieces(kind, r.id).length : ''), 'fonFicheOuvrir(\'' + kind + '\',\'' + r.id + '\')', '" title="Pièces jointes" aria-label="Pièces jointes')
+    + (doc ? '' : _fonBtn('🖨', 'fonRuralImprimerFiche(\'' + kind + '\',\'' + r.id + '\')', '" title="Imprimer la fiche" aria-label="Imprimer la fiche'))
     + (fcEstAdmin() ? '<span style="margin-left:8px;">' + _fonBtn('🗑', 'fonRuralSupprimer(\'' + kind + '\',\'' + r.id + '\')', '" title="Supprimer (motif obligatoire)" aria-label="Supprimer') + '</span>' : '');
 }
 function _fonBtnsListe(vue) {
