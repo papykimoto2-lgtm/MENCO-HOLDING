@@ -104,8 +104,9 @@ test('écrans : enquête enregistrée avec échéance calculée ; clôture antic
   try {
     await amorcer(app.page);
     const r = await app.page.evaluate(async function () {
+      DATA.dossiers_fonciers = (DATA.dossiers_fonciers || []).concat([{ id: 'dos1', reference: 'DF-T1', parcelle_id: 'pc1', statut: 'en_cours', etapes: [] }]);
       fonRuralOuvrir('enquetes');
-      document.getElementById('fonr-parcelle_id').innerHTML = '<option value="pc1">pc1</option>'; document.getElementById('fonr-parcelle_id').value = 'pc1';
+      document.getElementById('fonr-dossier_id').value = 'dos1';   /* dossier obligatoire : la parcelle en découle */
       document.getElementById('fonr-commissaire').value = 'M. Koffi';
       document.getElementById('fonr-statut').value = 'ouverte';
       document.getElementById('fonr-date_ouverture').value = __jour(0);

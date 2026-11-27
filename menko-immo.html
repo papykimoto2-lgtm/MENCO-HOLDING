@@ -97515,6 +97515,7 @@ async function saveParcelle() {
   }
   if (APP.editingId) { var idx=DATA.parcelles.findIndex(function(x){return x.id===APP.editingId;}); if(idx>=0)DATA.parcelles[idx]=p; }
   else DATA.parcelles.push(p);
+  try { await fonPersonneAssurer(p, 'vendeur', 'personne'); await fonPersonneAssurer(p, 'cedant', /^\s*(é|e)tat/i.test(p.cedant || '') ? 'etat' : 'personne'); } catch (_e) { console.warn('[personnes]', _e); }
   await dbPut('parcelles', p);
   if (typeof syncToSupabase==='function') syncToSupabase('pi_parcelles', p);
   /* L4 : écriture d'acquisition (immobilisation ou stock) si un traitement comptable est choisi. Ne bloque jamais l'enregistrement de la parcelle. */
@@ -116815,6 +116816,7 @@ function fonRuralOuvrir(kind, id) {
     else ch = '<input class="form-control" id="' + fid + '" type="' + (c.t === 'date' ? 'date' : c.t === 'number' ? 'number' : 'text') + '" value="' + escHtml(v) + '">';
     return '<div class="form-group' + span + '">' + lab + ch + '</div>';
   }).join('') + '</div>';
+  fonPersonnesDatalistMaj(); Object.keys(FON_PERS_CHAMPS[kind] || {}).forEach(function (k) { var el = document.getElementById('fonr-' + k); if (el) el.setAttribute('list', 'fon-pers-list'); });
   document.getElementById('modal-fon-rural').classList.add('open');
   if (kind === 'protocoles' || kind === 'pv_lot' || kind === 'pv_acd') fonDocBranche(kind);
 }
@@ -116844,6 +116846,8 @@ async function fonRuralEnregistrer() {
     else rec[c.k] = v;
   }
   if (kind === 'villages') rec.comite = comite;
+  if (kind === 'personnes' && !ex) { var _k = fonNormNom(rec.nom), _d = _fonPersonnesActives().filter(function (x) { return fonNormNom(x.nom) === _k; })[0]; if (_d) { toast('« ' + _d.nom + ' » existe déjà au référentiel (' + (_d.reference || '') + ').', 'error', 6000); return; } }
+  try { await fonPersonnesAssurerFiche(kind, rec); } catch (e) { console.warn('[personnes]', e); }
   if (FON_DOSSIER_OBLIG.indexOf(kind) >= 0 && (rec.dossier_id || !ex || ex.dossier_id)) {   /* ancienne fiche sans dossier : modifiable tant qu'aucun dossier n'est choisi */
     var _dos = fcDossier(rec.dossier_id); if (!_dos) { toast('Dossier foncier obligatoire.', 'error'); return; }
     rec.parcelle_id = _dos.parcelle_id || rec.parcelle_id || '';
@@ -117105,6 +117109,35 @@ async function fonPersonneFusionner(id) {
   if (!(await fonRuralSauver('personnes', src))) { delete src.fusionnee_dans; return; }
   try { logAction('FONCIER_PERSONNE_FUSION', (src.reference || id) + ' → ' + (dst.reference || cible) + ' (' + n + ' lien(s))'); } catch (e) {}
   closeModal('modal-fon-fiche'); toast(n + ' saisie(s) reliée(s) à ' + dst.nom + '.', 'success'); fonRuralRender();
+}
+/* ── L17 étape 2 : saisie assistée par le référentiel (plus de nouvelle saisie libre sans trace) ──
+   Les champs « personne » proposent le référentiel (liste de saisie). À l'enregistrement : nom déjà connu → lien ; nom nouveau → fiche créée au référentiel puis liée. */
+var FON_PERS_CHAMPS = { proprietaires: { proprietaire: 'type_proprietaire' }, ayants_droit: { nom: 'type' }, villages: { chef: 'personne' }, protocoles: { famille: 'famille', famille_rep_nom: 'personne', chef_nom: 'personne', cvgf_nom: 'personne' } };
+function fonPersonnesDatalistMaj() {
+  var dl = document.getElementById('fon-pers-list');
+  if (!dl) { dl = document.createElement('datalist'); dl.id = 'fon-pers-list'; document.body.appendChild(dl); }
+  dl.innerHTML = _fonPersonnesActives().map(function (p) { return '<option value="' + escHtml(p.nom) + '" label="' + escHtml((p.reference || '') + ' · ' + (FON_PERS_NATURES[p.nature] || '')) + '"></option>'; }).join('');
+  ['parc-vendeur', 'parc-cedant'].forEach(function (id) { var e = document.getElementById(id); if (e) e.setAttribute('list', 'fon-pers-list'); });
+}
+document.addEventListener('focusin', function (e) { var t = e.target && e.target.id; if (t === 'parc-vendeur' || t === 'parc-cedant') fonPersonnesDatalistMaj(); });
+/* Retourne l'id de la personne (existante ou créée) et pose obj.liens_personnes[champ]. */
+async function fonPersonneAssurer(obj, champ, nature, extra) {
+  var nom = String(obj[champ] || '').trim(), liens = obj.liens_personnes = obj.liens_personnes || {}, cle = fonNormNom(nom);
+  if (!cle) { delete liens[champ]; return ''; }
+  var per = _fonPersonnesActives().filter(function (x) { return fonNormNom(x.nom) === cle; })[0];
+  if (!per) {
+    if (!fcDroitEcriture()) return liens[champ] || '';
+    extra = extra || {};
+    per = { id: uid(), created_at: today(), nom: nom, nature: FON_PERS_NATURES[nature] ? nature : 'personne', contact: extra.contact || '', village_id: extra.village_id || '', cni: '', observations: 'Créée à la saisie.' };
+    per.reference = prochaineRefListe(DATA.personnes_fonciers || [], 'PER-' + new Date().getFullYear() + '-', 3, 'reference');
+    if (!(await fonRuralSauver('personnes', per))) return liens[champ] || '';
+    fonPersonnesDatalistMaj();
+  }
+  liens[champ] = per.id; return per.id;
+}
+async function fonPersonnesAssurerFiche(kind, rec) {
+  var m = FON_PERS_CHAMPS[kind]; if (!m) return;
+  for (var k in m) { await fonPersonneAssurer(rec, k, m[k] === 'personne' || m[k] === 'famille' ? m[k] : (rec[m[k]] || 'personne'), { contact: rec.contact, village_id: rec.village_id }); }
 }
 var FON_DROITS_HEADS = {
   proprietaires: ['Réf.', 'Parcelle', 'Propriétaire', 'Quote-part', 'Période'], charges: ['Réf.', 'Parcelle', 'Type', 'Bénéficiaire', 'Statut'],
@@ -118578,6 +118611,7 @@ var FON_NOTES = {
   'rural:oppositions': { t: 'Oppositions', but: 'Consigner et purger les contestations.', how: ['Saisir motif et opposant.', 'Médiation puis issue.'], calculs: [], regles: ['Opposition ouverte ou en médiation : réunion de validation et certificat foncier suspendus.', 'Levée, rejet ou jugement : issue obligatoire.'], amont: ['Enquêtes'], aval: ['Parcours (blocage étape 4)'] },
   'rural:bornages': { t: 'Bornages contradictoires', but: 'Fixer les limites en présence des riverains.', how: ['Convoquer les riverains.', 'Marquer les présents.', 'Joindre le procès-verbal.'], calculs: [], regles: ['Réalisé : PV et au moins un riverain présent.'], amont: ['Parcelles'], aval: ['Enquêtes'] },
   'rural:villages': { t: 'Villages et comités', but: 'Chefferie et comité villageois de gestion foncière (CVGF).', how: ['Créer le village.', 'Saisir le comité, son mandat et ses PV.'], calculs: [['Mandat restant', 'fin de mandat − aujourd\'hui', null]], regles: ['Mandat échu : alerte.'], amont: [], aval: ['Protocoles de purge', 'Ayants droit'] },
+  'rural:personnes': { t: 'Personnes (référentiel)', but: 'Fiche unique de chaque personne, famille, chefferie ou société liée à la terre : une seule saisie, réutilisée partout.', how: ['Saisir le nom dans n\'importe quel formulaire : le référentiel propose les noms connus.', 'Nom connu : lien automatique. Nom nouveau : fiche créée puis liée.', 'Doublons existants : « Rapprochement des doublons », puis « Fusionner » si deux fiches désignent la même personne.'], calculs: [['Utilisée dans', 'nombre de saisies reliées à la fiche (propriétaires, ayants droit, protocoles, villages, parcelles, opérations)', null]], regles: ['Deux fiches de même nom (casse, accents, ordre ignorés) sont refusées.', 'Une fiche fusionnée est conservée, ses liens pointent vers la fiche de destination.'], amont: ['Villages'], aval: ['Propriétaires', 'Ayants droit', 'Protocoles de purge'] },
   'rural:ayants_droit': { t: 'Ayants droit', but: 'Titulaires de droits coutumiers sur la terre.', how: ['Créer l\'ayant droit.', 'Indiquer sa part par parcelle.'], calculs: [['Part des ayants droit', 'somme des parts par parcelle ≤ 100 %', null]], regles: ['Terre rurale sans ayant droit : parcours bloqué à l\'étape 1.'], amont: ['Villages'], aval: ['Protocoles de purge'] },
   'rural:titres': { t: 'Titres', but: 'Certificats fonciers, titres fonciers, ACD par parcelle.', how: ['Saisir type, numéro, date.'], calculs: [], regles: ['Numéro unique par type.'], amont: ['Dossiers'], aval: ['Parcelles', 'Parcours (étape 5)'] },
   'rural:proprietaires': { t: 'Propriétaires', but: 'Chaîne de propriété datée.', how: ['Ajouter le propriétaire avec sa date de début.', 'Clôturer l\'ancien en cas de transfert.'], calculs: [['Quotes-parts actuelles', 'somme des quotes-parts des propriétaires sans date de fin ≤ 100 %', null]], regles: ['Dépassement de 100 % refusé par la base de données.'], amont: ['Mutations'], aval: ['Cessions'] },
@@ -122745,7 +122779,7 @@ function afRenderProp(){
       + '</span><br><button type="button" class="btn btn-secondary btn-sm" style="margin-top:3px;" '
         + (p.contact ? '' : 'disabled title="Ajoutez un email ou téléphone d\'abord"')
         + ' onclick="afGenererCodeProprietaire('+i+')">🔑 '+(hasCode?'Régénérer':'Générer le code')+'</button>';
-    return '<tr><td><input class="form-control" value="'+afEsc(p.nom)+'" oninput="_afOp.proprietaires['+i+'].nom=this.value"></td>'
+    return '<tr><td><input class="form-control" list="fon-pers-list" value="'+afEsc(p.nom)+'" onfocus="fonPersonnesDatalistMaj()" oninput="_afOp.proprietaires['+i+'].nom=this.value"></td>'
       +'<td><input class="form-control" value="'+afEsc(p.contact)+'" placeholder="email ou téléphone" oninput="_afOp.proprietaires['+i+'].contact=this.value;afRenderProp()"></td>'
       +'<td><input class="form-control" value="'+afEsc(p.qualite)+'" placeholder="chef de terre, héritier..." oninput="_afOp.proprietaires['+i+'].qualite=this.value"></td>'
       +'<td>'+portailCell+'</td>'
@@ -123237,6 +123271,7 @@ async function afSaveOperation(){
     _afOp.audit_derogation = { motif: _mo.trim(), par: (APP.currentUser && APP.currentUser.nom) || '—', le: today(), etape: _afOp.stage };
     try { logAction('FONCIER_AUDIT_DEROGATION', (_afOp.nom || _afOp.id) + ' → ' + _afOp.stage + ' — ' + _mo.trim()); } catch (_e) {}
   }
+  try { for (var _ip = 0; _ip < (_afOp.proprietaires || []).length; _ip++) await fonPersonneAssurer(_afOp.proprietaires[_ip], 'nom', 'personne', { contact: _afOp.proprietaires[_ip].contact }); } catch (_e) { console.warn('[personnes]', _e); }
   _afOp.updated_at=_nowTs;
   var idx=DATA.af_operations.findIndex(function(x){return x.id===_afOp.id;});
   if(idx>=0) DATA.af_operations[idx]=_afOp; else DATA.af_operations.push(_afOp);
