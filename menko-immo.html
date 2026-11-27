@@ -117457,6 +117457,7 @@ function fonAuditNouveau() {
     + '<div class="form-group"><label>Opération d\'acquisition</label><select class="form-control" id="fau-operation" onchange="fonAuditPreRemplir()"><option value="">— Aucune (audit libre) —</option>' + ops.map(function (o) { return '<option value="' + escHtml(o.id) + '">' + escHtml(o.nom || o.id) + '</option>'; }).join('') + '</select></div>'
     + '<div class="form-group"><label>Code projet</label><input class="form-control" id="fau-code" placeholder="OP-XXXX-2026"></div>'
     + '<div class="form-group"><label>Parcelle de l\'ERP (si elle existe)</label><select class="form-control" id="fau-parcelle">' + _fonParcOpts().map(function (o) { return '<option value="' + escHtml(o[0]) + '">' + escHtml(o[1]) + '</option>'; }).join('') + '</select></div>'
+    + '<div class="form-group"><label>Dossier foncier (facultatif)</label><select class="form-control" id="fau-dossier">' + _fonDossOpts().map(function (o) { return '<option value="' + escHtml(o[0]) + '">' + escHtml(o[1]) + '</option>'; }).join('') + '</select></div>'
     + '<div class="form-group"><label>Zone réglementaire *</label><select class="form-control" id="fau-zone"><option value="urbain">Urbain (MCLU / ACD)</option><option value="periurbain">Périurbain (MCLU / ACD)</option><option value="rural">Rural (AFOR / Certificat foncier)</option></select></div>'
     + '<div class="form-group"><label>Commune / sous-préfecture</label><input class="form-control" id="fau-commune"></div><div class="form-group"><label>Village / communauté</label><input class="form-control" id="fau-village"></div>'
     + '<div class="form-group"><label>Superficie brute (m²)</label><input type="number" class="form-control" id="fau-superficie"></div><div class="form-group"><label>Géomètre-expert mandaté</label><input class="form-control" id="fau-geometre"></div>'
@@ -117473,9 +117474,11 @@ function fonAuditPreRemplir() {
 async function fonAuditCreer() {
   var v = function (id) { return (document.getElementById(id) || {}).value || ''; }, aud = v('fau-auditeur').trim();
   if (!aud) { toast("L'auditeur est obligatoire.", 'error'); return; }
-  var op = v('fau-operation'), parc = v('fau-parcelle');
+  var op = v('fau-operation'), parc = v('fau-parcelle'), dos = v('fau-dossier'), _dd = dos ? fcDossier(dos) : null;
+  if (dos && !_dd) { toast('Dossier foncier introuvable.', 'error'); return; }
+  if (_dd && _dd.parcelle_id) parc = _dd.parcelle_id;
   if (op && (DATA.audits_fonciers || []).some(function (x) { return x.operation_id === op && x.decision !== 'no_go'; })) { toast('Cette opération a déjà un audit en cours ou validé : ouvrez-le depuis la liste.', 'error'); return; }
-  var a = { id: uid(), created_at: today(), operation_id: op, parcelle_id: parc, code_projet: v('fau-code').trim(), zone: v('fau-zone') || 'urbain', commune: v('fau-commune').trim(), village: v('fau-village').trim(),
+  var a = { id: uid(), created_at: today(), operation_id: op, dossier_id: dos, parcelle_id: parc, code_projet: v('fau-code').trim(), zone: v('fau-zone') || 'urbain', commune: v('fau-commune').trim(), village: v('fau-village').trim(),
     superficie_m2: parseFloat(v('fau-superficie')) || 0, geometre: v('fau-geometre').trim(), auditeur: aud, date_ouverture: today(), points: {}, visas: {}, decision: 'en_attente', historique: [] };
   FON_AUDIT_POINTS.forEach(function (d) { a.points[d.code] = { statut: 'a_verifier', piece_ref: '', observation: '' }; });
   a.reference = prochaineRefListe(DATA.audits_fonciers || [], 'AUD-' + new Date().getFullYear() + '-', 3, 'reference');
@@ -117959,12 +117962,12 @@ Object.assign(FON_RURAL_TYPES, {
     { k: 'annexe1', l: 'Annexe 1 jointe : arrêté préfectoral du chef + CNI des signataires', t: 'select', o: FON_OUINON }, { k: 'annexe2', l: 'Annexe 2 jointe : PV du conseil de famille', t: 'select', o: FON_OUINON }, { k: 'annexe3', l: 'Annexe 3 jointe : plan d\'état des lieux géoréférencé visé', t: 'select', o: FON_OUINON },
     { k: 'annexe4', l: 'Annexe 4 jointe : état foncier de moins de 15 jours', t: 'select', o: FON_OUINON }, { k: 'annexe5', l: 'Annexe 5 jointe : reçu de la première tranche', t: 'select', o: FON_OUINON }] },
   pv_lot: { store: 'pv_remises_fonciers', pre: 'PVL', lib: 'PV de remise de lot', fixe: { type: 'lot' }, filtre: function (r) { return r.type === 'lot'; }, champs: [
-    { k: 'lot_id', l: 'Lot', t: 'select', o: _fonLotOpts, req: 1 }, { k: 'client_id', l: 'Acquéreur (souscripteur)', t: 'select', o: _fonClientOpts, req: 1 }, { k: 'date_doc', l: 'Date de remise sur site', t: 'date', def: 'today' },
+    { k: 'lot_id', l: 'Lot', t: 'select', o: _fonLotOpts, req: 1 }, { k: 'dossier_id', l: 'Dossier foncier (facultatif)', t: 'select', o: _fonDossOpts }, { k: 'client_id', l: 'Acquéreur (souscripteur)', t: 'select', o: _fonClientOpts, req: 1 }, { k: 'date_doc', l: 'Date de remise sur site', t: 'date', def: 'today' },
     { k: 'representant_nom', l: "Représentant de l'aménageur", t: 'text', req: 1 }, { k: 'representant_fonction', l: 'Qualité', t: 'text' }, { k: 'nb_bornes', l: 'Nombre de bornes du lot', t: 'number', def: 4 },
     { k: 'attestation_ref', l: 'Attestation comptable de solde (n°)', t: 'text' }, { k: 'attestation_date', l: 'du', t: 'date' }, { k: 'observations', l: 'Réserves ou observations (vide = Néant)', t: 'textarea' },
     { k: 'derogation_solde', l: 'Dérogation au solde (administrateur : motif)', t: 'text' }] },
   pv_acd: { store: 'pv_remises_fonciers', pre: 'PVA', lib: "PV de remise d'ACD / titre", fixe: { type: 'acd' }, filtre: function (r) { return r.type === 'acd'; }, champs: [
-    { k: 'lot_id', l: 'Lot', t: 'select', o: _fonLotOpts, req: 1 }, { k: 'client_id', l: 'Bénéficiaire (souscripteur)', t: 'select', o: _fonClientOpts, req: 1 }, { k: 'date_doc', l: 'Date de remise', t: 'date', def: 'today' }, { k: 'lieu', l: 'Lieu', t: 'text', def: FON_DOC_VILLE },
+    { k: 'lot_id', l: 'Lot', t: 'select', o: _fonLotOpts, req: 1 }, { k: 'dossier_id', l: 'Dossier foncier (facultatif)', t: 'select', o: _fonDossOpts }, { k: 'client_id', l: 'Bénéficiaire (souscripteur)', t: 'select', o: _fonClientOpts, req: 1 }, { k: 'date_doc', l: 'Date de remise', t: 'date', def: 'today' }, { k: 'lieu', l: 'Lieu', t: 'text', def: FON_DOC_VILLE },
     { k: 'representant_nom', l: 'Remettant (nom et prénoms)', t: 'text', req: 1 }, { k: 'representant_fonction', l: 'Qualité', t: 'text', def: 'Responsable Foncier' },
     { k: 'piece_identite', l: "Pièce d'identité du bénéficiaire (n°)", t: 'text' }, { k: 'piece_delivree', l: 'Délivrée le / à', t: 'text' },
     { k: 'p1_remis', l: 'ACD remis', t: 'select', o: FON_OUINON }, { k: 'p1_ref', l: 'ACD n° / du', t: 'text' }, { k: 'p1_pages', l: 'Pages', t: 'text' },
@@ -118160,7 +118163,7 @@ async function fonDocsAction(kind, rec, action) {
     if (lot) { if (kind === 'pv_lot') lot.remise_physique = { ref: rec.reference, date: rec.date_doc || rec.date_signature }; else { lot.pv_acd = { ref: rec.reference, date: rec.date_doc || rec.date_signature }; if (lot.suivi_titre && !lot.suivi_titre.date_remise_client) lot.suivi_titre.date_remise_client = rec.date_doc || rec.date_signature; }
       await dbPut('lots', lot); if (typeof syncToSupabase === 'function') syncToSupabase('pi_lots', lot); }
     if (kind === 'pv_acd' && rec.enregistrer_dossier === 'oui' && lot) {
-      var d = (DATA.dossiers_fonciers || []).find(function (x) { return fcEstIndividuel(x) && ['cloture', 'annule'].indexOf(x.statut) === -1 && (x.lots_ids || [x.lot_id]).indexOf(lot.id) !== -1 && !x.remise_titre; });
+      var d = (rec.dossier_id && (DATA.dossiers_fonciers || []).find(function (x) { return x.id === rec.dossier_id && ['cloture', 'annule'].indexOf(x.statut) === -1 && !x.remise_titre; })) || (DATA.dossiers_fonciers || []).find(function (x) { return fcEstIndividuel(x) && ['cloture', 'annule'].indexOf(x.statut) === -1 && (x.lots_ids || [x.lot_id]).indexOf(lot.id) !== -1 && !x.remise_titre; });
       if (!d) toast('Aucun dossier de titre individuel ouvert pour ce lot : la remise est enregistrée sur le lot uniquement.', 'warning', 7000);
       else { var cl = (DATA.clients || []).find(function (c) { return c.id === rec.client_id; }) || {}, rr = await fcEnregistrerRemiseTitre(d.id, { date: rec.date_doc || fcAuj(), remis_a: ((cl.prenoms || '') + ' ' + (cl.nom || '')).trim(), piece_identite: rec.piece_identite || cl.piece_num || '', observations: 'PV ' + rec.reference });
         if (!rr.ok) toast('Remise non enregistrée dans le dossier : ' + rr.erreur, 'error', 8000); }
