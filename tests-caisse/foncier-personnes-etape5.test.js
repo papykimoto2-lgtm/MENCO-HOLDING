@@ -5,7 +5,7 @@ const { ouvrirApp, fermerNavigateur } = require('./harness');
 after(fermerNavigateur);
 
 const stub = () => {
-  window.toast = function () {}; window.fcDroitEcriture = function () { return true; }; window.fcDb = async function () { return true; }; window.dbPut = async function () { return true; };
+  window.toast = function () {}; window.userPeutSurStore = function () { return true; }; window.fcDroitEcriture = function () { return true; }; window.fcDb = async function () { return true; }; window.dbPut = async function () { return true; };
   window.syncToSupabase = function () {}; window.logAction = function () {}; window.fonRuralRender = function () {}; window.confirm = function () { return true; };
 };
 

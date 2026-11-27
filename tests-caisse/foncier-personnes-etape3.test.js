@@ -32,7 +32,7 @@ test('noms proposés pour une parcelle : propriétaires actuels, ayants droit, o
 test('référentiel enrichi à la saisie : contact et CNI repris d\'un protocole', async () => {
   const app = await ouvrirApp();
   const r = await app.page.evaluate(async () => {
-    window.toast = function () {}; window.fcDroitEcriture = function () { return true; }; window.fcDb = async function () { return true; };
+    window.toast = function () {}; window.userPeutSurStore = function () { return true; }; window.fcDroitEcriture = function () { return true; }; window.fcDb = async function () { return true; };
     DATA.personnes_fonciers = [{ id: 'pe1', reference: 'PER-1', nom: 'Kouamé Yao', nature: 'personne' }];
     var rec = { chef_nom: 'Kouame Yao', chef_cni: 'CI777' }; await fonPersonnesAssurerFiche('protocoles', rec);
     return { cni: DATA.personnes_fonciers[0].cni, lien: rec.liens_personnes.chef_nom, nb: DATA.personnes_fonciers.length };

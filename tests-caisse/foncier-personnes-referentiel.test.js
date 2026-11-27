@@ -8,7 +8,7 @@ test('rapprochement : un groupe par personne, liens ajoutés sans toucher aux an
   const app = await ouvrirApp();
   const r = await app.page.evaluate(async () => {
     var o = {};
-    window.toast = function () {}; window.fcDroitEcriture = function () { return true; }; window.fcDb = async function () { return true; }; window.dbPut = async function () { return true; };
+    window.toast = function () {}; window.userPeutSurStore = function () { return true; }; window.fcDroitEcriture = function () { return true; }; window.fcDb = async function () { return true; }; window.dbPut = async function () { return true; };
     window.syncToSupabase = function () {}; window.logAction = function () {}; window._fonJournal = async function () {}; window.fonRuralRender = function () {}; window.fonRapprochementOuvrir = function () {};
     DATA.personnes_fonciers = []; DATA.villages_fonciers = [{ id: 'v1', nom: 'Lahou', chef: 'Kouamé Yao', chef_tel: '07' }];
     DATA.af_operations = [{ id: 'op1', nom: 'Op1', proprietaires: [{ id: 'x', nom: 'KOUASSI Jean', contact: '0102' }] }];
@@ -40,7 +40,7 @@ test('rapprochement : un groupe par personne, liens ajoutés sans toucher aux an
 test('nom court sur plusieurs sites : homonymes possibles, exclu du « Tout créer » ; nom complet multi-sites : groupé', async () => {
   const app = await ouvrirApp();
   const r = await app.page.evaluate(async () => {
-    window.toast = function () {}; window.fcDroitEcriture = function () { return true; }; window.fcDb = async function () { return true; }; window.dbPut = async function () { return true; };
+    window.toast = function () {}; window.userPeutSurStore = function () { return true; }; window.fcDroitEcriture = function () { return true; }; window.fcDb = async function () { return true; }; window.dbPut = async function () { return true; };
     window.syncToSupabase = function () {}; window.logAction = function () {}; window._fonJournal = async function () {}; window.fonRuralRender = function () {}; window.fonRapprochementOuvrir = function () {};
     DATA.personnes_fonciers = []; DATA.proprietaires_fonciers = []; DATA.ayants_droit_fonciers = []; DATA.parcelles = []; DATA.villages_fonciers = [];
     DATA.af_operations = [
@@ -58,7 +58,7 @@ test('nom court sur plusieurs sites : homonymes possibles, exclu du « Tout cré
 test('délier : lien retiré, pas reproposé à la même fiche, nouvelle fiche possible, lien conservé à la ré-enregistrement', async () => {
   const app = await ouvrirApp();
   const r = await app.page.evaluate(async () => {
-    window.toast = function () {}; window.fcDroitEcriture = function () { return true; }; window.fcDb = async function () { return true; }; window.dbPut = async function () { return true; };
+    window.toast = function () {}; window.userPeutSurStore = function () { return true; }; window.fcDroitEcriture = function () { return true; }; window.fcDb = async function () { return true; }; window.dbPut = async function () { return true; };
     window.syncToSupabase = function () {}; window.logAction = function () {}; window._fonJournal = async function () {}; window.fonRuralRender = function () {}; window.confirm = function () { return true; };
     DATA.personnes_fonciers = []; DATA.proprietaires_fonciers = []; DATA.ayants_droit_fonciers = []; DATA.parcelles = []; DATA.villages_fonciers = [];
     DATA.af_operations = [{ id: 'o1', nom: 'DABRE', proprietaires: [{ id: '1', nom: 'AKA BEDJE Paul' }] }, { id: 'o2', nom: 'ANDOU', proprietaires: [{ id: '2', nom: 'AKA BEDJE Paul' }] }];
@@ -83,7 +83,7 @@ test('délier : lien retiré, pas reproposé à la même fiche, nouvelle fiche p
 test('aperçu de la migration : une ligne par groupe, aucune écriture, traitement en masse annoncé', async () => {
   const app = await ouvrirApp();
   const r = await app.page.evaluate(async () => {
-    window.toast = function () {}; var ecritures = 0; window.fcDb = async function () { ecritures++; return true; }; window.dbPut = async function () { ecritures++; return true; };
+    window.toast = function () {}; window.userPeutSurStore = function () { return true; }; var ecritures = 0; window.fcDb = async function () { ecritures++; return true; }; window.dbPut = async function () { ecritures++; return true; };
     DATA.personnes_fonciers = []; DATA.proprietaires_fonciers = []; DATA.ayants_droit_fonciers = []; DATA.parcelles = []; DATA.villages_fonciers = [];
     DATA.af_operations = [
       { id: 'o1', nom: 'DABRE', proprietaires: [{ id: '1', nom: 'AKA BEDJE' }, { id: '2', nom: 'ANKON WEDJE SYLVAIN' }, { id: '3', nom: 'DJINDJI AKISSI' }] },
