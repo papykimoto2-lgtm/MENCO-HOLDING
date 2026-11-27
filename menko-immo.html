@@ -116721,6 +116721,7 @@ function fonRuralBloquants(d, code, aujourd) {
   }
   var ouv = fonEnquetesDossier(d).filter(function (e) { return e.statut === 'ouverte' || e.statut === 'cloturee'; });
   if (code === 'rur_ouverture_enquete' && !ouv.length) r.push("aucune enquête officielle ouverte n'est enregistrée (Foncier › 2.6 Foncier rural)");
+  if (code === 'rur_bornage_geometre' && !fonBornagesDossier(d).some(function (b) { return b.statut !== 'annule'; })) r.push("aucun bornage contradictoire n'est enregistré (Foncier › 2.6 Bornages contradictoires)");
   if (code === 'rur_cloture_enquete') {
     if (!ouv.length) r.push("aucune enquête officielle n'est enregistrée");
     else if (!ouv.some(function (e) { return e.statut === 'cloturee' || aujourd >= e.date_fin_prevue; })) {
@@ -116738,19 +116739,26 @@ var FON_STATUT_LIB = { planifiee: 'Planifiée', ouverte: 'Ouverte', cloturee: 'C
 function _fonStat(st) { return FON_STATUT_LIB[st] || String(st || ''); }
 function _fonParcOpts() { return [['', '— Choisir —']].concat((DATA.parcelles || []).filter(function (p) { return !p.fusionnee_dans && !p.decoupee_dans; }).map(function (p) { return [p.id, (p.ref || p.id) + (fonRegimeParcelle(p) === 'rural' ? ' (rural)' : '')]; })); }
 function _fonVillOpts() { return [['', '— Aucun —']].concat((DATA.villages_fonciers || []).map(function (v) { return [v.id, v.nom + (v.sous_prefecture ? ' · ' + v.sous_prefecture : '')]; })); }
-function _fonDossOpts() { return [['', '— Aucun —']].concat((DATA.dossiers_fonciers || []).filter(function (d) { return d.type_procedure === 'immatriculation_rurale'; }).map(function (d) { return [d.id, d.reference || d.id]; })); }
+function _fonDossOpts() { return [['', '— Choisir un dossier —']].concat((DATA.dossiers_fonciers || []).filter(function (d) { return d.statut !== 'annule'; }).map(function (d) { var p = (DATA.parcelles || []).find(function (x) { return x.id === d.parcelle_id; }); return [d.id, (d.reference || d.id) + (p ? ' · ' + (p.ref || p.id) : '')]; })); }
+var FON_DOSSIER_OBLIG = ['enquetes', 'oppositions', 'bornages'];
+/* Parcelle = celle du dossier (source unique). Repli : dossier unique de la parcelle pour les anciennes fiches. */
+function fonDossierDeFiche(rec) {
+  if (rec && rec.dossier_id) return fcDossier(rec.dossier_id) || null;
+  var l = (DATA.dossiers_fonciers || []).filter(function (d) { return rec && rec.parcelle_id && d.parcelle_id === rec.parcelle_id && d.statut !== 'annule'; });
+  return l.length === 1 ? l[0] : null;
+}
 var FON_RURAL_TYPES = {
   enquetes: { store: 'enquetes_fonciers', pre: 'ENQ', lib: 'Enquête officielle', champs: [
-    { k: 'parcelle_id', l: 'Parcelle', t: 'select', o: _fonParcOpts, req: 1 }, { k: 'dossier_id', l: 'Dossier foncier', t: 'select', o: _fonDossOpts },
+    { k: 'dossier_id', l: 'Dossier foncier', t: 'select', o: _fonDossOpts, req: 1 }, { k: 'parcelle_id', l: 'Parcelle (déduite du dossier)', t: 'select', o: _fonParcOpts, ro: 1 },
     { k: 'village_id', l: 'Village', t: 'select', o: _fonVillOpts }, { k: 'commissaire', l: 'Commissaire enquêteur', t: 'text', req: 1 },
     { k: 'date_ouverture', l: "Date d'ouverture", t: 'date' }, { k: 'duree_jours', l: 'Durée (jours)', t: 'number', def: FON_ENQUETE_JOURS },
     { k: 'statut', l: 'Statut', t: 'select', o: [['planifiee', 'Planifiée'], ['ouverte', 'Ouverte']], def: 'planifiee' }, { k: 'observations', l: 'Observations', t: 'textarea' }] },
   oppositions: { store: 'oppositions_fonciers', pre: 'OPP', lib: 'Opposition', champs: [
-    { k: 'parcelle_id', l: 'Parcelle', t: 'select', o: _fonParcOpts, req: 1 }, { k: 'dossier_id', l: 'Dossier foncier', t: 'select', o: _fonDossOpts },
+    { k: 'dossier_id', l: 'Dossier foncier', t: 'select', o: _fonDossOpts, req: 1 }, { k: 'parcelle_id', l: 'Parcelle (déduite du dossier)', t: 'select', o: _fonParcOpts, ro: 1 },
     { k: 'opposant', l: 'Opposant', t: 'text', req: 1 }, { k: 'qualite', l: 'Qualité', t: 'select', o: [['riverain', 'Riverain'], ['famille', 'Famille / ayant droit'], ['village', 'Village / comité'], ['autre', 'Autre']], def: 'riverain' },
     { k: 'date_depot', l: 'Date de dépôt', t: 'date', def: 'today' }, { k: 'motif', l: 'Motif', t: 'textarea', req: 1 }] },
   bornages: { store: 'bornages_fonciers', pre: 'BRN', lib: 'Bornage contradictoire', champs: [
-    { k: 'parcelle_id', l: 'Parcelle', t: 'select', o: _fonParcOpts, req: 1 }, { k: 'dossier_id', l: 'Dossier foncier', t: 'select', o: _fonDossOpts },
+    { k: 'dossier_id', l: 'Dossier foncier', t: 'select', o: _fonDossOpts, req: 1 }, { k: 'parcelle_id', l: 'Parcelle (déduite du dossier)', t: 'select', o: _fonParcOpts, ro: 1 },
     { k: 'date', l: 'Date du bornage', t: 'date', req: 1 }, { k: 'lieu', l: 'Lieu de rendez-vous', t: 'text' }, { k: 'geometre', l: 'Géomètre-expert', t: 'text' },
     { k: 'pv_ref', l: 'Référence du procès-verbal signé', t: 'text' },
     { k: 'convocations', l: 'Riverains (une ligne : Nom ; Qualité ; présent oui/non ; signé oui/non)', t: 'convocations' }] },
@@ -116779,9 +116787,10 @@ function fonRuralOuvrir(kind, id) {
   FON_RURAL.edit = { kind: kind, id: id || null };
   document.getElementById('fon-rural-titre').textContent = (id ? 'Modifier : ' : 'Nouveau : ') + T.lib;
   document.getElementById('fon-rural-form').innerHTML = '<div class="form-grid">' + T.champs.map(function (c) {
-    var v = _fonValeurChamp(kind, rec, c), fid = 'fonr-' + c.k, lab = '<label>' + escHtml(c.l) + (c.req ? ' *' : '') + '</label>', span = (c.t === 'textarea' || c.t === 'convocations' || c.t === 'membres' || c.t === 'parcelles_parts') ? ' span-2' : '';
+    var v = _fonValeurChamp(kind, rec, c); if (c.k === 'dossier_id' && !v && rec && FON_DOSSIER_OBLIG.indexOf(kind) >= 0) { var _dd = fonDossierDeFiche(rec); v = _dd ? _dd.id : ''; }
+    var fid = 'fonr-' + c.k, lab = '<label>' + escHtml(c.l) + (c.req ? ' *' : '') + '</label>', span = (c.t === 'textarea' || c.t === 'convocations' || c.t === 'membres' || c.t === 'parcelles_parts') ? ' span-2' : '';
     var ch;
-    if (c.t === 'select') { var os = typeof c.o === 'function' ? c.o() : c.o; ch = '<select class="form-control" id="' + fid + '">' + os.map(function (o) { return '<option value="' + escHtml(o[0]) + '"' + (String(o[0]) === String(v) ? ' selected' : '') + '>' + escHtml(o[1]) + '</option>'; }).join('') + '</select>'; }
+    if (c.t === 'select') { var os = typeof c.o === 'function' ? c.o() : c.o; ch = '<select class="form-control" id="' + fid + '"' + (c.ro ? ' disabled' : '') + '>' + os.map(function (o) { return '<option value="' + escHtml(o[0]) + '"' + (String(o[0]) === String(v) ? ' selected' : '') + '>' + escHtml(o[1]) + '</option>'; }).join('') + '</select>'; }
     else if (c.t === 'textarea' || c.t === 'convocations' || c.t === 'membres' || c.t === 'parcelles_parts') ch = '<textarea class="form-control" id="' + fid + '" rows="' + (c.t === 'textarea' ? 3 : 5) + '">' + escHtml(v) + '</textarea>';
     else ch = '<input class="form-control" id="' + fid + '" type="' + (c.t === 'date' ? 'date' : c.t === 'number' ? 'number' : 'text') + '" value="' + escHtml(v) + '">';
     return '<div class="form-group' + span + '">' + lab + ch + '</div>';
@@ -116815,6 +116824,11 @@ async function fonRuralEnregistrer() {
     else rec[c.k] = v;
   }
   if (kind === 'villages') rec.comite = comite;
+  if (FON_DOSSIER_OBLIG.indexOf(kind) >= 0) {
+    var _dos = fcDossier(rec.dossier_id); if (!_dos) { toast('Dossier foncier obligatoire.', 'error'); return; }
+    rec.parcelle_id = _dos.parcelle_id || rec.parcelle_id || '';
+    if (!rec.parcelle_id) { toast('Le dossier choisi n\'a pas de parcelle.', 'error'); return; }
+  }
   if (kind === 'enquetes') {
     rec.duree_jours = rec.duree_jours > 0 ? rec.duree_jours : FON_ENQUETE_JOURS;
     if (rec.statut === 'ouverte' && !rec.date_ouverture) { toast("Date d'ouverture obligatoire pour une enquête ouverte.", 'error'); return; }
@@ -117908,7 +117922,7 @@ var FON_OUINON = [['', 'Non'], ['oui', 'Oui']];
 Object.assign(FON_RURAL_TYPES, {
   protocoles: { store: 'protocoles_purge_fonciers', pre: 'PRT-PURGE', lib: 'Protocole de purge des droits coutumiers', champs: [
     { k: 'programme_id', l: 'Programme (importé ou créé)', t: 'select', o: _fonProgOpts }, { k: 'operation_id', l: "Opération d'acquisition (pipeline)", t: 'select', o: _fonOpAfOpts },
-    { k: 'village_id', l: 'Village', t: 'select', o: _fonVillOpts, req: 1 }, { k: 'parcelle_id', l: 'Parcelle', t: 'select', o: _fonParcOpts },
+    { k: 'village_id', l: 'Village', t: 'select', o: _fonVillOpts, req: 1 }, { k: 'dossier_id', l: 'Dossier foncier (facultatif)', t: 'select', o: _fonDossOpts }, { k: 'parcelle_id', l: 'Parcelle', t: 'select', o: _fonParcOpts },
     { k: 'amenageur_nom', l: "Représentant de l'aménageur (nom et prénoms)", t: 'text', req: 1 }, { k: 'amenageur_fonction', l: 'Qualité', t: 'text', def: 'Directeur Général' },
     { k: 'chef_nom', l: 'Chef du village', t: 'text', req: 1 }, { k: 'chef_arrete', l: 'Arrêté préfectoral n°', t: 'text', req: 1 }, { k: 'chef_arrete_date', l: 'du', t: 'date' }, { k: 'chef_cni', l: 'CNI / passeport du chef', t: 'text' }, { k: 'chef_adresse', l: 'Demeurant à', t: 'text' },
     { k: 'cvgf_nom', l: 'Président du comité villageois (CVGF)', t: 'text', req: 1 }, { k: 'cvgf_cni', l: 'CNI du président', t: 'text' },
