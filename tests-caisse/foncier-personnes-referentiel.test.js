@@ -54,3 +54,28 @@ test('nom court sur plusieurs sites : homonymes possibles, exclu du « Tout cré
   assert.equal(r.court, true); assert.equal(r.complet, false); assert.equal(r.proche, 1);
   assert.deepEqual(r.personnes, ['ANKON WEDJE SYLVAIN']);
 });
+
+test('délier : lien retiré, pas reproposé à la même fiche, nouvelle fiche possible, lien conservé à la ré-enregistrement', async () => {
+  const app = await ouvrirApp();
+  const r = await app.page.evaluate(async () => {
+    window.toast = function () {}; window.fcDroitEcriture = function () { return true; }; window.fcDb = async function () { return true; }; window.dbPut = async function () { return true; };
+    window.syncToSupabase = function () {}; window.logAction = function () {}; window._fonJournal = async function () {}; window.fonRuralRender = function () {}; window.confirm = function () { return true; };
+    DATA.personnes_fonciers = []; DATA.proprietaires_fonciers = []; DATA.ayants_droit_fonciers = []; DATA.parcelles = []; DATA.villages_fonciers = [];
+    DATA.af_operations = [{ id: 'o1', nom: 'DABRE', proprietaires: [{ id: '1', nom: 'AKA BEDJE Paul' }] }, { id: 'o2', nom: 'ANDOU', proprietaires: [{ id: '2', nom: 'AKA BEDJE Paul' }] }];
+    await fonPersonnesToutCreer();
+    var P = DATA.personnes_fonciers[0], o = { creees: DATA.personnes_fonciers.length, liens: fonPersonneLiens(P.id).length };
+    var idx = fonPersonneLiens(P.id).findIndex(function (x) { return x.parent.id === 'o2'; });
+    await fonPersonneDelier(P.id, idx);
+    o.apresDelier = fonPersonneLiens(P.id).length; o.lienRetire = !DATA.af_operations[1].proprietaires[0].liens_personnes.nom;
+    var G = fonPersonnesGroupes(); o.groupes = G.length; o.personneProposee = G[0] && G[0].personne;   /* ne doit pas reproposer P */
+    await fonPersonnesCreerEtLier(G[0].cle);
+    o.personnes = DATA.personnes_fonciers.length; var Q = DATA.personnes_fonciers[1];
+    o.nouveauLien = DATA.af_operations[1].proprietaires[0].liens_personnes.nom === Q.id;
+    /* ré-enregistrement de l'opération : les deux liens (même nom, deux fiches) sont conservés */
+    await fonPersonneAssurer(DATA.af_operations[1].proprietaires[0], 'nom', 'personne'); await fonPersonneAssurer(DATA.af_operations[0].proprietaires[0], 'nom', 'personne');
+    o.stable = DATA.af_operations[1].proprietaires[0].liens_personnes.nom === Q.id && DATA.af_operations[0].proprietaires[0].liens_personnes.nom === P.id && DATA.personnes_fonciers.length === 2;
+    return o;
+  });
+  assert.equal(r.creees, 1); assert.equal(r.liens, 2); assert.equal(r.apresDelier, 1); assert.equal(r.lienRetire, true);
+  assert.equal(r.groupes, 1); assert.equal(r.personneProposee, null); assert.equal(r.personnes, 2); assert.equal(r.nouveauLien, true); assert.equal(r.stable, true);
+});

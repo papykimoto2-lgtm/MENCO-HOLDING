@@ -117026,7 +117026,7 @@ function fonPersonnesSources() {
     [['vendeur', 'Vendeur / propriétaire actuel'], ['cedant', 'Cédant']].forEach(function (c) {
       add({ nom: r[c[0]], nature: /^\s*(é|e)tat/i.test(r[c[0]] || '') ? 'etat' : 'personne', obj: r, champ: c[0], store: 'parcelles', ou: 'Parcelle ' + (r.ref || r.id) + ' › ' + c[1] }); });
   });
-  out.forEach(function (o) { o.cle = fonNormNom(o.nom); o.lie = (o.obj.liens_personnes || {})[o.champ] || ''; });
+  out.forEach(function (o) { o.cle = fonNormNom(o.nom); o.lie = (o.obj.liens_personnes || {})[o.champ] || ''; o.exclus = (o.obj.liens_exclus || {})[o.champ] || []; o.grp = o.cle + (o.exclus.length ? '#' + o.exclus.slice().sort().join(',') : ''); });
   return out;
 }
 function fonPersonneLiens(personneId) { return fonPersonnesSources().filter(function (o) { return o.lie === personneId; }); }
@@ -117034,7 +117034,7 @@ function _fonPersonnesActives() { return (DATA.personnes_fonciers || []).filter(
 /* Groupes de saisies identiques (même nom normalisé) + personnes proches (≤ 2 fautes de frappe). */
 function fonPersonnesGroupes() {
   var g = {}, src = fonPersonnesSources();
-  src.forEach(function (o) { (g[o.cle] = g[o.cle] || { cle: o.cle, sources: [] }).sources.push(o); });
+  src.forEach(function (o) { (g[o.grp] = g[o.grp] || { cle: o.grp, cleNom: o.cle, sources: [] }).sources.push(o); });
   var pers = _fonPersonnesActives(), cles = Object.keys(g);
   return cles.map(function (k) {
     var G = g[k], freq = {}; G.sources.forEach(function (o) { freq[o.nom.trim()] = (freq[o.nom.trim()] || 0) + 1; });
@@ -117042,11 +117042,11 @@ function fonPersonnesGroupes() {
     G.noms = Object.keys(freq).sort(function (a, b) { return (freq[b] - freq[a]) || (_civ(a) - _civ(b)) || (_acc(b) - _acc(a)) || (_maj(a) - _maj(b)) || (a.length - b.length); });
     var _nat = G.sources.map(function (o) { return o.nature; }).filter(function (n) { return n && n !== 'personne'; })[0];
     G.nature = /^\s*famille\b/i.test(G.noms[0]) ? 'famille' : (_nat || 'personne'); G.contact = (G.sources.filter(function (o) { return o.contact; })[0] || {}).contact || ''; G.village_id = (G.sources.filter(function (o) { return o.village_id; })[0] || {}).village_id || '';
-    G.personne = pers.filter(function (p) { return fonNormNom(p.nom) === k; })[0] || null;
+    G.personne = pers.filter(function (p) { return fonNormNom(p.nom) === G.cleNom && !G.sources.some(function (o) { return o.exclus.indexOf(p.id) !== -1; }); })[0] || null;
     G.nonLies = G.sources.filter(function (o) { return !o.lie || !(DATA.personnes_fonciers || []).some(function (p) { return p.id === o.lie && !p.fusionnee_dans; }); });
     var _sites = {}; G.sources.forEach(function (o) { if (o.parent) _sites[o.parent.id] = 1; });
-    G.homonymes = Object.keys(_sites).length > 1 && k.split(' ').length <= 2;   /* nom court présent sur plusieurs sites : peut être deux personnes */
-    G.proches = cles.filter(function (k2) { return k2 !== k && k.length >= 8 && k2.length >= 8 && _fonLev(k, k2) <= 2; }).map(function (k2) { return g[k2] ? (g[k2].sources[0].nom) : k2; });
+    G.homonymes = Object.keys(_sites).length > 1 && G.cleNom.split(' ').length <= 2;   /* nom court présent sur plusieurs sites : peut être deux personnes */
+    G.proches = cles.filter(function (k2) { return g[k2].cleNom !== G.cleNom && G.cleNom.length >= 8 && g[k2].cleNom.length >= 8 && _fonLev(G.cleNom, g[k2].cleNom) <= 2; }).map(function (k2) { return g[k2] ? (g[k2].sources[0].nom) : k2; });
     return G;
   }).filter(function (G) { return G.nonLies.length; }).sort(function (a, b) { return b.sources.length - a.sources.length; });
 }
@@ -117095,6 +117095,26 @@ function fonRapprochementOuvrir() {
       : '<div style="color:var(--dim);font-size:12px;">Tout est rapproché : aucune saisie sans lien au référentiel.</div>');
   document.getElementById('modal-fon-fiche').classList.add('open');
 }
+/* Saisies reliées à une fiche, avec « Délier » : le lien est retiré et la fiche retenue en exclusion pour cette saisie (le rapprochement ne la reproposera pas). */
+function fonPersonneLiensOuvrir(id) {
+  var r = (DATA.personnes_fonciers || []).find(function (x) { return x.id === id; }); if (!r) return;
+  var E = escHtml, L = fonPersonneLiens(id), bj = document.getElementById('fon-fiche-imprimer'); if (bj) bj.style.display = 'none';
+  document.getElementById('fon-fiche-titre').textContent = '⛓ Saisies reliées à « ' + r.nom + ' »';
+  document.getElementById('fon-fiche-corps').innerHTML = L.length ? '<div class="table-wrap"><table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr><th>Où</th><th>Texte saisi</th><th></th></tr></thead><tbody>' + L.map(function (o, i) {
+    return '<tr><td style="border-top:1px solid #ddd;padding:4px;">' + E(o.ou) + '</td><td style="border-top:1px solid #ddd;padding:4px;">' + E(o.nom) + '</td><td style="border-top:1px solid #ddd;padding:4px;">' + _fonBtn('⛓ Délier', 'fonPersonneDelier(\'' + id + '\',' + i + ')') + '</td></tr>'; }).join('') + '</tbody></table></div>'
+    : '<div style="color:var(--dim);font-size:12px;">Aucune saisie reliée.</div>';
+  document.getElementById('modal-fon-fiche').classList.add('open');
+}
+async function fonPersonneDelier(id, idx) {
+  if (!fcDroitEcriture()) { toast('Votre profil ne permet pas de modifier le module Foncier.', 'error'); return; }
+  var o = fonPersonneLiens(id)[idx]; if (!o) return;
+  if (!confirm('Délier « ' + o.nom + ' » (' + o.ou + ') de cette fiche ?\nLa saisie ne sera plus reliée à cette personne ; le rapprochement ne la lui reproposera pas.')) return;
+  var liens = o.obj.liens_personnes || {}; delete liens[o.champ];
+  var ex = o.obj.liens_exclus = o.obj.liens_exclus || {}; ex[o.champ] = (ex[o.champ] || []).concat([id]);
+  try { await _fonPersonnesPersister(o); } catch (e) { toast('Écriture refusée : ' + e.message, 'error'); return; }
+  try { logAction('FONCIER_PERSONNE_DELIER', o.ou + ' « ' + o.nom + ' » délié de ' + id); } catch (e) {}
+  toast('Saisie déliée.', 'success'); fonPersonneLiensOuvrir(id); try { fonRuralRender(); } catch (e) {}
+}
 /* Fusion de deux fiches du référentiel : les saisies liées à la source pointent vers la cible, la source est conservée (fusionnee_dans). */
 function fonPersonneFusionUI(id) {
   var r = (DATA.personnes_fonciers || []).find(function (x) { return x.id === id; }); if (!r) return;
@@ -117129,7 +117149,10 @@ document.addEventListener('focusin', function (e) { var t = e.target && e.target
 async function fonPersonneAssurer(obj, champ, nature, extra) {
   var nom = String(obj[champ] || '').trim(), liens = obj.liens_personnes = obj.liens_personnes || {}, cle = fonNormNom(nom);
   if (!cle) { delete liens[champ]; return ''; }
-  var per = _fonPersonnesActives().filter(function (x) { return fonNormNom(x.nom) === cle; })[0];
+  var deja = liens[champ] && _fonPersonnesActives().filter(function (x) { return x.id === liens[champ] && fonNormNom(x.nom) === cle; })[0];
+  if (deja) return deja.id;   /* lien déjà posé et nom inchangé : conservé */
+  var excl = (obj.liens_exclus || {})[champ] || [];
+  var per = _fonPersonnesActives().filter(function (x) { return fonNormNom(x.nom) === cle && excl.indexOf(x.id) === -1; })[0];
   if (!per) {
     if (!fcDroitEcriture()) return liens[champ] || '';
     extra = extra || {};
@@ -117254,7 +117277,7 @@ function fonDroitsLigne(vue, r, aujourd) {
   } else if (vue === 'personnes') {
     var vp = (DATA.villages_fonciers || []).find(function (x) { return x.id === r.village_id; }), nl = fonPersonneLiens(r.id).length;
     cells = [r.reference || '—', E(r.nom), E(FON_PERS_NATURES[r.nature] || r.nature || ''), E(vp ? vp.nom : '—'), nl ? nl + ' enregistrement(s)' : '—'];
-    act += _fonBtn('🔀 Fusionner', 'fonPersonneFusionUI(\'' + r.id + '\')');
+    act += _fonBtn('⛓ Liens', 'fonPersonneLiensOuvrir(\'' + r.id + '\')') + _fonBtn('🔀 Fusionner', 'fonPersonneFusionUI(\'' + r.id + '\')');
   } else if (vue === 'ayants_droit') {
     var v = (DATA.villages_fonciers || []).find(function (x) { return x.id === r.village_id; });
     cells = [r.reference || '—', E(r.nom), E(r.type || ''), E(v ? v.nom : '—'), (r.parcelles || []).map(function (x) { return E(x.ref) + ' (' + x.part + ' %)'; }).join(', ') || '—'];
