@@ -117863,20 +117863,44 @@ function fonAuditNouveau() {
   document.getElementById('fon-audit-corps').innerHTML = '<div class="form-grid">'
     + '<div class="form-group"><label>Opération d\'acquisition</label><select class="form-control" id="fau-operation" onchange="fonAuditPreRemplir()"><option value="">— Aucune (audit libre) —</option>' + ops.map(function (o) { return '<option value="' + escHtml(o.id) + '">' + escHtml(o.nom || o.id) + '</option>'; }).join('') + '</select></div>'
     + '<div class="form-group"><label>Code projet</label><input class="form-control" id="fau-code" placeholder="OP-XXXX-2026"></div>'
-    + '<div class="form-group"><label>Parcelle de l\'ERP (si elle existe)</label><select class="form-control" id="fau-parcelle">' + _fonParcOpts().map(function (o) { return '<option value="' + escHtml(o[0]) + '">' + escHtml(o[1]) + '</option>'; }).join('') + '</select></div>'
+    + '<div class="form-group"><label>Parcelle de l\'ERP (si elle existe)</label><select class="form-control" id="fau-parcelle" onchange="fonAuditParcelleChoisie(this)">' + _fonParcOpts().map(function (o) { return '<option value="' + escHtml(o[0]) + '">' + escHtml(o[1]) + '</option>'; }).join('') + '</select></div>'
     + '<div class="form-group"><label>Dossier foncier (facultatif)</label><select class="form-control" id="fau-dossier">' + _fonDossOpts().map(function (o) { return '<option value="' + escHtml(o[0]) + '">' + escHtml(o[1]) + '</option>'; }).join('') + '</select></div>'
     + '<div class="form-group"><label>Zone réglementaire *</label><select class="form-control" id="fau-zone"><option value="urbain">Urbain (MCLU / ACD)</option><option value="periurbain">Périurbain (MCLU / ACD)</option><option value="rural">Rural (AFOR / Certificat foncier)</option></select></div>'
     + '<div class="form-group"><label>Commune / sous-préfecture</label><input class="form-control" id="fau-commune"></div><div class="form-group"><label>Village / communauté</label><input class="form-control" id="fau-village"></div>'
     + '<div class="form-group"><label>Superficie brute (m²)</label><input type="number" class="form-control" id="fau-superficie"></div><div class="form-group"><label>Géomètre-expert mandaté</label><input class="form-control" id="fau-geometre"></div>'
     + '<div class="form-group"><label>Auditeur / responsable *</label><input class="form-control" id="fau-auditeur" value="' + escHtml((APP.currentUser && APP.currentUser.nom) || '') + '"></div></div>'
     + '<div style="margin-top:10px;"><button class="btn btn-primary" onclick="fonAuditCreer()">Ouvrir l\'audit (19 points)</button></div>';
+  FON_AUDIT_CHAMPS.forEach(function (id) { var e = document.getElementById(id); if (e) { e.dataset.auto = ''; e.dataset.touched = ''; var marquer = function () { e.dataset.auto = ''; e.dataset.touched = '1'; }; e.addEventListener('input', marquer); e.addEventListener('change', marquer); } });
   document.getElementById('modal-fon-audit').classList.add('open');
 }
+/* Choix de l'opération (ou de la parcelle) : les champs de l'audit se préremplissent. Un champ déjà tapé par l'utilisateur n'est jamais écrasé ;
+   un champ prérempli suit le choix (changer d'opération le met à jour, « Aucune » le vide). */
+var FON_AUDIT_CHAMPS = ['fau-code', 'fau-parcelle', 'fau-dossier', 'fau-zone', 'fau-commune', 'fau-village', 'fau-superficie', 'fau-geometre'];
+function fonAuditContexte(opId, parcId) {
+  var op = opId ? (DATA.af_operations || []).find(function (x) { return x.id === opId; }) : null, pid = parcId || (op && op.parcelle_id) || '';
+  var parc = pid ? (DATA.parcelles || []).find(function (x) { return x.id === pid; }) : null;
+  var prog = pid ? (DATA.programmes || []).find(function (g) { return g.parcelle_id === pid; }) : null;
+  var prot = (DATA.protocoles_purge_fonciers || []).filter(function (x) { return (op && x.operation_id === op.id) || (pid && x.parcelle_id === pid); }).filter(function (x) { return x.geometre; })[0];
+  var doss = pid ? (DATA.dossiers_fonciers || []).filter(function (d) { return d.parcelle_id === pid && ['annule', 'cloture'].indexOf(d.statut) === -1; }) : [];
+  return {
+    code: op ? op.nom : '', parcelle: op && op.parcelle_id ? op.parcelle_id : '', dossier: doss.length === 1 ? doss[0].id : '',
+    zone: parc ? fonRegimeParcelle(parc) : '', commune: (op && op.commune) || (parc && parc.commune) || '', village: (op && op.village) || '',
+    superficie: (op && op.superficie) || (parc && parc.superficie) || '', geometre: (prog && prog.menko && prog.menko.geometre) || (prot && prot.geometre) || ''
+  };
+}
+function fonAuditParcelleChoisie(sel) { sel.dataset.auto = ''; sel.dataset.touched = '1'; fonAuditPreRemplir(); }
 function fonAuditPreRemplir() {
-  var o = (DATA.af_operations || []).find(function (x) { return x.id === document.getElementById('fau-operation').value; }); if (!o) return;
-  var set = function (id, v) { var e = document.getElementById(id); if (e && !e.value && v) e.value = v; };
-  set('fau-code', o.nom); set('fau-commune', o.commune); set('fau-village', o.village); set('fau-superficie', o.superficie);
-  if (o.parcelle_id) { var s = document.getElementById('fau-parcelle'); if (s) s.value = o.parcelle_id; }
+  var ctx = fonAuditContexte((document.getElementById('fau-operation') || {}).value, (document.getElementById('fau-parcelle') || {}).value);
+  var poser = function (id, v) {
+    var e = document.getElementById(id); if (!e) return;
+    var libre = e.dataset.auto === '1' || (e.dataset.touched !== '1' && (e.value === '' || id === 'fau-zone'));
+    if (!libre) return;
+    if (v === '' || v == null) { if (e.dataset.auto === '1') { e.value = id === 'fau-zone' ? 'urbain' : ''; e.dataset.auto = ''; } return; }
+    if (e.tagName === 'SELECT' && !Array.prototype.some.call(e.options, function (o) { return o.value === String(v); })) return;
+    e.value = v; e.dataset.auto = '1';
+  };
+  poser('fau-code', ctx.code); poser('fau-parcelle', ctx.parcelle);
+  poser('fau-dossier', ctx.dossier); poser('fau-zone', ctx.zone); poser('fau-commune', ctx.commune); poser('fau-village', ctx.village); poser('fau-superficie', ctx.superficie); poser('fau-geometre', ctx.geometre);
 }
 async function fonAuditCreer() {
   var v = function (id) { return (document.getElementById(id) || {}).value || ''; }, aud = v('fau-auditeur').trim();
