@@ -116848,6 +116848,7 @@ async function fonRuralEnregistrer() {
   }
   if (kind === 'villages') rec.comite = comite;
   if (kind === 'personnes' && !ex) { var _k = fonNormNom(rec.nom), _d = _fonPersonnesActives().filter(function (x) { return fonNormNom(x.nom) === _k; })[0]; if (_d) { toast('« ' + _d.nom + ' » existe déjà au référentiel (' + (_d.reference || '') + ').', 'error', 6000); return; } }
+  if (kind === 'personnes' && !ex) rec.historique = [{ le: new Date().toISOString(), par: (APP.currentUser && APP.currentUser.nom) || '—', action: 'Fiche créée', detail: 'saisie manuelle' }];
   try { await fonPersonnesAssurerFiche(kind, rec); } catch (e) { console.warn('[personnes]', e); }
   if (FON_DOSSIER_OBLIG.indexOf(kind) >= 0 && (rec.dossier_id || !ex || ex.dossier_id)) {   /* ancienne fiche sans dossier : modifiable tant qu'aucun dossier n'est choisi */
     var _dos = fcDossier(rec.dossier_id); if (!_dos) { toast('Dossier foncier obligatoire.', 'error'); return; }
@@ -117007,10 +117008,17 @@ function fonNormNom(s) {
   return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ')
     .split(' ').filter(function (t) { return t && ['m', 'mr', 'mme', 'mlle', 'monsieur', 'madame', 'de', 'du', 'des', 'd', 'la', 'le'].indexOf(t) === -1; }).sort().join(' ');
 }
-function _fonLev(a, b) {
-  var m = a.length, n = b.length, d = [], i, j; for (i = 0; i <= m; i++) { d[i] = [i]; } for (j = 1; j <= n; j++) d[0][j] = j;
-  for (i = 1; i <= m; i++) for (j = 1; j <= n; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-  return d[m][n];
+function _fonLev(a, b, max) {
+  /* distance d'édition avec abandon dès que le minimum de la ligne dépasse « max » (comparaison de centaines de noms) */
+  var m = a.length, n = b.length; if (max !== undefined && Math.abs(m - n) > max) return max + 1;
+  var prev = [], cur = [], i, j; for (j = 0; j <= n; j++) prev[j] = j;
+  for (i = 1; i <= m; i++) {
+    cur[0] = i; var mini = i;
+    for (j = 1; j <= n; j++) { cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1)); if (cur[j] < mini) mini = cur[j]; }
+    if (max !== undefined && mini > max) return max + 1;
+    var t = prev; prev = cur; cur = t;
+  }
+  return prev[n];
 }
 /* Toutes les saisies de personnes existantes, sous une forme uniforme. */
 var FON_PERS_MEMO = null;   /* sources calculées une fois par affichage (la liste compte des centaines de lignes) */
@@ -117041,7 +117049,8 @@ function _fonPersonnesActives() { return (DATA.personnes_fonciers || []).filter(
 function fonPersonnesGroupes() {
   var g = {}, src = fonPersonnesSources();
   src.forEach(function (o) { (g[o.grp] = g[o.grp] || { cle: o.grp, cleNom: o.cle, sources: [] }).sources.push(o); });
-  var pers = _fonPersonnesActives(), cles = Object.keys(g);
+  var pers = _fonPersonnesActives(), cles = Object.keys(g), persParCle = {}, actifs = {};
+  pers.forEach(function (x) { actifs[x.id] = 1; (persParCle[fonNormNom(x.nom)] = persParCle[fonNormNom(x.nom)] || []).push(x); });   /* clés calculées une seule fois */
   return cles.map(function (k) {
     var G = g[k], freq = {}; G.sources.forEach(function (o) { freq[o.nom.trim()] = (freq[o.nom.trim()] || 0) + 1; });
     var _acc = function (x) { return /[^\x00-\x7f]/.test(x) ? 1 : 0; }, _maj = function (x) { return x === x.toUpperCase() ? 1 : 0; }, _civ = function (x) { return /^(m|mr|mme|mlle|monsieur|madame)\.?\s+/i.test(x) ? 1 : 0; };
@@ -117049,28 +117058,33 @@ function fonPersonnesGroupes() {
     var _nat = G.sources.map(function (o) { return o.nature; }).filter(function (n) { return n && n !== 'personne'; })[0];
     var _n0 = G.noms[0];
     G.nature = /^\s*(é|e)tat\b/i.test(_n0) || /\b(etat|état)[ -]ci\b/i.test(_n0) ? 'etat' : /^\s*famille\b/i.test(_n0) ? 'famille' : /communaut|collectivit|village|chefferie/i.test(_n0) ? (/chefferie/i.test(_n0) ? 'chefferie' : 'collectivite') : /\b(sarl|sa|ets|société|societe|sci|groupe)\b/i.test(_n0) ? 'societe' : (_nat || 'personne'); G.contact = (G.sources.filter(function (o) { return o.contact; })[0] || {}).contact || ''; G.village_id = (G.sources.filter(function (o) { return o.village_id; })[0] || {}).village_id || '';
-    G.personne = pers.filter(function (p) { return fonNormNom(p.nom) === G.cleNom && !G.sources.some(function (o) { return o.exclus.indexOf(p.id) !== -1; }); })[0] || null;
-    G.nonLies = G.sources.filter(function (o) { return !o.lie || !(DATA.personnes_fonciers || []).some(function (p) { return p.id === o.lie && !p.fusionnee_dans; }); });
+    G.personne = (persParCle[G.cleNom] || []).filter(function (p) { return !G.sources.some(function (o) { return o.exclus.indexOf(p.id) !== -1; }); })[0] || null;
+    G.nonLies = G.sources.filter(function (o) { return !o.lie || !actifs[o.lie]; });
     G.acteurSeul = G.sources.every(function (o) { return o.acteur; });   /* souscripteurs et intervenants seuls : jamais créés en masse sans choix explicite */
     var _sites = {}; G.sources.forEach(function (o) { if (o.parent) _sites[o.parent.id] = 1; });
     G.homonymes = Object.keys(_sites).length > 1 && G.cleNom.split(' ').length <= 2 && ['personne'].indexOf(G.nature) !== -1;   /* un État, une famille, une collectivité ou une société est une entité unique */   /* nom court présent sur plusieurs sites : peut être deux personnes */
     var _seuil = G.cleNom.length >= 15 ? 3 : 2;
-    G.proches = cles.filter(function (k2) { var c2 = g[k2].cleNom; return c2 !== G.cleNom && G.cleNom.length >= 8 && c2.length >= 8 && Math.abs(c2.length - G.cleNom.length) <= _seuil && _fonLev(G.cleNom, c2) <= _seuil; }).map(function (k2) { return g[k2] ? (g[k2].sources[0].nom) : k2; });
+    G.proches = cles.filter(function (k2) { var c2 = g[k2].cleNom; return c2 !== G.cleNom && G.cleNom.length >= 8 && c2.length >= 8 && Math.abs(c2.length - G.cleNom.length) <= _seuil && _fonLev(G.cleNom, c2, _seuil) <= _seuil; }).map(function (k2) { return g[k2] ? (g[k2].sources[0].nom) : k2; });
     return G;
   }).filter(function (G) { return G.nonLies.length; }).sort(function (a, b) { return b.sources.length - a.sources.length; });
 }
 async function _fonPersonnesPersister(o) {
+  /* un utilisateur du foncier ne peut écrire dans Acquisition, Parcelles ou Souscripteurs que s'il y a le droit */
+  if (['af_operations', 'parcelles', 'clients'].indexOf(o.store) !== -1 && typeof userPeutSurStore === 'function' && !userPeutSurStore(o.store, 'u')) throw new Error('droit insuffisant sur « ' + o.store + ' »');
   if (o.store === 'af_operations') { await dbPut('af_operations', o.parent); if (typeof syncToSupabase === 'function') syncToSupabase('pi_af_operations', o.parent); }
   else if (o.store === 'clients') { await dbPut('clients', o.obj); if (typeof syncToSupabase === 'function') syncToSupabase('pi_clients', o.obj); }
   else if (o.store === 'parcelles') { await fcDb('parcelles', o.obj, { forceRole: true }); if (typeof syncToSupabase === 'function') syncToSupabase('pi_parcelles', o.obj); }
   else await fcDb(o.store, o.obj, { forceRole: true });
 }
 async function _fonPersonnesLier(sources, personneId) {
-  var n = 0;
+  var n = 0, echecs = [];
   for (var i = 0; i < sources.length; i++) {
-    var o = sources[i]; (o.obj.liens_personnes = o.obj.liens_personnes || {})[o.champ] = personneId;
-    await _fonPersonnesPersister(o); n++;
+    var o = sources[i], liens = o.obj.liens_personnes = o.obj.liens_personnes || {}, ancien = liens[o.champ];
+    liens[o.champ] = personneId;
+    try { await _fonPersonnesPersister(o); n++; }
+    catch (e) { if (ancien === undefined) delete liens[o.champ]; else liens[o.champ] = ancien; echecs.push(o.ou + ' (' + e.message + ')'); }   /* échec : lien annulé en mémoire, rien de partiel */
   }
+  if (echecs.length) toast(echecs.length + ' saisie(s) non reliée(s) : ' + echecs.slice(0, 2).join(' ; '), 'error', 8000);
   return n;
 }
 async function fonPersonnesCreerEtLier(cle) {
@@ -117078,11 +117092,13 @@ async function fonPersonnesCreerEtLier(cle) {
   var G = fonPersonnesGroupes().filter(function (x) { return x.cle === cle; })[0]; if (!G) return 0;
   var per = G.personne;
   if (!per) {
-    per = { id: uid(), created_at: today(), nom: G.noms[0].replace(/^\s*(m|mr|mme|mlle|monsieur|madame)\.?\s+/i, '').trim(), nature: FON_PERS_NATURES[G.nature] ? G.nature : 'personne', contact: G.contact, village_id: G.village_id, cni: '', observations: 'Créée par rapprochement (' + G.sources.length + ' saisie(s)).' };
+    per = { id: uid(), created_at: today(), nom: G.noms[0].replace(/^\s*(m|mr|mme|mlle|monsieur|madame)\.?\s+/i, '').trim(), nature: FON_PERS_NATURES[G.nature] ? G.nature : 'personne', contact: G.contact, village_id: G.village_id, cni: '', observations: 'Créée par rapprochement (' + G.sources.length + ' saisie(s)).', historique: [{ le: new Date().toISOString(), par: (APP.currentUser && APP.currentUser.nom) || '—', action: 'Fiche créée', detail: 'rapprochement (' + G.sources.length + ' saisie(s))' }] };
     per.reference = prochaineRefListe(DATA.personnes_fonciers || [], 'PER-' + new Date().getFullYear() + '-', 3, 'reference');
     if (!(await fonRuralSauver('personnes', per))) return 0;
   }
-  return await _fonPersonnesLier(G.nonLies, per.id);
+  var _nl = await _fonPersonnesLier(G.nonLies, per.id);
+  if (_nl && G.personne) await fonPersonneJournal(per.id, 'Saisies reliées', _nl + ' saisie(s) par rapprochement');
+  return _nl;
 }
 async function fonPersonnesToutCreer(avecActeurs) {
   /* Les noms proches (fautes de frappe possibles) sont laissés à la vérification : jamais créés ni fusionnés automatiquement. */
@@ -117182,8 +117198,20 @@ async function fonPersonnePropager(rec, avant) {
     if (natChg && NAT[o.store]) o.obj[NAT[o.store]] = rec.nature;
     try { await _fonPersonnesPersister(o); n++; } catch (e) { toast('Écriture refusée : ' + e.message, 'error'); }
   }
+  await fonPersonneJournal(rec.id, 'Correction répercutée', '(' + quoi + ') ' + n + ' saisie(s) mise(s) à jour, ' + figes.length + ' document(s) signé(s) conservé(s)');
   try { logAction('FONCIER_PERSONNE_PROPAGATION', (rec.reference || rec.id) + ' (' + quoi + ') : ' + n + ' saisie(s) mises à jour, ' + figes.length + ' conservée(s)'); } catch (e) {}
   toast(n + ' saisie(s) mise(s) à jour.', 'success'); try { fonRuralRender(); } catch (e) {}
+}
+/* Journal d'une fiche du référentiel : qui a créé, relié, corrigé, fusionné, délié, généré un code — et quand. */
+async function fonPersonneJournal(id, action, detail) {
+  var r = (DATA.personnes_fonciers || []).find(function (x) { return x.id === id; }); if (!r) return;
+  r.historique = (r.historique || []).concat([{ le: new Date().toISOString(), par: (APP.currentUser && APP.currentUser.nom) || '—', action: action, detail: String(detail || '').slice(0, 300) }]).slice(-200);
+  try { await fcDb('personnes_fonciers', r, { forceRole: true }); } catch (e) { /* le journal ne bloque jamais l'action */ }
+}
+function fonPersonneHistorique(r) {
+  var ev = (r.historique || []).map(function (h) { return { le: h.le, par: h.par, txt: h.action + (h.detail ? ' — ' + h.detail : '') }; })
+    .concat((r.historique_modifs || []).map(function (m) { return { le: m.le, par: m.par, txt: 'Fiche modifiée : ' + (m.champs || []).map(function (c) { return c.l + ' « ' + c.avant + ' » → « ' + c.apres + ' »'; }).join(' ; ') + (m.motif ? ' (motif : ' + m.motif + ')' : '') }; }));
+  return ev.sort(function (a, b) { return String(b.le).localeCompare(String(a.le)); });
 }
 /* ── Fiche personne complète : identité, parcelles, saisies reliées, accès portail, impression ── */
 function fonPersonneParcelles(id) {
@@ -117211,7 +117239,8 @@ function fonPersonneFicheHtml(r) {
   return '<div style="font-size:12.5px;line-height:1.6;">' + ligne('Référence', r.reference) + ligne('Nom', r.nom) + ligne('Nature', FON_PERS_NATURES[r.nature] || r.nature) + ligne('Village', v && v.nom) + ligne('Contact', r.contact) + ligne('CNI / passeport / RCCM', r.cni) + (r.observations ? ligne('Observations', r.observations) : '')
     + '<div style="margin-top:8px;"><b>Parcelles concernées (' + P.length + ')</b><br>' + (P.length ? P.map(function (x) { return E(x.ref || x.id) + (x.localisation ? ' — ' + E(x.localisation) : ''); }).join('<br>') : '<span style="color:var(--dim);">Aucune.</span>') + '</div>'
     + '<div style="margin-top:8px;"><b>Saisies reliées (' + L.length + ')</b><br>' + (L.length ? L.map(function (o) { return E(o.ou) + (o.nom !== r.nom ? ' <small style="color:var(--dim);">(saisi : ' + E(o.nom) + ')</small>' : ''); }).join('<br>') : '<span style="color:var(--dim);">Aucune.</span>') + '</div>'
-    + '<div style="margin-top:8px;"><b>Accès portail propriétaire</b> : ' + (portail ? '🔐 actif' : '⚪ aucun') + '</div></div>';
+    + '<div style="margin-top:8px;"><b>Accès portail propriétaire</b> : ' + (portail ? '🔐 actif' : '⚪ aucun') + '</div>'
+    + '<div style="margin-top:8px;"><b>Historique</b><br>' + (fonPersonneHistorique(r).length ? fonPersonneHistorique(r).slice(0, 30).map(function (h) { return '<small>' + E(String(h.le || '').slice(0, 16).replace('T', ' ')) + ' · ' + E(h.par || '—') + ' · ' + E(h.txt) + '</small>'; }).join('<br>') : '<span style="color:var(--dim);">Aucun événement.</span>') + '</div></div>';
 }
 function fonPersonneFiche(id) {
   var r = (DATA.personnes_fonciers || []).find(function (x) { return x.id === id; }); if (!r) return;
@@ -117240,6 +117269,7 @@ async function fonPersonnePortailGenerer(id) {
     ops[o.parent.id] = o.parent;
   }
   for (var k in ops) { await dbPut('af_operations', ops[k]); if (typeof syncToSupabase === 'function') syncToSupabase('pi_af_operations', ops[k]); }
+  await fonPersonneJournal(id, 'Code portail généré', 'posé sur ' + entrees.length + ' saisie(s) d\'opération');
   try { logAction('FONCIER_PORTAIL_CODE_PERSONNE', (r.reference || id) + ' : code posé sur ' + entrees.length + ' saisie(s)'); } catch (e) {}
   toast('Code d\'accès généré pour ' + r.nom + ' — transmettez-le via l\'invitation.', 'success');
   fonPersonneFiche(id);
@@ -117267,6 +117297,7 @@ async function fonPersonneDelier(id, idx) {
   var liens = o.obj.liens_personnes || {}; delete liens[o.champ];
   var ex = o.obj.liens_exclus = o.obj.liens_exclus || {}; ex[o.champ] = (ex[o.champ] || []).concat([id]);
   try { await _fonPersonnesPersister(o); } catch (e) { toast('Écriture refusée : ' + e.message, 'error'); return; }
+  await fonPersonneJournal(id, 'Saisie déliée', o.ou + ' « ' + o.nom + ' »');
   try { logAction('FONCIER_PERSONNE_DELIER', o.ou + ' « ' + o.nom + ' » délié de ' + id); } catch (e) {}
   toast('Saisie déliée.', 'success'); fonPersonneLiensOuvrir(id); try { fonRuralRender(); } catch (e) {}
 }
@@ -117300,6 +117331,7 @@ async function fonPersonneFusionner(id) {
   var n = await _fonPersonnesLier(fonPersonneLiens(id), cible);
   src.fusionnee_dans = cible; src.modifie_par = (APP.currentUser && APP.currentUser.nom) || '—';
   if (!(await fonRuralSauver('personnes', src))) { delete src.fusionnee_dans; return; }
+  await fonPersonneJournal(id, 'Fusionnée', 'dans ' + (dst.reference || cible) + ' (' + n + ' saisie(s) reliée(s) à la fiche de destination)'); await fonPersonneJournal(cible, 'Fiche absorbée', (src.reference || id) + ' fusionnée ici (' + n + ' saisie(s))');
   try { logAction('FONCIER_PERSONNE_FUSION', (src.reference || id) + ' → ' + (dst.reference || cible) + ' (' + n + ' lien(s))'); } catch (e) {}
   closeModal('modal-fon-fiche'); toast(n + ' saisie(s) reliée(s) à ' + dst.nom + '.', 'success'); fonRuralRender();
 }
@@ -117342,7 +117374,7 @@ async function fonPersonneAssurer(obj, champ, nature, extra) {
   if (!per) {
     if (!fcDroitEcriture()) return liens[champ] || '';
     extra = extra || {};
-    per = { id: uid(), created_at: today(), nom: nom, nature: FON_PERS_NATURES[nature] ? nature : 'personne', contact: extra.contact || '', village_id: extra.village_id || '', cni: '', observations: 'Créée à la saisie.' };
+    per = { id: uid(), created_at: today(), nom: nom, nature: FON_PERS_NATURES[nature] ? nature : 'personne', contact: extra.contact || '', village_id: extra.village_id || '', cni: '', observations: 'Créée à la saisie.', historique: [{ le: new Date().toISOString(), par: (APP.currentUser && APP.currentUser.nom) || '—', action: 'Fiche créée', detail: 'automatiquement à la saisie d\'un formulaire' }] };
     per.reference = prochaineRefListe(DATA.personnes_fonciers || [], 'PER-' + new Date().getFullYear() + '-', 3, 'reference');
     if (!(await fonRuralSauver('personnes', per))) return liens[champ] || '';
     fonPersonnesDatalistMaj();
@@ -119410,6 +119442,11 @@ function fonRuralSuppressionBloquee(kind, r) {
   if (kind === 'enquetes' && r.statut === 'cloturee') raisons.push('enquête clôturée (pièce de la procédure)');
   if (kind === 'oppositions') { if (['levee', 'rejetee', 'jugee'].indexOf(r.statut) !== -1) raisons.push('opposition traitée (' + r.statut + ') : à conserver'); else if ((r.mediation || []).length) raisons.push('médiation en cours de consignation'); }
   if (kind === 'bornages' && r.statut === 'realise') raisons.push('bornage réalisé (procès-verbal)');
+  if (kind === 'personnes') {
+    var nl = fonPersonneLiens(r.id).length, nf = D('personnes_fonciers').filter(function (x) { return x.fusionnee_dans === r.id; }).length;
+    if (nl) raisons.push(nl + ' saisie(s) reliée(s) : les délier ou fusionner la fiche');
+    if (nf) raisons.push(nf + ' fiche(s) fusionnée(s) dans celle-ci (historique à conserver)');
+  }
   if (kind === 'villages') {
     var n1 = D('ayants_droit_fonciers').filter(function (a) { return a.village_id === r.id; }).length, n2 = D('protocoles_purge_fonciers').filter(function (x) { return x.village_id === r.id; }).length, n3 = D('enquetes_fonciers').filter(function (x) { return x.village_id === r.id; }).length;
     if (n1) raisons.push(n1 + ' ayant(s) droit rattaché(s)'); if (n2) raisons.push(n2 + ' protocole(s)'); if (n3) raisons.push(n3 + ' enquête(s)');
