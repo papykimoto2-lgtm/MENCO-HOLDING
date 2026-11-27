@@ -117043,12 +117043,13 @@ function fonPersonnesGroupes() {
     var _acc = function (x) { return /[^\x00-\x7f]/.test(x) ? 1 : 0; }, _maj = function (x) { return x === x.toUpperCase() ? 1 : 0; }, _civ = function (x) { return /^(m|mr|mme|mlle|monsieur|madame)\.?\s+/i.test(x) ? 1 : 0; };
     G.noms = Object.keys(freq).sort(function (a, b) { return (freq[b] - freq[a]) || (_civ(a) - _civ(b)) || (_acc(b) - _acc(a)) || (_maj(a) - _maj(b)) || (a.length - b.length); });
     var _nat = G.sources.map(function (o) { return o.nature; }).filter(function (n) { return n && n !== 'personne'; })[0];
-    G.nature = /^\s*famille\b/i.test(G.noms[0]) ? 'famille' : (_nat || 'personne'); G.contact = (G.sources.filter(function (o) { return o.contact; })[0] || {}).contact || ''; G.village_id = (G.sources.filter(function (o) { return o.village_id; })[0] || {}).village_id || '';
+    var _n0 = G.noms[0];
+    G.nature = /^\s*(é|e)tat\b/i.test(_n0) || /\b(etat|état)[ -]ci\b/i.test(_n0) ? 'etat' : /^\s*famille\b/i.test(_n0) ? 'famille' : /communaut|collectivit|village|chefferie/i.test(_n0) ? (/chefferie/i.test(_n0) ? 'chefferie' : 'collectivite') : /\b(sarl|sa|ets|société|societe|sci|groupe)\b/i.test(_n0) ? 'societe' : (_nat || 'personne'); G.contact = (G.sources.filter(function (o) { return o.contact; })[0] || {}).contact || ''; G.village_id = (G.sources.filter(function (o) { return o.village_id; })[0] || {}).village_id || '';
     G.personne = pers.filter(function (p) { return fonNormNom(p.nom) === G.cleNom && !G.sources.some(function (o) { return o.exclus.indexOf(p.id) !== -1; }); })[0] || null;
     G.nonLies = G.sources.filter(function (o) { return !o.lie || !(DATA.personnes_fonciers || []).some(function (p) { return p.id === o.lie && !p.fusionnee_dans; }); });
     var _sites = {}; G.sources.forEach(function (o) { if (o.parent) _sites[o.parent.id] = 1; });
-    G.homonymes = Object.keys(_sites).length > 1 && G.cleNom.split(' ').length <= 2;   /* nom court présent sur plusieurs sites : peut être deux personnes */
-    G.proches = cles.filter(function (k2) { return g[k2].cleNom !== G.cleNom && G.cleNom.length >= 8 && g[k2].cleNom.length >= 8 && _fonLev(G.cleNom, g[k2].cleNom) <= 2; }).map(function (k2) { return g[k2] ? (g[k2].sources[0].nom) : k2; });
+    G.homonymes = Object.keys(_sites).length > 1 && G.cleNom.split(' ').length <= 2 && ['personne'].indexOf(G.nature) !== -1;   /* un État, une famille, une collectivité ou une société est une entité unique */   /* nom court présent sur plusieurs sites : peut être deux personnes */
+    G.proches = cles.filter(function (k2) { return g[k2].cleNom !== G.cleNom && G.cleNom.length >= 8 && g[k2].cleNom.length >= 8 && _fonLev(G.cleNom, g[k2].cleNom) <= (G.cleNom.length >= 15 ? 3 : 2); }).map(function (k2) { return g[k2] ? (g[k2].sources[0].nom) : k2; });
     return G;
   }).filter(function (G) { return G.nonLies.length; }).sort(function (a, b) { return b.sources.length - a.sources.length; });
 }
@@ -117088,7 +117089,7 @@ function fonRapprochementOuvrir() {
   var E = escHtml, G = fonPersonnesGroupes(), bj = document.getElementById('fon-fiche-imprimer'); if (bj) bj.style.display = 'none';
   document.getElementById('fon-fiche-titre').textContent = '🔗 Rapprochement des personnes et familles';
   document.getElementById('fon-fiche-corps').innerHTML = '<div style="font-size:12px;margin-bottom:8px;">Une même personne saisie à plusieurs endroits est regroupée. « Créer et lier » ajoute la personne au référentiel et relie chaque saisie ; les anciens textes ne sont pas modifiés. Les noms proches (⚠) sont à vérifier puis à fusionner.</div>'
-    + (G.length ? '<div style="margin-bottom:8px;">' + _fonBtn('✅ Tout créer et lier (' + G.filter(function (g) { return !g.proches.length && !g.homonymes; }).length + ')', 'fonPersonnesToutCreer()', 'btn-primary') + (G.some(function (g) { return g.proches.length || g.homonymes; }) ? ' <small>Les lignes ⚠ (noms proches ou homonymes possibles) restent à vérifier une par une.</small>' : '') + '</div>'
+    + (G.length ? '<div style="margin-bottom:8px;">' + _fonBtn('⬇ Aperçu CSV (à relire avant de valider)', 'fonRapprochementCsv()') + _fonBtn('✅ Tout créer et lier (' + G.filter(function (g) { return !g.proches.length && !g.homonymes; }).length + ')', 'fonPersonnesToutCreer()', 'btn-primary') + (G.some(function (g) { return g.proches.length || g.homonymes; }) ? ' <small>Les lignes ⚠ (noms proches ou homonymes possibles) restent à vérifier une par une.</small>' : '') + '</div>'
       + '<div class="table-wrap"><table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr><th>Nom</th><th>Saisies</th><th>État</th><th></th></tr></thead><tbody>' + G.map(function (g) {
         return '<tr><td style="border-top:1px solid #ddd;padding:4px;"><b>' + E(g.noms[0]) + '</b>' + (g.noms.length > 1 ? '<br><small>variantes : ' + E(g.noms.slice(1).join(' · ')) + '</small>' : '') + (g.proches.length ? '<br><small>⚠ proche de : ' + E(g.proches.slice(0, 3).join(' · ')) + '</small>' : '') + (g.homonymes ? '<br><small>⚠ nom court sur plusieurs sites : homonymes possibles</small>' : '') + '</td>'
           + '<td style="border-top:1px solid #ddd;padding:4px;"><small>' + g.sources.length + ' : ' + E(g.sources.slice(0, 4).map(function (o) { return o.ou; }).join(' ; ')) + (g.sources.length > 4 ? ' …' : '') + '</small></td>'
@@ -117185,6 +117186,19 @@ async function fonPersonneDelier(id, idx) {
   try { await _fonPersonnesPersister(o); } catch (e) { toast('Écriture refusée : ' + e.message, 'error'); return; }
   try { logAction('FONCIER_PERSONNE_DELIER', o.ou + ' « ' + o.nom + ' » délié de ' + id); } catch (e) {}
   toast('Saisie déliée.', 'success'); fonPersonneLiensOuvrir(id); try { fonRuralRender(); } catch (e) {}
+}
+/* Aperçu de la migration : ce que « Tout créer et lier » ferait, ligne par ligne, à relire avant toute validation (aucune écriture). */
+function fonRapprochementApercu() {
+  return fonPersonnesGroupes().map(function (g) {
+    var traite = !g.proches.length && !g.homonymes;
+    return [g.noms[0], g.noms.slice(1).join(' | '), FON_PERS_NATURES[g.nature] || g.nature, g.sources.length, g.sources.map(function (o) { return o.ou; }).join(' ; '),
+      g.personne ? 'déjà au référentiel ' + (g.personne.reference || '') : 'à créer', g.proches.join(' | '), g.homonymes ? 'oui' : '', traite ? 'oui' : 'non (à vérifier)'];
+  });
+}
+function fonRapprochementCsv() {
+  var L = fonRapprochementApercu();
+  _fonTelecharger('rapprochement_personnes_apercu_' + fcAuj() + '.csv', _fonCsvGen(['Nom retenu', 'Variantes saisies', 'Nature', 'Nb saisies', 'Où', 'État', 'Noms proches', 'Homonymes possibles', 'Traité par « Tout créer »'], L));
+  toast(L.length + ' ligne(s) exportée(s) : aucune donnée modifiée.', 'success');
 }
 /* Fusion de deux fiches du référentiel : les saisies liées à la source pointent vers la cible, la source est conservée (fusionnee_dans). */
 function fonPersonneFusionUI(id) {
