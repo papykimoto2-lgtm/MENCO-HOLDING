@@ -116869,6 +116869,7 @@ async function fonRuralEnregistrer() {
   rec.modifie_par = (APP.currentUser && APP.currentUser.nom) || '—';
   if (!(await fonRuralSauver(kind, rec))) return;
   if (!ex && kind !== 'villages') await _fonJournal(rec, T.lib + ' ' + rec.reference + ' enregistrée');
+  if (kind === 'personnes' && ex) await fonPersonnePropager(rec, ex);
   if (FON_DOSSIER_OBLIG.indexOf(kind) >= 0) await fonRuralEtapesSync(rec);
   closeModal('modal-fon-rural'); fonRuralRender(); toast(T.lib + ' enregistrée.', 'success');
 }
@@ -116924,7 +116925,7 @@ function fonRuralRender() {
   var vue = FON_RURAL.vue, T = FON_RURAL_TYPES[vue], liste = (DATA[T.store] || []).filter(T.filtre || function () { return true; }), aujourd = fcAuj();
   var onglets = FON_ONGLETS;
   var nbOpp = (DATA.oppositions_fonciers || []).filter(function (o) { return o.statut === 'ouverte' || o.statut === 'en_mediation'; }).length;
-  document.getElementById('fon-rural-onglets').innerHTML = onglets.map(function (o) { return '<button class="btn btn-' + (o[0] === vue ? 'primary' : 'secondary') + ' btn-sm" onclick="fonRuralVue(\'' + o[0] + '\')">' + o[1] + (o[0] === 'oppositions' && nbOpp ? ' <span class="tbadge">' + nbOpp + '</span>' : '') + '</button> '; }).join('')
+  document.getElementById('fon-rural-onglets').innerHTML = onglets.map(function (o) { return '<button class="btn btn-' + (o[0] === vue ? 'primary' : 'secondary') + ' btn-sm" onclick="fonRuralVue(\'' + o[0] + '\')">' + o[1] + (o[0] === 'oppositions' && nbOpp ? ' <span class="tbadge">' + nbOpp + '</span>' : '') + (o[0] === 'personnes' && fonPersonnesNonRelieesNb() ? ' <span class="tbadge" title="Saisies non rapprochées du référentiel">' + fonPersonnesNonRelieesNb() + '</span>' : '') + '</button> '; }).join('')
     + '<button class="btn btn-primary btn-sm" style="float:right;" onclick="fonRuralOuvrir(\'' + vue + '\')">+ ' + escHtml(T.lib) + '</button>';
   var E = escHtml, lignes = liste.slice().sort(function (a, b) { return String(b.created_at || '').localeCompare(String(a.created_at || '')); }).map(function (r) {
     var cells, act = _fonBtn('✏️', 'fonRuralOuvrir(\'' + vue + '\',\'' + r.id + '\')', '" title="Modifier" aria-label="Modifier');
@@ -117142,6 +117143,29 @@ async function fonChaineValider() {
 }
 /* Accès portail propriétaire : code posé sur la saisie de l'opération, visible depuis la fiche du référentiel. */
 function fonPersonnePortail(id) { return fonPersonneLiens(id).some(function (o) { return o.store === 'af_operations' && o.obj.code_acces_hash && o.obj.code_acces_salt; }); }
+/* ── L17 étape 5 : source unique — une correction de la fiche se répercute sur les saisies reliées ── */
+function fonPersonnesNonRelieesNb() { try { return fonPersonnesSources().filter(function (o) { return !o.lie; }).length; } catch (e) { return 0; } }
+/* Nom et contact corrigés dans le référentiel → repris dans les saisies reliées. Les documents signés ne bougent jamais. */
+async function fonPersonnePropager(rec, avant) {
+  var nomChg = rec.nom !== avant.nom, ctChg = (rec.contact || '') !== (avant.contact || ''); if (!nomChg && !ctChg) return;
+  var L = fonPersonneLiens(rec.id), figes = [], maj = [];
+  L.forEach(function (o) {
+    var signe = (o.store === 'protocoles_purge_fonciers' || o.store === 'pv_remises_fonciers') && (o.obj.statut === 'signe' || o.obj.statut === 'reitere');
+    var aChanger = (nomChg && o.obj[o.champ] !== rec.nom) || (ctChg && 'contact' in o.obj && o.store !== 'protocoles_purge_fonciers' && o.champ === 'nom' && (o.obj.contact || '') !== (rec.contact || ''));
+    if (!aChanger) return; (signe ? figes : maj).push(o);
+  });
+  if (!maj.length && !figes.length) return;
+  if (!maj.length) { toast(figes.length + ' document(s) signé(s) conservent l\'ancien nom (jamais modifiés).', 'info', 6000); return; }
+  if (!confirm('Répercuter la correction sur ' + maj.length + ' saisie(s) reliée(s)' + (figes.length ? ' (' + figes.length + ' document(s) signé(s) conservé(s) tels quels)' : '') + ' ?\nAnciens textes remplacés par : « ' + rec.nom + ' »' + (rec.contact ? ' · ' + rec.contact : ''))) return;
+  var n = 0;
+  for (var i = 0; i < maj.length; i++) {
+    var o = maj[i]; if (nomChg) o.obj[o.champ] = rec.nom;
+    if (ctChg && 'contact' in o.obj && o.champ === 'nom' && o.store !== 'protocoles_purge_fonciers') o.obj.contact = rec.contact || '';
+    try { await _fonPersonnesPersister(o); n++; } catch (e) { toast('Écriture refusée : ' + e.message, 'error'); }
+  }
+  try { logAction('FONCIER_PERSONNE_PROPAGATION', (rec.reference || rec.id) + ' : ' + n + ' saisie(s) mises à jour, ' + figes.length + ' conservée(s)'); } catch (e) {}
+  toast(n + ' saisie(s) mise(s) à jour.', 'success'); try { fonRuralRender(); } catch (e) {}
+}
 /* Saisies reliées à une fiche, avec « Délier » : le lien est retiré et la fiche retenue en exclusion pour cette saisie (le rapprochement ne la reproposera pas). */
 function fonPersonneLiensOuvrir(id) {
   var r = (DATA.personnes_fonciers || []).find(function (x) { return x.id === id; }); if (!r) return;
@@ -118802,7 +118826,7 @@ function fonOngletsHtml(actif) {
   return FON_NAV_GROUPES.map(function (g) {
     return '<div style="margin:0 0 6px;"><div style="font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--dim);margin-bottom:2px;">' + escHtml(g[0]) + '</div>'
       + g[2].filter(function (v) { return lib[v]; }).map(function (v) {
-        return '<button class="btn btn-' + (v === actif ? 'primary' : 'secondary') + ' btn-sm" onclick="fonRuralVue(\'' + v + '\')">' + lib[v] + (v === 'oppositions' && nbOpp ? ' <span class="tbadge">' + nbOpp + '</span>' : '') + '</button> ';
+        return '<button class="btn btn-' + (v === actif ? 'primary' : 'secondary') + ' btn-sm" onclick="fonRuralVue(\'' + v + '\')">' + lib[v] + (v === 'oppositions' && nbOpp ? ' <span class="tbadge">' + nbOpp + '</span>' : '') + (v === 'personnes' && fonPersonnesNonRelieesNb() ? ' <span class="tbadge" title="Saisies non rapprochées du référentiel">' + fonPersonnesNonRelieesNb() + '</span>' : '') + '</button> ';
       }).join('') + '</div>';
   }).join('');
 }
@@ -118903,6 +118927,8 @@ function fonCoherenceAnalyser() {
     if (sansClient.length) add('vendu_sans_souscripteur', 'critique', p, sansClient.length + ' lot(s) vendu(s) sans souscripteur', 'Lots : ' + sansClient.slice(0, 6).map(function (l) { return l.numero || l.id; }).join(', ') + (sansClient.length > 6 ? '…' : '') + '. Un lot vendu doit venir des versements d\'un souscripteur.', [{ lib: 'Ouvrir les lots', js: 'fonAller(\'page:lots\')' }]);
     var somme = lots.filter(function (l) { return !l.hors_vente; }).reduce(function (s, l) { return s + N(l.surface); }, 0), ref = g ? g.aire : sup;
     if (ref > 0 && somme > ref * 1.02) add('lots_surface', 'majeur', p, 'Lots plus grands que la parcelle', 'Somme des lots : ' + _fonCohF(Math.round(somme)) + ' m² pour une parcelle de ' + _fonCohF(Math.round(ref)) + ' m². Vérifier les surfaces des lots ou le rattachement au programme.', [{ lib: 'Ouvrir les lots', js: 'fonAller(\'page:lots\')' }]);
+    var _nr = (DATA.proprietaires_fonciers || []).filter(function (r) { return r.parcelle_id === p.id && !r.date_fin && !(r.liens_personnes && r.liens_personnes.proprietaire); }).length + (DATA.ayants_droit_fonciers || []).filter(function (a) { return (a.parcelles || []).some(function (x) { return x.parcelle_id === p.id; }) && !(a.liens_personnes && a.liens_personnes.nom); }).length;
+    if (_nr) add('personne_non_reliee', 'info', p, _nr + ' propriétaire(s) ou ayant(s) droit non relié(s) au référentiel', 'Chaque personne ou famille doit avoir une fiche unique au référentiel (Foncier 2.6 › Personnes) : sans lien, les corrections de nom ou de contact ne se répercutent pas.', [{ lib: 'Rapprochement des doublons', js: 'fonAller(\'rural:personnes\')' }]);
     var oppA = (DATA.oppositions_fonciers || []).filter(function (o) { return o.parcelle_id === p.id && (o.statut === 'ouverte' || o.statut === 'en_mediation'); });
     if (oppA.length && vendus.length) add('opposition_lots_vendus', 'critique', p, 'Opposition active sur une terre déjà vendue', oppA.length + ' opposition(s) ouverte(s) alors que ' + vendus.length + ' lot(s) sont vendus : risque juridique pour les souscripteurs.', [{ lib: 'Traiter les oppositions', js: 'fonAller(\'rural:oppositions\')' }]);
     if (fonRegimeParcelle(p) === 'rural') {
@@ -119155,7 +119181,8 @@ var FON_COH_CONSEIL = {
   rural_sans_ayant_droit: 'Recenser les ayants droit auprès de la chefferie avant toute purge.',
   sans_contour: 'Saisir au moins 3 bornes (relevé du géomètre ou point GPS terrain).',
   sans_superficie: 'Reprendre la contenance du titre ou du plan de géomètre.',
-  cout_manquant: 'Saisir le prix d\'acquisition et les frais, ou retirer le traitement comptable.'
+  cout_manquant: 'Saisir le prix d\'acquisition et les frais, ou retirer le traitement comptable.',
+  personne_non_reliee: 'Ouvrir Foncier 2.6 › Personnes › « Rapprochement des doublons » : les saisies sûres sont reliées en un clic, les noms proches sont vérifiés une par une.'
 };
 function fonCohPropositionSurface(p, aire, sup) {
   var N = function (v) { return parseFloat(String(v == null ? '' : v).replace(/[^\d.,]/g, '').replace(',', '.')) || 0; }, proche = function (a, b) { return a > 0 && b > 0 && Math.abs(a - b) / b <= 0.02; };
