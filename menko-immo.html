@@ -116816,7 +116816,8 @@ function fonRuralOuvrir(kind, id) {
     else ch = '<input class="form-control" id="' + fid + '" type="' + (c.t === 'date' ? 'date' : c.t === 'number' ? 'number' : 'text') + '" value="' + escHtml(v) + '">';
     return '<div class="form-group' + span + '">' + lab + ch + '</div>';
   }).join('') + '</div>';
-  fonPersonnesDatalistMaj(); Object.keys(FON_PERS_CHAMPS[kind] || {}).forEach(function (k) { var el = document.getElementById('fonr-' + k); if (el) el.setAttribute('list', 'fon-pers-list'); });
+  fonPersonnesDatalistMaj((rec && rec.parcelle_id) || ''); Object.keys(FON_PERS_CHAMPS[kind] || {}).forEach(function (k) { var el = document.getElementById('fonr-' + k); if (el) el.setAttribute('list', 'fon-pers-list'); });
+  var _sp = document.getElementById('fonr-parcelle_id'); if (_sp && FON_PERS_CHAMPS[kind]) _sp.addEventListener('change', function () { fonPersonnesDatalistMaj(_sp.value); });
   document.getElementById('modal-fon-rural').classList.add('open');
   if (kind === 'protocoles' || kind === 'pv_lot' || kind === 'pv_acd') fonDocBranche(kind);
 }
@@ -117138,10 +117139,23 @@ async function fonPersonneFusionner(id) {
 /* ── L17 étape 2 : saisie assistée par le référentiel (plus de nouvelle saisie libre sans trace) ──
    Les champs « personne » proposent le référentiel (liste de saisie). À l'enregistrement : nom déjà connu → lien ; nom nouveau → fiche créée au référentiel puis liée. */
 var FON_PERS_CHAMPS = { proprietaires: { proprietaire: 'type_proprietaire' }, ayants_droit: { nom: 'type' }, villages: { chef: 'personne' }, protocoles: { famille: 'famille', famille_rep_nom: 'personne', chef_nom: 'personne', cvgf_nom: 'personne' } };
-function fonPersonnesDatalistMaj() {
+/* Noms déjà connus pour une parcelle : propriétaires actuels, ayants droit, propriétaires de l'opération d'acquisition liée. */
+function fonPersonnesProposees(parcelleId) {
+  var out = [], vus = {}, add = function (nom, ou) { var k = fonNormNom(nom); if (k && !vus[k]) { vus[k] = 1; out.push({ nom: String(nom).trim(), ou: ou }); } };
+  if (!parcelleId) return out;
+  (DATA.proprietaires_fonciers || []).forEach(function (r) { if (r.parcelle_id === parcelleId && !r.date_fin) add(r.proprietaire, 'propriétaire actuel'); });
+  (DATA.ayants_droit_fonciers || []).forEach(function (a) { if ((a.parcelles || []).some(function (x) { return x.parcelle_id === parcelleId; })) add(a.nom, 'ayant droit'); });
+  var pc = (DATA.parcelles || []).find(function (x) { return x.id === parcelleId; }), op = pc && pc.operation_id && (DATA.af_operations || []).find(function (o) { return o.id === pc.operation_id; });
+  if (op) (op.proprietaires || []).forEach(function (q) { add(q.nom, 'opération ' + (op.nom || '')); });
+  return out;
+}
+function fonPersonnesDatalistMaj(parcelleId) {
   var dl = document.getElementById('fon-pers-list');
   if (!dl) { dl = document.createElement('datalist'); dl.id = 'fon-pers-list'; document.body.appendChild(dl); }
-  dl.innerHTML = _fonPersonnesActives().map(function (p) { return '<option value="' + escHtml(p.nom) + '" label="' + escHtml((p.reference || '') + ' · ' + (FON_PERS_NATURES[p.nature] || '')) + '"></option>'; }).join('');
+  var ctx = fonPersonnesProposees(parcelleId || (typeof APP !== 'undefined' && document.getElementById('parc-vendeur') ? APP.editingId : '')), vus = {};
+  ctx.forEach(function (c) { vus[fonNormNom(c.nom)] = 1; });
+  dl.innerHTML = ctx.map(function (c) { return '<option value="' + escHtml(c.nom) + '" label="↳ ' + escHtml(c.ou) + '"></option>'; }).join('')
+    + _fonPersonnesActives().filter(function (p) { return !vus[fonNormNom(p.nom)]; }).map(function (p) { return '<option value="' + escHtml(p.nom) + '" label="' + escHtml((p.reference || '') + ' · ' + (FON_PERS_NATURES[p.nature] || '')) + '"></option>'; }).join('');
   ['parc-vendeur', 'parc-cedant'].forEach(function (id) { var e = document.getElementById(id); if (e) e.setAttribute('list', 'fon-pers-list'); });
 }
 document.addEventListener('focusin', function (e) { var t = e.target && e.target.id; if (t === 'parc-vendeur' || t === 'parc-cedant') fonPersonnesDatalistMaj(); });
@@ -117161,11 +117175,15 @@ async function fonPersonneAssurer(obj, champ, nature, extra) {
     if (!(await fonRuralSauver('personnes', per))) return liens[champ] || '';
     fonPersonnesDatalistMaj();
   }
+  extra = extra || {};
+  var _maj = false; if (!per.contact && extra.contact) { per.contact = extra.contact; _maj = true; } if (!per.village_id && extra.village_id) { per.village_id = extra.village_id; _maj = true; } if (!per.cni && extra.cni) { per.cni = extra.cni; _maj = true; }
+  if (_maj && fcDroitEcriture()) { try { await fonRuralSauver('personnes', per); } catch (e) { /* l'enrichissement ne bloque pas la saisie */ } }
   liens[champ] = per.id; return per.id;
 }
 async function fonPersonnesAssurerFiche(kind, rec) {
   var m = FON_PERS_CHAMPS[kind]; if (!m) return;
-  for (var k in m) { await fonPersonneAssurer(rec, k, m[k] === 'personne' || m[k] === 'famille' ? m[k] : (rec[m[k]] || 'personne'), { contact: rec.contact, village_id: rec.village_id }); }
+  var CNI = { chef_nom: 'chef_cni', cvgf_nom: 'cvgf_cni', famille_rep_nom: 'famille_rep_cni' };
+  for (var k in m) { await fonPersonneAssurer(rec, k, m[k] === 'personne' || m[k] === 'famille' ? m[k] : (rec[m[k]] || 'personne'), { contact: rec.contact, village_id: rec.village_id, cni: CNI[k] ? rec[CNI[k]] : '' }); }
 }
 var FON_DROITS_HEADS = {
   proprietaires: ['Réf.', 'Parcelle', 'Propriétaire', 'Quote-part', 'Période'], charges: ['Réf.', 'Parcelle', 'Type', 'Bénéficiaire', 'Statut'],
@@ -118211,6 +118229,13 @@ function fonDocPrerempli(kind, rec) {
     if (prog) { var m = prog.menko || {}; out.parcelle_id = rec.parcelle_id || prog.parcelle_id || ''; out.geometre = m.geometre || ''; out.geometre_ordre = m.num_agrement_geometre || ''; out.notaire = _fonNotaireNom(m.notaire); if (m.quote_part_village_pct !== undefined && m.quote_part_village_pct !== null) out.quote_part_village_pct = m.quote_part_village_pct; if (prog.nb_lots && m.quote_part_village_pct) out.nb_lots_village = Math.round(prog.nb_lots * m.quote_part_village_pct / 100); }
     if (parc) { out.superficie_m2 = parc.superficie || ''; out.commune = parc.commune || ''; out.lieu_dit = parc.localisation || ''; }
     if (vil) { out.chef_nom = vil.chef || ''; var cm = vil.comite || {}, pres = (cm.membres || []).filter(function (x) { return /pr[ée]sident/i.test(x.fonction || ''); })[0]; if (pres) out.cvgf_nom = pres.nom; out.commune = out.commune || vil.sous_prefecture || ''; }
+  }
+  if (kind === 'protocoles') {   /* L17 étape 3 : CNI et famille repris du référentiel des personnes (une seule saisie) */
+    var _per = function (nom) { var k = fonNormNom(nom); return k ? _fonPersonnesActives().filter(function (x) { return fonNormNom(x.nom) === k; })[0] : null; };
+    var _p1 = vil && _per(vil.chef); if (_p1 && _p1.cni) out.chef_cni = _p1.cni;
+    var _pr = vil && ((vil.comite || {}).membres || []).filter(function (x) { return /pr[ée]sident/i.test(x.fonction || ''); })[0], _p2 = _pr && _per(_pr.nom); if (_p2 && _p2.cni) out.cvgf_cni = _p2.cni;
+    if (!rec.famille && parc) { var _ay = (DATA.ayants_droit_fonciers || []).filter(function (a) { return a.type === 'famille' && (a.parcelles || []).some(function (x) { return x.parcelle_id === parc.id; }); })[0]; if (_ay) out.famille = _ay.nom; }
+    var _pf = rec.famille_rep_nom && _per(rec.famille_rep_nom); if (_pf && _pf.cni) out.famille_rep_cni = _pf.cni;
   }
   if (kind === 'pv_lot' || kind === 'pv_acd') {
     var lot = (DATA.lots || []).find(function (l) { return l.id === rec.lot_id; }), cl = (DATA.clients || []).find(function (c) { return lot && (c.lot_id === lot.id || (c.lots_ids || c.lot_ids || []).indexOf(lot.id) !== -1); });
