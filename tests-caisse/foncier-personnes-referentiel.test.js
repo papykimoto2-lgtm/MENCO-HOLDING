@@ -79,3 +79,31 @@ test('délier : lien retiré, pas reproposé à la même fiche, nouvelle fiche p
   assert.equal(r.creees, 1); assert.equal(r.liens, 2); assert.equal(r.apresDelier, 1); assert.equal(r.lienRetire, true);
   assert.equal(r.groupes, 1); assert.equal(r.personneProposee, null); assert.equal(r.personnes, 2); assert.equal(r.nouveauLien, true); assert.equal(r.stable, true);
 });
+
+test('aperçu de la migration : une ligne par groupe, aucune écriture, traitement en masse annoncé', async () => {
+  const app = await ouvrirApp();
+  const r = await app.page.evaluate(async () => {
+    window.toast = function () {}; var ecritures = 0; window.fcDb = async function () { ecritures++; return true; }; window.dbPut = async function () { ecritures++; return true; };
+    DATA.personnes_fonciers = []; DATA.proprietaires_fonciers = []; DATA.ayants_droit_fonciers = []; DATA.parcelles = []; DATA.villages_fonciers = [];
+    DATA.af_operations = [
+      { id: 'o1', nom: 'DABRE', proprietaires: [{ id: '1', nom: 'AKA BEDJE' }, { id: '2', nom: 'ANKON WEDJE SYLVAIN' }, { id: '3', nom: 'DJINDJI AKISSI' }] },
+      { id: 'o2', nom: 'ANDOU', proprietaires: [{ id: '4', nom: 'AKA BEDJE ' }, { id: '5', nom: 'ANKON WEDJE SYLVAIN ' }, { id: '6', nom: 'DINDJI AKISSI' }] }];
+    var L = fonRapprochementApercu(); return { lignes: L.length, traites: L.filter(function (l) { return l[8] === 'oui'; }).map(function (l) { return l[0]; }), ecritures: ecritures };
+  });
+  assert.equal(r.lignes, 4); assert.deepEqual(r.traites, ['ANKON WEDJE SYLVAIN']); assert.equal(r.ecritures, 0);
+});
+
+test('données réelles : État, collectivité et famille traités comme entités uniques ; quasi-doublons longs signalés', async () => {
+  const app = await ouvrirApp();
+  const r = await app.page.evaluate(async () => {
+    DATA.personnes_fonciers = []; DATA.proprietaires_fonciers = []; DATA.ayants_droit_fonciers = []; DATA.villages_fonciers = [];
+    DATA.af_operations = [
+      { id: 'o1', nom: 'A', proprietaires: [{ id: '1', nom: 'FAMILLE OGBOTOU' }, { id: '2', nom: 'ADICO PAUL' }, { id: '3', nom: 'DAGNAN ASSI PAUL' }, { id: '4', nom: 'KPANGBA KACOU MARTIN' }] },
+      { id: 'o2', nom: 'B', proprietaires: [{ id: '5', nom: 'FAMILLE OGBOTOU' }, { id: '6', nom: 'ADICO PAUL' }, { id: '7', nom: 'DAGNISSAN ASSI PAUL' }, { id: '8', nom: 'KPANGBA KOUAKOU MARTIN' }] }];
+    DATA.parcelles = [{ id: 'p1', ref: 'P1', cedant: 'ETAT-CI' }, { id: 'p2', ref: 'P2', cedant: 'ETAT CI' }, { id: 'p3', ref: 'P3', vendeur: 'COMMUNAUTE VILLAGEOISE' }];
+    var G = fonPersonnesGroupes(), par = function (c) { return G.filter(function (g) { return g.cle === fonNormNom(c); })[0]; };
+    return { etat: [par('ETAT-CI').nature, par('ETAT-CI').homonymes, par('ETAT-CI').sources.length], coll: par('COMMUNAUTE VILLAGEOISE').nature, fam: [par('FAMILLE OGBOTOU').nature, par('FAMILLE OGBOTOU').homonymes],
+      adico: par('ADICO PAUL').homonymes, dag: par('DAGNAN ASSI PAUL').proches.length, kp: par('KPANGBA KACOU MARTIN').proches.length };
+  });
+  assert.deepEqual(r.etat, ['etat', false, 2]); assert.equal(r.coll, 'collectivite'); assert.deepEqual(r.fam, ['famille', false]); assert.equal(r.adico, true); assert.equal(r.dag, 1); assert.equal(r.kp, 1);
+});
