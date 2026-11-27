@@ -116734,6 +116734,25 @@ function fonRuralBloquants(d, code, aujourd) {
   return r;
 }
 
+/* Étapes du dossier calculées depuis les fiches : une étape active passe à « terminée » dès que sa fiche le prouve.
+   Les contrôles habituels (ordre, validation, justificatif) restent appliqués : si l'un bloque, l'étape reste inchangée. */
+var FON_ETAPE_FICHE = [
+  ['rur_ouverture_enquete', function (d) { return fonEnquetesDossier(d).some(function (e) { return e.statut === 'ouverte' || e.statut === 'cloturee'; }); }],
+  ['rur_bornage_geometre', function (d) { return fonBornagesDossier(d).some(function (b) { return b.statut === 'realise'; }); }],
+  ['rur_cloture_enquete', function (d) { return fonEnquetesDossier(d).some(function (e) { return e.statut === 'cloturee'; }) && fonRuralBloquants(d, 'rur_cloture_enquete').length === 0; }]
+];
+async function fonRuralEtapesSync(rec) {
+  try {
+    var d = fonDossierDeFiche(rec); if (!d || d.type_procedure !== 'immatriculation_rurale') return;
+    for (var i = 0; i < FON_ETAPE_FICHE.length; i++) {
+      var code = FON_ETAPE_FICHE[i][0], e = fcEtape(d, code);
+      if (!e || FC_STATUTS_ACTIFS.indexOf(e.statut) === -1 || !FON_ETAPE_FICHE[i][1](d)) continue;
+      var r = await fcChangerStatutEtape(d.id, code, 'termine', {});
+      if (r && r.ok) toast('Étape « ' + (e.libelle || code) + ' » terminée automatiquement (fiche enregistrée).', 'success', 5000);
+    }
+  } catch (err) { console.warn('[fonRuralEtapesSync]', err); }
+}
+
 var FON_RURAL = { vue: 'enquetes' };
 var FON_STATUT_LIB = { planifiee: 'Planifiée', ouverte: 'Ouverte', cloturee: 'Clôturée', en_mediation: 'En médiation', levee: 'Levée', rejetee: 'Rejetée', jugee: 'Jugée', convoque: 'Convoqué', realise: 'Réalisé', annule: 'Annulé', active: 'Active', terminee: 'Terminée', brouillon: 'Brouillon', actif: 'Actif', resilie: 'Résilié', signe: 'Signé', reitere: 'Réitéré' };
 function _fonStat(st) { return FON_STATUT_LIB[st] || String(st || ''); }
@@ -116844,6 +116863,7 @@ async function fonRuralEnregistrer() {
   rec.modifie_par = (APP.currentUser && APP.currentUser.nom) || '—';
   if (!(await fonRuralSauver(kind, rec))) return;
   if (!ex && kind !== 'villages') await _fonJournal(rec, T.lib + ' ' + rec.reference + ' enregistrée');
+  if (FON_DOSSIER_OBLIG.indexOf(kind) >= 0) await fonRuralEtapesSync(rec);
   closeModal('modal-fon-rural'); fonRuralRender(); toast(T.lib + ' enregistrée.', 'success');
 }
 async function fonRuralAction(kind, id, action) {
@@ -116872,6 +116892,7 @@ async function fonRuralAction(kind, id, action) {
   else { if (!(await fonDroitsAction(kind, rec, action))) return; }
   if (!(await fonRuralSauver(kind, rec))) return;
   await _fonJournal(rec, T.lib + ' ' + rec.reference + ' : ' + action + (rec.issue ? ' — ' + rec.issue : ''));
+  if (FON_DOSSIER_OBLIG.indexOf(kind) >= 0) await fonRuralEtapesSync(rec);
   fonRuralRender();
 }
 /* Les signatures au doigt (image, date, appareil) ne figurent pas dans le texte du formulaire : on les reporte sur la même personne (nom, à défaut rang). */
