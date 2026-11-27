@@ -16036,7 +16036,7 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
                 <div class="form-group"><label>Longitude</label><input id="af-lng" class="form-control" placeholder="-3.628"></div>
                 <div class="form-group span-2"><label>Statut de la négociation</label><input id="af-statut-nego" class="form-control" placeholder="Premier contact, accord verbal..."></div>
               </div>
-              <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0 6px;"><strong>Propriétaires identifiés</strong><button class="btn btn-secondary btn-sm" onclick="afAddProprietaire()">+ Propriétaire</button></div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0 6px;"><strong>Propriétaires identifiés</strong><span><button class="btn btn-secondary btn-sm" title="Reporte ces propriétaires dans la chaîne de propriété de la parcelle liée (Foncier 2.6 › Propriétaires), sans ressaisie" onclick="fonChaineDepuisOperation()">🏠 Créer la chaîne de propriété</button> <button class="btn btn-secondary btn-sm" onclick="afAddProprietaire()">+ Propriétaire</button></span></div>
               <div class="table-wrap"><table><thead><tr><th>Nom</th><th>Contact</th><th>Qualité</th><th>Portail</th><th></th></tr></thead><tbody id="af-tbody-prop"></tbody></table></div>
               <div style="font-size:11px;color:var(--blanc-dim);margin-top:4px;">Le bouton 🔑 génère un code d'accès personnel permettant au propriétaire de suivre, depuis « Espace Propriétaire Foncier », l'avancement de sa parcelle (étape en cours, travaux VRD, documents). Nécessite un contact (email ou téléphone) et que l'opération soit déjà enregistrée.</div>
               <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0 6px;"><strong>Documents disponibles</strong><button class="btn btn-secondary btn-sm" onclick="afAddDocument()">+ Document</button></div>
@@ -117096,6 +117096,52 @@ function fonRapprochementOuvrir() {
       : '<div style="color:var(--dim);font-size:12px;">Tout est rapproché : aucune saisie sans lien au référentiel.</div>');
   document.getElementById('modal-fon-fiche').classList.add('open');
 }
+/* ── L17 étape 4 : chaîne de propriété issue de l'opération d'acquisition (sans ressaisie) ──
+   Les propriétaires identifiés de l'opération sont reportés dans Foncier 2.6 › Propriétaires de la parcelle liée, reliés au référentiel des personnes.
+   Quote-parts : jamais inventées — proposées à parts égales sur la capacité restante, modifiables avant validation. */
+function _fonChainePrevue(op) {
+  var pid = op && op.parcelle_id, actuels = pid ? fonProprietairesActuels(pid) : [], deja = {};
+  actuels.forEach(function (r) { deja[fonNormNom(r.proprietaire)] = 1; });
+  var liste = (op && op.proprietaires || []).filter(function (q) { var k = fonNormNom(q.nom); if (!k || deja[k]) return false; deja[k] = 1; return true; });
+  var reste = Math.max(0, 100 - actuels.reduce(function (s, r) { return s + (parseFloat(r.quote_part) || 0); }, 0));
+  return { pid: pid, liste: liste, reste: reste, part: liste.length ? Math.floor(reste / liste.length * 100) / 100 : 0 };
+}
+function fonChaineDepuisOperation() {
+  var op = (DATA.af_operations || []).find(function (o) { return _afOp && o.id === _afOp.id; });
+  if (!op) { toast("Enregistrez d'abord l'opération.", 'error'); return; }
+  if (!op.parcelle_id) { toast("Cette opération n'est pas encore liée à une parcelle (Transférer vers le Portefeuille Foncier).", 'error', 6000); return; }
+  var P = _fonChainePrevue(op), E = escHtml, bj = document.getElementById('fon-fiche-imprimer'); if (bj) bj.style.display = 'none';
+  FON_CHAINE_OP = op.id;
+  document.getElementById('fon-fiche-titre').textContent = '🏠 Chaîne de propriété — ' + (op.nom || 'opération');
+  document.getElementById('fon-fiche-corps').innerHTML = P.liste.length
+    ? '<div style="font-size:12px;margin-bottom:8px;">' + P.liste.length + ' propriétaire(s) à reporter sur la parcelle liée. Capacité restante : <b>' + P.reste + ' %</b>. Quotes-parts proposées à parts égales : <b>corrigez-les</b> si elles diffèrent (total ≤ ' + P.reste + ' %).</div>'
+      + '<div class="table-wrap"><table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr><th>Propriétaire</th><th>Quote-part (%)</th></tr></thead><tbody>' + P.liste.map(function (q, i) {
+        return '<tr><td style="border-top:1px solid #ddd;padding:4px;">' + E(q.nom.trim()) + '</td><td style="border-top:1px solid #ddd;padding:4px;"><input type="number" step="0.01" min="0" max="100" class="form-control" id="fon-chaine-q' + i + '" value="' + P.part + '" style="width:100px;"></td></tr>'; }).join('') + '</tbody></table></div>'
+      + '<div style="margin-top:8px;">' + _fonBtn('✅ Créer dans la chaîne de propriété', 'fonChaineValider()', 'btn-primary') + '</div>'
+    : '<div style="color:var(--dim);font-size:12px;">Rien à reporter : tous les propriétaires de l\'opération sont déjà dans la chaîne de propriété de la parcelle (ou aucun n\'est saisi, ou la capacité de 100 % est atteinte).</div>';
+  document.getElementById('modal-fon-fiche').classList.add('open');
+}
+var FON_CHAINE_OP = '';
+async function fonChaineValider() {
+  var op = (DATA.af_operations || []).find(function (o) { return o.id === FON_CHAINE_OP; }); if (!op) return;
+  if (!fcDroitEcriture()) { toast('Votre profil ne permet pas de modifier le module Foncier.', 'error'); return; }
+  var P = _fonChainePrevue(op), qs = P.liste.map(function (q, i) { return parseFloat((document.getElementById('fon-chaine-q' + i) || {}).value) || 0; });
+  if (qs.some(function (q) { return !(q > 0 && q <= 100); })) { toast('Chaque quote-part doit être comprise entre 0 et 100 %.', 'error'); return; }
+  var tot = qs.reduce(function (a, b) { return a + b; }, 0); if (tot > P.reste + 0.0001) { toast('Total ' + tot + ' % : capacité restante ' + P.reste + ' %.', 'error', 6000); return; }
+  var n = 0;
+  for (var i = 0; i < P.liste.length; i++) {
+    var q = P.liste[i], rec = { id: uid(), created_at: today(), parcelle_id: P.pid, proprietaire: q.nom.trim(), type_proprietaire: /^\s*famille\b/i.test(q.nom) ? 'famille' : 'personne', quote_part: qs[i], acte: 'origine', reference_acte: '', date_debut: today(), operation_id: op.id };
+    rec.reference = prochaineRefListe(DATA.proprietaires_fonciers || [], 'PRO-' + new Date().getFullYear() + '-', 3, 'reference');
+    try { await fonPersonneAssurer(rec, 'proprietaire', rec.type_proprietaire, { contact: q.contact }); } catch (e) { /* le lien au référentiel ne bloque pas */ }
+    if (!(await fonRuralSauver('proprietaires', rec))) break; n++;
+    if (rec.liens_personnes && rec.liens_personnes.proprietaire) (q.liens_personnes = q.liens_personnes || {}).nom = rec.liens_personnes.proprietaire;   /* la saisie de l'opération (et son code portail) pointe vers la même fiche */
+  }
+  try { await dbPut('af_operations', op); if (typeof syncToSupabase === 'function') syncToSupabase('pi_af_operations', op); } catch (e) { toast('Liens de l\'opération non enregistrés : ' + e.message, 'error'); }
+  try { logAction('FONCIER_CHAINE_DEPUIS_OPERATION', (op.nom || op.id) + ' : ' + n + ' propriétaire(s) reporté(s)'); } catch (e) {}
+  toast(n + ' propriétaire(s) ajouté(s) à la chaîne de propriété.', 'success'); closeModal('modal-fon-fiche'); try { fonRuralRender(); } catch (e) {}
+}
+/* Accès portail propriétaire : code posé sur la saisie de l'opération, visible depuis la fiche du référentiel. */
+function fonPersonnePortail(id) { return fonPersonneLiens(id).some(function (o) { return o.store === 'af_operations' && o.obj.code_acces_hash && o.obj.code_acces_salt; }); }
 /* Saisies reliées à une fiche, avec « Délier » : le lien est retiré et la fiche retenue en exclusion pour cette saisie (le rapprochement ne la reproposera pas). */
 function fonPersonneLiensOuvrir(id) {
   var r = (DATA.personnes_fonciers || []).find(function (x) { return x.id === id; }); if (!r) return;
@@ -117158,7 +117204,12 @@ function fonPersonnesDatalistMaj(parcelleId) {
     + _fonPersonnesActives().filter(function (p) { return !vus[fonNormNom(p.nom)]; }).map(function (p) { return '<option value="' + escHtml(p.nom) + '" label="' + escHtml((p.reference || '') + ' · ' + (FON_PERS_NATURES[p.nature] || '')) + '"></option>'; }).join('');
   ['parc-vendeur', 'parc-cedant'].forEach(function (id) { var e = document.getElementById(id); if (e) e.setAttribute('list', 'fon-pers-list'); });
 }
-document.addEventListener('focusin', function (e) { var t = e.target && e.target.id; if (t === 'parc-vendeur' || t === 'parc-cedant') fonPersonnesDatalistMaj(); });
+document.addEventListener('focusin', function (e) {
+  var t = e.target && e.target.id; if (t !== 'parc-vendeur' && t !== 'parc-cedant') return;
+  fonPersonnesDatalistMaj();
+  /* vendeur vide et un seul propriétaire actuel dans la chaîne de propriété : proposé d'office (modifiable) */
+  if (t === 'parc-vendeur' && !e.target.value && typeof APP !== 'undefined' && APP.editingId) { var o = fonProprietairesActuels(APP.editingId); if (o.length === 1) e.target.value = o[0].proprietaire; }
+});
 /* Retourne l'id de la personne (existante ou créée) et pose obj.liens_personnes[champ]. */
 async function fonPersonneAssurer(obj, champ, nature, extra) {
   var nom = String(obj[champ] || '').trim(), liens = obj.liens_personnes = obj.liens_personnes || {}, cle = fonNormNom(nom);
@@ -117294,7 +117345,7 @@ function fonDroitsLigne(vue, r, aujourd) {
     if (r.statut === 'actif') { if (ech.some(function (e) { return e.statut !== 'paye'; })) act += B('💰 Encaisser', 'encaisser'); act += B('Résilier', 'resilier'); }
   } else if (vue === 'personnes') {
     var vp = (DATA.villages_fonciers || []).find(function (x) { return x.id === r.village_id; }), nl = fonPersonneLiens(r.id).length;
-    cells = [r.reference || '—', E(r.nom), E(FON_PERS_NATURES[r.nature] || r.nature || ''), E(vp ? vp.nom : '—'), nl ? nl + ' enregistrement(s)' : '—'];
+    cells = [r.reference || '—', E(r.nom), E(FON_PERS_NATURES[r.nature] || r.nature || ''), E(vp ? vp.nom : '—'), nl ? nl + ' enregistrement(s)' + (fonPersonnePortail(r.id) ? ' · 🔐 portail' : '') : '—'];
     act += _fonBtn('⛓ Liens', 'fonPersonneLiensOuvrir(\'' + r.id + '\')') + _fonBtn('🔀 Fusionner', 'fonPersonneFusionUI(\'' + r.id + '\')');
   } else if (vue === 'ayants_droit') {
     var v = (DATA.villages_fonciers || []).find(function (x) { return x.id === r.village_id; });
