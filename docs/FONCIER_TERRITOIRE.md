@@ -112,6 +112,14 @@ Dans l'audit : bouton **Lancer le contrôle territorial**. La parcelle liée à 
 - **Pour la direction** : bouton **📄 Rapport** de l'onglet Territoire. Il utilise l'analyse en cours (la lance si besoin) et produit : couches contrôlées avec source, date, version ; synthèse par niveau ; parcelles en alerte avec le détail des croisements (critiques d'abord) ; parcelles sans croisement et **sans contour** ; suites à donner ; cadre « établi par / validé par ». L'action est journalisée (`FONCIER_TERRITOIRE_RAPPORT`). Rien n'est enregistré dans les audits.
 - Le PDF s'obtient par l'impression du navigateur (« Enregistrer au format PDF »). Document interne : données stratégiques.
 
+## 3 ter. Alerte précoce sur les parcelles
+
+- **Colonne 🌍 Territoire** dans Foncier › Portefeuille Foncier (tableau et grille) : ⛔ Critique, 🔶 Majeur, ℹ️ Information, ○ Aucun croisement, ? Contour à saisir (moins de 3 bornes), · Pas de couche (aucune couche active). Même contrôle que l'audit.
+- Le badge se calcule **par petits lots** après l'affichage (témoin « … » d'abord) et reste en **cache** tant que le contour et les couches ne changent pas ; il se recalcule après un import, une activation ou une désactivation de couche. Au clic, la carte s'ouvre sur la parcelle.
+- **À l'enregistrement d'une parcelle** avec contour : si le croisement est **critique ou majeur**, un avertissement indique la zone, la couche et la part de la parcelle, et l'action est journalisée (`FONCIER_ALERTE_TERRITORIALE`). L'enregistrement n'est **jamais bloqué**.
+- Toujours indicatif : « Aucun croisement » ne vaut pas conformité ; la décision passe par l'audit pré-acquisition.
+- Correctif au passage : le tableau des parcelles échappe désormais la référence, la localisation, la commune, le n° de titre, le type de titre, le programme et le statut (ils venaient aussi d'imports Excel).
+
 ## 4. Limites connues
 
 - La surface commune est estimée par échantillonnage du contour : marge de quelques pour cent. À confirmer par le géomètre avant toute décision.
