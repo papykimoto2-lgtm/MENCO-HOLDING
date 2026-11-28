@@ -132,9 +132,12 @@ test('courbes de niveau : bibliothèque chargée à la demande, source et couche
     o.nb = f.length; o.cle = f.every(function (x) { return typeof x.properties.ele === 'number' && x.properties.level !== undefined; });
     o.altitudes = Array.from(new Set(f.map(function (x) { return x.properties.ele; }))).sort(function (a, b) { return a - b; }).slice(0, 8);
     o.visible = m.getLayoutProperty('courbes-ligne', 'visibility'); o.avantZones = m.getStyle().layers.map(function (l) { return l.id; }).indexOf('courbes-ligne') < m.getStyle().layers.map(function (l) { return l.id; }).indexOf('zones-fill');
+    fonTerritoireFond('plan'); o.couleurPlan = m.getPaintProperty('courbes-ligne', 'line-color'); fonTerritoireFond('satellite'); o.couleurSat = m.getPaintProperty('courbes-ligne', 'line-color'); fonTerritoireFond('sombre'); o.couleurSombre = m.getPaintProperty('courbes-ligne', 'line-color');
+    o.largeurs = JSON.stringify(m.getPaintProperty('courbes-ligne', 'line-width'));
     fonTerritoireOption('courbes'); o.masque = m.getLayoutProperty('courbes-ligne', 'visibility'); return o;
   });
   assert.ok(r.nb > 0, 'aucun tracé'); assert.equal(r.cle, true); assert.ok(r.altitudes.length >= 2, 'altitudes : ' + r.altitudes); assert.equal(r.visible, 'visible'); assert.equal(r.avantZones, true); assert.equal(r.masque, 'none'); assert.ok(nbRelief > 0);
+  assert.equal(r.couleurPlan, '#8a4a10'); assert.equal(r.couleurSat, '#ffe9a8'); assert.equal(r.couleurSombre, '#e3c777'); assert.match(r.largeurs, /1\.8/);   /* lisibles sur chaque fond */
 });
 
 test('plein écran, panneau et mode léger', { skip: !dispo && 'maplibre-gl absent' }, async () => {

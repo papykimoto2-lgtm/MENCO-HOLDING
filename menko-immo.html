@@ -118472,6 +118472,15 @@ function fonTerritoireAppliquerOptions() {
    (chargée seulement à la première activation). Équidistance selon le zoom [courante, maîtresse] en mètres. Altitudes issues d'un modèle mondial (précision de l'ordre de la dizaine de mètres) : indicatives, pas un levé de géomètre. */
 var FON_TER_COURBES_SEUILS = { 11: [100, 500], 12: [50, 200], 13: [20, 100], 14: [10, 50], 15: [5, 25], 16: [2, 10], 17: [1, 5] };
 var FON_TER_DEM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
+/* Couleurs des courbes selon le fond : doré sur fond sombre, brun sur le plan clair, jaune clair sur le satellite (lisibles dans chaque cas). */
+var FON_TER_COURBES_COUL = { sombre: ['#e3c777', '#f3dca0', '#0b1220'], plan: ['#8a4a10', '#5b3410', '#ffffff'], satellite: ['#ffe9a8', '#fff3c4', '#000000'] };
+function fonTerCourbesCouleurs() {
+  var map = FON_TER.map; if (!map || !FON_TER.pret) return; var c = FON_TER_COURBES_COUL[FON_TER.fond] || FON_TER_COURBES_COUL.sombre;
+  try {
+    if (map.getLayer('courbes-ligne')) map.setPaintProperty('courbes-ligne', 'line-color', c[0]);
+    if (map.getLayer('courbes-cote')) { map.setPaintProperty('courbes-cote', 'text-color', c[1]); map.setPaintProperty('courbes-cote', 'text-halo-color', c[2]); }
+  } catch (e) { /* couche pas encore prête */ }
+}
 function fonTerContoursScript(ok, ko) {
   if (window.mlcontour && window.mlcontour.DemSource) { ok(); return; }
   var s = document.getElementById('mlcontour-js') || document.createElement('script');
@@ -118481,7 +118490,7 @@ function fonTerContoursScript(ok, ko) {
 function fonTerritoireCourbes() {
   var map = FON_TER.map; if (!map || !FON_TER.pret) return;
   var vis = function (oui) { ['courbes-ligne', 'courbes-cote'].forEach(function (l) { if (map.getLayer(l)) map.setLayoutProperty(l, 'visibility', oui ? 'visible' : 'none'); }); };
-  if (map.getSource('courbes')) { vis(FON_TER.courbes); return; }
+  if (map.getSource('courbes')) { vis(FON_TER.courbes); fonTerCourbesCouleurs(); return; }
   if (!FON_TER.courbes || FON_TER.courbesCharge) return;
   FON_TER.courbesCharge = true;
   fonTerContoursScript(function () {
@@ -118490,8 +118499,8 @@ function fonTerritoireCourbes() {
       if (!FON_TER.demSrc) { FON_TER.demSrc = new mlcontour.DemSource({ url: FON_TER_DEM_URL, encoding: 'terrarium', maxzoom: 14, worker: true, cacheSize: 80 }); FON_TER.demSrc.setupMaplibre(maplibregl); }
       map.addSource('courbes', { type: 'vector', maxzoom: 17, tiles: [FON_TER.demSrc.contourProtocolUrl({ thresholds: FON_TER_COURBES_SEUILS, contourLayer: 'contours', elevationKey: 'ele', levelKey: 'level' })] });
       var avant = map.getLayer('zones-fill') ? 'zones-fill' : undefined;
-      map.addLayer({ id: 'courbes-ligne', type: 'line', source: 'courbes', 'source-layer': 'contours', minzoom: 11, layout: { visibility: FON_TER.courbes ? 'visible' : 'none' }, paint: { 'line-color': '#e3c777', 'line-opacity': ['match', ['get', 'level'], 1, 0.8, 0.4], 'line-width': ['match', ['get', 'level'], 1, 1.3, 0.6] } }, avant);
-      if (map.getStyle().glyphs) map.addLayer({ id: 'courbes-cote', type: 'symbol', source: 'courbes', 'source-layer': 'contours', minzoom: 13, filter: ['>', ['get', 'level'], 0], layout: { visibility: FON_TER.courbes ? 'visible' : 'none', 'symbol-placement': 'line', 'text-size': 10, 'text-field': ['concat', ['number-format', ['get', 'ele'], {}], ' m'], 'text-font': ['Noto Sans Regular'] }, paint: { 'text-color': '#f3dca0', 'text-halo-color': '#0b1220', 'text-halo-width': 1.2 } });
+      map.addLayer({ id: 'courbes-ligne', type: 'line', source: 'courbes', 'source-layer': 'contours', minzoom: 11, layout: { visibility: FON_TER.courbes ? 'visible' : 'none' }, paint: { 'line-color': (FON_TER_COURBES_COUL[FON_TER.fond] || FON_TER_COURBES_COUL.sombre)[0], 'line-opacity': ['match', ['get', 'level'], 1, 0.95, 0.65], 'line-width': ['match', ['get', 'level'], 1, 1.8, 0.9] } }, avant);
+      if (map.getStyle().glyphs) map.addLayer({ id: 'courbes-cote', type: 'symbol', source: 'courbes', 'source-layer': 'contours', minzoom: 13, filter: ['>', ['get', 'level'], 0], layout: { visibility: FON_TER.courbes ? 'visible' : 'none', 'symbol-placement': 'line', 'text-size': 10, 'text-field': ['concat', ['number-format', ['get', 'ele'], {}], ' m'], 'text-font': ['Noto Sans Regular'] }, paint: { 'text-color': (FON_TER_COURBES_COUL[FON_TER.fond] || FON_TER_COURBES_COUL.sombre)[1], 'text-halo-color': (FON_TER_COURBES_COUL[FON_TER.fond] || FON_TER_COURBES_COUL.sombre)[2], 'text-halo-width': 1.6 } });
     } catch (e) { console.warn('[courbes]', e); FON_TER.courbes = false; toast('Courbes de niveau indisponibles : ' + e.message, 'error'); var b = document.getElementById('fon-ter-barre'); if (b) b.innerHTML = fonTerritoireBarreHtml(); }
   }, function () { FON_TER.courbesCharge = false; FON_TER.courbes = false; toast('Courbes de niveau indisponibles (bibliothèque non chargée, hors ligne ?).', 'error'); var b = document.getElementById('fon-ter-barre'); if (b) b.innerHTML = fonTerritoireBarreHtml(); });
 }
@@ -118525,7 +118534,7 @@ function fonTerritoireEnsemble() {
 }
 function fonTerritoireBasculer3D() { FON_TER.pitch = !FON_TER.pitch; if (FON_TER.map) FON_TER.map.easeTo({ pitch: FON_TER.pitch ? 55 : 0, duration: 600 }); var b = document.getElementById('fon-ter-barre'); if (b) b.innerHTML = fonTerritoireBarreHtml(); }
 function fonTerritoireOption(k) { FON_TER[k] = !FON_TER[k]; fonTerritoireAppliquerOptions(); var b = document.getElementById('fon-ter-barre'); if (b) b.innerHTML = fonTerritoireBarreHtml(); }
-function fonTerritoireFond(k) { FON_TER.fond = FON_TER_FONDS[k] ? k : 'sombre'; var m = FON_TER.map; if (m && FON_TER.pret && m.getSource('fond') && m.getSource('fond').setTiles) m.getSource('fond').setTiles(FON_TER_FONDS[FON_TER.fond].t); }
+function fonTerritoireFond(k) { FON_TER.fond = FON_TER_FONDS[k] ? k : 'sombre'; var m = FON_TER.map; if (m && FON_TER.pret && m.getSource('fond') && m.getSource('fond').setTiles) m.getSource('fond').setTiles(FON_TER_FONDS[FON_TER.fond].t); fonTerCourbesCouleurs(); }
 function fonTerritoireVisibilite(id, oui) { FON_TER.masque[id] = !oui; var m = FON_TER.map; if (m && FON_TER.pret) { var f = ['in', ['get', 'couche_id'], ['literal', fonTerCouchesVisibles()]]; ['zones-fill', 'zones-line', 'zones-3d'].forEach(function (l) { if (m.getLayer(l)) m.setFilter(l, f); }); } }
 function fonTerritoireControlerParcelle(pid) {
   var p = (DATA.parcelles || []).find(function (x) { return x.id === pid; }); if (!p) return;
