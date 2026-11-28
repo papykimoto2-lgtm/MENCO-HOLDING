@@ -227,3 +227,17 @@ Carte Territoire › bouton **⚙** (administrateur) : saisir l'URL des tuiles r
 ## 3 octies. Barre d'outils de la carte sur mobile
 
 Écran ≤ 760 px : la barre tient sur **une seule ligne défilable**, en **icônes seules** (le nom reste en info-bulle). Le bouton **⌄** la réduit à un bouton « 🛠 Outils » pour voir toute la carte ; un second appui la rouvre. Sur grand écran, rien ne change.
+
+## 3 nonies. Carte des sols (structure des sols et sondages)
+
+Dans la carte du Territoire, bouton **🪨 Sols**. Deux sources, indicatives :
+
+| Source | Contenu |
+|---|---|
+| **Couche « Sols (pédologie, structure géotechnique) »** | Nouveau type de couche. Importez un GeoJSON, KML ou KMZ comme pour les autres couches (source, date, version, statut obligatoires). La **nature du sol** de chaque zone est lue dans les propriétés (`nature`, `sol`, `classe`, `type`, `lithologie`, `formation`, `unite`, `nom`) : argile, argile molle/vase, limon, sable (lâche, dense), graveleux, latérite/cuirasse, remblai, marne/roche. Les zones sont colorées **par nature**. Une nature **non portante** (argile molle, sable lâche, remblai) passe la zone en « Constructible sous condition » : elle entre dans le contrôle des parcelles (niveau majeur). |
+| **Sondages géolocalisés** | Table `pi_sondages_sols` (`supabase/foncier_sondages_sols.sql`). Fiche : nom (SC1, SP2…), parcelle, latitude/longitude WGS84, nature dominante, profondeur, contrainte admissible (MPa), nappe, essai (pressiomètre, pénétromètre, SPT), date, bureau d'études. Points colorés par nature, contour **rouge** si non portant ; clic = détail. |
+
+- **Créer un sondage** : bouton **+ Sondage** du panneau de la carte (position à saisir), ou **Foncier › Terrain › 🪨 Sondage ici** (position GPS et parcelle choisie préremplies). Position hors Côte d'Ivoire refusée ; latitude/longitude inversées signalées.
+- **Où suis-je ?** (Terrain) affiche aussi les sondages à moins de **300 m**.
+- **Indicatif** : une carte de sols ou un sondage ponctuel **ne remplace pas l'étude géotechnique** du terrain. Le module alerte, il n'autorise rien ; absence de sondage ou de zone ≠ sol sans risque.
+- Mise en service : exécuter `supabase/foncier_sondages_sols.sql` (idempotent) sur le projet Supabase. Tant que la table est absente, les sondages restent sur l'appareil.
