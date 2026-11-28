@@ -118102,7 +118102,9 @@ async function fonTerritoireTexteDeFichier(file) {
 function fonTerritoireHorsPays(zones) { return zones.filter(function (z) { var b = z.bbox; return b[0] < 4.2 || b[2] > 10.8 || b[1] < -8.7 || b[3] > -2.4; }).length; }
 function fonTerritoireProvenanceComplete(c) { return !!(c && String(c.source || '').trim() && c.source !== 'À renseigner' && c.date_source && String(c.version || '').trim()); }
 var FON_TER_MODELES = [
-  ['SDUGA 2040 — orientations d\'aménagement', 'sduga'], ['Plan d\'urbanisme de détail (PUd) — zones concernées', 'pud'], ['Zones d\'aménagement différé (ZAD)', 'zad'],
+  ['SDUGA 2040 — pôles urbains (Bingerville, Anyama…)', 'sduga', 'alerte'], ['SDUGA 2040 — transports et mobilité', 'infrastructure', 'alerte'],
+  ['SDUGA 2040 — protection environnementale (zones humides, forêts, eau)', 'protegee', 'interdit'], ['SDUGA 2040 — maîtrise foncière (ZAD et encadrement)', 'zad', 'sous_condition'],
+  ['Plan d\'urbanisme de détail (PUd) — zones concernées', 'pud'], ['Zones d\'aménagement différé (ZAD)', 'zad'],
   ['Périmètres déclarés d\'utilité publique', 'dup'], ['Forêts classées, domaine public et zones protégées', 'protegee'], ['Zones humides et inondables', 'hydrologie'], ['Infrastructures de transport existantes et projetées', 'infrastructure']
 ];
 /* Couches types à compléter : créées INACTIVES, sans source ; elles ne servent au contrôle qu'une fois la provenance renseignée et un fichier importé. */
@@ -118111,7 +118113,7 @@ async function fonTerritoireCreerModeles() {
   var n = 0;
   for (var i = 0; i < FON_TER_MODELES.length; i++) {
     var m = FON_TER_MODELES[i]; if ((DATA.couches_territoriales || []).some(function (c) { return c.nom === m[0]; })) continue;
-    var c = { id: uid(), created_at: today(), nom: m[0], type: m[1], source: 'À renseigner', date_source: '', version: '', statut: 'projet', actif: false, perimetre: '', observations: 'À compléter : source officielle, date, version, statut juridique ; puis importer le fichier.' };
+    var c = { id: uid(), created_at: today(), nom: m[0], type: m[1], categorie_defaut: m[2] || '', source: 'À renseigner', date_source: '', version: '', statut: 'projet', actif: false, perimetre: '', observations: 'À compléter : source officielle, date, version, statut juridique ; puis importer le fichier.' };
     c.reference = prochaineRefListe(DATA.couches_territoriales || [], 'COU-' + new Date().getFullYear() + '-', 3, 'reference');
     if (await fonRuralSauver('couches', c)) n++;
   }
@@ -118146,7 +118148,7 @@ async function fonTerritoireImporter(coucheId, txt, opts) {
   var avant = fonTerritoireZones(coucheId).length;
   if (!confirm('Importer ' + R.zones.length + ' zone(s) (' + R.points + ' points) dans « ' + c.nom + ' » (' + (FON_TER_STATUTS[c.statut] || c.statut) + ', version ' + (c.version || '—') + ') ?' + (R.ignores ? '\n' + R.ignores + ' entité(s) non polygonale(s) ignorée(s).' : '') + (opts && opts.utm ? '\nCoordonnées converties depuis UTM zone ' + opts.utm + ' Nord (datum WGS84 supposé).' : '') + (fonTerritoireHorsPays(R.zones) ? '\n⚠ ' + fonTerritoireHorsPays(R.zones) + ' zone(s) HORS de la Côte d\'Ivoire : vérifier le système de coordonnées avant de valider.' : '') + (avant ? '\nLes ' + avant + ' zone(s) actuelles de la couche seront REMPLACÉES.' : ''))) return false;
   if (avant) await fonTerritoireViderZones(coucheId, true);
-  var def = FON_TER_CATEGORIE_DEFAUT[c.type] || 'info', n = 0;
+  var def = (FON_TER_CATEGORIES[c.categorie_defaut] ? c.categorie_defaut : FON_TER_CATEGORIE_DEFAUT[c.type]) || 'info', n = 0;
   for (var i = 0; i < R.zones.length; i++) {
     var z = R.zones[i], rec = { id: uid(), couche_id: coucheId, nom: z.nom, categorie: FON_TER_CATEGORIES[z.categorie] ? z.categorie : def, qualification: FON_TER_TYPES[c.type] || '', anneaux: z.anneaux, bbox: z.bbox, proprietes: z.proprietes, created_at: today() };
     try { await fcDb('zones_territoriales', rec, { forceRole: true }); (DATA.zones_territoriales = DATA.zones_territoriales || []).push(rec); n++; } catch (e) { toast('Écriture refusée : ' + e.message, 'error'); break; }

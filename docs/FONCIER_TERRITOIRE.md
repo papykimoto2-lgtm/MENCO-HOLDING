@@ -24,7 +24,16 @@ Les couches **obsolètes** ou désactivées ne sont jamais contrôlées.
 
 ## 2 bis. Guide d'import des couches
 
-**Couches types** : le bouton « Couches types » crée sept couches **inactives** à compléter (SDUGA, PUd, ZAD, utilité publique, zones protégées, zones humides et inondables, infrastructures). Elles ne servent au contrôle qu'une fois la provenance renseignée et un fichier importé.
+**Couches types** : le bouton « Couches types » crée dix couches **inactives** à compléter : 4 couches SDUGA 2040, PUd, ZAD, utilité publique, zones protégées, zones humides et inondables, infrastructures.
+
+| Couche SDUGA 2040 | Catégorie par défaut |
+|---|---|
+| Pôles urbains (Bingerville, Anyama…) | à surveiller |
+| Transports et mobilité | à surveiller |
+| Protection environnementale (zones humides, forêts, eau) | inconstructible |
+| Maîtrise foncière (ZAD et encadrement) | sous condition |
+
+La catégorie par défaut s'applique à l'import ; la propriété `categorie` d'une zone du fichier la remplace. Aucun contour n'est fourni : chaque couche reste vide et inactive tant que le fichier officiel n'est pas importé. Elles ne servent au contrôle qu'une fois la provenance renseignée et un fichier importé.
 
 **Formats acceptés** : `.geojson` / `.json`, `.kml`, `.kmz`.
 

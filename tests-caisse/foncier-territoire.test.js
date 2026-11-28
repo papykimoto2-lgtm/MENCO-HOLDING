@@ -152,12 +152,12 @@ test('couches types et provenance : inactives sans source, import refusé sans p
     window.__T = []; o.refus = await fonTerritoireImporter(c.id, gj); o.msgRefus = /source, la date et la version/.test(window.__T.join(' '));
     o.controleSansProvenance = fonTerritoireCouchesActives().length;
     Object.assign(c, { source: 'Arrêté test', date_source: '2023-05-01', version: '1' });
-    o.ok = await fonTerritoireImporter(c.id, gj); o.activee = c.actif === true; o.controleApres = fonTerritoireCouchesActives().map(function (x) { return x.nom; }).length;
+    o.ok = await fonTerritoireImporter(c.id, gj); o.activee = c.actif === true; o.catSduga = (DATA.zones_territoriales[0] || {}).categorie; o.cats = DATA.couches_territoriales.filter(function (x) { return /^SDUGA 2040/.test(x.nom); }).map(function (x) { return x.categorie_defaut; }).join(','); o.controleApres = fonTerritoireCouchesActives().map(function (x) { return x.nom; }).length;
     await fonTerritoireBasculer(c.id); o.desactivee = c.actif === false; o.controleDesactivee = fonTerritoireCouchesActives().length;
     await fonTerritoireBasculer(c.id); o.reactivee = c.actif === true;
     return o;
   }, { st: stub.toString(), parc: PARC });
-  assert.equal(r.crees, 7); assert.equal(r.inactives, true); assert.equal(r.idempotent, true); assert.equal(r.refus, false); assert.equal(r.msgRefus, true); assert.equal(r.controleSansProvenance, 0);
+  assert.equal(r.crees, 10); assert.equal(r.catSduga, 'alerte'); assert.equal(r.cats, 'alerte,alerte,interdit,sous_condition'); assert.equal(r.inactives, true); assert.equal(r.idempotent, true); assert.equal(r.refus, false); assert.equal(r.msgRefus, true); assert.equal(r.controleSansProvenance, 0);
   assert.equal(r.ok, true); assert.equal(r.activee, true); assert.equal(r.controleApres, 1); assert.equal(r.desactivee, true); assert.equal(r.controleDesactivee, 0); assert.equal(r.reactivee, true);
 });
 
