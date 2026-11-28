@@ -118255,18 +118255,21 @@ async function fonTerritoireImporter(coucheId, txt, opts) {
   }
   if (R.erreurs.length) { toast(R.erreurs[0], 'error', 9000); return false; }
   if (!R.zones.length) { toast('Aucune zone polygonale exploitable (' + R.ignores + ' entité(s) ignorée(s) : points ou lignes).', 'error', 8000); return false; }
-  var avant = fonTerritoireZones(coucheId).length;
+  var avant = fonTerritoireZones(coucheId).length, anciennes = fonTerritoireZones(coucheId).slice(), crees = [];
   if (!confirm('Importer ' + R.zones.length + ' zone(s) (' + R.points + ' points) dans « ' + c.nom + ' » (' + (FON_TER_STATUTS[c.statut] || c.statut) + ', version ' + (c.version || '—') + ') ?' + (R.ignores ? '\n' + R.ignores + ' entité(s) non polygonale(s) ignorée(s).' : '') + (opts && opts.utm ? '\nCoordonnées converties depuis UTM zone ' + opts.utm + ' Nord (datum WGS84 supposé).' : '') + (fonTerritoireHorsPays(R.zones) ? '\n⚠ ' + fonTerritoireHorsPays(R.zones) + ' zone(s) HORS de la Côte d\'Ivoire : vérifier le système de coordonnées avant de valider.' : '') + (avant ? '\nLes ' + avant + ' zone(s) actuelles de la couche seront REMPLACÉES.' : ''))) return false;
   if (avant) await fonTerritoireViderZones(coucheId, true);
   var def = (FON_TER_CATEGORIES[c.categorie_defaut] ? c.categorie_defaut : FON_TER_CATEGORIE_DEFAUT[c.type]) || 'info', n = 0;
   for (var i = 0; i < R.zones.length; i++) {
     var z = R.zones[i], rec = { id: uid(), couche_id: coucheId, nom: z.nom, categorie: FON_TER_CATEGORIES[z.categorie] ? z.categorie : def, qualification: FON_TER_TYPES[c.type] || '', anneaux: z.anneaux, bbox: z.bbox, proprietes: z.proprietes, created_at: today() };
-    try { await fcDb('zones_territoriales', rec, { forceRole: true }); (DATA.zones_territoriales = DATA.zones_territoriales || []).push(rec); n++; } catch (e) { toast('Écriture refusée : ' + e.message, 'error'); break; }
+    try { await fcDb('zones_territoriales', rec, { forceRole: true }); (DATA.zones_territoriales = DATA.zones_territoriales || []).push(rec); crees.push(rec); n++; } catch (e) { toast('Écriture refusée : ' + e.message, 'error'); break; }
   }
   c.actif = c.statut !== 'obsolete' && n > 0; c.import_nb = n; c.import_le = new Date().toISOString(); c.import_par = (APP.currentUser && APP.currentUser.nom) || '—';
+  var cmp = avant ? fonTerritoireComparerZones(anciennes, crees) : null, touches = (avant && c.actif) ? fonTerritoireAuditsTouches(coucheId) : [];
+  (c.historique_versions = c.historique_versions || []).unshift({ le: c.import_le, par: c.import_par, version_avant: c.version_importee || '', version: c.version || '', premiere: !avant, nb: n, ajoutees: cmp ? cmp.ajoutees : [], supprimees: cmp ? cmp.supprimees : [], modifiees: cmp ? cmp.modifiees : [], nb_ajoutees: cmp ? cmp.nb_ajoutees : n, nb_supprimees: cmp ? cmp.nb_supprimees : 0, nb_modifiees: cmp ? cmp.nb_modifiees : 0, inchangees: cmp ? cmp.inchangees : 0, audits_touches: touches });
+  c.historique_versions = c.historique_versions.slice(0, 20); c.version_importee = c.version || '';
   await fonRuralSauver('couches', c);
   try { logAction('FONCIER_TERRITOIRE_IMPORT', c.reference + ' « ' + c.nom + ' » v' + (c.version || '') + ' : ' + n + ' zone(s)'); } catch (e) {}
-  toast(n + ' zone(s) importée(s).', 'success'); FON_TER.sel = coucheId; fonTerritoireRender(); return true;
+  toast(n + ' zone(s) importée(s).' + (cmp ? ' Par rapport à la version précédente : +' + cmp.nb_ajoutees + ', −' + cmp.nb_supprimees + ', ~' + cmp.nb_modifiees + '.' : '') + (touches.length ? ' ⚠ ' + touches.length + ' audit(s) touché(s) : voir « Historique des versions ».' : ''), touches.length ? 'warning' : 'success', touches.length ? 12000 : 5000); FON_TER.sel = coucheId; fonTerritoireRender(); return true;
 }
 async function fonTerritoireViderZones(coucheId, silencieux) {
   var Z = fonTerritoireZones(coucheId); if (!Z.length) return true;
@@ -118552,13 +118555,115 @@ async function fonTerritoireAnalyser() {
   }
   FON_TER.analyseLe = new Date().toISOString(); FON_TER.focus = ''; toast(n + ' parcelle(s) analysée(s).', 'success'); fonTerritoireCarteMaj();
 }
+/* ── Historique et comparaison des versions d'une couche ──
+   À chaque import, on garde ce qui a changé entre l'ancienne et la nouvelle version (zones ajoutées, retirées, modifiées) et les audits
+   déjà réalisés dont le croisement avec CETTE couche change. Les audits décidés restent figés : on les SIGNALE, on ne les modifie jamais. */
+function _fonTerSig(z) { var b = (z.bbox || []).map(function (x) { return Math.round(x * 10000) / 10000; }).join(','), n = 0; (z.anneaux || []).forEach(function (r) { n += r.length; }); return b + '|' + n; }
+function _fonTerNom(z) { return fonNormNom(z.nom || ''); }
+function fonTerritoireComparerZones(anciennes, nouvelles) {
+  var so = {}, sn = {}; anciennes.forEach(function (z) { so[_fonTerSig(z)] = 1; }); nouvelles.forEach(function (z) { sn[_fonTerSig(z)] = 1; });
+  var supp = anciennes.filter(function (z) { return !sn[_fonTerSig(z)]; }), ajou = nouvelles.filter(function (z) { return !so[_fonTerSig(z)]; });
+  var parNom = {}; supp.forEach(function (z) { var k = _fonTerNom(z); (parNom[k] = parNom[k] || []).push(z); });
+  var modif = [], ajoutees = [];
+  ajou.forEach(function (z) { var k = _fonTerNom(z); if (parNom[k] && parNom[k].length) { parNom[k].pop(); modif.push(z.nom); } else ajoutees.push(z.nom); });
+  var supprimees = []; Object.keys(parNom).forEach(function (k) { parNom[k].forEach(function (z) { supprimees.push(z.nom); }); });
+  var cap = function (l) { return l.slice(0, 30); };
+  return { ajoutees: cap(ajoutees), supprimees: cap(supprimees), modifiees: cap(modif), nb_ajoutees: ajoutees.length, nb_supprimees: supprimees.length, nb_modifiees: modif.length, inchangees: nouvelles.length - ajou.length };
+}
+/* Audits dont le croisement avec la couche change avec les zones actuelles (couche déjà remplacée et active). */
+function fonTerritoireAuditsTouches(coucheId) {
+  var out = [];
+  (DATA.audits_fonciers || []).forEach(function (a) {
+    var ct = a.controle_territorial; if (!ct || !a.parcelle_id) return;
+    var p = (DATA.parcelles || []).find(function (x) { return x.id === a.parcelle_id; }); if (!p) return;
+    var maint = fonTerritoireControle(p), cle = function (x) { return x.couche_id + '|' + fonNormNom(x.zone_nom || ''); };
+    var anc = (ct.croisements || []).filter(function (x) { return x.couche_id === coucheId; }), nou = maint.croisements.filter(function (x) { return x.couche_id === coucheId; }), ka = {}, kn = {};
+    anc.forEach(function (x) { ka[cle(x)] = x; }); nou.forEach(function (x) { kn[cle(x)] = x; });
+    var nouveaux = nou.filter(function (x) { return !ka[cle(x)]; }).map(function (x) { return { zone: x.zone_nom, pct: x.pct, niveau: x.niveau }; });
+    var leves = anc.filter(function (x) { return !kn[cle(x)]; }).map(function (x) { return x.zone_nom; });
+    var aggraves = nou.filter(function (x) { var o = ka[cle(x)]; return o && o.niveau !== x.niveau; }).map(function (x) { return { zone: x.zone_nom, de: ka[cle(x)].niveau, a: x.niveau }; });
+    if (nouveaux.length || leves.length || aggraves.length) out.push({ audit_id: a.id, audit: a.reference || a.id, parcelle: ct.ref || '', decision: a.decision || 'en_attente', nouveaux: nouveaux.slice(0, 10), leves: leves.slice(0, 10), changes: aggraves.slice(0, 10) });
+  });
+  return out.slice(0, 50);
+}
+function fonTerritoireHistoriqueHtml(c) {
+  var E = escHtml, H = (c && c.historique_versions) || []; if (!H.length) return '';
+  var liste = function (l, n) { return l && l.length ? E(l.join(', ')) + (n > l.length ? ' … (+' + (n - l.length) + ')' : '') : '—'; };
+  return '<div style="margin-top:10px;"><b>🕘 Historique des versions</b><div class="table-wrap"><table style="width:100%;font-size:11px;"><thead><tr><th>Date</th><th>Version</th><th>Par</th><th>Zones</th><th>Audits touchés</th></tr></thead><tbody>' + H.map(function (h) {
+    var ch = h.premiere ? 'Premier import : ' + h.nb + ' zone(s)' : '+ ' + (h.nb_ajoutees === undefined ? (h.ajoutees || []).length : h.nb_ajoutees) + ' ajoutée(s) : ' + liste(h.ajoutees, h.nb_ajoutees) + '<br>− ' + (h.nb_supprimees === undefined ? (h.supprimees || []).length : h.nb_supprimees) + ' retirée(s) : ' + liste(h.supprimees, h.nb_supprimees) + '<br>~ ' + (h.nb_modifiees === undefined ? (h.modifiees || []).length : h.nb_modifiees) + ' modifiée(s) : ' + liste(h.modifiees, h.nb_modifiees) + '<br>= ' + (h.inchangees || 0) + ' inchangée(s)';
+    var at = (h.audits_touches || []).length ? h.audits_touches.map(function (t) {
+      return '<b>' + E(t.audit) + '</b> (' + E(t.parcelle) + ', ' + E(t.decision === 'en_attente' ? 'en cours' : String(t.decision).toUpperCase()) + ')' + (t.nouveaux.length ? '<br>⛔ nouveau : ' + E(t.nouveaux.map(function (x) { return x.zone + ' ' + x.pct + ' %'; }).join(', ')) : '') + (t.leves.length ? '<br>✅ levé : ' + E(t.leves.join(', ')) : '') + (t.changes.length ? '<br>🔶 niveau : ' + E(t.changes.map(function (x) { return x.zone + ' ' + x.de + '→' + x.a; }).join(', ')) : ''); }).join('<hr style="margin:3px 0;">') : '—';
+    return '<tr><td>' + E(String(h.le || '').slice(0, 16).replace('T', ' ')) + '</td><td>' + (h.premiere ? '' : 'v' + E(h.version_avant || '—') + ' → ') + 'v' + E(h.version || '—') + '</td><td>' + E(h.par || '—') + '</td><td>' + ch + '</td><td>' + at + '</td></tr>'; }).join('') + '</tbody></table></div>'
+    + '<div style="font-size:11px;color:var(--dim);">Les audits décidés restent figés : ils sont signalés, jamais modifiés. Réexaminez-les avec le géomètre et la direction.</div></div>';
+}
+/* ── Rapport territorial imprimable (PDF par l'impression du navigateur) ──
+   1) section « Contrôle territorial » de l'impression de l'audit ; 2) rapport pour la direction depuis l'onglet Territoire.
+   Mêmes mentions partout : indicatif, il alerte et n'autorise rien, l'absence de croisement ne vaut pas conformité. */
+var FON_TER_NIV_LIB = { critique: 'Critique', majeur: 'Majeur', info: 'Information', aucun: 'Aucun croisement', inconnu: 'Non contrôlable' };
+var FON_TER_RAPPORT_CSS = 'body{font-family:Arial,sans-serif;font-size:11px;color:#111}table{border-collapse:collapse;width:100%;margin:4px 0 10px}td,th{border:1px solid #444;padding:4px;vertical-align:top}th{background:#eee;text-align:left}h2{margin:0 0 2px}h3{margin:14px 0 4px;font-size:13px}.n-critique{color:#b91c1c;font-weight:700}.n-majeur{color:#b45309;font-weight:700}.n-info{color:#1d4ed8}.avert{border:1px solid #b45309;background:#fffbeb;padding:6px 8px;margin:8px 0}.pt{color:#555;font-size:10px}@media print{.pas-imprimer{display:none}}';
+var FON_TER_AVERTISSEMENT = "Contrôle indicatif : il alerte, il n'autorise rien. Une analyse territoriale n'est pas une autorisation administrative. L'absence de croisement ne vaut pas conformité : seules les couches chargées, dans la version indiquée, sont contrôlées. La surface commune est estimée (marge de quelques pour cent) et doit être confirmée par le géomètre avant toute décision.";
+function fonTerritoireCouchesTableHtml(couches) {
+  var E = escHtml; if (!couches || !couches.length) return '<p>Aucune couche active avec provenance complète.</p>';
+  return '<table><tr><th>Couche</th><th>Type</th><th>Source</th><th>Date de la source</th><th>Version</th><th>Statut</th></tr>' + couches.map(function (c) {
+    return '<tr><td>' + E(c.reference || '') + ' ' + E(c.nom || '') + '</td><td>' + E(FON_TER_TYPES[c.type] || c.type || '') + '</td><td>' + E(c.source || '—') + '</td><td>' + E(c.date_source || '—') + '</td><td>v' + E(c.version || '—') + '</td><td>' + E(FON_TER_STATUTS[c.statut] || c.statut || '') + '</td></tr>'; }).join('') + '</table>';
+}
+function fonTerritoireCroisementsTableHtml(ct) {
+  var E = escHtml; if (!ct.contour) return '<p class="n-majeur">Moins de 3 bornes : aucun croisement calculable. Le contour de la parcelle doit être saisi.</p>';
+  if (!ct.croisements.length) return '<p>Aucun croisement avec les couches contrôlées. <b>Cela ne vaut pas conformité.</b></p>';
+  return '<table><tr><th>Niveau</th><th>Zone</th><th>Couche</th><th>Catégorie</th><th>Part de la parcelle</th><th>Point d\'audit</th></tr>' + ct.croisements.map(function (x) {
+    return '<tr><td class="n-' + E(x.niveau) + '">' + E(FON_TER_NIV_LIB[x.niveau] || x.niveau) + '</td><td>' + E(x.zone_nom) + '</td><td>' + E(x.couche_nom) + ' <span class="pt">v' + E(x.version || '—') + ' · ' + E(FON_TER_STATUTS[x.statut] || x.statut || '') + '</span></td><td>' + E(FON_TER_CATEGORIES[x.categorie] || x.categorie) + '</td><td><b>' + E(String(x.pct)) + ' %</b> <span class="pt">(' + E(String(x.m2)) + ' m²)</span></td><td>' + E(x.point || '—') + '</td></tr>'; }).join('') + '</table>';
+}
+/* Section de l'impression de l'audit. */
+function fonTerritoireControleImpression(a) {
+  var E = escHtml, ct = a && a.controle_territorial, h = '<h3>Contrôle territorial</h3><div class="avert">' + E(FON_TER_AVERTISSEMENT) + '</div>';
+  if (!ct) return h + '<p>Contrôle territorial <b>non lancé</b> pour cet audit. Cela ne vaut pas conformité.</p>';
+  h += '<p>Contrôle du ' + E(String(ct.le || '').slice(0, 16).replace('T', ' ')) + ' par ' + E(ct.par || '—') + ' · parcelle ' + E(ct.ref || '') + ' · ' + (ct.contour ? E(String(ct.aire_m2)) + ' m²' : 'contour absent') + '</p>'
+    + '<b>Couches contrôlées</b>' + fonTerritoireCouchesTableHtml(ct.couches) + '<b>Résultat</b>' + fonTerritoireCroisementsTableHtml(ct);
+  if (a.derogation_territoriale) h += '<p><b>Dérogation territoriale :</b> ' + E(a.derogation_territoriale.motif || '') + ' (' + E(a.derogation_territoriale.par || '') + ', ' + E(a.derogation_territoriale.le || '') + ')</p>';
+  return h;
+}
+/* Document complet du rapport pour la direction (fonction pure : testable sans fenêtre). */
+function fonTerritoireRapportHtml(alertes, analyseLe, par) {
+  var E = escHtml, rang = { critique: 0, majeur: 1, info: 2, aucun: 3, inconnu: 4 }, ids = Object.keys(alertes || {});
+  var liste = ids.map(function (id) { var a = alertes[id], p = (DATA.parcelles || []).find(function (x) { return x.id === id; }); return { id: id, ref: (a.res && a.res.ref) || (p && (p.ref || p.id)) || id, a: a }; })
+    .sort(function (x, y) { return (rang[x.a.niveau] === undefined ? 9 : rang[x.a.niveau]) - (rang[y.a.niveau] === undefined ? 9 : rang[y.a.niveau]) || String(x.ref).localeCompare(String(y.ref)); });
+  var cnt = { critique: 0, majeur: 0, info: 0, aucun: 0, inconnu: 0 }; liste.forEach(function (x) { if (cnt[x.a.niveau] !== undefined) cnt[x.a.niveau]++; });
+  var couches = fonTerritoireCouchesActives().map(function (c) { return { reference: c.reference, nom: c.nom, type: c.type, source: c.source, date_source: c.date_source, version: c.version, statut: c.statut }; });
+  var h = '<!doctype html><meta charset="utf-8"><title>Rapport territorial</title><style>' + FON_TER_RAPPORT_CSS + '</style>'
+    + '<h2>MENKO GESTION IMMOBILIÈRE — Rapport de contrôle territorial</h2><p>Analyse du ' + E(String(analyseLe || '').slice(0, 16).replace('T', ' ')) + ' · établi par ' + E(par || '—') + ' · ' + liste.length + ' parcelle(s) analysée(s)</p>'
+    + '<div class="avert">' + E(FON_TER_AVERTISSEMENT) + '</div>'
+    + '<h3>1. Couches territoriales contrôlées</h3>' + fonTerritoireCouchesTableHtml(couches)
+    + '<h3>2. Synthèse</h3><table><tr><th>Critique</th><th>Majeur</th><th>Information</th><th>Aucun croisement</th><th>Non contrôlable</th></tr><tr><td class="n-critique">' + cnt.critique + '</td><td class="n-majeur">' + cnt.majeur + '</td><td>' + cnt.info + '</td><td>' + cnt.aucun + '</td><td>' + cnt.inconnu + '</td></tr></table>';
+  var alertesL = liste.filter(function (x) { return x.a.niveau === 'critique' || x.a.niveau === 'majeur' || x.a.niveau === 'info'; });
+  h += '<h3>3. Parcelles en alerte (' + alertesL.length + ')</h3>';
+  if (!alertesL.length) h += '<p>Aucune parcelle en alerte. <b>Cela ne vaut pas conformité.</b></p>';
+  alertesL.forEach(function (x) { var ct = x.a.res; h += '<h4 style="margin:10px 0 2px;">' + E(String(x.ref)) + ' — <span class="n-' + E(x.a.niveau) + '">' + E(FON_TER_NIV_LIB[x.a.niveau]) + '</span>' + (ct && ct.contour ? ' <span class="pt">· ' + E(String(ct.aire_m2)) + ' m²</span>' : '') + '</h4>' + (ct ? fonTerritoireCroisementsTableHtml(ct) : ''); });
+  var sans = liste.filter(function (x) { return x.a.niveau === 'aucun'; });
+  /* Parcelles sans contour : absentes de l'analyse, mais à signaler (elles ne sont pas pour autant conformes). */
+  var inc = liste.filter(function (x) { return x.a.niveau === 'inconnu'; }), vues = {}; inc.forEach(function (x) { vues[x.id] = 1; });
+  try { _sigParcellesActives().forEach(function (p) { var q = _sigParcellePath(p); if ((!q || q.length < 3) && !vues[p.id]) { vues[p.id] = 1; inc.push({ id: p.id, ref: p.ref || p.id }); } }); } catch (e) { /* liste facultative */ }
+  h += '<h3>4. Sans croisement et non contrôlables</h3><p><b>Sans croisement (' + sans.length + ') :</b> ' + (sans.length ? sans.map(function (x) { return E(String(x.ref)); }).join(', ') : '—') + '. <i>Ne vaut pas conformité.</i></p>'
+    + '<p><b>Non contrôlables, moins de 3 bornes (' + inc.length + ') :</b> ' + (inc.length ? inc.map(function (x) { return E(String(x.ref)); }).join(', ') : '—') + '.</p>'
+    + '<h3>5. Suites à donner</h3><ul><li>Parcelle critique : audit pré-acquisition, confirmation du croisement par le géomètre, dérogation d\'un administrateur motivée si le dossier se poursuit.</li><li>Parcelle majeure : consigner le constat dans l\'audit et examiner la condition applicable.</li><li>Charger les couches manquantes du secteur avant toute conclusion.</li></ul>'
+    + '<table style="margin-top:18px;"><tr><td style="height:70px;width:50%;"><b>Établi par</b><br>' + E(par || '') + '<br>Date : ____/____/____</td><td style="height:70px;"><b>Validé par (direction)</b><br>Nom :<br>Date : ____/____/____</td></tr></table>'
+    + '<p class="pt">Document interne : données stratégiques, ne pas diffuser.</p><script>window.print()<\/script>';
+  return h;
+}
+async function fonTerritoireRapport() {
+  if (!fonTerritoireCouchesActives().length) { toast('Aucune couche active avec provenance complète : rapport impossible.', 'error'); return; }
+  var w = window.open('', '_blank', 'width=1000,height=900'); if (!w) { toast('Fenêtre bloquée par le navigateur.', 'error'); return; }
+  if (!Object.keys(FON_TER.alertes || {}).length) await fonTerritoireAnalyser();
+  if (!Object.keys(FON_TER.alertes || {}).length) { try { w.close(); } catch (e) {} toast('Aucune parcelle à analyser.', 'error'); return; }
+  w.document.write(fonTerritoireRapportHtml(FON_TER.alertes, FON_TER.analyseLe, (APP.currentUser && APP.currentUser.nom) || '—')); w.document.close();
+  try { await logAction('FONCIER_TERRITOIRE_RAPPORT', Object.keys(FON_TER.alertes).length + ' parcelle(s) — analyse du ' + String(FON_TER.analyseLe || '').slice(0, 16)); } catch (e) {}
+}
 function fonTerritoireAuditCarte(pid) { try { closeModal('modal-fon-audit'); } catch (e) {} FON_TER.focus = pid; FON_TER.resultat = null; fonAller('tab:territoire'); }
 function fonTerritoireVoir(id) { FON_TER.sel = (FON_TER.sel === id ? '' : id); fonTerritoireRender(); }
 function fonTerritoireRender() {
   var root = document.getElementById('fon-territoire-root'); if (!root) return;
   var E = escHtml, L = (DATA.couches_territoriales || []).slice().sort(function (a, b) { return String(a.reference || '').localeCompare(String(b.reference || '')); });
   var badge = function (st) { var col = { officiel: '#16a34a', indicatif: '#2563eb', projet: '#f59e0b', obsolete: '#94a3b8' }[st] || '#94a3b8'; return '<span style="background:' + col + ';color:#fff;border-radius:10px;padding:1px 8px;font-size:11px;white-space:nowrap;">' + E(FON_TER_STATUTS[st] || st || '—') + '</span>'; };
-  var h = '<div class="card"><div class="card-title">🌍 Territoire — couches officielles et contrôle des parcelles <button class="btn btn-primary btn-sm" style="float:right;" onclick="fonRuralOuvrir(\'couches\')">+ Couche</button><button class="btn btn-secondary btn-sm" style="float:right;margin-right:6px;" title="Crée les couches usuelles à compléter (inactives tant que la source n\'est pas renseignée)" onclick="fonTerritoireCreerModeles()">Couches types</button></div>'
+  var h = '<div class="card"><div class="card-title">🌍 Territoire — couches officielles et contrôle des parcelles <button class="btn btn-primary btn-sm" style="float:right;" onclick="fonRuralOuvrir(\'couches\')">+ Couche</button><button class="btn btn-secondary btn-sm" style="float:right;margin-right:6px;" title="Rapport imprimable (PDF) du contrôle territorial des parcelles, pour la direction" onclick="fonTerritoireRapport()">📄 Rapport</button><button class="btn btn-secondary btn-sm" style="float:right;margin-right:6px;" title="Crée les couches usuelles à compléter (inactives tant que la source n\'est pas renseignée)" onclick="fonTerritoireCreerModeles()">Couches types</button></div>'
     + '<div style="font-size:12px;color:var(--dim);margin-bottom:8px;">Une couche garde sa <b>source, sa date, sa version et son statut juridique</b>. Le contrôle territorial d\'un audit pré-acquisition croise la parcelle avec les couches actives : il <b>alerte</b>, il n\'autorise jamais. Données stratégiques : accès restreint, ne jamais les publier.</div>'
     + (L.length ? '<div class="table-wrap"><table style="width:100%;font-size:12px;"><thead><tr><th>Réf.</th><th>Couche</th><th>Type</th><th>Source</th><th>Version</th><th>Statut</th><th>Zones</th><th></th></tr></thead><tbody>' + L.map(function (c) {
       var n = fonTerritoireZones(c.id).length, inactive = c.actif === false, incompl = !fonTerritoireProvenanceComplete(c);
@@ -118570,7 +118675,7 @@ function fonTerritoireRender() {
     var Z = fonTerritoireZones(c.id), compte = {}; Z.forEach(function (z) { compte[z.categorie] = (compte[z.categorie] || 0) + 1; });
     h += '<div class="card"><div class="card-title">' + E(c.nom) + ' — ' + Z.length + ' zone(s) ' + (fcEstAdmin() && Z.length ? _fonBtn('Vider les zones', 'fonTerritoireViderZones(\'' + c.id + '\')') : '') + '</div>'
       + '<div style="font-size:12px;margin-bottom:6px;">' + Object.keys(FON_TER_CATEGORIES).map(function (k) { return compte[k] ? '<span style="color:' + FON_TER_COULEURS[k] + ';">●</span> ' + E(FON_TER_CATEGORIES[k]) + ' : <b>' + compte[k] + '</b>' : ''; }).filter(Boolean).join(' · ') + '</div>'
-      + (Z.length ? fonTerritoireSvg(Z) + '<div class="table-wrap" style="margin-top:8px;max-height:320px;overflow:auto;"><table style="width:100%;font-size:12px;"><thead><tr><th>Zone</th><th>Catégorie</th><th>Contours</th></tr></thead><tbody>' + Z.slice(0, 200).map(function (z) { return '<tr><td>' + E(z.nom) + '</td><td>' + E(FON_TER_CATEGORIES[z.categorie] || z.categorie) + '</td><td>' + (z.anneaux || []).length + '</td></tr>'; }).join('') + '</tbody></table></div>' + (Z.length > 200 ? '<div style="font-size:11px;color:var(--dim);">200 premières zones affichées.</div>' : '') : '<div style="color:var(--dim);font-size:12px;">Aucune zone : importez un fichier GeoJSON.</div>') + '</div>';
+      + (Z.length ? fonTerritoireSvg(Z) + '<div class="table-wrap" style="margin-top:8px;max-height:320px;overflow:auto;"><table style="width:100%;font-size:12px;"><thead><tr><th>Zone</th><th>Catégorie</th><th>Contours</th></tr></thead><tbody>' + Z.slice(0, 200).map(function (z) { return '<tr><td>' + E(z.nom) + '</td><td>' + E(FON_TER_CATEGORIES[z.categorie] || z.categorie) + '</td><td>' + (z.anneaux || []).length + '</td></tr>'; }).join('') + '</tbody></table></div>' + (Z.length > 200 ? '<div style="font-size:11px;color:var(--dim);">200 premières zones affichées.</div>' : '') : '<div style="color:var(--dim);font-size:12px;">Aucune zone : importez un fichier GeoJSON.</div>') + fonTerritoireHistoriqueHtml(c) + '</div>';
   }
   if (!document.getElementById('fon-ter-liste-zone') || !document.getElementById('fon-ter-carte-zone') || !root.contains(document.getElementById('fon-ter-carte-zone'))) {
     if (FON_TER.map) { try { FON_TER.map.remove(); } catch (e) {} FON_TER.map = null; FON_TER.pret = false; }
@@ -118680,7 +118785,7 @@ function fonAuditImprimer(id) {
   w.document.write('<!doctype html><meta charset="utf-8"><title>Audit ' + E(a.reference || '') + '</title><style>body{font-family:Arial,sans-serif;font-size:11px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #444;padding:4px;vertical-align:top}th{background:#eee}h2{margin:0}</style>'
     + '<h2>MENKO GESTION IMMOBILIÈRE — Protocole d\'audit foncier pré-acquisition</h2><p>Réf. AUD-FON-MENKO-02 · Dossier ' + E(a.reference || '') + ' · ' + E(a.code_projet || '') + ' · ' + E(a.commune || '') + ' / ' + E(a.village || '') + ' · ' + (a.superficie_m2 || '—') + ' m² · zone ' + E(a.zone) + ' · auditeur ' + E(a.auditeur || '') + '</p>'
     + '<p><b>Verdict : ' + E(v.libelle) + '</b>' + (a.decision && a.decision !== 'en_attente' ? ' — Décision comité : ' + E(a.decision.toUpperCase()) + ' le ' + E(a.decision_le || '') + (a.decision_motif ? ' (' + E(a.decision_motif) + ')' : '') : '') + '</p>'
-    + '<table><tr><th>Code</th><th>Vérification / pièce exigée</th><th>Crit.</th><th>Statut</th><th>Réf. pièce</th><th>Observations</th></tr>' + rows + '</table><h3>Décision du comité d\'engagement foncier</h3><table><tr>' + vis + '</tr></table><script>window.print()<\/script>');
+    + '<table><tr><th>Code</th><th>Vérification / pièce exigée</th><th>Crit.</th><th>Statut</th><th>Réf. pièce</th><th>Observations</th></tr>' + rows + '</table>' + fonTerritoireControleImpression(a) + '<h3>Décision du comité d\'engagement foncier</h3><table><tr>' + vis + '</tr></table><script>window.print()<\/script>');
   w.document.close();
 }
 function fonAuditRender() {
