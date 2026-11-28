@@ -64,6 +64,17 @@ La catégorie par défaut s'applique à l'import ; la propriété `categorie` d'
 
 Tant que la réponse n'est pas claire, la couche reste « indicative » ou « en projet ».
 
+## 2 ter. Versions d'une couche et audits touchés
+
+À chaque import d'une couche, l'ERP garde dans la couche un **historique des versions** (20 au plus) : date, auteur, version avant et après, zones **ajoutées**, **retirées**, **modifiées** (même nom, contour différent), nombre d'inchangées.
+
+Il recalcule aussi le croisement avec **cette couche** de chaque audit qui a un contrôle territorial, et signale les audits dont le résultat change : nouveau croisement, croisement levé, niveau modifié. Un avertissement s'affiche à l'import (« n audit(s) touché(s) »), le détail est dans **Historique des versions** (clic sur la couche).
+
+- Les audits **décidés restent figés** : ils sont signalés, jamais modifiés. Les réexaminer avec le géomètre et la direction.
+- La comparaison suppose que la **version de la fiche est mise à jour avant le réimport** ; la version précédente est celle du dernier import.
+- Appariement des zones par nom normalisé et par emprise : deux zones renommées apparaissent comme une retirée et une ajoutée.
+- L'historique n'est pas rétroactif : il commence au premier import fait après cette fonction.
+
 ## 3. Brique 2 — contrôle territorial de l'audit pré-acquisition
 
 Dans l'audit : bouton **Lancer le contrôle territorial**. La parcelle liée à l'audit est croisée avec toutes les couches actives.
@@ -76,12 +87,17 @@ Dans l'audit : bouton **Lancer le contrôle territorial**. La parcelle liée à 
 - **GO** : si des couches sont actives et qu'aucun contrôle n'a été lancé, confirmation demandée. Si un croisement **critique** existe, le GO exige **un administrateur et un motif** (dérogation consignée sur l'audit).
 - **Absence de croisement ≠ conformité** : seules les couches chargées sont contrôlées. L'écran le rappelle.
 
+## 3 bis. Rapport territorial imprimable (PDF)
+
+- **Dans l'audit** : l'impression de l'audit contient maintenant la section « Contrôle territorial » (couches et versions, croisements, point d'audit, dérogation éventuelle, mentions). Un audit sans contrôle l'indique : « non lancé, ne vaut pas conformité ».
+- **Pour la direction** : bouton **📄 Rapport** de l'onglet Territoire. Il utilise l'analyse en cours (la lance si besoin) et produit : couches contrôlées avec source, date, version ; synthèse par niveau ; parcelles en alerte avec le détail des croisements (critiques d'abord) ; parcelles sans croisement et **sans contour** ; suites à donner ; cadre « établi par / validé par ». L'action est journalisée (`FONCIER_TERRITOIRE_RAPPORT`). Rien n'est enregistré dans les audits.
+- Le PDF s'obtient par l'impression du navigateur (« Enregistrer au format PDF »). Document interne : données stratégiques.
+
 ## 4. Limites connues
 
 - La surface commune est estimée par échantillonnage du contour : marge de quelques pour cent. À confirmer par le géomètre avant toute décision.
 - Anneaux intérieurs (trous) non pris en compte.
 - Parcelle sans contour (moins de 3 bornes) : aucun contrôle possible, signalé.
-- L'impression de l'audit ne reprend pas encore le panneau territorial.
 - Carte : pas de bâtiments ni de relief hors ligne ; pas d'étiquettes de texte sur la carte (noms au clic).
 
 ## 4 bis. Carte 3D
