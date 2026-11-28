@@ -223,3 +223,7 @@ Carte Territoire › bouton **⚙** (administrateur) : saisir l'URL des tuiles r
 - Le fond « Hébergé (entreprise) » apparaît dans le sélecteur. Vide = retiré, retour au fond sombre.
 - Réglage **propre à l'appareil** (stocké dans le navigateur) ; l'action est journalisée (`FONCIER_FOND_HEBERGE`).
 - Le serveur de tuiles doit autoriser le site en CORS (`Access-Control-Allow-Origin`).
+
+## 3 octies. Barre d'outils de la carte sur mobile
+
+Écran ≤ 760 px : la barre tient sur **une seule ligne défilable**, en **icônes seules** (le nom reste en info-bulle). Le bouton **⌄** la réduit à un bouton « 🛠 Outils » pour voir toute la carte ; un second appui la rouvre. Sur grand écran, rien ne change.
