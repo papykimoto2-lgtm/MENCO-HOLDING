@@ -118016,7 +118016,7 @@ Object.assign(FON_RURAL_TYPES, { couches: { store: 'couches_territoriales', pre:
   { k: 'version', l: 'Version', t: 'text', req: 1 },
   { k: 'statut', l: 'Statut juridique', t: 'select', o: Object.keys(FON_TER_STATUTS).map(function (k) { return [k, FON_TER_STATUTS[k]]; }), def: 'indicatif', req: 1 },
   { k: 'perimetre', l: 'Périmètre couvert (communes, secteurs)', t: 'text' }, { k: 'observations', l: 'Observations', t: 'textarea' }] } });
-function fonTerritoireCouchesActives() { return (DATA.couches_territoriales || []).filter(function (c) { return c.actif !== false && c.statut !== 'obsolete'; }); }
+function fonTerritoireCouchesActives() { return (DATA.couches_territoriales || []).filter(function (c) { return c.actif !== false && c.statut !== 'obsolete' && fonTerritoireProvenanceComplete(c); }); }   /* sans provenance (source, date, version), une couche n'est jamais contrôlée */
 function fonTerritoireZones(coucheId) { return (DATA.zones_territoriales || []).filter(function (z) { return z.couche_id === coucheId; }); }
 /* Lecture d'un GeoJSON WGS84 : polygones et multipolygones (anneau extérieur), coordonnées [lng, lat]. Rien n'est écrit ici. */
 function _fonTerSimplifier(ring) {
@@ -118034,8 +118034,9 @@ function _fonTerSimplifier(ring) {
   if (out.length > FON_TER_MAX_POINTS) { var pas = Math.ceil(out.length / FON_TER_MAX_POINTS); out = out.filter(function (_, i) { return i % pas === 0; }); }
   return out;
 }
-function fonTerritoireLireGeoJSON(txt) {
-  var r = { zones: [], erreurs: [], ignores: 0, points: 0 }, g;
+function fonTerritoireLireGeoJSON(txt, opts) {
+  opts = opts || {};
+  var r = { zones: [], erreurs: [], ignores: 0, points: 0, projete: false }, g;
   try { g = JSON.parse(txt); } catch (e) { r.erreurs.push('Fichier illisible : ce n\'est pas un GeoJSON valide.'); return r; }
   var feats = g.type === 'FeatureCollection' ? (g.features || []) : g.type === 'Feature' ? [g] : g.type === 'GeometryCollection' ? (g.geometries || []).map(function (x) { return { type: 'Feature', geometry: x, properties: {} }; }) : (g.type ? [{ type: 'Feature', geometry: g, properties: {} }] : []);
   if (!feats.length) { r.erreurs.push('Aucune entité dans le fichier.'); return r; }
@@ -118049,7 +118050,11 @@ function fonTerritoireLireGeoJSON(txt) {
       var ring = (pg && pg[0]) || []; if (ring.length < 4) return;
       var pts = ring.map(function (c) { return [Number(c[1]), Number(c[0])]; });
       if (pts.some(function (q) { return !isFinite(q[0]) || !isFinite(q[1]); })) return;
-      if (pts.some(function (q) { return Math.abs(q[0]) > 90 || Math.abs(q[1]) > 180; })) { hors++; return; }
+      if (pts.some(function (q) { return Math.abs(q[0]) > 90 || Math.abs(q[1]) > 180; })) {
+        if (!opts.utm) { hors++; r.projete = true; return; }
+        pts = ring.map(function (c) { return utm30ToLatLng(Number(c[0]), Number(c[1]), opts.utm); });   /* [Est, Nord] → [lat, lng] */
+        if (pts.some(function (q) { return !isFinite(q[0]) || !isFinite(q[1]) || Math.abs(q[0]) > 90 || Math.abs(q[1]) > 180; })) { hors++; return; }
+      }
       var a = pts[0], b = pts[pts.length - 1]; if (a[0] === b[0] && a[1] === b[1]) pts = pts.slice(0, -1);
       if (pts.length < 3) return; pts = _fonTerSimplifier(pts); if (pts.length >= 3) anneaux.push(pts.map(function (q) { return [Math.round(q[0] * 1e6) / 1e6, Math.round(q[1] * 1e6) / 1e6]; }));
     });
@@ -118063,26 +118068,89 @@ function fonTerritoireLireGeoJSON(txt) {
   if (r.zones.length > FON_TER_MAX_ZONES) r.erreurs.push(r.zones.length + ' zones : maximum ' + FON_TER_MAX_ZONES + ' par couche. Découper le fichier.');
   return r;
 }
+/* KML (Google Earth, QGIS) → GeoJSON : Placemark, Polygon, MultiGeometry ; ExtendedData reprises comme propriétés. */
+function fonTerritoireKmlVersGeoJSON(txt) {
+  var d = new DOMParser().parseFromString(txt, 'application/xml'); if (d.getElementsByTagName('parsererror').length) return null;
+  var coords = function (el) { return String(el.textContent || '').trim().split(/\s+/).map(function (t) { var a = t.split(','); return [parseFloat(a[0]), parseFloat(a[1])]; }).filter(function (c) { return isFinite(c[0]) && isFinite(c[1]); }); };
+  var feats = [];
+  Array.prototype.forEach.call(d.getElementsByTagName('Placemark'), function (pm) {
+    var props = {}, nom = pm.getElementsByTagName('name')[0];
+    if (nom) props.nom = String(nom.textContent || '').trim();
+    Array.prototype.forEach.call(pm.getElementsByTagName('SimpleData'), function (x) { props[x.getAttribute('name')] = String(x.textContent || '').trim(); });
+    Array.prototype.forEach.call(pm.getElementsByTagName('Data'), function (x) { var v = x.getElementsByTagName('value')[0]; props[x.getAttribute('name')] = v ? String(v.textContent || '').trim() : ''; });
+    var polys = [];
+    Array.prototype.forEach.call(pm.getElementsByTagName('Polygon'), function (pg) { var ob = pg.getElementsByTagName('outerBoundaryIs')[0], lr = ob && ob.getElementsByTagName('coordinates')[0]; if (lr) polys.push([coords(lr)]); });
+    if (polys.length) feats.push({ type: 'Feature', properties: props, geometry: polys.length === 1 ? { type: 'Polygon', coordinates: polys[0] } : { type: 'MultiPolygon', coordinates: polys } });
+    else feats.push({ type: 'Feature', properties: props, geometry: { type: 'Point', coordinates: [0, 0] } });   /* ligne ou point : compté comme ignoré */
+  });
+  return { type: 'FeatureCollection', features: feats };
+}
+/* Texte GeoJSON prêt à lire, quel que soit le format du fichier (.geojson, .json, .kml, .kmz). */
+async function fonTerritoireTexteDeFichier(file) {
+  var nom = String(file.name || '').toLowerCase();
+  if (/\.kmz$/.test(nom)) {
+    var z; try { z = _fonZipLire(await file.arrayBuffer()); } catch (e) { throw new Error("Fichier KMZ illisible : " + e.message.replace('classeur Excel (.xlsx)', 'KMZ')); }
+    var kml = Object.keys(z.entrees).filter(function (k) { return /\.kml$/i.test(k); })[0]; if (!kml) throw new Error('KMZ sans fichier .kml.');
+    var g = fonTerritoireKmlVersGeoJSON(await _fonZipPartie(z, kml)); if (!g) throw new Error('KML illisible dans le KMZ.'); return JSON.stringify(g);
+  }
+  var txt = await file.text();
+  if (/\.kml$/.test(nom)) { var k = fonTerritoireKmlVersGeoJSON(txt); if (!k) throw new Error('KML illisible.'); return JSON.stringify(k); }
+  return txt;
+}
+/* Contrôles de plausibilité avant import : étendue en Côte d'Ivoire (lat 4,2–10,8 ; lng −8,7–−2,4). */
+function fonTerritoireHorsPays(zones) { return zones.filter(function (z) { var b = z.bbox; return b[0] < 4.2 || b[2] > 10.8 || b[1] < -8.7 || b[3] > -2.4; }).length; }
+function fonTerritoireProvenanceComplete(c) { return !!(c && String(c.source || '').trim() && c.source !== 'À renseigner' && c.date_source && String(c.version || '').trim()); }
+var FON_TER_MODELES = [
+  ['SDUGA 2040 — orientations d\'aménagement', 'sduga'], ['Plan d\'urbanisme de détail (PUd) — zones concernées', 'pud'], ['Zones d\'aménagement différé (ZAD)', 'zad'],
+  ['Périmètres déclarés d\'utilité publique', 'dup'], ['Forêts classées, domaine public et zones protégées', 'protegee'], ['Zones humides et inondables', 'hydrologie'], ['Infrastructures de transport existantes et projetées', 'infrastructure']
+];
+/* Couches types à compléter : créées INACTIVES, sans source ; elles ne servent au contrôle qu'une fois la provenance renseignée et un fichier importé. */
+async function fonTerritoireCreerModeles() {
+  if (!fcDroitEcriture()) { toast('Votre profil ne permet pas de modifier le module Foncier.', 'error'); return; }
+  var n = 0;
+  for (var i = 0; i < FON_TER_MODELES.length; i++) {
+    var m = FON_TER_MODELES[i]; if ((DATA.couches_territoriales || []).some(function (c) { return c.nom === m[0]; })) continue;
+    var c = { id: uid(), created_at: today(), nom: m[0], type: m[1], source: 'À renseigner', date_source: '', version: '', statut: 'projet', actif: false, perimetre: '', observations: 'À compléter : source officielle, date, version, statut juridique ; puis importer le fichier.' };
+    c.reference = prochaineRefListe(DATA.couches_territoriales || [], 'COU-' + new Date().getFullYear() + '-', 3, 'reference');
+    if (await fonRuralSauver('couches', c)) n++;
+  }
+  toast(n ? n + ' couche(s) type créée(s), inactives : renseignez source, date et version.' : 'Les couches types existent déjà.', n ? 'success' : 'info', 6000); fonTerritoireRender();
+}
+async function fonTerritoireBasculer(id) {
+  var c = (DATA.couches_territoriales || []).find(function (x) { return x.id === id; }); if (!c) return;
+  if (!fcDroitEcriture()) { toast('Votre profil ne permet pas de modifier le module Foncier.', 'error'); return; }
+  if (c.actif === false && !fonTerritoireProvenanceComplete(c)) { toast('Renseignez d\'abord source, date et version (✏️).', 'error'); return; }
+  if (c.actif === false && !fonTerritoireZones(id).length) { toast('Aucune zone : importez un fichier avant d\'activer la couche.', 'error'); return; }
+  c.actif = c.actif === false; await fonRuralSauver('couches', c);
+  try { logAction('FONCIER_TERRITOIRE_ACTIVATION', (c.reference || id) + ' : ' + (c.actif ? 'activée' : 'désactivée')); } catch (e) {}
+  fonTerritoireRender();
+}
 function fonTerritoireImportUI(coucheId) {
-  var i = document.createElement('input'); i.type = 'file'; i.accept = '.geojson,.json,application/geo+json,application/json';
-  i.onchange = function () { var f = i.files[0]; if (!f) return; var rd = new FileReader(); rd.onload = function () { fonTerritoireImporter(coucheId, String(rd.result || '')); }; rd.readAsText(f); };
+  var i = document.createElement('input'); i.type = 'file'; i.accept = '.geojson,.json,.kml,.kmz,application/geo+json,application/json,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz';
+  i.onchange = async function () { var f = i.files[0]; if (!f) return; try { fonTerritoireImporter(coucheId, await fonTerritoireTexteDeFichier(f)); } catch (e) { toast(e.message, 'error', 8000); } };
   i.click();
 }
-async function fonTerritoireImporter(coucheId, txt) {
+async function fonTerritoireImporter(coucheId, txt, opts) {
   var c = (DATA.couches_territoriales || []).find(function (x) { return x.id === coucheId; }); if (!c) return false;
   if (!fcDroitEcriture()) { toast('Votre profil ne permet pas de modifier le module Foncier.', 'error'); return false; }
-  var R = fonTerritoireLireGeoJSON(txt);
+  if (!fonTerritoireProvenanceComplete(c)) { toast('Renseignez d\'abord la source, la date et la version de la couche (✏️) : une donnée sans provenance n\'est pas importée.', 'error', 8000); return false; }
+  var R = fonTerritoireLireGeoJSON(txt, opts), utmChoisi = '';
+  if (R.projete && !(opts && opts.utm)) {
+    var z = prompt('Coordonnées projetées (UTM) détectées.\nZone UTM nord ? (30 = Abidjan et centre ; 29 = ouest)\nAttention : datum supposé WGS84, un écart de quelques dizaines de mètres est possible si la source est en Abidjan 87. À confirmer auprès de la source.', '30');
+    if (!z) return false; var zn = parseInt(z, 10); if (!(zn >= 28 && zn <= 31)) { toast('Zone UTM invalide (28 à 31).', 'error'); return false; }
+    return fonTerritoireImporter(coucheId, txt, { utm: zn });
+  }
   if (R.erreurs.length) { toast(R.erreurs[0], 'error', 9000); return false; }
   if (!R.zones.length) { toast('Aucune zone polygonale exploitable (' + R.ignores + ' entité(s) ignorée(s) : points ou lignes).', 'error', 8000); return false; }
   var avant = fonTerritoireZones(coucheId).length;
-  if (!confirm('Importer ' + R.zones.length + ' zone(s) (' + R.points + ' points) dans « ' + c.nom + ' » (' + (FON_TER_STATUTS[c.statut] || c.statut) + ', version ' + (c.version || '—') + ') ?' + (R.ignores ? '\n' + R.ignores + ' entité(s) non polygonale(s) ignorée(s).' : '') + (avant ? '\nLes ' + avant + ' zone(s) actuelles de la couche seront REMPLACÉES.' : ''))) return false;
+  if (!confirm('Importer ' + R.zones.length + ' zone(s) (' + R.points + ' points) dans « ' + c.nom + ' » (' + (FON_TER_STATUTS[c.statut] || c.statut) + ', version ' + (c.version || '—') + ') ?' + (R.ignores ? '\n' + R.ignores + ' entité(s) non polygonale(s) ignorée(s).' : '') + (opts && opts.utm ? '\nCoordonnées converties depuis UTM zone ' + opts.utm + ' Nord (datum WGS84 supposé).' : '') + (fonTerritoireHorsPays(R.zones) ? '\n⚠ ' + fonTerritoireHorsPays(R.zones) + ' zone(s) HORS de la Côte d\'Ivoire : vérifier le système de coordonnées avant de valider.' : '') + (avant ? '\nLes ' + avant + ' zone(s) actuelles de la couche seront REMPLACÉES.' : ''))) return false;
   if (avant) await fonTerritoireViderZones(coucheId, true);
   var def = FON_TER_CATEGORIE_DEFAUT[c.type] || 'info', n = 0;
   for (var i = 0; i < R.zones.length; i++) {
     var z = R.zones[i], rec = { id: uid(), couche_id: coucheId, nom: z.nom, categorie: FON_TER_CATEGORIES[z.categorie] ? z.categorie : def, qualification: FON_TER_TYPES[c.type] || '', anneaux: z.anneaux, bbox: z.bbox, proprietes: z.proprietes, created_at: today() };
     try { await fcDb('zones_territoriales', rec, { forceRole: true }); (DATA.zones_territoriales = DATA.zones_territoriales || []).push(rec); n++; } catch (e) { toast('Écriture refusée : ' + e.message, 'error'); break; }
   }
-  c.import_nb = n; c.import_le = new Date().toISOString(); c.import_par = (APP.currentUser && APP.currentUser.nom) || '—';
+  c.actif = c.statut !== 'obsolete' && n > 0; c.import_nb = n; c.import_le = new Date().toISOString(); c.import_par = (APP.currentUser && APP.currentUser.nom) || '—';
   await fonRuralSauver('couches', c);
   try { logAction('FONCIER_TERRITOIRE_IMPORT', c.reference + ' « ' + c.nom + ' » v' + (c.version || '') + ' : ' + n + ' zone(s)'); } catch (e) {}
   toast(n + ' zone(s) importée(s).', 'success'); FON_TER.sel = coucheId; fonTerritoireRender(); return true;
@@ -118113,12 +118181,12 @@ function fonTerritoireRender() {
   var root = document.getElementById('fon-territoire-root'); if (!root) return;
   var E = escHtml, L = (DATA.couches_territoriales || []).slice().sort(function (a, b) { return String(a.reference || '').localeCompare(String(b.reference || '')); });
   var badge = function (st) { var col = { officiel: '#16a34a', indicatif: '#2563eb', projet: '#f59e0b', obsolete: '#94a3b8' }[st] || '#94a3b8'; return '<span style="background:' + col + ';color:#fff;border-radius:10px;padding:1px 8px;font-size:11px;white-space:nowrap;">' + E(FON_TER_STATUTS[st] || st || '—') + '</span>'; };
-  var h = '<div class="card"><div class="card-title">🌍 Territoire — couches officielles et contrôle des parcelles <button class="btn btn-primary btn-sm" style="float:right;" onclick="fonRuralOuvrir(\'couches\')">+ Couche</button></div>'
+  var h = '<div class="card"><div class="card-title">🌍 Territoire — couches officielles et contrôle des parcelles <button class="btn btn-primary btn-sm" style="float:right;" onclick="fonRuralOuvrir(\'couches\')">+ Couche</button><button class="btn btn-secondary btn-sm" style="float:right;margin-right:6px;" title="Crée les couches usuelles à compléter (inactives tant que la source n\'est pas renseignée)" onclick="fonTerritoireCreerModeles()">Couches types</button></div>'
     + '<div style="font-size:12px;color:var(--dim);margin-bottom:8px;">Une couche garde sa <b>source, sa date, sa version et son statut juridique</b>. Le contrôle territorial d\'un audit pré-acquisition croise la parcelle avec les couches actives : il <b>alerte</b>, il n\'autorise jamais. Données stratégiques : accès restreint, ne jamais les publier.</div>'
     + (L.length ? '<div class="table-wrap"><table style="width:100%;font-size:12px;"><thead><tr><th>Réf.</th><th>Couche</th><th>Type</th><th>Source</th><th>Version</th><th>Statut</th><th>Zones</th><th></th></tr></thead><tbody>' + L.map(function (c) {
-      var n = fonTerritoireZones(c.id).length;
-      return '<tr><td>' + E(c.reference || '—') + '</td><td><b>' + E(c.nom) + '</b>' + (c.perimetre ? '<br><small>' + E(c.perimetre) + '</small>' : '') + '</td><td>' + E(FON_TER_TYPES[c.type] || c.type || '') + '</td><td>' + E(c.source || '') + '<br><small>' + E(c.date_source || '') + '</small></td><td>' + E(c.version || '') + '</td><td>' + badge(c.statut) + '</td><td>' + n + (c.import_le ? '<br><small>' + E(String(c.import_le).slice(0, 10)) + '</small>' : '') + '</td>'
-        + '<td style="white-space:nowrap;">' + _fonBtn('📥 Importer', 'fonTerritoireImportUI(\'' + c.id + '\')') + _fonBtn(FON_TER.sel === c.id ? 'Masquer' : '👁 Voir', 'fonTerritoireVoir(\'' + c.id + '\')') + _fonBtn('✏️', 'fonRuralOuvrir(\'couches\',\'' + c.id + '\')', '" title="Modifier" aria-label="Modifier') + (fcEstAdmin() ? _fonBtn('🗑', 'fonRuralSupprimer(\'couches\',\'' + c.id + '\')', '" title="Supprimer (couche vide, motif obligatoire)" aria-label="Supprimer') : '') + '</td></tr>'; }).join('') + '</tbody></table></div>'
+      var n = fonTerritoireZones(c.id).length, inactive = c.actif === false, incompl = !fonTerritoireProvenanceComplete(c);
+      return '<tr' + (inactive ? ' style="opacity:.75;"' : '') + '><td>' + E(c.reference || '—') + '</td><td><b>' + E(c.nom) + '</b>' + (incompl ? '<br><small style="color:#dc2626;">⚠ source, date ou version à renseigner</small>' : inactive ? '<br><small style="color:#b45309;">inactive : pas utilisée au contrôle</small>' : '') + (c.perimetre ? '<br><small>' + E(c.perimetre) + '</small>' : '') + '</td><td>' + E(FON_TER_TYPES[c.type] || c.type || '') + '</td><td>' + E(c.source || '') + '<br><small>' + E(c.date_source || '') + '</small></td><td>' + E(c.version || '') + '</td><td>' + badge(c.statut) + '</td><td>' + n + (c.import_le ? '<br><small>' + E(String(c.import_le).slice(0, 10)) + '</small>' : '') + '</td>'
+        + '<td style="white-space:nowrap;">' + _fonBtn('📥 Importer', 'fonTerritoireImportUI(\'' + c.id + '\')') + (n ? _fonBtn(inactive ? '▶ Activer' : '⏸ Désactiver', 'fonTerritoireBasculer(\'' + c.id + '\')') : '') + _fonBtn(FON_TER.sel === c.id ? 'Masquer' : '👁 Voir', 'fonTerritoireVoir(\'' + c.id + '\')') + _fonBtn('✏️', 'fonRuralOuvrir(\'couches\',\'' + c.id + '\')', '" title="Modifier" aria-label="Modifier') + (fcEstAdmin() ? _fonBtn('🗑', 'fonRuralSupprimer(\'couches\',\'' + c.id + '\')', '" title="Supprimer (couche vide, motif obligatoire)" aria-label="Supprimer') : '') + '</td></tr>'; }).join('') + '</tbody></table></div>'
       : '<div style="color:var(--dim);font-size:12px;padding:10px 0;">Aucune couche. Créez la première (ex. SDUGA 2040) puis importez son fichier GeoJSON.</div>') + '</div>';
   var c = L.filter(function (x) { return x.id === FON_TER.sel; })[0];
   if (c) {
