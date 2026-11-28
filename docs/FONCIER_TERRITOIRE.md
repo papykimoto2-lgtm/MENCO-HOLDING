@@ -101,7 +101,7 @@ Foncier › Territoire : carte sombre en 3D (MapLibre GL 4.7.1), inclinable, ave
 
 **Bâtiments et relief** : bâtiments d'OpenStreetMap (service OpenFreeMap) et relief AWS Terrain Tiles, tels qu'ils existent. Ils montrent le terrain actuel, **pas un plan directeur ni des constructions futures**.
 
-**Confidentialité** : les couches et les parcelles se dessinent dans le navigateur, elles ne quittent pas l'ERP. En revanche, le fond de carte, le relief et les bâtiments sont demandés à des serveurs publics (CARTO / OpenStreetMap / Esri, AWS, OpenFreeMap) : **ces serveurs voient la zone affichée** (adresse IP et dalles demandées). Pour un secteur sensible, utiliser le fond « Sombre » à un zoom large, ou un serveur de tuiles interne.
+**Confidentialité** : les couches et les parcelles se dessinent dans le navigateur, elles ne quittent pas l'ERP. En revanche, le fond de carte, le relief et les bâtiments sont demandés à des serveurs publics (Esri / OpenStreetMap, AWS, OpenFreeMap) : **ces serveurs voient la zone affichée** (adresse IP et dalles demandées). Pour un secteur sensible, utiliser le fond « Sombre » à un zoom large (Esri Dark Gray, sans clé ; zoom natif jusqu'à 16, au-delà l'image est agrandie), ou un serveur de tuiles interne.
 
 **Test du rendu** : `npm i --no-save maplibre-gl@4.7.1` puis `node tests-caisse/foncier-territoire-carte.test.js` (rendu WebGL réel hors ligne ; ignoré si le paquet est absent). Capture : variable `CARTE_CAPTURE=chemin.png`.
 
