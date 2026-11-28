@@ -118178,6 +118178,192 @@ function fonTerritoireSvg(zones) {
   }).join('') + '</svg>';
 }
 function fonTerritoireAller() { try { closeModal('modal-fon-audit'); } catch (e) {} fonAller('tab:territoire'); }
+/* ── Carte 3D du Territoire (MapLibre GL) : couches officielles, parcelles, relief, bâtiments, contrôle des parcelles ──
+   Les couches et les parcelles se dessinent dans le navigateur : aucune donnée de couche ne quitte l'ERP.
+   Seuls les fonds de carte (tuiles), le relief et les bâtiments sont demandés à des serveurs publics, qui voient donc la zone affichée.
+   Hauteurs des zones et des parcelles : SYMBOLIQUES (lecture de la catégorie ou du niveau d'alerte), pas des hauteurs réelles. */
+FON_TER.masque = {}; FON_TER.parcelles = true; FON_TER.fond = 'sombre'; FON_TER.pitch = true; FON_TER.relief = true; FON_TER.batiments = true; FON_TER.volumes = false;
+FON_TER.alertes = {}; FON_TER.focus = ''; FON_TER.analyseLe = ''; FON_TER.resultat = null; FON_TER.map = null; FON_TER.pret = false;
+var FON_TER_NIVEAU_COUL = { critique: '#ef4444', majeur: '#f59e0b', info: '#3b82f6', aucun: '#22c55e', inconnu: '#64748b' };
+var FON_TER_HAUTEUR_ZONE = { interdit: 60, sous_condition: 40, alerte: 25, info: 10 }, FON_TER_HAUTEUR_PARC = { critique: 70, majeur: 45, info: 25, aucun: 12, inconnu: 12 };
+var FON_TER_FONDS = {
+  sombre: { l: 'Sombre', t: ['https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png', 'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png', 'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png'], a: '© OpenStreetMap © CARTO' },
+  plan: { l: 'Plan', t: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], a: '© OpenStreetMap' },
+  satellite: { l: 'Satellite', t: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'], a: '© Esri' }
+};
+function fonTerMapLibre(ok, ko) {
+  if (window.maplibregl && window.maplibregl.Map) { ok(); return; }
+  if (!document.getElementById('maplibre-css')) { var c = document.createElement('link'); c.id = 'maplibre-css'; c.rel = 'stylesheet'; c.href = 'https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css'; document.head.appendChild(c); }
+  var s = document.getElementById('maplibre-js') || document.createElement('script');
+  if (!s.id) { s.id = 'maplibre-js'; s.src = 'https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js'; document.head.appendChild(s); }
+  s.addEventListener('load', ok); s.addEventListener('error', ko || function () {});
+}
+/* Données cartographiques : fonctions pures, testables sans carte. */
+function _fonTerFerme(rg) { var r = rg.map(function (q) { return [q[1], q[0]]; }); var a = r[0], b = r[r.length - 1]; if (a[0] !== b[0] || a[1] !== b[1]) r.push([a[0], a[1]]); return r; }
+function fonTerritoireGeoZones() {
+  var feats = [], cs = {}; (DATA.couches_territoriales || []).forEach(function (c) { cs[c.id] = c; });
+  (DATA.zones_territoriales || []).forEach(function (z) {
+    var c = cs[z.couche_id]; if (!c || !(z.anneaux || []).length) return;
+    var col = FON_TER_COULEURS[z.categorie] || '#94a3b8';
+    feats.push({ type: 'Feature', properties: { id: z.id, couche_id: c.id, nom: z.nom, categorie: z.categorie || 'info', couleur: col, hauteur: FON_TER_HAUTEUR_ZONE[z.categorie] || 10, active: fonTerritoireCouchesActives().some(function (x) { return x.id === c.id; }) ? 1 : 0 },
+      geometry: { type: 'MultiPolygon', coordinates: z.anneaux.map(function (rg) { return [_fonTerFerme(rg)]; }) } });
+  });
+  return { type: 'FeatureCollection', features: feats };
+}
+function fonTerritoireGeoParcelles() {
+  var feats = [];
+  _sigParcellesActives().forEach(function (p) {
+    var path = _sigParcellePath(p); if (!path || path.length < 3) return;
+    var niv = FON_TER.alertes[p.id] ? FON_TER.alertes[p.id].niveau : '';
+    feats.push({ type: 'Feature', properties: { id: p.id, ref: p.ref || p.id, niveau: niv || 'inconnu', couleur: FON_TER_NIVEAU_COUL[niv] || '#64748b', hauteur: niv ? FON_TER_HAUTEUR_PARC[niv] : 12, focus: FON_TER.focus === p.id ? 1 : 0, analysee: niv ? 1 : 0 },
+      geometry: { type: 'Polygon', coordinates: [_fonTerFerme(path)] } });
+  });
+  return { type: 'FeatureCollection', features: feats };
+}
+function fonTerBbox(gj) {
+  var b = [Infinity, Infinity, -Infinity, -Infinity];
+  gj.features.forEach(function (f) { var polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates; polys.forEach(function (pg) { pg[0].forEach(function (q) { b = [Math.min(b[0], q[0]), Math.min(b[1], q[1]), Math.max(b[2], q[0]), Math.max(b[3], q[1])]; }); }); });
+  return isFinite(b[0]) ? b : null;
+}
+function fonTerStyle() {
+  if (window.__FON_TER_STYLE_HORS_LIGNE) return window.__FON_TER_STYLE_HORS_LIGNE;
+  var f = FON_TER_FONDS[FON_TER.fond] || FON_TER_FONDS.sombre;
+  return { version: 8,
+    sources: { fond: { type: 'raster', tiles: f.t, tileSize: 256, attribution: f.a, maxzoom: 19 },
+      dem: { type: 'raster-dem', tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], encoding: 'terrarium', tileSize: 256, maxzoom: 14, attribution: 'Relief © Mapzen / AWS Terrain Tiles' },
+      bati: { type: 'vector', url: 'https://tiles.openfreemap.org/planet', attribution: 'Bâtiments © OpenStreetMap, OpenFreeMap' } },
+    layers: [{ id: 'fond', type: 'raster', source: 'fond' },
+      { id: 'relief', type: 'hillshade', source: 'dem', paint: { 'hillshade-exaggeration': 0.5, 'hillshade-shadow-color': '#05080f', 'hillshade-highlight-color': '#8fb8ff' } },
+      { id: 'bati3d', type: 'fill-extrusion', source: 'bati', 'source-layer': 'building', minzoom: 13, paint: { 'fill-extrusion-color': '#7f95b5', 'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 6], 'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0], 'fill-extrusion-opacity': 0.82 } }] };
+}
+function fonTerCouchesVisibles() { return (DATA.couches_territoriales || []).filter(function (c) { return FON_TER.masque[c.id] === undefined ? fonTerritoireCouchesActives().some(function (x) { return x.id === c.id; }) : !FON_TER.masque[c.id]; }).map(function (c) { return c.id; }); }
+function fonTerPopupZone(p, c) {
+  var E = escHtml; return '<b>' + E(p.nom) + '</b><br>' + E(FON_TER_CATEGORIES[p.categorie] || p.categorie) + (c ? '<br><small>' + E(c.nom) + ' · v' + E(c.version || '—') + ' · ' + E(FON_TER_STATUTS[c.statut] || c.statut || '') + '<br>Source : ' + E(c.source || '—') + ' (' + E(c.date_source || '—') + ')</small>' : '');
+}
+function fonTerritoireCarteCadre() {
+  var B = 'background:#16233b;color:#dbe7ff;border:1px solid #2a3b5e;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px;';
+  return '<div class="card" style="padding:0;overflow:hidden;background:#0b1220;color:#dbe7ff;border:1px solid #1e2a44;"><style>#fon-ter-panneau,#fon-ter-panneau *{color:inherit}#fon-ter-panneau table{background:transparent;border-collapse:collapse}#fon-ter-panneau td,#fon-ter-panneau th{color:#dbe7ff;background:transparent;border:0;border-bottom:1px solid #1e2a44;padding:3px 4px!important;width:auto!important;min-width:0!important;white-space:normal!important}#fon-ter-panneau table{table-layout:auto!important;width:100%!important;min-width:0!important}#fon-ter-panneau small{color:#8aa0c8}</style>'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid #1e2a44;"><b>🗺 Carte du territoire</b><span style="font-size:11px;color:#8aa0c8;">Glisser = déplacer · Ctrl + glisser ou clic droit = incliner · molette = zoom</span></div>'
+    + '<div style="display:flex;flex-wrap:wrap;"><div style="flex:1 1 560px;position:relative;min-height:540px;"><div id="fon-ter-map" style="position:absolute;inset:0;"></div>'
+    + '<div id="fon-ter-barre" style="position:absolute;left:10px;right:10px;bottom:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:rgba(11,18,32,.82);border:1px solid #1e2a44;border-radius:8px;padding:6px;" data-style="' + B + '"></div></div>'
+    + '<div id="fon-ter-panneau" style="flex:0 0 310px;max-width:100%;max-height:540px;overflow:auto;background:#111a2b;border-left:1px solid #1e2a44;padding:10px;font-size:12px;"></div></div>'
+    + '<div style="padding:6px 12px;font-size:11px;color:#8aa0c8;border-top:1px solid #1e2a44;">Les couches et les parcelles se dessinent dans votre navigateur ; seuls le fond de carte, le relief et les bâtiments sont demandés à des serveurs publics, qui voient la zone affichée. Hauteurs des zones et des parcelles : <b>symboliques</b> (catégorie ou niveau d\'alerte), pas des hauteurs réelles. Bâtiments : OpenStreetMap, tels que cartographiés.</div></div>';
+}
+function fonTerritoireBarreHtml() {
+  var B = 'background:#16233b;color:#dbe7ff;border:1px solid #2a3b5e;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px;', ON = 'background:#1d4ed8;color:#fff;border:1px solid #3b82f6;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px;';
+  var b = function (lib, js, on, titre) { return '<button type="button" style="' + (on ? ON : B) + '" title="' + escHtml(titre || '') + '" onclick="' + js + '">' + lib + '</button>'; };
+  return b('🧭 Vue d\'ensemble', 'fonTerritoireEnsemble()', false, 'Cadrer les couches et les parcelles')
+    + b(FON_TER.pitch ? '◧ 3D' : '▭ 2D', 'fonTerritoireBasculer3D()', FON_TER.pitch, 'Incliner la carte')
+    + b('⛰ Relief', 'fonTerritoireOption(\'relief\')', FON_TER.relief, 'Relief du terrain')
+    + b('🏢 Bâtiments', 'fonTerritoireOption(\'batiments\')', FON_TER.batiments, 'Bâtiments en volume (OpenStreetMap)')
+    + b('▥ Volumes', 'fonTerritoireOption(\'volumes\')', FON_TER.volumes, 'Zones et parcelles en volume (hauteurs symboliques)')
+    + b('▦ Parcelles', 'fonTerritoireOption(\'parcelles\')', FON_TER.parcelles, 'Afficher les parcelles')
+    + '<select style="' + B + '" onchange="fonTerritoireFond(this.value)" title="Fond de carte">' + Object.keys(FON_TER_FONDS).map(function (k) { return '<option value="' + k + '"' + (FON_TER.fond === k ? ' selected' : '') + '>' + FON_TER_FONDS[k].l + '</option>'; }).join('') + '</select>'
+    + '<select style="' + B + 'max-width:150px;" onchange="fonTerritoireVoirParcelle(this.value)" title="Parcelle à contrôler"><option value="">Parcelle…</option>' + _sigParcellesActives().filter(function (p) { var q = _sigParcellePath(p); return q && q.length >= 3; }).map(function (p) { return '<option value="' + escHtml(p.id) + '"' + (FON_TER.focus === p.id ? ' selected' : '') + '>' + escHtml(p.ref || p.id) + '</option>'; }).join('') + '</select>'
+    + '<span style="flex:1"></span>' + b('🔎 Analyser les parcelles', 'fonTerritoireAnalyser()', false, 'Contrôler toutes les parcelles à contour (rien n\'est enregistré)');
+}
+/* Résumé d'un contrôle. Même règle que l'audit : il alerte, il n'autorise rien ; l'absence de croisement ≠ conformité. */
+function fonTerritoireResumeHtml(ct) {
+  var E = escHtml, niv = { critique: ['⛔', '#ef4444'], majeur: ['🔶', '#f59e0b'], info: ['ℹ️', '#3b82f6'] };
+  if (!ct.couches.length) return '<span style="color:#8aa0c8;">Aucune couche active avec provenance complète : contrôle impossible.</span>';
+  var h = '<b>' + E(ct.ref) + '</b> · ' + (ct.contour ? E(String(ct.aire_m2)) + ' m²' : '<b>contour absent</b>') + '<br><small style="color:#8aa0c8;">Couches : ' + ct.couches.map(function (c) { return E(c.nom) + ' v' + E(c.version || '—'); }).join(', ') + '</small><br>';
+  if (!ct.contour) return h + '<span style="color:#ef4444;">Moins de 3 bornes : aucun croisement calculable.</span>';
+  if (!ct.croisements.length) return h + '<span style="color:#22c55e;">Aucun croisement avec les couches contrôlées.</span> <span style="color:#8aa0c8;">⚠ Cela ne vaut pas conformité : seules les couches chargées sont contrôlées.</span>';
+  return h + '<table style="width:100%;font-size:11px;"><thead><tr><th></th><th align="left">Zone</th><th align="left">Catégorie</th><th>Part</th></tr></thead><tbody>' + ct.croisements.map(function (x) { var n = niv[x.niveau] || niv.info; return '<tr><td style="color:' + n[1] + ';">' + n[0] + '</td><td>' + E(x.zone_nom) + '<br><small style="color:#8aa0c8;">' + E(x.couche_nom) + ' v' + E(x.version || '—') + '</small></td><td>' + E(FON_TER_CATEGORIES[x.categorie] || x.categorie) + '</td><td align="right"><b>' + x.pct + ' %</b></td></tr>'; }).join('') + '</tbody></table>';
+}
+function fonTerritoireNiveauMax(ct) { if (!ct.couches.length || !ct.contour) return 'inconnu'; var r = { critique: 0, majeur: 1, info: 2 }, m = 'aucun'; ct.croisements.forEach(function (x) { if (m === 'aucun' || r[x.niveau] < r[m]) m = x.niveau; }); return m; }
+function fonTerritoireAlertesHtml() {
+  var E = escHtml, rang = { critique: 0, majeur: 1, info: 2 }, ids = Object.keys(FON_TER.alertes); if (!ids.length) return '';
+  var L2 = ids.map(function (id) { var a = FON_TER.alertes[id], p = (DATA.parcelles || []).find(function (x) { return x.id === id; }); return p ? { p: p, a: a } : null; }).filter(function (x) { return x && rang[x.a.niveau] !== undefined; }).sort(function (x, y) { return rang[x.a.niveau] - rang[y.a.niveau] || y.a.nb - x.a.nb; });
+  var sans = ids.filter(function (k) { return FON_TER.alertes[k].niveau === 'aucun'; }).length, inc = ids.filter(function (k) { return FON_TER.alertes[k].niveau === 'inconnu'; }).length;
+  return '<div style="margin-top:10px;"><b>Parcelles en alerte</b><br><small style="color:#8aa0c8;">Analyse du ' + E(String(FON_TER.analyseLe || '').slice(0, 16).replace('T', ' ')) + ', non enregistrée · ' + ids.length + ' analysée(s), ' + L2.length + ' en alerte, ' + sans + ' sans croisement, ' + inc + ' non contrôlable(s)</small>'
+    + (L2.length ? '<table style="width:100%;font-size:11px;margin-top:4px;"><tbody>' + L2.map(function (x) { return '<tr><td>' + E(x.p.ref || x.p.id) + '</td><td style="color:' + FON_TER_NIVEAU_COUL[x.a.niveau] + ';"><b>' + E(x.a.niveau) + '</b></td><td>' + x.a.nb + '</td><td align="right"><button type="button" style="background:#16233b;color:#dbe7ff;border:1px solid #2a3b5e;border-radius:6px;padding:2px 8px;cursor:pointer;" onclick="fonTerritoireVoirParcelle(\'' + x.p.id + '\')">Voir</button></td></tr>'; }).join('') + '</tbody></table>' : '<br><span style="color:#8aa0c8;">Aucune parcelle en alerte. ⚠ Cela ne vaut pas conformité.</span>') + '</div>';
+}
+function fonTerritoirePanneauHtml() {
+  var E = escHtml, cs = (DATA.couches_territoriales || []).filter(function (c) { return fonTerritoireZones(c.id).length; }), vis = fonTerCouchesVisibles(), act = {}; fonTerritoireCouchesActives().forEach(function (c) { act[c.id] = 1; });
+  var h = '<div style="font-weight:700;margin-bottom:4px;">Couches</div>' + (cs.length ? cs.map(function (c) {
+    var ncat = {}; fonTerritoireZones(c.id).forEach(function (z) { ncat[z.categorie] = 1; });
+    return '<label style="display:flex;gap:6px;align-items:flex-start;margin-bottom:5px;"><input type="checkbox" ' + (vis.indexOf(c.id) !== -1 ? 'checked ' : '') + 'onchange="fonTerritoireVisibilite(\'' + c.id + '\',this.checked)"><span><b>' + E(c.nom) + '</b>' + (act[c.id] ? '' : ' <i style="color:#f59e0b;">(inactive : non contrôlée)</i>') + '<br><small style="color:#8aa0c8;">' + E(FON_TER_STATUTS[c.statut] || '') + ' · v' + E(c.version || '—') + ' · ' + fonTerritoireZones(c.id).length + ' zone(s) ' + Object.keys(ncat).map(function (k) { return '<span style="color:' + (FON_TER_COULEURS[k] || '#94a3b8') + ';">●</span>'; }).join('') + '</small></span></label>';
+  }).join('') : '<span style="color:#8aa0c8;">Aucune zone importée.</span>');
+  h += '<div style="margin-top:8px;color:#8aa0c8;font-size:11px;">' + Object.keys(FON_TER_CATEGORIES).map(function (k) { return '<span style="color:' + FON_TER_COULEURS[k] + ';">■</span> ' + E(FON_TER_CATEGORIES[k]); }).join('<br>') + '</div>';
+  h += '<div style="margin-top:8px;color:#8aa0c8;font-size:11px;">Parcelles après analyse : <span style="color:#ef4444;">■</span> critique <span style="color:#f59e0b;">■</span> majeur <span style="color:#3b82f6;">■</span> information <span style="color:#22c55e;">■</span> aucun croisement (≠ conforme) <span style="color:#64748b;">■</span> non analysée</div>';
+  if (FON_TER.resultat) h += '<div style="margin-top:10px;border:1px solid #2a3b5e;border-radius:8px;padding:8px;"><b>🌍 Contrôle de la parcelle</b><br><small style="color:#8aa0c8;">Indicatif : il alerte, il n\'autorise rien</small><br>' + fonTerritoireResumeHtml(FON_TER.resultat) + '</div>';
+  return h + fonTerritoireAlertesHtml();
+}
+function fonTerritoireCarteMaj() {
+  var zone = document.getElementById('fon-ter-carte-zone'); if (!zone) return;
+  if (!document.getElementById('fon-ter-map')) { if (FON_TER.map) { try { FON_TER.map.remove(); } catch (e) {} FON_TER.map = null; FON_TER.pret = false; } zone.innerHTML = fonTerritoireCarteCadre(); }
+  var barre = document.getElementById('fon-ter-barre'), pan = document.getElementById('fon-ter-panneau'); if (barre) barre.innerHTML = fonTerritoireBarreHtml(); if (pan) pan.innerHTML = fonTerritoirePanneauHtml();
+  if (FON_TER.map) { fonTerritoireDonnees(); try { FON_TER.map.resize(); } catch (e) {} return; }
+  if (FON_TER.chargement) return; FON_TER.chargement = true;
+  fonTerMapLibre(function () { FON_TER.chargement = false; try { fonTerritoireCarteBuild(); } catch (e) { console.warn('[carte]', e); var m = document.getElementById('fon-ter-map'); if (m) m.innerHTML = '<div style="padding:16px;color:#8aa0c8;font-size:12px;">Carte 3D indisponible : ' + escHtml(/webgl/i.test(e.message) ? 'WebGL est requis (navigateur ou carte graphique).' : e.message) + '</div>'; } },
+    function () { FON_TER.chargement = false; var m = document.getElementById('fon-ter-map'); if (m) m.innerHTML = '<div style="padding:16px;color:#8aa0c8;font-size:12px;">Carte indisponible (hors ligne ?). Les couches restent consultables dans la liste.</div>'; });
+}
+function fonTerritoireCarteBuild() {
+  var el = document.getElementById('fon-ter-map'); if (!el) return;
+  var map = new maplibregl.Map({ container: el, style: fonTerStyle(), center: FON_TER.vue ? FON_TER.vue.c : [-4.02, 5.35], zoom: FON_TER.vue ? FON_TER.vue.z : 10, pitch: FON_TER.pitch ? 55 : 0, bearing: FON_TER.vue ? FON_TER.vue.b : -15, maxPitch: 80, attributionControl: { compact: true } });
+  FON_TER.map = map; map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-left');
+  map.on('load', function () {
+    var vide = { type: 'FeatureCollection', features: [] };
+    map.addSource('zones', { type: 'geojson', data: vide }); map.addSource('parcelles', { type: 'geojson', data: vide });
+    map.addLayer({ id: 'zones-fill', type: 'fill', source: 'zones', paint: { 'fill-color': ['get', 'couleur'], 'fill-opacity': ['case', ['==', ['get', 'active'], 1], 0.34, 0.16] } });
+    map.addLayer({ id: 'zones-line', type: 'line', source: 'zones', paint: { 'line-color': ['get', 'couleur'], 'line-width': 1.6 } });
+    map.addLayer({ id: 'zones-3d', type: 'fill-extrusion', source: 'zones', layout: { visibility: 'none' }, paint: { 'fill-extrusion-color': ['get', 'couleur'], 'fill-extrusion-height': ['get', 'hauteur'], 'fill-extrusion-opacity': 0.45 } });
+    map.addLayer({ id: 'parc-fill', type: 'fill', source: 'parcelles', paint: { 'fill-color': ['get', 'couleur'], 'fill-opacity': ['case', ['==', ['get', 'analysee'], 1], 0.45, 0.2] } });
+    map.addLayer({ id: 'parc-3d', type: 'fill-extrusion', source: 'parcelles', layout: { visibility: 'none' }, paint: { 'fill-extrusion-color': ['get', 'couleur'], 'fill-extrusion-height': ['get', 'hauteur'], 'fill-extrusion-opacity': 0.8 } });
+    map.addLayer({ id: 'parc-line', type: 'line', source: 'parcelles', paint: { 'line-color': ['case', ['==', ['get', 'focus'], 1], '#ffffff', ['get', 'couleur']], 'line-width': ['case', ['==', ['get', 'focus'], 1], 4, 2] } });
+    var popup = function (e, html) { new maplibregl.Popup({ maxWidth: '320px' }).setLngLat(e.lngLat).setHTML(html).addTo(map); };
+    map.on('click', 'zones-fill', function (e) { var f = e.features && e.features[0]; if (!f) return; if (map.queryRenderedFeatures(e.point, { layers: ['parc-fill'] }).length) return; popup(e, fonTerPopupZone(f.properties, (DATA.couches_territoriales || []).find(function (c) { return c.id === f.properties.couche_id; }))); });
+    map.on('click', 'parc-fill', function (e) { var f = e.features && e.features[0]; if (!f) return; popup(e, '<b>' + escHtml(f.properties.ref) + '</b><br><button type="button" style="margin-top:4px;" onclick="fonTerritoireControlerParcelle(\'' + escHtml(f.properties.id) + '\')">🌍 Contrôler cette parcelle</button>'); });
+    ['zones-fill', 'parc-fill'].forEach(function (l) { map.on('mouseenter', l, function () { map.getCanvas().style.cursor = 'pointer'; }); map.on('mouseleave', l, function () { map.getCanvas().style.cursor = ''; }); });
+    FON_TER.pret = true; fonTerritoireDonnees(true); fonTerritoireAppliquerOptions();
+  });
+  map.on('error', function (e) { if (window.__FON_TER_DEBUG) console.warn('[carte]', e && e.error && e.error.message); });
+}
+function fonTerritoireDonnees(cadrer) {
+  var map = FON_TER.map; if (!map || !FON_TER.pret) return;
+  FON_TER.geoZones = fonTerritoireGeoZones(); FON_TER.geoParc = fonTerritoireGeoParcelles();
+  map.getSource('zones').setData(FON_TER.geoZones); map.getSource('parcelles').setData(FON_TER.geoParc);
+  var vis = fonTerCouchesVisibles(), filtre = ['in', ['get', 'couche_id'], ['literal', vis]];
+  ['zones-fill', 'zones-line', 'zones-3d'].forEach(function (l) { if (map.getLayer(l)) map.setFilter(l, filtre); });
+  fonTerritoireAppliquerOptions();
+  var foc = FON_TER.focus && FON_TER.geoParc.features.filter(function (f) { return f.properties.id === FON_TER.focus; })[0];
+  if (foc) { var b = fonTerBbox({ features: [foc] }); map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 140, maxZoom: 17, pitch: FON_TER.pitch ? 55 : 0 }); }
+  else if (cadrer && !FON_TER.vue) fonTerritoireEnsemble();
+}
+function fonTerritoireAppliquerOptions() {
+  var map = FON_TER.map; if (!map || !FON_TER.pret) return;
+  var vis = function (l, oui) { if (map.getLayer(l)) map.setLayoutProperty(l, 'visibility', oui ? 'visible' : 'none'); };
+  vis('bati3d', FON_TER.batiments); vis('relief', FON_TER.relief); vis('zones-3d', FON_TER.volumes); vis('parc-3d', FON_TER.volumes && FON_TER.parcelles); vis('parc-fill', FON_TER.parcelles); vis('parc-line', FON_TER.parcelles);
+  try { if (map.getSource('dem')) map.setTerrain(FON_TER.relief ? { source: 'dem', exaggeration: 1.3 } : null); } catch (e) { /* relief indisponible */ }
+}
+function fonTerritoireEnsemble() {
+  var map = FON_TER.map; if (!map) return; FON_TER.focus = ''; FON_TER.resultat = null;
+  var g = { features: (FON_TER.geoZones ? FON_TER.geoZones.features.filter(function (f) { return f.properties.active; }) : []).concat(FON_TER.geoParc ? FON_TER.geoParc.features : []) }, b = fonTerBbox(g);
+  if (b) map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 70, maxZoom: 15, pitch: FON_TER.pitch ? 55 : 0 }); else map.easeTo({ center: [-4.02, 5.35], zoom: 10 });
+  var pan = document.getElementById('fon-ter-panneau'); if (pan) pan.innerHTML = fonTerritoirePanneauHtml();
+}
+function fonTerritoireBasculer3D() { FON_TER.pitch = !FON_TER.pitch; if (FON_TER.map) FON_TER.map.easeTo({ pitch: FON_TER.pitch ? 55 : 0, duration: 600 }); var b = document.getElementById('fon-ter-barre'); if (b) b.innerHTML = fonTerritoireBarreHtml(); }
+function fonTerritoireOption(k) { FON_TER[k] = !FON_TER[k]; fonTerritoireAppliquerOptions(); var b = document.getElementById('fon-ter-barre'); if (b) b.innerHTML = fonTerritoireBarreHtml(); }
+function fonTerritoireFond(k) { FON_TER.fond = FON_TER_FONDS[k] ? k : 'sombre'; var m = FON_TER.map; if (m && FON_TER.pret && m.getSource('fond') && m.getSource('fond').setTiles) m.getSource('fond').setTiles(FON_TER_FONDS[FON_TER.fond].t); }
+function fonTerritoireVisibilite(id, oui) { FON_TER.masque[id] = !oui; var m = FON_TER.map; if (m && FON_TER.pret) { var f = ['in', ['get', 'couche_id'], ['literal', fonTerCouchesVisibles()]]; ['zones-fill', 'zones-line', 'zones-3d'].forEach(function (l) { if (m.getLayer(l)) m.setFilter(l, f); }); } }
+function fonTerritoireControlerParcelle(pid) {
+  var p = (DATA.parcelles || []).find(function (x) { return x.id === pid; }); if (!p) return;
+  var ct = fonTerritoireControle(p); FON_TER.alertes[pid] = { niveau: fonTerritoireNiveauMax(ct), nb: ct.croisements.length, le: ct.le, res: ct }; FON_TER.focus = pid; FON_TER.resultat = ct;
+  try { document.querySelectorAll('.maplibregl-popup').forEach(function (x) { x.remove(); }); } catch (e) {} fonTerritoireCarteMaj();
+}
+function fonTerritoireVoirParcelle(pid) { if (!pid) { FON_TER.focus = ''; FON_TER.resultat = null; fonTerritoireCarteMaj(); return; } fonTerritoireControlerParcelle(pid); }
+/* Analyse de toutes les parcelles à contour : coloration de la carte et liste des parcelles en alerte (rien n'est enregistré). */
+async function fonTerritoireAnalyser() {
+  if (!fonTerritoireCouchesActives().length) { toast('Aucune couche active avec provenance complète : analyse impossible.', 'error'); return; }
+  var L2 = _sigParcellesActives().filter(function (p) { var q = _sigParcellePath(p); return q && q.length >= 3; }); FON_TER.alertes = {}; var n = 0;
+  for (var i = 0; i < L2.length; i++) {
+    var ct = fonTerritoireControle(L2[i]); FON_TER.alertes[L2[i].id] = { niveau: fonTerritoireNiveauMax(ct), nb: ct.croisements.length, le: ct.le, res: ct }; n++;
+    if (i % 5 === 4) await new Promise(function (r) { setTimeout(r, 0); });
+  }
+  FON_TER.analyseLe = new Date().toISOString(); FON_TER.focus = ''; toast(n + ' parcelle(s) analysée(s).', 'success'); fonTerritoireCarteMaj();
+}
+function fonTerritoireAuditCarte(pid) { try { closeModal('modal-fon-audit'); } catch (e) {} FON_TER.focus = pid; FON_TER.resultat = null; fonAller('tab:territoire'); }
 function fonTerritoireVoir(id) { FON_TER.sel = (FON_TER.sel === id ? '' : id); fonTerritoireRender(); }
 function fonTerritoireRender() {
   var root = document.getElementById('fon-territoire-root'); if (!root) return;
@@ -118197,7 +118383,11 @@ function fonTerritoireRender() {
       + '<div style="font-size:12px;margin-bottom:6px;">' + Object.keys(FON_TER_CATEGORIES).map(function (k) { return compte[k] ? '<span style="color:' + FON_TER_COULEURS[k] + ';">●</span> ' + E(FON_TER_CATEGORIES[k]) + ' : <b>' + compte[k] + '</b>' : ''; }).filter(Boolean).join(' · ') + '</div>'
       + (Z.length ? fonTerritoireSvg(Z) + '<div class="table-wrap" style="margin-top:8px;max-height:320px;overflow:auto;"><table style="width:100%;font-size:12px;"><thead><tr><th>Zone</th><th>Catégorie</th><th>Contours</th></tr></thead><tbody>' + Z.slice(0, 200).map(function (z) { return '<tr><td>' + E(z.nom) + '</td><td>' + E(FON_TER_CATEGORIES[z.categorie] || z.categorie) + '</td><td>' + (z.anneaux || []).length + '</td></tr>'; }).join('') + '</tbody></table></div>' + (Z.length > 200 ? '<div style="font-size:11px;color:var(--dim);">200 premières zones affichées.</div>' : '') : '<div style="color:var(--dim);font-size:12px;">Aucune zone : importez un fichier GeoJSON.</div>') + '</div>';
   }
-  root.innerHTML = h;
+  if (!document.getElementById('fon-ter-liste-zone') || !document.getElementById('fon-ter-carte-zone') || !root.contains(document.getElementById('fon-ter-carte-zone'))) {
+    if (FON_TER.map) { try { FON_TER.map.remove(); } catch (e) {} FON_TER.map = null; FON_TER.pret = false; }
+    root.innerHTML = '<div id="fon-ter-carte-zone"></div><div id="fon-ter-liste-zone"></div>';
+  }
+  document.getElementById('fon-ter-liste-zone').innerHTML = h; fonTerritoireCarteMaj();
 }
 /* Contrôle d'une parcelle contre les couches actives (aucune écriture). */
 function fonTerritoireControle(p) {
@@ -118226,7 +118416,7 @@ function fonTerritoireAuditHtml(a) {
   var boite = function (corps) { return '<div style="border:1px solid var(--border,#ddd);border-radius:8px;padding:8px 10px;margin:0 0 10px;font-size:12px;"><div style="font-weight:700;margin-bottom:4px;">🌍 Contrôle territorial <span style="font-weight:400;color:var(--dim);">(indicatif : il alerte, il n\'autorise rien)</span></div>' + corps + '</div>'; };
   if (!actives.length) return boite('<span style="color:var(--dim);">Aucune couche territoriale active : contrôle impossible. Cela ne vaut pas conformité.</span><div style="margin-top:6px;">' + _fonBtn('🌍 Aller à Territoire pour charger une couche', 'fonTerritoireAller()', 'btn-primary') + '</div>');
   if (!a.parcelle_id) return boite('<span style="color:var(--dim);">Aucune parcelle liée à cet audit : le contrôle exige le contour de la parcelle.</span>');
-  var h = '<div style="margin-bottom:4px;">' + (verrou ? '' : _fonBtn(ct ? '🔄 Relancer le contrôle' : '▶ Lancer le contrôle territorial', 'fonTerritoireAuditLancer(\'' + a.id + '\')', 'btn-primary')) + '</div>';
+  var h = '<div style="margin-bottom:4px;">' + (verrou ? '' : _fonBtn(ct ? '🔄 Relancer le contrôle' : '▶ Lancer le contrôle territorial', 'fonTerritoireAuditLancer(\'' + a.id + '\')', 'btn-primary')) + _fonBtn('🗺 Voir sur la carte', 'fonTerritoireAuditCarte(\'' + a.parcelle_id + '\')') + '</div>';
   if (!ct) return boite(h + '<span style="color:var(--dim);">Contrôle non lancé (' + actives.length + ' couche(s) active(s)).</span>');
   var niv = { critique: ['⛔', '#dc2626'], majeur: ['🔶', '#f59e0b'], info: ['ℹ️', '#2563eb'] };
   h += '<div style="color:var(--dim);margin-bottom:4px;">Contrôle du ' + E(String(ct.le || '').slice(0, 16).replace('T', ' ')) + ' par ' + E(ct.par || '—') + ' · parcelle ' + E(ct.ref || '') + ' · ' + (ct.contour ? E(String(ct.aire_m2)) + ' m²' : '<b>contour absent</b>') + '<br>Couches contrôlées : ' + ct.couches.map(function (c) { return E(c.nom) + ' (v' + E(c.version || '—') + ', ' + E(FON_TER_STATUTS[c.statut] || c.statut || '') + ')'; }).join(' ; ') + '</div>';
