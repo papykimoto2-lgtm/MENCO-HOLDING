@@ -118620,9 +118620,77 @@ async function fonSondageIci() {
   var pos; try { pos = await fonGpsPosition(); } catch (e) { toast(e.message, 'error'); return false; }
   fonSondageNouveau(pos.lat, pos.lng, FON_RURAL.terrainParcelle || ''); return true;
 }
+/* Import de sondages (tableau du bureau d'études : CSV ou Excel). Lecture et contrôle sans écriture. */
+var FON_SOND_ALIAS = {
+  nom: ['sondage', 'nom', 'nom sondage', 'id', 'point', 'numero', 'ref sondage', 'reference sondage', 'code'], parcelle: ['parcelle', 'ref parcelle', 'reference parcelle', 'n parcelle', 'id parcelle'],
+  lat: ['lat', 'latitude'], lng: ['lng', 'lon', 'long', 'longitude'], x: ['x', 'e', 'est', 'easting'], y: ['y', 'n', 'nord', 'northing'], zone: ['zone', 'fuseau', 'zone utm'],
+  nature: ['nature', 'sol', 'nature du sol', 'lithologie', 'formation', 'classe'], profondeur_m: ['profondeur', 'prof', 'profondeur m', 'profondeur du sondage'],
+  sigma_adm: ['contrainte', 'contrainte admissible', 'sigma', 'sigma adm', 'qadm', 'contrainte admissible mpa', 'mpa'], nappe_m: ['nappe', 'nappe m', 'niveau nappe', 'niveau de la nappe'],
+  essai: ['essai', 'type essai', 'methode'], date_essai: ['date', 'date essai', 'date de l essai'], bureau: ['bureau', 'bureau d etudes', 'bet', 'geotechnicien'], observations: ['observations', 'remarques', 'commentaire', 'commentaires']
+};
+var FON_SOND_MAX = 500;
+function fonSondagesDepuisTableau(rows, opts) {
+  opts = opts || {}; var res = { sondages: [], erreurs: [], avertissements: [], ignores: 0 };
+  if (!rows || rows.length < 2) { res.erreurs.push('Fichier vide : en-têtes et au moins un sondage attendus.'); return res; }
+  var heads = rows[0].map(_fonReleveNorm), col = {};
+  Object.keys(FON_SOND_ALIAS).forEach(function (k) { var i = heads.findIndex(function (h) { return FON_SOND_ALIAS[k].indexOf(h) !== -1; }); if (i >= 0) col[k] = i; });
+  var geo = col.lat !== undefined && col.lng !== undefined;
+  if (col.nom === undefined) res.erreurs.push('Colonne « sondage » introuvable (en-têtes reconnus : sondage, nom, id, point…).');
+  if (col.nature === undefined) res.erreurs.push('Colonne « nature » du sol introuvable.');
+  if (!geo && (col.x === undefined || col.y === undefined)) res.erreurs.push('Position introuvable : colonnes lat et lng, ou x et y (UTM).');
+  if (res.erreurs.length) return res;
+  if (rows.length - 1 > FON_SOND_MAX) { res.erreurs.push((rows.length - 1) + ' lignes : maximum ' + FON_SOND_MAX + ' par import.'); return res; }
+  var vus = {}, parcs = {}; (DATA.parcelles || []).forEach(function (p) { if (!p.fusionnee_dans && !p.decoupee_dans) parcs[_fonReleveNorm(p.ref)] = p; });
+  var cell = function (ro, k) { return col[k] === undefined ? '' : String(ro[col[k]] == null ? '' : ro[col[k]]).trim(); }, num = function (ro, k) { var t = cell(ro, k); return t === '' ? undefined : fonReleveNombre(t); };
+  var essais = {}; Object.keys(GEO_ESSAIS).forEach(function (k) { essais[_fonReleveNorm(k)] = k; essais[_fonReleveNorm(GEO_ESSAIS[k])] = k; });
+  for (var r = 1; r < rows.length; r++) {
+    var ro = rows[r]; if (!ro.some(function (x) { return String(x).trim(); })) continue; var L = 'Ligne ' + (r + 1) + ' : ', nom = cell(ro, 'nom'), err = null;
+    if (!nom) err = 'nom du sondage vide.';
+    var lat, lng; if (!err) {
+      if (geo) { lat = fonReleveNombre(ro[col.lat]); lng = fonReleveNombre(ro[col.lng]); } else { var zo = num(ro, 'zone'), zn = (zo === 29 || zo === 30) ? zo : (opts.zone === 29 ? 29 : 30), x = fonReleveNombre(ro[col.x]), y = fonReleveNombre(ro[col.y]); if (isFinite(x) && isFinite(y)) { var ll = utm30ToLatLng(x, y, zn); lat = ll[0]; lng = ll[1]; } }
+      if (!isFinite(lat) || !isFinite(lng)) err = 'position illisible.';
+      else if (!fonReleveEnPays(lat, lng)) err = fonReleveEnPays(lng, lat) ? 'latitude et longitude semblent inversées.' : 'position hors de la Côte d\'Ivoire.';
+    }
+    var nat = err ? '' : fonSolNatureDepuis(cell(ro, 'nature')); if (!err && !nat) err = 'nature du sol non reconnue (« ' + cell(ro, 'nature') + ' »).';
+    var prof = num(ro, 'profondeur_m'), sig = num(ro, 'sigma_adm'), nap = num(ro, 'nappe_m');
+    if (!err && [prof, sig, nap].some(function (v) { return v !== undefined && (!isFinite(v) || v < 0); })) err = 'profondeur, contrainte ou nappe illisible ou négative.';
+    if (err) { res.erreurs.push(L + err); res.ignores++; continue; }
+    var cle = _fonReleveNorm(nom) + '|' + lat.toFixed(5) + '|' + lng.toFixed(5);
+    if (vus[cle] || (DATA.sondages_sols || []).some(function (x) { return !x._deleted && _fonReleveNorm(x.nom) === _fonReleveNorm(nom) && Math.abs(parseFloat(x.lat) - lat) < 1e-5 && Math.abs(parseFloat(x.lng) - lng) < 1e-5; })) { res.avertissements.push(L + 'sondage « ' + nom + ' » déjà présent : ignoré.'); res.ignores++; continue; }
+    vus[cle] = 1;
+    var rec = { nom: nom.slice(0, 80), lat: Math.round(lat * 1e7) / 1e7, lng: Math.round(lng * 1e7) / 1e7, nature: nat };
+    if (prof !== undefined) rec.profondeur_m = prof; if (sig !== undefined) rec.sigma_adm = sig; if (nap !== undefined) rec.nappe_m = nap;
+    var es = essais[_fonReleveNorm(cell(ro, 'essai'))]; if (es) rec.essai = es; else if (cell(ro, 'essai')) res.avertissements.push(L + 'essai « ' + cell(ro, 'essai') + ' » non reconnu : ignoré.');
+    var de = cell(ro, 'date_essai'); if (/^\d{4}-\d{2}-\d{2}$/.test(de)) rec.date_essai = de; else if (de) res.avertissements.push(L + 'date « ' + de + ' » ignorée (format AAAA-MM-JJ attendu).');
+    if (cell(ro, 'bureau')) rec.bureau = cell(ro, 'bureau').slice(0, 120); if (cell(ro, 'observations')) rec.observations = cell(ro, 'observations').slice(0, 500);
+    var pr = cell(ro, 'parcelle'); if (pr) { var pc = parcs[_fonReleveNorm(pr)]; if (pc) rec.parcelle_id = pc.id; else res.avertissements.push(L + 'parcelle « ' + pr + ' » introuvable : sondage importé sans parcelle.'); }
+    res.sondages.push(rec);
+  }
+  if (!res.sondages.length && !res.erreurs.length) res.erreurs.push('Aucun sondage exploitable.');
+  return res;
+}
+function fonSondagesModele() {
+  var csv = 'sondage;lat;lng;nature;profondeur;contrainte;nappe;essai;date;bureau;parcelle\nSC1;5.350000;-4.001000;Argile molle;6;0.08;2.5;pressio;2026-03-12;BET Exemple;P-001\nSP2;5.351200;-4.002300;Sable dense;5;0.45;;penetro;2026-03-12;BET Exemple;P-001\n';
+  var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv' })); a.download = 'modele-sondages.csv'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { try { URL.revokeObjectURL(a.href); } catch (e) {} }, 2000);
+}
+async function fonSondagesImporter(input) {
+  var f = input && input.files && input.files[0]; if (input) input.value = ''; if (!f) return false;
+  if (!fcDroitEcriture()) { toast('Votre profil ne permet pas de modifier le module Foncier.', 'error'); return false; }
+  var rows; try { if (/\.xlsx$/i.test(f.name)) { var wb = await fonXlsxLire(await f.arrayBuffer()), nom = Object.keys(wb.feuilles)[0]; if (!nom) throw new Error('Classeur vide.'); rows = wb.feuilles[nom]; } else rows = fonReleveCsv(await f.text()); } catch (e) { toast('Fichier illisible : ' + e.message, 'error'); return false; }
+  var R = fonSondagesDepuisTableau(rows); if (R.erreurs.length && !R.sondages.length) { toast(R.erreurs.slice(0, 3).join(' · '), 'error', 9000); return false; }
+  var msg = R.sondages.length + ' sondage(s) à importer' + (R.erreurs.length ? ', ' + R.erreurs.length + ' ligne(s) refusée(s) :\n- ' + R.erreurs.slice(0, 5).join('\n- ') : '') + (R.avertissements.length ? '\n' + R.avertissements.length + ' avertissement(s) :\n- ' + R.avertissements.slice(0, 3).join('\n- ') : '') + '\n\nImporter ?';
+  if (!confirm(msg)) return false;
+  var n = 0, T = FON_RURAL_TYPES.sondages;
+  for (var i = 0; i < R.sondages.length; i++) {
+    var rec = Object.assign({ id: uid(), created_at: today(), actif: true, source: 'import' }, R.sondages[i]); rec.reference = prochaineRefListe(DATA[T.store] || [], T.pre + '-' + new Date().getFullYear() + '-', 3, 'reference'); rec.modifie_par = (APP.currentUser && APP.currentUser.nom) || '—';
+    if (!(await fonRuralSauver('sondages', rec))) break; n++;
+  }
+  try { logAction('FONCIER_SONDAGES_IMPORT', n + ' sondage(s) importé(s) depuis ' + f.name); } catch (e) {}
+  toast(n + ' sondage(s) importé(s).', n ? 'success' : 'error'); if (typeof fonTerritoireRender === 'function') fonTerritoireRender(); return n > 0;
+}
 function fonSondagesPanneauHtml() {
   var E = escHtml, L = fonSondagesActifs(); if (!L.length && !(DATA.couches_territoriales || []).some(function (c) { return c.type === 'sols'; })) return '';
-  return '<div style="margin-top:10px;"><b>🪨 Sols</b> <button type="button" style="font-size:11px;" onclick="fonSondageNouveau()">+ Sondage</button><br><small style="color:#8aa0c8;">' + L.length + ' sondage(s) géolocalisé(s). Indicatif : ne remplace pas l\'étude géotechnique.</small>'
+  return '<div style="margin-top:10px;"><b>🪨 Sols</b> <button type="button" style="font-size:11px;" onclick="fonSondageNouveau()">+ Sondage</button> <label style="font-size:11px;cursor:pointer;border:1px solid #2a3b5e;border-radius:4px;padding:1px 6px;">📥 Importer<input type="file" accept=".csv,.txt,.xlsx" style="display:none;" onchange="fonSondagesImporter(this)"></label> <button type="button" style="font-size:11px;" onclick="fonSondagesModele()" title="Modèle CSV">⬇</button><br><small style="color:#8aa0c8;">' + L.length + ' sondage(s) géolocalisé(s). Indicatif : ne remplace pas l\'étude géotechnique.</small>'
     + (L.length ? '<table style="width:100%;font-size:11px;margin-top:4px;"><tbody>' + L.slice(0, 40).map(function (x) { var n = GEO_NATURES[x.nature] || {}; return '<tr><td><span style="color:' + (n.coul || '#94a3b8') + ';">●</span> ' + E(x.nom || '') + '</td><td>' + E(n.lib || '') + '</td><td align="right"><button type="button" style="font-size:11px;" onclick="fonSondageVoir(\'' + E(x.id) + '\')">Voir</button></td></tr>'; }).join('') + '</tbody></table>' : '') + '</div>';
 }
 function fonSondageVoir(id) {
