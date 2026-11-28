@@ -10337,7 +10337,7 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
                   <th>Réf. Parcelle</th><th>Localisation</th><th>Commune / Sous-pref.</th>
                   <th>Superficie (m²)</th><th>Coût acquisition</th>
                   <th>N° TF / ACD</th><th>Type titre</th><th>Programme affecté</th>
-                  <th>Statut</th><th>Actions</th>
+                  <th>Statut</th><th title="Contrôle territorial indicatif des couches officielles (SDUGA, PUd, ZAD, zones protégées…)">🌍 Territoire</th><th>Actions</th>
                 </tr></thead>
                 <tbody id="tbody-parcelles"></tbody>
               </table>
@@ -97377,7 +97377,7 @@ function renderParcelles() {
   }
 
   if (!list.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--blanc-dim);padding:24px;">Aucune parcelle enregistrée</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--blanc-dim);padding:24px;">Aucune parcelle enregistrée</td></tr>';
     if (gridC) gridC.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--blanc-dim);padding:40px 20px;">🗺️ Aucune parcelle enregistrée</div>';
     return;
   }
@@ -97386,15 +97386,16 @@ function renderParcelles() {
     var progNom = p.programme_id ? ((DATA.programmes.find(function(x){ return x.id===p.programme_id; })||{}).nom||'—') : '—';
     var coutTot = (p.prix_acq||0)+(p.frais_mutation||0)+(p.frais_bornage||0)+(p.frais_notaire||0);
     return '<tr>'
-      + '<td style="font-weight:700;color:var(--or);">' + p.ref + '</td>'
-      + '<td>' + (p.localisation||'—') + '</td>'
-      + '<td>' + (p.commune||'—') + '</td>'
+      + '<td style="font-weight:700;color:var(--or);">' + escHtml(p.ref||'') + '</td>'
+      + '<td>' + escHtml(p.localisation||'—') + '</td>'
+      + '<td>' + escHtml(p.commune||'—') + '</td>'
       + '<td style="font-weight:600;">' + fmtF(p.superficie||0) + '</td>'
       + '<td>' + fmtF(coutTot) + ' FCFA</td>'
-      + '<td style="font-family:monospace;font-size:11px;">' + (p.num_titre||'—') + '</td>'
-      + '<td style="font-size:11px;">' + (p.type_titre||'—') + '</td>'
-      + '<td style="font-size:12px;">' + progNom + '</td>'
-      + '<td><span class="badge ' + (PARC_STAT_MAP[p.statut]||'badge-bleu') + '">' + (p.statut||'').replace(/_/g,' ') + '</span></td>'
+      + '<td style="font-family:monospace;font-size:11px;">' + escHtml(p.num_titre||'—') + '</td>'
+      + '<td style="font-size:11px;">' + escHtml(p.type_titre||'—') + '</td>'
+      + '<td style="font-size:12px;">' + escHtml(progNom) + '</td>'
+      + '<td><span class="badge ' + (PARC_STAT_MAP[p.statut]||'badge-bleu') + '">' + escHtml((p.statut||'').replace(/_/g,' ')) + '</span></td>'
+      + '<td>' + fonTerritoireBadgeHtml(p) + '</td>'
       + '<td>' + ((p.bornes&&p.bornes.length>=3)?('<button class="btn btn-secondary btn-sm btn-icon" title="Plan parcellaire" onclick="genererPlanParcellaire(\'' + p.id + '\')">📐</button> '):'') + '<button class="btn btn-secondary btn-sm btn-icon" title="Céder / vendre" onclick="cesNewFromParcelle(\'' + p.id + '\')">💰</button> <button class="btn btn-secondary btn-sm btn-icon" onclick="openParcelle(\'' + p.id + '\')">✏️</button> <button class="btn btn-danger btn-sm btn-icon" onclick="deleteParcelle(\'' + p.id + '\')">🗑</button></td>'
       + '</tr>';
   }).join('');
@@ -97418,6 +97419,7 @@ function renderParcelles() {
         +     '<div class="emp-card-name">' + escHtml(p.ref||'') + '</div>'
         +     '<div class="emp-card-poste">' + escHtml(p.localisation || p.commune || '—') + '</div>'
         +     '<div class="emp-card-matricule">📜 ' + escHtml(p.num_titre || 'Sans titre') + '</div>'
+        +     '<div style="margin-top:3px;">🌍 ' + fonTerritoireBadgeHtml(p) + '</div>'
         +   '</div>'
         + '</div>'
         + '<div class="emp-card-tags">'
@@ -97434,6 +97436,7 @@ function renderParcelles() {
         + '</div>';
     }).join('');
   }
+  fonTerritoireBadgesRemplir();
 }
 
 /* Régime d'une parcelle : valeur enregistrée, sinon 'urbain' (parcelles antérieures au lot L1, migrées en base par foncier_urbain_rural_l1.sql). */
@@ -97554,6 +97557,7 @@ async function saveParcelle() {
   renderParcelles(); updateFoncierKPIs();
   filiereLiveRefresh();
   toast('Parcelle enregistrée.', 'success');
+  try { fonTerritoireAlerteParcelle(p); } catch (_eT) { console.warn('[territoire]', _eT); }
 }
 
 async function deleteParcelle(id) {
@@ -118568,6 +118572,56 @@ async function fonTerritoireAnalyser() {
     if (i % 5 === 4) await new Promise(function (r) { setTimeout(r, 0); });
   }
   FON_TER.analyseLe = new Date().toISOString(); FON_TER.focus = ''; toast(n + ' parcelle(s) analysée(s).', 'success'); fonTerritoireCarteMaj();
+}
+/* ── Alerte précoce : badge territorial sur chaque parcelle (liste, grille) et alerte à l'enregistrement ──
+   Le contrôle est celui de l'audit (même fonction), indicatif : il alerte, il n'autorise rien ; « aucun croisement » ne vaut pas conformité.
+   Calcul paresseux et mis en cache (contour + couches), par petits lots pour ne jamais figer l'écran. */
+var FON_TER_BADGE = { cache: {} };
+var FON_TER_BADGE_STYLE = { critique: ['⛔', '#dc2626', 'Critique'], majeur: ['🔶', '#d97706', 'Majeur'], info: ['ℹ️', '#2563eb', 'Information'], aucun: ['○', '#64748b', 'Aucun croisement'], contour: ['?', '#94a3b8', 'Contour à saisir'], sans: ['·', '#94a3b8', 'Pas de couche'] };
+function fonTerritoireSigParcelle(p) {
+  var q = _sigParcellePath(p), g = (q && q.length >= 3) ? q.map(function (x) { return Math.round(x[0] * 1e6) + ',' + Math.round(x[1] * 1e6); }).join(';') : '';
+  return g + '#' + fonTerritoireSignatureZones();
+}
+function fonTerritoireBadgeCalculer(p) {
+  var sig = fonTerritoireSigParcelle(p), c = FON_TER_BADGE.cache[p.id]; if (c && c.sig === sig) return c.r;
+  var r, q = _sigParcellePath(p);
+  if (!fonTerritoireCouchesActives().length) r = { niveau: 'sans', nb: 0 };
+  else if (!q || q.length < 3) r = { niveau: 'contour', nb: 0 };
+  else { var ct = fonTerritoireControle(p), top = ct.croisements.slice().sort(function (a, b) { return b.pct - a.pct; })[0]; r = { niveau: fonTerritoireNiveauMax(ct), nb: ct.croisements.length, zone: top ? top.zone_nom : '', couche: top ? top.couche_nom : '', pct: top ? top.pct : 0 }; }
+  FON_TER_BADGE.cache[p.id] = { sig: sig, r: r }; return r;
+}
+function fonTerritoireBadgeDe(p, r) {
+  var E = escHtml, st = FON_TER_BADGE_STYLE[r.niveau] || FON_TER_BADGE_STYLE.sans;
+  var tip = 'Contrôle territorial indicatif : il alerte, il n\'autorise rien. ' + (r.nb ? r.nb + ' croisement(s) ; le plus fort : ' + (r.zone || '') + ' (' + (r.couche || '') + ') ' + r.pct + ' % de la parcelle.' : st[2] + '.') + (r.niveau === 'aucun' ? ' Cela ne vaut pas conformité : seules les couches chargées sont contrôlées.' : '') + ' Cliquer : ouvrir sur la carte.';
+  return '<span class="ter-badge" data-ter="' + E(p.id) + '" role="button" tabindex="0" title="' + E(tip) + '" onclick="event.stopPropagation();fonTerritoireVoirParcelleListe(\'' + E(p.id) + '\')" style="display:inline-block;cursor:pointer;white-space:nowrap;font-size:11px;font-weight:600;color:' + st[1] + ';">' + st[0] + ' ' + E(st[2]) + '</span>';
+}
+/* Badge d'une parcelle : tout de suite s'il est en cache, sinon un témoin « … » rempli ensuite par fonTerritoireBadgesRemplir(). */
+function fonTerritoireBadgeHtml(p) {
+  var c = FON_TER_BADGE.cache[p.id]; if (c && c.sig === fonTerritoireSigParcelle(p)) return fonTerritoireBadgeDe(p, c.r);
+  return '<span class="ter-badge" data-ter="' + escHtml(p.id) + '" data-att="1" style="font-size:11px;color:#94a3b8;" title="Contrôle territorial en cours">…</span>';
+}
+function fonTerritoireBadgesRemplir() {
+  var els = Array.prototype.slice.call(document.querySelectorAll('.ter-badge[data-att="1"]')); if (!els.length || FON_TER_BADGE.enCours) return;
+  FON_TER_BADGE.enCours = true; var i = 0;
+  var lot = function () {
+    var t0 = Date.now();
+    while (i < els.length && Date.now() - t0 < 30) {
+      var el = els[i++], p = el.isConnected && (DATA.parcelles || []).find(function (x) { return x.id === el.getAttribute('data-ter'); });
+      if (p) { try { var r = fonTerritoireBadgeCalculer(p), tmp = document.createElement('div'); tmp.innerHTML = fonTerritoireBadgeDe(p, r); el.replaceWith(tmp.firstChild); } catch (e) { el.removeAttribute('data-att'); el.textContent = '—'; } }
+    }
+    if (i < els.length) setTimeout(lot, 0); else FON_TER_BADGE.enCours = false;
+  };
+  setTimeout(lot, 0);
+}
+function fonTerritoireVoirParcelleListe(pid) { FON_TER.focus = pid; FON_TER.resultat = null; try { fonAller('tab:territoire'); } catch (e) { toast('Ouvrez Foncier › Territoire.', 'info'); } }
+/* À l'enregistrement d'une parcelle : contrôle immédiat, avertissement si croisement critique ou majeur. Ne bloque jamais l'enregistrement. */
+function fonTerritoireAlerteParcelle(p) {
+  if (!p) return null; delete FON_TER_BADGE.cache[p.id]; var r = fonTerritoireBadgeCalculer(p);
+  if (r.niveau === 'critique' || r.niveau === 'majeur') {
+    toast('🌍 Parcelle ' + (p.ref || '') + ' : croisement ' + (r.niveau === 'critique' ? 'CRITIQUE' : 'majeur') + ' avec « ' + (r.zone || '') + ' » (' + (r.couche || '') + ', ' + r.pct + ' % de la parcelle). Indicatif : lancer un audit pré-acquisition et faire confirmer par le géomètre.', 'warning', 14000);
+    try { logAction('FONCIER_ALERTE_TERRITORIALE', (p.ref || p.id) + ' : ' + r.niveau + ' — ' + (r.zone || '') + ' (' + (r.couche || '') + ') ' + r.pct + ' %'); } catch (e) {}
+  }
+  return r;
 }
 /* ── Veille de secteurs : secteurs dessinés sur la carte, analysés avec les couches actives ; alerte quand une couche change ──
    Un secteur est un polygone (anneau [lat, lng]) avec le dernier résultat d'analyse. À chaque import ou changement d'activation d'une couche,
