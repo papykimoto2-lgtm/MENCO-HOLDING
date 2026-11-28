@@ -89,3 +89,32 @@ une erreur 401/403 persistante dans la console de l'ERP.
 - **Secrets dans `pi_params`** (clé FNE, jeton Twilio, clé EmailJS) : lisibles tant que `pi_params` reste ouverte ; la ligne
   `portail` est la seule à laisser en lecture publique. À sortir de `pi_params` (coffre de secrets Edge Functions).
 - **Autres applications** (`agro_state`, hub Menko) : fermeture séparée.
+
+## Mise à jour du 28/11/2026 — état mesuré et simulation sur la production (rien n'a été appliqué)
+
+Script `rls_03_fermeture.sql` rejoué **en simulation dans une transaction annulée** sur MENCO HOLDING (aucune écriture conservée).
+
+| Mesure | Résultat |
+|---|---|
+| Tables avec une politique ouverte | **177** (dont `agro_state`, hors périmètre) — 167 le 31/10 : les tables créées depuis (dont `pi_smq_*`) portent aussi une règle ouverte |
+| Vague A (internes, le portail n'y touche pas) | **130** tables |
+| Vague B (exposées au portail, politiques `portail_*` conservées) | **34** tables |
+| Vague C (sensibles, une par une) | **12** tables |
+| Tables sans politique `personnel_tout` (fermeture refusée par le script) | **0** : le personnel ne perd l'accès à aucune table |
+| Tables sans RLS activée | **0** |
+| Vues publiques encore en `security_invoker` | **4** (`pi_parcelles_public`, `pi_operations_public`, `pi_biens_louer_public`, `pi_appel_financiers_public`) : à repasser en droits du propriétaire **avant la vague B** |
+| `IMMO_SYNC_ANON_FALLBACK` | `false` depuis le 02/11 (préalable 5 fait) |
+
+**Lecture du code, vague A** : le portail en ligne (`portail-unique.html`) ne lit **aucune** table de la vague A (la seule occurrence de `pi_employes` est un commentaire interdisant sa lecture). Les fonctions Vercel `api/*` n'appellent aucune table `pi_*`. Les fonctions serveur (Edge Functions, `SECURITY DEFINER`) ne sont pas concernées par RLS.
+
+**Anciennes copies publiées** : `5portail-unique.html` et `portail-uniqueXX.html` sont servis par Vercel et lisent encore des tables ouvertes (`pi_lots`, `pi_programmes`, `pi_users`, `pi_employes`…). Elles cesseraient de fonctionner après fermeture : à **supprimer du dépôt** (elles ne sont pas liées depuis le site).
+
+### Ce qu'il reste avant la vague A (décisions et gestes humains)
+
+1. ☐ **Sauvegarde fraîche** confirmée (Supabase › Database › Backups) et export JSON de l'ERP.
+2. ☐ **Fenêtre de 20 minutes** avec une personne connectée à l'ERP pour la **recette** (je ne peux pas me connecter à l'ERP : sans elle, une panne passerait inaperçue).
+3. ☐ Utilisateurs prévenus : le jeton du personnel dure 8 h ; après expiration, les envois sont différés (conservés en local) jusqu'à la reconnexion.
+4. ☐ Créer `rls_fermeture` (exécuter `rls_03_fermeture.sql`), puis `fermer(vague('A'), 'A', false)`.
+5. ☐ Recette (section 5), puis **retour arrière immédiat** si un critère d'arrêt est atteint : `select rls_fermeture.restaurer('A');`.
+
+Le retour arrière est complet et instantané (chaque politique retirée est sauvegardée puis recréée à l'identique). Aucune donnée n'est modifiée par la fermeture.
