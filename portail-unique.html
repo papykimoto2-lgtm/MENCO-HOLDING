@@ -2542,7 +2542,7 @@
       +'<button onclick="sSub(this,\'ech\')">Échéancier</button>'
       +'<button onclick="sSub(this,\'ver\')">Versements</button>'
       +'<button onclick="sSub(this,\'tra\')">Travaux</button>'
-      +((c.lot_id||(c.lot_ids&&c.lot_ids.length))?'<button onclick="sSub(this,\'plan\');planOuvrir()">🗺️ Plan 3D</button>':'')
+      +((c.lot_id||(c.lot_ids&&c.lot_ids.length))?'<button onclick="sSub(this,\'plan\');planOuvrir()">🗺️ Plan 3D</button><button onclick="sSub(this,\'ens\');ensembleOuvrir()">🧭 Plan d\'ensemble</button>':'')
       +'<button onclick="sSub(this,\'rec\')">🔑 Réception</button>'
       +(S.suivi?'<button onclick="sSub(this,\'tit\')">📜 Suivi du titre</button>':'')
       +'<button onclick="sSub(this,\'doc\')">Documents</button>'
@@ -2555,7 +2555,7 @@
     html+='<div class="sub" id="s-ech"><div class="card"><strong>📅 Échéancier</strong><div style="overflow-x:auto;"><table><thead><tr><th>N°</th><th>Échéance</th><th>Montant</th><th>Statut</th></tr></thead><tbody>'+echeancier()+'</tbody></table></div><div style="font-size:.72rem; color:#4b6a8b; margin-top:8px;">Mensualité = (Prix − Apport) ÷ Durée. Frais exclus.</div></div></div>';
     html+='<div class="sub" id="s-ver"><div class="card"><strong>💳 Historique des versements</strong><div style="overflow-x:auto;"><table><thead><tr><th>Date</th><th>Type</th><th>Concerne</th><th>Montant</th><th>Mode</th></tr></thead><tbody>'+tableVers(vs)+'</tbody></table></div></div></div>';
     html+='<div class="sub" id="s-tra">'+blocTravaux()+'</div>';
-    html+='<div class="sub" id="s-plan"></div>';
+    html+='<div class="sub" id="s-plan"></div><div class="sub" id="s-ens"></div>';
     html+='<div class="sub" id="s-rec">'+blocReception()+'</div>';
     if(S.suivi) html+='<div class="sub" id="s-tit">'+blocSuiviTitre()+blocPiecesTitre()+blocDeboursTitre()+'</div>';
     html+='<div class="sub" id="s-doc">'+sPrixModifs()+sAttSoldeSuivi()+'<div class="card"><strong>📁 Mes documents</strong><div style="display:flex; flex-direction:column; gap:12px; margin-top:12px; max-width:340px;"><button class="highlight-btn" style="background:#0077b6;" onclick="docEcheancier()">📅 Échéancier personnalisé</button><button class="highlight-btn" style="background:#0077b6;" onclick="docAttestation()">📑 Attestation de versements</button>'+sAttSoldeBtn()+'</div></div></div>';
@@ -2640,6 +2640,54 @@
       box.innerHTML='<div class="card"><strong>🗺️ Plan 3D</strong><p style="font-size:.85rem;color:#4b6a8b;margin:8px 0;">'+(e&&e.message==='session'?'Session expirée : reconnectez-vous.':'Le plan n\'a pas pu être chargé pour le moment.')+'</p><button class="highlight-btn" onclick="planOuvrir()">Réessayer</button></div>';
     }
   }
+  /* Plan d'ensemble (plan directeur) du programme : seulement ce que la direction a PUBLIÉ (copie figée), pour les programmes de mes lots.
+     Fonctions serveur fc_vue_plan_ensemble (liste) et fc_vue_plan_ensemble_image (une image, re-contrôlée contre mes programmes).
+     Le statut juridique et sa mention sont toujours affichés ; les phases sont toujours « prévisionnelles, sans engagement ». */
+  var ENS_MENTIONS={
+    projet:"Projet d'aménagement de MENKO. Document indicatif, non approuvé par l'administration, susceptible d'évoluer. Il ne constitue ni un engagement contractuel ni une garantie de réalisation.",
+    depose:"Plan déposé auprès de l'urbanisme, en cours d'instruction : il peut être modifié ou refusé. Document indicatif, sans valeur contractuelle.",
+    approuve:"Plan approuvé par l'acte indiqué ci-dessous. Seul l'acte officiel fait foi."
+  };
+  var ENS_STATUTS={ projet:'Projet MENKO — indicatif, non approuvé', depose:"Déposé à l'urbanisme — en instruction", approuve:'Approuvé par arrêté' };
+  function ensBloc(pl){
+    var st=ENS_MENTIONS[pl.statut_plan]?pl.statut_plan:'projet', ph=Array.isArray(pl.phases)?pl.phases:[];
+    var h='<div class="card" data-plan="'+esc(pl.id)+'"><strong>🧭 '+esc(pl.titre||'')+'</strong> <span style="font-size:.78rem;color:#4b6a8b;">v'+esc(pl.version||'')+' · '+esc(pl.date_plan||'')+(pl.programme?' · '+esc(pl.programme):'')+'</span>'
+      +'<div style="margin:10px 0;padding:10px 12px;border-radius:8px;font-size:.82rem;background:'+(st==='approuve'?'#ecfdf5':'#fff7ed')+';border:1px solid '+(st==='approuve'?'#a7f3d0':'#fed7aa')+';"><strong>'+esc(ENS_STATUTS[st])+'</strong><br>'+esc(ENS_MENTIONS[st])+(st==='approuve'&&pl.reference_acte?'<br>Acte : '+esc(pl.reference_acte):'')+'</div>';
+    if(pl.a_image) h+='<div class="ens-img" style="margin:8px 0;"><button class="highlight-btn" style="width:auto;" onclick="ensImage(\''+esc(pl.id)+'\',this)">🖼️ Voir le plan</button></div>';
+    if(ph.length){
+      h+='<div style="margin-top:12px;"><strong style="font-size:.88rem;">Phases prévisionnelles</strong><div style="font-size:.74rem;color:#4b6a8b;margin:2px 0 6px;">Calendrier indicatif, sans engagement de date.</div>'
+        +'<ol style="margin:0 0 0 18px;padding:0;font-size:.84rem;line-height:1.6;">'+ph.map(function(x){ return '<li><strong>'+esc(x.nom||'')+'</strong>'+(x.periode?' — '+esc(x.periode):'')+(x.description?'<br><span style="font-size:.78rem;color:#4b6a8b;">'+esc(x.description)+'</span>':'')+'</li>'; }).join('')+'</ol></div>';
+    }
+    return h+'</div>';
+  }
+  async function ensembleOuvrir(){
+    var box=document.getElementById('s-ens'); if(!box||box.getAttribute('data-ok')==='1'||!S.client) return;
+    box.setAttribute('data-ok','1');
+    box.innerHTML='<div class="loader"><span class="spinner dark"></span> Chargement du plan d\'ensemble…</div>';
+    try{
+      var r=await fetch(SB_URL+'/rest/v1/rpc/fc_vue_plan_ensemble',{ method:'POST', headers:_authHdr(true), body:'{}' });
+      if(r.status===401||r.status===403) throw new Error('session');
+      if(!r.ok) throw new Error('http');
+      var v=await r.json(), L=(v&&Array.isArray(v.plans))?v.plans:[];
+      box.innerHTML=L.length?L.map(ensBloc).join(''):'<div class="card"><strong>🧭 Plan d\'ensemble</strong><p style="font-size:.85rem;color:#4b6a8b;margin:8px 0;">Aucun plan d\'ensemble n\'est publié pour votre programme pour le moment.</p></div>';
+    }catch(e){
+      box.setAttribute('data-ok','0');
+      box.innerHTML='<div class="card"><strong>🧭 Plan d\'ensemble</strong><p style="font-size:.85rem;color:#4b6a8b;margin:8px 0;">'+(e&&e.message==='session'?'Session expirée : reconnectez-vous.':'Le plan d\'ensemble n\'a pas pu être chargé pour le moment.')+'</p><button class="highlight-btn" style="width:auto;" onclick="ensembleOuvrir()">Réessayer</button></div>';
+    }
+  }
+  async function ensImage(id,btn){
+    var zone=btn&&btn.parentNode; if(!zone) return; btn.disabled=true; btn.textContent='Chargement…';
+    try{
+      var r=await fetch(SB_URL+'/rest/v1/rpc/fc_vue_plan_ensemble_image',{ method:'POST', headers:_authHdr(true), body:JSON.stringify({ p_plan_id:id }) });
+      if(!r.ok) throw new Error('http');
+      var v=await r.json(), src=v&&v.image;
+      /* Seules les images raster sont affichées : jamais de SVG, de HTML ni de script. */
+      if(typeof src!=='string'||!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/.test(src)) throw new Error('image');
+      var img=document.createElement('img'); img.alt='Plan d\'ensemble du programme'; img.src=src; img.style.cssText='max-width:100%;border-radius:8px;border:1px solid #d6e2f0;cursor:zoom-in;'; img.onclick=function(){ img.style.maxWidth=img.style.maxWidth==='none'?'100%':'none'; };
+      zone.innerHTML=''; zone.appendChild(img);
+    }catch(e){ btn.disabled=false; btn.textContent='🖼️ Voir le plan'; alert('Le plan n\'a pas pu être chargé pour le moment.'); }
+  }
+  window.ensembleOuvrir=ensembleOuvrir; window.ensImage=ensImage;
   function kpiBox(l,v,st){ return '<div class="kpi"><div class="l">'+l+'</div><div class="v" style="'+(st||'')+'">'+v+'</div></div>'; }
   function sSub(btn,key){
     document.querySelectorAll('#sous-dash .subnav button').forEach(function(b){ b.classList.remove('on'); });
