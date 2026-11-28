@@ -75,6 +75,25 @@ Il recalcule aussi le croisement avec **cette couche** de chaque audit qui a un 
 - Appariement des zones par nom normalisé et par emprise : deux zones renommées apparaissent comme une retirée et une ajoutée.
 - L'historique n'est pas rétroactif : il commence au premier import fait après cette fonction.
 
+## 2 quater. Veille de secteurs
+
+Écran : Foncier › Territoire › **🔭 Secteurs surveillés** (au-dessus des couches). Table cloud : `pi_secteurs_veille` (`supabase/foncier_secteurs_veille.sql`).
+
+Un **secteur** est un polygone que MENKO surveille (Ahoué, Brofodoumé, Aghien-Télégraphe, Bingerville–Adjin…).
+
+| Élément | Détail |
+|---|---|
+| Création | **✏ Dessiner un secteur** (clic sur les sommets, 3 au moins, **✔ Terminer**, nom de 3 caractères au moins, Échap pour annuler) ou **📥 Importer** un GeoJSON, KML ou KMZ (un secteur par polygone, 50 au plus, refus hors de la Côte d'Ivoire) |
+| Analyse | surface ; **zones des couches actives** qui recouvrent le secteur (part du secteur, catégorie) ; **cumul** inconstructible / sous condition (plafonné à 100 % : des zones de couches différentes peuvent se superposer) ; **parcelles** dont le centre est dans le secteur, dont celles en alerte |
+| Veille | à **chaque import** et à **chaque activation ou désactivation** d'une couche, les secteurs actifs sont ré-analysés et comparés à l'analyse précédente |
+| Alerte | zones **nouvelles**, **disparues**, **modifiées** (écart d'au moins 5 points), **version de couche** changée ou couche ajoutée/retirée du contrôle, variation des **parcelles en alerte**. Le secteur passe « ⚠ à examiner », avec le motif et la date ; **Marquer comme examiné** |
+| Carte | secteurs en pointillé violet (rouge si à examiner) ; clic = résumé et détail ; bouton **🔭 Secteurs** pour les masquer |
+| Suspension | ▶ / ⏸ : un secteur suspendu n'est plus analysé |
+| Suppression | administrateur, motif de 10 caractères |
+| Rapport | la section « Secteurs surveillés » figure dans **📄 Rapport** |
+
+**Limites** : l'analyse porte sur les couches **chargées et actives** (sans couche, elle est vide et ne vaut pas conformité). La part des zones est estimée par échantillonnage. Aucune notification hors de l'écran : le badge « à examiner » et la ligne en rouge. Le suivi démarre à la création du secteur (état de départ) : il ne remonte pas dans le passé.
+
 ## 3. Brique 2 — contrôle territorial de l'audit pré-acquisition
 
 Dans l'audit : bouton **Lancer le contrôle territorial**. La parcelle liée à l'audit est croisée avec toutes les couches actives.
