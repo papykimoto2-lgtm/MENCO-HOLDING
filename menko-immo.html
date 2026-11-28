@@ -51416,6 +51416,22 @@ function _pfCollecter() {
   return r;
 }
 
+/* Risque territorial du portefeuille pour le rapport à la direction : même contrôle que l'audit (cache du badge), indicatif.
+   Il alerte, il n'autorise rien ; « aucun croisement » ne vaut pas conformité. */
+function pfTerritoireCollecter() {
+  var t = { couches: 0, avecContour: 0, analysees: 0, critique: [], majeur: [], info: 0, aucun: 0, sansContour: 0, secteurs: 0, secteursAExaminer: [] };
+  try {
+    t.couches = fonTerritoireCouchesActives().length;
+    _sigParcellesActives().forEach(function (p) {
+      var q = _sigParcellePath(p); if (!q || q.length < 3) { t.sansContour++; return; } t.avecContour++; if (!t.couches) return;
+      var r = fonTerritoireBadgeCalculer(p); t.analysees++;
+      if (r.niveau === 'critique') t.critique.push({ p: p, r: r }); else if (r.niveau === 'majeur') t.majeur.push({ p: p, r: r }); else if (r.niveau === 'info') t.info++; else t.aucun++;
+    });
+    var sc = (DATA.secteurs_veille || []).filter(function (x) { return x.actif !== false; }); t.secteurs = sc.length; t.secteursAExaminer = sc.filter(function (x) { return x.non_lu; });
+  } catch (e) { console.warn('[pf territoire]', e); }
+  return t;
+}
+function _pfTerritoireLigne(x) { return _pfLabel(x.p) + (x.r.zone ? ' (' + x.r.zone + ', ' + x.r.pct + ' %)' : ''); }
 function _pfActions(r) {
   var A = [];
   var noms = function(list, n){
@@ -51427,6 +51443,23 @@ function _pfActions(r) {
   if (r.enLitige.length) A.push({ p:100, titre:'Traiter les litiges fonciers',
     detail:r.enLitige.length + ' parcelle(s) en litige représentant ' + fmtF(val(r.enLitige)) + ' F d\'actif : ' + noms(r.enLitige),
     action:'Faire le point avec le conseil juridique sur chaque dossier. Une parcelle en litige n\'est ni cessible ni finançable : elle immobilise du capital sans rendement.' });
+
+  var T = r.territoire;
+  if (T && T.critique.length) A.push({ p:96, titre:'Lever les croisements territoriaux critiques',
+    detail:T.critique.length + ' parcelle(s) croisent une zone inconstructible (1 % de la parcelle ou plus) : ' + T.critique.slice(0,4).map(_pfTerritoireLigne).join(', ') + (T.critique.length > 4 ? ' … (+' + (T.critique.length-4) + ')' : ''),
+    action:'Lancer ou relancer l\'audit pré-acquisition et faire confirmer le croisement par le géomètre avant tout nouveau frais, lotissement ou cession. Contrôle indicatif : il alerte, il n\'autorise rien.' });
+
+  if (T && T.secteursAExaminer.length) A.push({ p:82, titre:'Examiner les secteurs surveillés où une couche a changé',
+    detail:T.secteursAExaminer.length + ' secteur(s) sur ' + T.secteurs + ' ont changé depuis la dernière analyse : ' + T.secteursAExaminer.slice(0,4).map(function(x){ return x.nom; }).join(', '),
+    action:'Ouvrir Foncier › Territoire › Secteurs surveillés, lire les changements (zones nouvelles, nouvelle version de couche, parcelles en alerte) puis les marquer comme examinés après décision.' });
+
+  if (T && T.majeur.length) A.push({ p:75, titre:'Examiner les croisements territoriaux majeurs',
+    detail:T.majeur.length + ' parcelle(s) croisent une zone sous condition ou à surveiller : ' + T.majeur.slice(0,4).map(_pfTerritoireLigne).join(', ') + (T.majeur.length > 4 ? ' … (+' + (T.majeur.length-4) + ')' : ''),
+    action:'Consigner le constat dans l\'audit et vérifier la condition applicable (ZAD, SDUGA, hydrologie) avant d\'engager la suite.' });
+
+  if (T && !T.couches && T.avecContour > 0) A.push({ p:50, titre:'Charger les couches territoriales',
+    detail:'Aucune couche territoriale active : le contrôle des ' + T.avecContour + ' parcelle(s) à contour est impossible.',
+    action:'Importer les couches officielles (SDUGA, PUd, ZAD, zones protégées) dans Foncier › Territoire. Sans elles, aucune alerte territoriale ne peut être donnée.' });
 
   if (r.sansTitre.length) A.push({ p:92, titre:'Sécuriser les titres manquants',
     detail:r.sansTitre.length + ' parcelle(s) acquises ou aménagées sans titre ni ACD, pour ' + fmtF(val(r.sansTitre)) + ' F : ' + noms(r.sansTitre),
@@ -51476,7 +51509,7 @@ function _pfActions(r) {
 }
 
 function _pfTexteRapport() {
-  var r = _pfCollecter();
+  var r = _pfCollecter(); r.territoire = pfTerritoireCollecter();
   var A = _pfActions(r);
   var jour = new Date().toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
   var L = [];
@@ -51499,6 +51532,15 @@ function _pfTexteRapport() {
     var d = r.parStatut[st];
     L.push('  · ' + String(st).replace(/_/g,' ') + ' : ' + d.nb + ' parcelle(s) · ' + (d.superficie/10000).toFixed(2) + ' ha · ' + fmtF(d.valeur) + ' F');
   });
+  L.push('');
+  var T = r.territoire;
+  L.push('▸ RISQUE TERRITORIAL (indicatif)');
+  if (T && T.couches) {
+    L.push('  ' + T.couches + ' couche(s) officielle(s) contrôlée(s) · ' + T.analysees + ' parcelle(s) analysée(s)' + (T.sansContour ? ' · ' + T.sansContour + ' sans contour (non contrôlable)' : ''));
+    L.push('  Critique : ' + T.critique.length + ' · Majeur : ' + T.majeur.length + ' · Information : ' + T.info + ' · Aucun croisement : ' + T.aucun);
+  } else L.push('  Aucune couche territoriale active : contrôle impossible. Cela ne vaut pas conformité.');
+  if (T && T.secteurs) L.push('  Secteurs surveillés : ' + T.secteurs + (T.secteursAExaminer.length ? ', dont ' + T.secteursAExaminer.length + ' à examiner' : ', aucun changement à examiner'));
+  L.push('  Le contrôle alerte, il n\'autorise rien ; l\'absence de croisement ne vaut pas conformité.');
   L.push('');
   if (r.cessions.length) {
     L.push('▸ VALORISATION RÉALISÉE');
