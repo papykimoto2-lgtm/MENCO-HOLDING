@@ -117716,6 +117716,36 @@ async function fonSignatureValider() {
   toast('Signature de ' + c.nom + ' enregistrée.', 'success'); _fonSig.index = -1; fonSignatureRendre(); fonRuralRender(); return true;
 }
 
+/* Position GPS contre les couches territoriales actives (local, sans réseau). Alerte seulement : n'autorise jamais. */
+function fonTerritoirePointControle(lat, lng) {
+  var res = { lat: lat, lng: lng, couches: fonTerritoireCouchesActives(), dedans: [], proches: [] };
+  if (!isFinite(lat) || !isFinite(lng) || !res.couches.length) return res;
+  var idx = {}; res.couches.forEach(function (c) { idx[c.id] = c; });
+  var zone = latLngToUtm(lat, lng).zone, u = latLngToUtm(lat, lng, zone), pt = [u.E, u.N], M = 0.0045;
+  (DATA.zones_territoriales || []).forEach(function (z) {
+    var c = idx[z.couche_id]; if (!c) return; var b = z.bbox;
+    if (b && (lat < b[0] - M || lat > b[2] + M || lng < b[1] - M || lng > b[3] + M)) return;
+    var dedans = false, dist = Infinity;
+    (z.anneaux || []).forEach(function (rg) { var m = fonGeoMetres(rg, zone); if (m.length < 3) return; if (fonGeoDansPoly(pt, m)) dedans = true; dist = Math.min(dist, fonGeoDistBord(pt, m)); });
+    var x = { zone_nom: z.nom, couche_nom: c.nom, version: c.version || '', statut: c.statut, categorie: z.categorie || 'info', distance_m: Math.round(dist) };
+    if (dedans) res.dedans.push(x); else if (dist <= 500) res.proches.push(x);
+  });
+  var rang = { interdit: 0, sous_condition: 1, alerte: 2, info: 3 }, tri = function (a, b) { return rang[a.categorie] - rang[b.categorie] || a.distance_m - b.distance_m; };
+  res.dedans.sort(tri); res.proches.sort(tri); return res;
+}
+function fonTerritoirePointHtml(r) {
+  var E = escHtml, h = '<div style="font-size:12px;border:1px solid var(--border,#ddd);border-radius:8px;padding:8px 10px;margin:8px 0;"><b>🌍 Position ' + E(r.lat.toFixed(5)) + ', ' + E(r.lng.toFixed(5)) + '</b>' + (r.acc ? ' <small>± ' + Math.round(r.acc) + ' m</small>' : '');
+  if (!r.couches.length) return h + '<div style="color:var(--dim);">Aucune couche territoriale active : contrôle impossible. Cela ne vaut pas conformité.</div></div>';
+  var ligne = function (x, dans) { return '<div style="color:' + FON_TER_COULEURS[x.categorie] + ';">' + (dans ? '● ' : '○ ') + E(x.zone_nom) + ' — ' + E(FON_TER_CATEGORIES[x.categorie] || x.categorie) + ' <small style="color:var(--dim);">' + E(x.couche_nom) + (x.version ? ' v' + E(x.version) : '') + (dans ? '' : ' · à ' + x.distance_m + ' m') + '</small></div>'; };
+  h += r.dedans.length ? '<div style="margin-top:4px;"><b>Dans ' + r.dedans.length + ' zone(s) :</b></div>' + r.dedans.map(function (x) { return ligne(x, true); }).join('') : '<div style="color:#16a34a;margin-top:4px;">Hors de toute zone des couches chargées.</div>';
+  if (r.proches.length) h += '<div style="margin-top:4px;"><b>À moins de 500 m :</b></div>' + r.proches.slice(0, 5).map(function (x) { return ligne(x, false); }).join('');
+  return h + '<div style="color:var(--dim);margin-top:4px;">⚠ Alerte indicative (' + r.couches.length + ' couche(s) chargée(s)) : absence de croisement ≠ conformité.</div></div>';
+}
+async function fonTerrainOuSuisJe() {
+  var pos; try { pos = await fonGpsPosition(); } catch (e) { toast(e.message, 'error'); return false; }
+  var r = fonTerritoirePointControle(pos.lat, pos.lng); r.acc = pos.acc; FON_RURAL.terrainPoint = r;
+  var el = document.getElementById('fon-terrain-point'); if (el) el.innerHTML = fonTerritoirePointHtml(r); return r;
+}
 function fonTerrainRender() {
   var host = document.getElementById('fon-rural-liste'); if (!host) return;
   var E = escHtml, p = _fonTerrainParcelle(), attente = (typeof _outboxRead === 'function') ? _outboxRead().length : 0, enLigne = navigator.onLine !== false;
@@ -117726,7 +117756,9 @@ function fonTerrainRender() {
     + '<div class="form-group"><label>Parcelle</label><select class="form-control" id="fon-terrain-parcelle" onchange="fonTerrainChoisir(this.value)">' + opts + '</select></div>'
     + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin:10px 0;">'
     + '<button class="btn btn-primary" style="min-height:64px;font-size:15px;" ' + (p ? '' : 'disabled ') + 'onclick="fonTerrainAjouterBorne()">📍 Ma position = nouvelle borne</button>'
-    + '<label class="btn btn-primary" style="min-height:64px;font-size:15px;display:flex;align-items:center;justify-content:center;cursor:pointer;' + (p ? '' : 'opacity:.5;pointer-events:none;') + '">📷 Photo géolocalisée<input type="file" accept="image/*" capture="environment" style="display:none;" onchange="fonTerrainPhoto(this)"></label></div>';
+    + '<label class="btn btn-primary" style="min-height:64px;font-size:15px;display:flex;align-items:center;justify-content:center;cursor:pointer;' + (p ? '' : 'opacity:.5;pointer-events:none;') + '">📷 Photo géolocalisée<input type="file" accept="image/*" capture="environment" style="display:none;" onchange="fonTerrainPhoto(this)"></label><button class="btn btn-secondary" style="min-height:64px;font-size:15px;" onclick="fonTerrainOuSuisJe()">🧭 Où suis-je ? (zones)</button></div>'
+    + '<div id="fon-terrain-point">' + (FON_RURAL.terrainPoint ? fonTerritoirePointHtml(FON_RURAL.terrainPoint) : '') + '</div>'
+    + (p ? '<div style="font-size:12px;margin:4px 0;">🌍 Territoire de la parcelle : ' + fonTerritoireBadgeHtml(p) + '</div>' : '');
   if (p) {
     var bs = p.bornes || [];
     h += '<div class="card-title" style="margin-top:12px;">Bornes (' + bs.length + ')</div><div style="font-size:12px;">' + (bs.length ? bs.slice(-8).map(function (b) { return '<div>' + E(b.nom || '') + ' · E ' + b.x + ' / N ' + b.y + (b.precision_m ? ' · ± ' + b.precision_m + ' m' : '') + (b.source === 'gps' ? ' · GPS' : '') + '</div>'; }).join('') : '<span style="color:var(--dim);">Aucune borne.</span>') + '</div>'

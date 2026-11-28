@@ -207,3 +207,11 @@ Foncier › Territoire : carte sombre en 3D (MapLibre GL 4.7.1), inclinable, ave
 ## 6 bis. Suites prévues (briques 3 à 5)
 
 Carte d'alertes et suivi de secteurs (Ahoué, Brofodoumé, Aghien-Télégraphe, Bingerville–Adjin) ; scénarios d'aménagement et rentabilité ; rapport pour la direction générale.
+
+## 3 sexies. Terrain : « Où suis-je ? » (hors ligne)
+
+Écran **Foncier › Terrain** : bouton **🧭 Où suis-je ? (zones)**. Le GPS du téléphone est croisé avec les couches **actives** déjà chargées dans l'appareil : aucun appel réseau.
+- Affiche les zones qui contiennent la position, et celles à moins de 500 m (avec la distance).
+- Affiche aussi le badge territorial de la parcelle choisie.
+- **Alerte indicative** : n'autorise rien ; absence de croisement ≠ conformité. Sans couche active : « contrôle impossible ».
+- La précision GPS est rappelée ; au-delà, sortir à découvert avant de conclure.
