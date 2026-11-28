@@ -118398,6 +118398,32 @@ var FON_TER_FONDS = {
   plan: { l: 'Plan', t: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], a: '© OpenStreetMap' },
   satellite: { l: 'Satellite', t: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'], a: '© Esri' }
 };
+/* Fond hébergé (tuiles raster XYZ servies par l'entreprise). Réglage propre à l'appareil ; https seulement. */
+function fonTerFondHebergeValide(u) {
+  u = String(u || '').trim(); if (!u || u.length > 300) return '';
+  if (!/\{z\}/.test(u) || !/\{x\}/.test(u) || !/\{y\}/.test(u)) return '';
+  var t; try { t = new URL(u.replace(/\{[zxy]\}/g, '0')); } catch (e) { return ''; }
+  if (t.protocol !== 'https:' || t.username || t.password) return '';
+  return u;
+}
+function fonTerFondHebergeAppliquer() {
+  var u = ''; try { u = fonTerFondHebergeValide(localStorage.getItem('fon_ter_fond_heberge')); } catch (e) {}
+  if (u) FON_TER_FONDS.heberge = { l: 'Hébergé (entreprise)', t: [u], a: '© Fonds de carte de l\'entreprise' }; else delete FON_TER_FONDS.heberge;
+  FON_TER_COURBES_COUL.heberge = FON_TER_COURBES_COUL.plan;
+  if (!u && FON_TER.fond === 'heberge') FON_TER.fond = 'sombre';
+  return u;
+}
+function fonTerritoireFondHeberge() {
+  if (!fcEstAdmin()) { toast('Réservé à un administrateur.', 'error'); return false; }
+  var cur = ''; try { cur = localStorage.getItem('fon_ter_fond_heberge') || ''; } catch (e) {}
+  var v = prompt("URL des tuiles (https, avec {z} {x} {y}). Vide = retirer.\nExemple : https://tuiles.exemple.ci/abidjan/{z}/{x}/{y}.png", cur); if (v === null) return false;
+  v = v.trim(); var ok = v ? fonTerFondHebergeValide(v) : '';
+  if (v && !ok) { toast('URL refusée : https obligatoire, {z} {x} {y} requis, sans identifiants.', 'error', 6000); return false; }
+  try { if (ok) localStorage.setItem('fon_ter_fond_heberge', ok); else localStorage.removeItem('fon_ter_fond_heberge'); } catch (e) { toast('Enregistrement impossible sur cet appareil.', 'error'); return false; }
+  try { logAction('FONCIER_FOND_HEBERGE', ok ? ok : 'retiré'); } catch (e) {}
+  fonTerFondHebergeAppliquer(); if (ok) fonTerritoireFond('heberge'); var b = document.getElementById('fon-ter-barre'); if (b) b.innerHTML = fonTerritoireBarreHtml();
+  toast(ok ? 'Fond hébergé activé sur cet appareil.' : 'Fond hébergé retiré.', 'success'); return true;
+}
 function fonTerMapLibre(ok, ko) {
   if (window.maplibregl && window.maplibregl.Map) { ok(); return; }
   if (!document.getElementById('maplibre-css')) { var c = document.createElement('link'); c.id = 'maplibre-css'; c.rel = 'stylesheet'; c.href = 'https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css'; document.head.appendChild(c); }
@@ -118440,6 +118466,7 @@ function fonTerBbox(gj) {
   return isFinite(b[0]) ? b : null;
 }
 function fonTerStyle() {
+  fonTerFondHebergeAppliquer();
   if (window.__FON_TER_STYLE_HORS_LIGNE) return window.__FON_TER_STYLE_HORS_LIGNE;
   var f = FON_TER_FONDS[FON_TER.fond] || FON_TER_FONDS.sombre;
   return { version: 8, glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
@@ -118464,6 +118491,7 @@ function fonTerritoireCarteCadre() {
     + '<div style="padding:6px 12px;font-size:11px;color:#8aa0c8;border-top:1px solid #1e2a44;">Les couches et les parcelles se dessinent dans votre navigateur ; seuls le fond de carte, le relief et les bâtiments sont demandés à des serveurs publics, qui voient la zone affichée. Hauteurs des zones et des parcelles : <b>symboliques</b> (catégorie ou niveau d\'alerte), pas des hauteurs réelles. Bâtiments : OpenStreetMap, tels que cartographiés.</div></div>';
 }
 function fonTerritoireBarreHtml() {
+  fonTerFondHebergeAppliquer();
   var B = 'background:#16233b;color:#dbe7ff;border:1px solid #2a3b5e;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px;', ON = 'background:#1d4ed8;color:#fff;border:1px solid #3b82f6;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px;';
   var b = function (lib, js, on, titre) { return '<button type="button" style="' + (on ? ON : B) + '" title="' + escHtml(titre || '') + '" onclick="' + js + '">' + lib + '</button>'; };
   return b('🧭 Vue d\'ensemble', 'fonTerritoireEnsemble()', false, 'Cadrer les couches et les parcelles')
@@ -118474,7 +118502,7 @@ function fonTerritoireBarreHtml() {
     + b('〰 Courbes', 'fonTerritoireOption(\'courbes\')', FON_TER.courbes, 'Courbes de niveau (calculées à partir du relief AWS, équidistance selon le zoom)')
     + b('🔭 Secteurs', 'fonTerritoireOption(\'secteurs\')', FON_TER.secteurs, 'Afficher les secteurs surveillés')
     + b('▦ Parcelles', 'fonTerritoireOption(\'parcelles\')', FON_TER.parcelles, 'Afficher les parcelles')
-    + '<select style="' + B + '" onchange="fonTerritoireFond(this.value)" title="Fond de carte">' + Object.keys(FON_TER_FONDS).map(function (k) { return '<option value="' + k + '"' + (FON_TER.fond === k ? ' selected' : '') + '>' + FON_TER_FONDS[k].l + '</option>'; }).join('') + '</select>'
+    + '<select style="' + B + '" onchange="fonTerritoireFond(this.value)" title="Fond de carte">' + Object.keys(FON_TER_FONDS).map(function (k) { return '<option value="' + k + '"' + (FON_TER.fond === k ? ' selected' : '') + '>' + FON_TER_FONDS[k].l + '</option>'; }).join('') + '</select>' + (fcEstAdmin() ? '<button style="' + B + '" onclick="fonTerritoireFondHeberge()" title="Fond de carte hébergé par l\'entreprise">⚙</button>' : '')
     + '<select style="' + B + 'max-width:150px;" onchange="fonTerritoireVoirParcelle(this.value)" title="Parcelle à contrôler"><option value="">Parcelle…</option>' + _sigParcellesActives().filter(function (p) { var q = _sigParcellePath(p); return q && q.length >= 3; }).map(function (p) { return '<option value="' + escHtml(p.id) + '"' + (FON_TER.focus === p.id ? ' selected' : '') + '>' + escHtml(p.ref || p.id) + '</option>'; }).join('') + '</select>'
     + (FON_TER.mesure ? b('📏 Distance', 'fonTerritoireMesureMode(\'distance\')', FON_TER.mesure.mode === 'distance', 'Mesurer une distance') + b('📐 Surface', 'fonTerritoireMesureMode(\'surface\')', FON_TER.mesure.mode === 'surface', 'Mesurer une surface') + b('↩ Point', 'fonTerritoireMesureRetirer()', false, 'Retirer le dernier point') + b('✖ Fin', 'fonTerritoireMesureFin()', false, 'Terminer la mesure') : b('📏 Mesurer', 'fonTerritoireMesureDemarrer(\'distance\')', false, 'Mesurer une distance ou une surface'))
     + b('📸 Exporter', 'fonTerritoireExporterCarte()', false, 'Exporter la carte en PNG avec légende, échelle, couches et mentions')
