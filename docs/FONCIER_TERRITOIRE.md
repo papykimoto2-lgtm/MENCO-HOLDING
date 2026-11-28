@@ -97,13 +97,24 @@ Foncier › Territoire : carte sombre en 3D (MapLibre GL 4.7.1), inclinable, ave
 | Barre d'outils | vue d'ensemble, 3D / 2D, relief, bâtiments, volumes, parcelles, fond (sombre, plan, satellite), choix d'une parcelle |
 | Depuis l'audit | bouton « 🗺 Voir sur la carte » : ouvre la carte centrée sur la parcelle de l'audit |
 
+**Courbes de niveau** (bouton « 〰 Courbes ») : tracées dans le navigateur, dans un web worker, à partir des tuiles de relief AWS, par la bibliothèque `maplibre-contour` 0.1.0 (chargée depuis jsDelivr **à la première activation seulement**). Équidistance selon le zoom [courante, maîtresse] : zoom 11 : 100 / 500 m ; 12 : 50 / 200 ; 13 : 20 / 100 ; 14 : 10 / 50 ; 15 : 5 / 25 ; 16 : 2 / 10 ; 17 : 1 / 5. Les cotes (altitude des courbes maîtresses) s'affichent dès le zoom 13. **Altitudes issues d'un modèle mondial, précision de l'ordre de la dizaine de mètres : indicatives, pas un levé de géomètre.** Pour une parcelle, seul un levé topographique fait foi.
+
+**Plein écran** : « ⛶ Plein écran » (plein écran du navigateur ; cadre fixe sur iPhone et iPad). Échap pour quitter. « ☰ Panneau » masque ou affiche le panneau des couches pour agrandir la carte.
+
+**Performance**
+- Contours des zones renvoyés à la carte **seulement s'ils changent** (import, activation, suppression) ; la carte n'est plus recalculée à chaque rafraîchissement de l'écran.
+- Calcul des zones actives fait une fois (au lieu d'une fois par zone) : 1 500 zones de 400 points construites en moins de 0,4 s.
+- Relief, bâtiments et courbes ne sont **demandés au réseau que s'ils sont activés** ; bâtiments à partir du zoom 14.
+- **Appareil modeste** (4 cœurs ou moins, ou 4 Go ou moins) : relief et bâtiments désactivés au départ, sans anticrénelage, sans fondu, bâtiments sans transparence (passe de rendu en moins). Bouton « ⚡ Léger » : coupe relief, bâtiments, volumes, courbes, remet la carte à plat et ramène la résolution à 1 (connexion lente ou batterie).
+- Redimensionnement automatique de la carte (plein écran, panneau, rotation d'écran).
+
 **Volumes** : les hauteurs des zones et des parcelles sont **symboliques** (lecture de la catégorie ou du niveau d'alerte). Ce ne sont pas des hauteurs réelles.
 
 **Bâtiments et relief** : bâtiments d'OpenStreetMap (service OpenFreeMap) et relief AWS Terrain Tiles, tels qu'ils existent. Ils montrent le terrain actuel, **pas un plan directeur ni des constructions futures**.
 
 **Confidentialité** : les couches et les parcelles se dessinent dans le navigateur, elles ne quittent pas l'ERP. En revanche, le fond de carte, le relief et les bâtiments sont demandés à des serveurs publics (Esri / OpenStreetMap, AWS, OpenFreeMap) : **ces serveurs voient la zone affichée** (adresse IP et dalles demandées). Pour un secteur sensible, utiliser le fond « Sombre » à un zoom large (Esri Dark Gray, sans clé ; zoom natif jusqu'à 16, au-delà l'image est agrandie), ou un serveur de tuiles interne.
 
-**Test du rendu** : `npm i --no-save maplibre-gl@4.7.1` puis `node tests-caisse/foncier-territoire-carte.test.js` (rendu WebGL réel hors ligne ; ignoré si le paquet est absent). Capture : variable `CARTE_CAPTURE=chemin.png`.
+**Test du rendu** : `npm i --no-save maplibre-gl@4.7.1 maplibre-contour@0.1.0` puis `node tests-caisse/foncier-territoire-carte.test.js` (rendu WebGL réel hors ligne ; ignoré si le paquet est absent). Capture : variable `CARTE_CAPTURE=chemin.png`.
 
 **Prérequis** : navigateur avec WebGL. Sinon, la carte affiche un message et les couches restent consultables dans la liste. Hors ligne : même comportement.
 

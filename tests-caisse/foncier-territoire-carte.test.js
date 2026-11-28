@@ -100,3 +100,76 @@ test('capture : carte 3D sombre avec volumes (inspection visuelle)', { skip: !di
   const px = await app.page.evaluate(() => { var c = document.querySelector('#fon-ter-map canvas'); return [c.width, c.height]; });
   assert.ok(px[0] > 300 && px[1] > 300, 'canvas de la carte trop petit : ' + px);
 });
+
+
+/* ── Courbes de niveau, plein écran, performances ── */
+const zlib = require('zlib');
+const MLCONTOUR = process.env.MLCONTOUR_DIST || path.join(__dirname, '..', 'node_modules', 'maplibre-contour', 'dist');
+const dispoContour = dispo && fs.existsSync(path.join(MLCONTOUR, 'index.min.js'));
+function crc32(buf) { let c, crc = 0xffffffff; for (let n = 0; n < buf.length; n++) { c = (crc ^ buf[n]) & 0xff; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; crc = (crc >>> 8) ^ c; } return (crc ^ 0xffffffff) >>> 0; }
+function chunk(type, data) { const len = Buffer.alloc(4); len.writeUInt32BE(data.length); const td = Buffer.concat([Buffer.from(type), data]); const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(td)); return Buffer.concat([len, td, crc]); }
+/* Tuile de relief Terrarium synthétique : pente de 0 à 100 m d'ouest en est. */
+function tuileRelief() {
+  const W = 256, raw = Buffer.alloc((W * 4 + 1) * W);
+  for (let y = 0; y < W; y++) { raw[y * (W * 4 + 1)] = 0; for (let x = 0; x < W; x++) { const v = 32768 + (x / (W - 1)) * 100, o = y * (W * 4 + 1) + 1 + x * 4; raw[o] = Math.floor(v / 256); raw[o + 1] = Math.floor(v % 256); raw[o + 2] = Math.floor((v - Math.floor(v)) * 256); raw[o + 3] = 255; } }
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(W, 4); ihdr[8] = 8; ihdr[9] = 6;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+test('courbes de niveau : bibliothèque chargée à la demande, source et couches ajoutées, tracés produits à partir du relief', { skip: !dispoContour && 'maplibre-contour absent (npm i --no-save maplibre-contour@0.1.0)' }, async () => {
+  const app = await ouvrirApp(); await preparer(app.page);
+  const png = tuileRelief(); let nbRelief = 0;
+  await app.page.context().route('**/elevation-tiles-prod/**', (route) => { nbRelief++; route.fulfill({ status: 200, contentType: 'image/png', body: png }); });
+  await app.page.evaluate(() => { FON_TER.vue = null; FON_TER.courbes = false; fonTerritoireRender(); }); await attendre(app.page);
+  const avant = await app.page.evaluate(() => ({ source: !!FON_TER.map.getSource('courbes'), lib: !!window.mlcontour, bouton: /Courbes/.test(document.getElementById('fon-ter-barre').innerHTML) }));
+  assert.deepEqual(avant, { source: false, lib: false, bouton: true });   /* rien chargé tant que les courbes ne sont pas demandées */
+  await app.page.addScriptTag({ path: path.join(MLCONTOUR, 'index.min.js') });
+  await app.page.evaluate(() => { FON_TER.map.jumpTo({ center: [-4.0, 5.35], zoom: 13, pitch: 0 }); fonTerritoireOption('courbes'); });
+  await app.page.waitForFunction(() => FON_TER.map.getSource('courbes') && FON_TER.map.getLayer('courbes-ligne'), null, { timeout: 15000 });
+  await app.page.waitForFunction(() => FON_TER.map.querySourceFeatures('courbes', { sourceLayer: 'contours' }).length > 0, null, { timeout: 20000 });
+  const r = await app.page.evaluate(() => {
+    var m = FON_TER.map, f = m.querySourceFeatures('courbes', { sourceLayer: 'contours' }), o = {};
+    o.nb = f.length; o.cle = f.every(function (x) { return typeof x.properties.ele === 'number' && x.properties.level !== undefined; });
+    o.altitudes = Array.from(new Set(f.map(function (x) { return x.properties.ele; }))).sort(function (a, b) { return a - b; }).slice(0, 8);
+    o.visible = m.getLayoutProperty('courbes-ligne', 'visibility'); o.avantZones = m.getStyle().layers.map(function (l) { return l.id; }).indexOf('courbes-ligne') < m.getStyle().layers.map(function (l) { return l.id; }).indexOf('zones-fill');
+    fonTerritoireOption('courbes'); o.masque = m.getLayoutProperty('courbes-ligne', 'visibility'); return o;
+  });
+  assert.ok(r.nb > 0, 'aucun tracé'); assert.equal(r.cle, true); assert.ok(r.altitudes.length >= 2, 'altitudes : ' + r.altitudes); assert.equal(r.visible, 'visible'); assert.equal(r.avantZones, true); assert.equal(r.masque, 'none'); assert.ok(nbRelief > 0);
+});
+
+test('plein écran, panneau et mode léger', { skip: !dispo && 'maplibre-gl absent' }, async () => {
+  const app = await ouvrirApp(); await app.page.setViewportSize({ width: 1280, height: 800 }); await preparer(app.page);
+  await app.page.evaluate(() => { FON_TER.vue = null; fonTerritoireRender(); }); await attendre(app.page);
+  const r = await app.page.evaluate(async () => {
+    var o = {}, att = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); }, c = document.getElementById('fon-ter-cadre');
+    o.barre = ['Plein écran', 'Panneau', 'Léger', 'Courbes'].map(function (t) { return document.getElementById('fon-ter-barre').innerHTML.indexOf(t) !== -1; });
+    fonTerritoirePleinEcran(true); await att(400);
+    var rc = c.getBoundingClientRect(), cv = document.querySelector('#fon-ter-map canvas').getBoundingClientRect();
+    o.plein = c.classList.contains('fon-ter-plein') && FON_TER.plein; o.cadre = [Math.round(rc.width) === window.innerWidth, Math.round(rc.height) === window.innerHeight]; o.canvasGrand = cv.height > 500 && cv.width > 600;
+    o.libelle = /Quitter le plein écran/.test(document.getElementById('fon-ter-barre').innerHTML);
+    var l0 = cv.width; fonTerritoirePanneau(); await att(300); var l1 = document.querySelector('#fon-ter-map canvas').getBoundingClientRect().width;
+    o.panneauMasque = document.getElementById('fon-ter-panneau').style.display === 'none' && l1 > l0; fonTerritoirePanneau();
+    fonTerritoirePleinEcran(false); await att(300); o.sorti = !c.classList.contains('fon-ter-plein') && !document.body.classList.contains('fon-ter-plein-body') && FON_TER.plein === false;
+    FON_TER.leger = false; FON_TER.relief = FON_TER.batiments = true; fonTerritoireLeger(); o.leger = FON_TER.leger === true && !FON_TER.relief && !FON_TER.batiments && !FON_TER.volumes && !FON_TER.courbes && !FON_TER.pitch;
+    return o;
+  });
+  assert.deepEqual(r.barre, [true, true, true, true]); assert.equal(r.plein, true); assert.deepEqual(r.cadre, [true, true]); assert.equal(r.canvasGrand, true); assert.equal(r.libelle, true);
+  assert.equal(r.panneauMasque, true); assert.equal(r.sorti, true); assert.equal(r.leger, true);
+});
+
+test('performances : contours des zones renvoyés à la carte seulement s\'ils changent ; calcul des zones actives sans recalcul par zone', { skip: !dispo && 'maplibre-gl absent' }, async () => {
+  const app = await ouvrirApp(); await preparer(app.page);
+  await app.page.evaluate(() => { FON_TER.vue = null; fonTerritoireRender(); }); await attendre(app.page);
+  const r = await app.page.evaluate(async () => {
+    var m = FON_TER.map, o = {}, n = { zones: 0, parc: 0 }, sz = m.getSource('zones'), sp = m.getSource('parcelles'), oz = sz.setData.bind(sz), op = sp.setData.bind(sp);
+    sz.setData = function (d) { n.zones++; return oz(d); }; sp.setData = function (d) { n.parc++; return op(d); };
+    fonTerritoireDonnees(); fonTerritoireDonnees(); fonTerritoireCarteMaj(); o.inchange = [n.zones, n.parc];
+    DATA.zones_territoriales.push({ id: 'zNouv', couche_id: 'cp', nom: 'Nouvelle', categorie: 'interdit', anneaux: [[[5.36, -3.99], [5.36, -3.98], [5.37, -3.98]]], bbox: [5.3, -4.1, 5.5, -3.8] });
+    fonTerritoireDonnees(); o.apresAjout = [n.zones, n.parc, FON_TER.geoZones.features.length];
+    /* 1 500 zones de 400 points : construction des données */
+    var grand = []; for (var i = 0; i < 1500; i++) { var rg = []; for (var k = 0; k < 400; k++) rg.push([5 + i * 1e-4 + Math.cos(k / 64) * 1e-4, -4 + Math.sin(k / 64) * 1e-4]); grand.push({ id: 'g' + i, couche_id: i % 2 ? 'cp' : 'cz', nom: 'G' + i, categorie: 'interdit', anneaux: [rg], bbox: [5, -4, 6, -3] }); }
+    DATA.zones_territoriales = grand; var t0 = performance.now(); var g = fonTerritoireGeoZones(); o.ms = performance.now() - t0; o.nb = g.features.length;
+    return o;
+  });
+  assert.deepEqual(r.inchange, [0, 0]); assert.deepEqual(r.apresAjout.slice(0, 2), [1, 0]); assert.equal(r.apresAjout[2], 4); assert.equal(r.nb, 1500); assert.ok(r.ms < 400, 'construction trop lente : ' + r.ms + ' ms');
+});
