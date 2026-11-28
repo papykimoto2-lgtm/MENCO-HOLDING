@@ -1806,21 +1806,8 @@
         document.getElementById('partlot-dash').innerHTML='<div class="loader"><span class="spinner dark"></span> Reprise de votre session…</div>';
         await chargerPartLot();
       } else if (saved.espace === 'proprio_foncier') {
-        /* Pas de fonction chargerXxx dédiée pour cet espace : la logique de
-           recherche vit dans loginPropFoncier() elle-même — reproduite ici
-           à l'identique (un même propriétaire peut apparaître dans
-           plusieurs opérations, voir commentaire d'origine). */
-        var rows=await sb('pi_af_operations?select=id,data');
-        var ops=unwrap(rows||[]);
-        var mine=[], moi=null;
-        for(var i=0;i<ops.length;i++){
-          var props=ops[i].proprietaires||[];
-          for(var j=0;j<props.length;j++){
-            if(props[j].id===saved.id){ mine.push(ops[i]); if(!moi) moi=props[j]; break; }
-          }
-        }
-        if(!moi) throw new Error('expired');
-        PF.prop=moi; PF.ops=mine;
+        /* Vue serveur fc_vue_proprietaire() avec le jeton ; refusée s'il a expiré. */
+        await chargerPropFoncier();
         document.getElementById('propfonc-login').style.display='none';
         document.getElementById('propfonc-dash').style.display='block';
         rendrePropFoncier();
@@ -6237,6 +6224,7 @@
      gestion, pour qu'un propriétaire ne lise jamais un pourcentage différent
      de celui affiché en interne. */
   function pfVrdAvancement(op){
+    if(typeof op.avancement==='number') return op.avancement;   /* calculé par le serveur (budgets non transmis) */
     var postes = op.postes_vrd || [];
     var bud = 0, i;
     for(i=0;i<postes.length;i++) bud += (parseFloat(postes[i].budget)||0);
@@ -6249,6 +6237,16 @@
     return Math.round(w/bud);
   }
 
+  /* Vue serveur du propriétaire connecté (fc_vue_proprietaire, SECURITY DEFINER) : sans paramètre, identité lue dans le jeton.
+     Échec (jeton expiré, fonction absente, réseau) : on n'ouvre jamais un repli sur la lecture directe des tables. */
+  async function chargerPropFoncier(){
+    var r=await fetch(SB_URL+'/rest/v1/rpc/fc_vue_proprietaire',{ method:'POST', headers:_authHdr(true), body:'{}' });
+    if(r.status===401||r.status===403) throw new Error('expired');
+    if(!r.ok) throw new Error('service');
+    var v=await r.json();
+    if(!v||!v.moi||!v.moi.id||!Array.isArray(v.sites)) throw new Error('auth');
+    PF.prop=v.moi; PF.ops=v.sites; return v;
+  }
   async function loginPropFoncier(){
     var ident=(document.getElementById('pfLogin').value||'').trim();
     var code=(document.getElementById('pfCode').value||'').trim();
@@ -6264,28 +6262,19 @@
          l'opération : un même propriétaire pouvant figurer dans plusieurs
          opérations, c'est le couple qui identifie ses apports. */
       var lg=await portalLogin('proprio_foncier', ident, code);
-      var rows=await sb('pi_af_operations?select=id,data');
-      var ops=unwrap(rows||[]);
-      /* Filtrage local : on ne s'en remet pas à la seule policy serveur pour
-         décider quelles opérations concernent ce propriétaire. */
-      var mine=[], moi=null;
-      for(var i=0;i<ops.length;i++){
-        var props=ops[i].proprietaires||[];
-        for(var j=0;j<props.length;j++){
-          if(props[j].id===lg.prop_id || (lg.id && props[j].id===lg.id)){
-            mine.push(ops[i]); if(!moi) moi=props[j]; break;
-          }
-        }
-      }
+      /* Les données viennent de la fonction serveur fc_vue_proprietaire() : identité lue dans le jeton, aucune autre
+         fiche, aucune empreinte de code, aucun budget. Le portail ne charge plus la table des opérations. */
+      await chargerPropFoncier();
+      var moi=PF.prop;
       if(!moi) throw new Error('auth');
       delete att[bfKey]; localStorage.setItem('pf_bf',JSON.stringify(att));
-      PF.prop=moi; PF.ops=mine;
       _persisterEspacePortail('proprio_foncier', moi.id);
       document.getElementById('propfonc-login').style.display='none';
       document.getElementById('propfonc-dash').style.display='block';
       logConnexion('[PROP-TERRIEN] '+ident, true, 'Portail propriétaire terrien — '+(moi.nom||''));
       rendrePropFoncier();
     }catch(e){
+      if(e && e.message==='service'){ SB_TOKEN=null; try{ sessionStorage.removeItem('pp_token'); }catch(x){} btn.disabled=false; btn.innerHTML='Se connecter'; setErr('pfError','Service momentanément indisponible. Réessayez dans quelques minutes.'); return; }
       att[bfKey]=(att[bfKey]||0)+1; localStorage.setItem('pf_bf',JSON.stringify(att));
       var reste=5-(att[bfKey]||0);
       logConnexion('[PROP-TERRIEN] '+ident, false, 'Code incorrect');
@@ -6315,7 +6304,7 @@
     var lotsProp=0, lotsConnus=false;
     for(i=0;i<ops.length;i++){
       var nb=parseInt(ops[i].nb_lots,10)||0;
-      var cle=(ops[i].cle&&parseFloat(ops[i].cle.prop))||0;
+      var cle=(typeof ops[i].cle_prop==='number'?ops[i].cle_prop:(ops[i].cle&&parseFloat(ops[i].cle.prop)))||0;
       if(nb>0&&cle>0){ lotsProp += Math.floor(nb*cle/100); lotsConnus=true; }
     }
 
@@ -6370,7 +6359,7 @@
         +'</div>';
 
       /* Travaux d'aménagement, poste par poste */
-      var postes=o.postes_vrd||[];
+      var postes=o.postes||o.postes_vrd||[];
       if(postes.length){
         h+='<div style="margin-top:14px;"><div style="font-weight:700;font-size:.82rem;margin-bottom:6px;">🚧 Travaux d\'aménagement — '+av+' %</div>';
         for(var v=0;v<postes.length;v++){
