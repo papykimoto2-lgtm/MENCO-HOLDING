@@ -156456,17 +156456,21 @@ function _propfoncMatches(contactNorm) {
   });
   return out;
 }
+/* Empreinte de session : dérivée des codes d'accès actuels. Régénérer ou retirer un code coupe donc les sessions ouvertes. */
+function _propfoncPreuve(matches) { return matches.map(function (m) { return String(m.prop.code_acces_hash || '').slice(0, 16); }).join('.'); }
 function verifierSessionPropFonc() {
   try {
-    var saved = localStorage.getItem('propfonc_session');
+    var saved = sessionStorage.getItem('propfonc_session') || localStorage.getItem('propfonc_session');
+    localStorage.removeItem('propfonc_session');   /* ancienne version : un simple {contact} suffisait à entrer */
     if (!saved) return false;
     var data = JSON.parse(saved);
-    var matches = _propfoncMatches(data.contact);
-    if (matches.length) {
+    var matches = _propfoncMatches(data.contact).filter(function (m) { return m.prop.code_acces_hash; });
+    /* Session valable 8 h et seulement si elle porte la preuve d'une authentification (contact seul = refusé). */
+    if (matches.length && data.p && data.p === _propfoncPreuve(matches) && data.t && (Date.now() - data.t) < 8 * 3600 * 1000) {
       SESSION_PROPFONC = { contact: data.contact, nom: matches[0].prop.nom || 'Propriétaire' };
       return true;
     }
-    localStorage.removeItem('propfonc_session');
+    sessionStorage.removeItem('propfonc_session');
   } catch(e) {}
   return false;
 }
@@ -156483,6 +156487,11 @@ async function authentifierProprietaireFoncier() {
   var errEl = document.getElementById('pf-login-error');
   errEl.style.display = 'none';
   if (!login || !code) { errEl.textContent = 'Veuillez saisir votre email/téléphone et votre code d\'accès.'; errEl.style.display='block'; return; }
+  if (_portailBruteforceBloque('propfonc', login)) {
+    errEl.textContent = '🔒 Trop de tentatives. Réessayez demain.'; errEl.style.display = 'block';
+    await logConnexion('[PROPRIETAIRE FONCIER] ' + login, false, 'Bloqué brute-force');
+    return;
+  }
   var loginNorm = login.replace(/\s/g,'').toLowerCase();
   var matches = _propfoncMatches(loginNorm);
   var validated = [];
@@ -156495,9 +156504,11 @@ async function authentifierProprietaireFoncier() {
   }
   if (!validated.length) {
     errEl.textContent = 'Identifiants incorrects.'; errEl.style.display = 'block';
+    _portailBruteforceEchec('propfonc', login);
     await logConnexion('[PROPRIETAIRE FONCIER] ' + login, false, 'Code accès incorrect');
     return;
   }
+  _portailBruteforceReset('propfonc', login);
   var nom = validated[0].prop.nom || 'Propriétaire';
   await logConnexion('[PROPRIETAIRE FONCIER] ' + nom, true, 'Portail propriétaire foncier');
   var nowIso = new Date().toISOString();
@@ -156512,7 +156523,7 @@ async function authentifierProprietaireFoncier() {
     if (typeof syncToSupabase === 'function') syncToSupabase('pi_af_operations', opsToSave[opId]);
   }
   SESSION_PROPFONC = { contact: loginNorm, nom: nom };
-  localStorage.setItem('propfonc_session', JSON.stringify({ contact: loginNorm }));
+  sessionStorage.setItem('propfonc_session', JSON.stringify({ contact: loginNorm, p: _propfoncPreuve(_propfoncMatches(loginNorm).filter(function (m) { return m.prop.code_acces_hash; })), t: Date.now() }));
   closeModal('modal-login-propfonc');
   toast('Bienvenue ' + nom + ' 👋', 'success');
   goToPortailPropFonc();
@@ -156520,7 +156531,7 @@ async function authentifierProprietaireFoncier() {
 function deconnecterProprietaireFoncier() {
   if (!confirm('Voulez-vous vous déconnecter de votre espace ?')) return;
   SESSION_PROPFONC = null;
-  localStorage.removeItem('propfonc_session');
+  sessionStorage.removeItem('propfonc_session'); localStorage.removeItem('propfonc_session');
   toast('Déconnecté.', 'info');
   goTo('dashboard');
 }

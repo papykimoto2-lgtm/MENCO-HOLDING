@@ -54,9 +54,24 @@ Une personne, une famille, une chefferie, une société ou l'État = **une seule
 | Base | Table en RLS forcé, aucun accès anonyme, contraintes sur nom et nature | Conforme |
 | Documents signés | Risque de modification par répercussion | Exclus par construction, comptés et signalés |
 
-### Point existant, hors périmètre, à décider
+### Portail propriétaire : lot sécurité (traité)
 
-Le **portail propriétaire** charge toutes les opérations d'acquisition côté navigateur et vérifie le code localement ; les empreintes de codes sont donc lisibles par ce canal. Ce n'est pas introduit par L17 et n'a pas été modifié.
+| Constat | Traitement |
+|---|---|
+| Le portail externe (`portail-unique.html`) lisait **toute** la table des opérations puis filtrait dans le navigateur : propriétaires voisins, empreintes de codes, financiers, prix, budgets | Fonction serveur **`fc_vue_proprietaire()`** (`supabase/foncier_portail_proprietaire.sql`) : identité lue dans le jeton (claim `prop_id`), aucun paramètre, ne renvoie que l'écran du propriétaire (budgets exclus : l'avancement pondéré est calculé côté serveur). Le portail n'a plus aucun repli sur la table : panne = « service indisponible » |
+| La politique `portail_operations` donnait la ligne entière au propriétaire concerné | Retirée pour les propriétaires (accès financier et cession conservés) |
+| ERP, ancien portail propriétaire : session = `{contact}` dans le `localStorage` : **n'importe qui pouvait s'y introduire** en posant cette valeur | Session dans `sessionStorage`, **preuve** dérivée des codes actuels (régénérer un code coupe la session), durée 8 h, ancienne session effacée |
+| Même portail : aucune limite d'essais | 5 échecs par identifiant et par jour, comme le portail acquéreur |
+| Panne du service comptée comme un échec de connexion | Non comptée |
+| Défaut trouvé par les tests : les postes de travaux n'auraient pas été affichés avec la nouvelle vue | Corrigé |
+
+**Mise en service** : exécuter `supabase/foncier_portail_proprietaire.sql` (idempotent, additif ; retour arrière en fin de fichier), puis déployer le portail. Ordre sans risque : la fonction d'abord.
+
+**Reste ouvert (hors de ce lot)**
+- La base MENCO porte encore **162 politiques ouvertes `*_open_rollback`** (dont `pi_af_operations`) : la clé publique peut lire et écrire ces tables. Le plan de fermeture par vagues est préparé et non appliqué (`supabase/RLS_RECETTE_FERMETURE.md`). Ce lot rend le portail propriétaire indépendant de cette fermeture, il ne la remplace pas.
+- Limite d'essais du serveur de connexion (`portal-login`) : en mémoire d'instance, remise à zéro au recyclage. Une table Postgres serait plus robuste.
+- Code à 6 chiffres hachés en SHA-256 simple : à renforcer (hachage lent) avec un plan de migration des codes existants.
+- Un propriétaire présent dans plusieurs opérations sous des fiches distinctes ne voit que celles de la fiche qui a ouvert la session.
 
 ## 6. Note de conception — portail « par personne » (non réalisé)
 
