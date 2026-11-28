@@ -241,3 +241,17 @@ Dans la carte du Territoire, bouton **🪨 Sols**. Deux sources, indicatives :
 - **Où suis-je ?** (Terrain) affiche aussi les sondages à moins de **300 m**.
 - **Indicatif** : une carte de sols ou un sondage ponctuel **ne remplace pas l'étude géotechnique** du terrain. Le module alerte, il n'autorise rien ; absence de sondage ou de zone ≠ sol sans risque.
 - Mise en service : exécuter `supabase/foncier_sondages_sols.sql` (idempotent) sur le projet Supabase. Tant que la table est absente, les sondages restent sur l'appareil.
+
+### 3 nonies bis. Import de sondages (tableau du bureau d'études)
+
+Panneau de la carte › **🪨 Sols › 📥 Importer** (CSV, TXT ou Excel `.xlsx`, première feuille) ; **⬇** = modèle CSV. Un aperçu (nombre à importer, lignes refusées, avertissements) demande confirmation **avant** toute écriture.
+
+| Colonne | Rôle |
+|---|---|
+| sondage (obligatoire) | nom : SC1, SP2… |
+| lat, lng **ou** x, y (+ zone 29/30) | position WGS84 ou UTM |
+| nature (obligatoire) | argile, argile molle, vase, limon, sable lâche, sable (dense), graveleux, latérite, remblai, marne… |
+| profondeur, contrainte (MPa), nappe | facultatifs, ≥ 0 |
+| essai, date (AAAA-MM-JJ), bureau, parcelle, observations | facultatifs ; parcelle liée par sa référence |
+
+Lignes **refusées** : nom vide, position illisible, hors Côte d'Ivoire (lat/lng inversées signalées), nature non reconnue, valeur négative. **Ignorés** avec avertissement : doublon (même nom et même position qu'un sondage existant), essai ou date non reconnus, parcelle introuvable (sondage importé sans parcelle). 500 lignes au plus. Journal `FONCIER_SONDAGES_IMPORT`.

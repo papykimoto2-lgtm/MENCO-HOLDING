@@ -54,3 +54,42 @@ test('« Où suis-je ? » affiche les sondages proches ; formulaire prérempli ;
   }, { st: stub.toString() });
   assert.ok(r.html); assert.equal(Number(r.lat), 5.3501); assert.equal(r.parc, 'p1'); assert.match(r.refus, /hors de la Côte/); assert.equal(r.nb, 1); assert.match(r.inverse, /inversées/); assert.equal(r.apres, 2); assert.match(r.ref, /^SOL-\d{4}-\d{3}$/);
 });
+
+test('import de sondages : colonnes reconnues, UTM, nature/pays/négatifs refusés, doublons, parcelle liée, essai et date', async () => {
+  const app = await ouvrirApp();
+  const r = await app.page.evaluate(({ st }) => {
+    new Function('(' + st + ')()')(); var o = {};
+    DATA.parcelles = [{ id: 'p1', ref: 'P-001' }]; DATA.sondages_sols = [{ id: 'ex', nom: 'SC1', lat: 5.35, lng: -4.001, nature: 'argile' }];
+    var csv = 'Sondage;Latitude;Longitude;Nature du sol;Profondeur;Contrainte admissible;Nappe;Essai;Date;Parcelle\n'
+      + 'SC1;5,350000;-4,001000;Argile molle;6;0,08;;pressio;2026-03-12;P-001\n'          /* doublon d\'un existant */
+      + 'SC2;5,351000;-4,002000;Sable dense;5;0,45;2,5;Pénétromètre dynamique;12/03/2026;P-001\n'
+      + 'SC3;5,352000;-4,003000;Béton;4;;;;;\n'                                              /* nature inconnue */
+      + 'SC4;45;-4;Argile;4;;;;;\n'                                                          /* hors pays */
+      + 'SC5;-4,0;5,35;Argile;4;;;;;\n'                                                      /* inversée */
+      + 'SC6;5,353;-4,004;Argile;-3;;;;;\n'                                                  /* négatif */
+      + 'SC7;5,354;-4,005;Latérite;7;;;spt;;P-999\n';
+    var R = fonSondagesDepuisTableau(fonReleveCsv(csv)); o.n = R.sondages.length; o.noms = R.sondages.map(function (x) { return x.nom; }).join(',');
+    o.err = R.erreurs.length; o.errInv = R.erreurs.some(function (e) { return /inversées/.test(e); }); o.errPays = R.erreurs.some(function (e) { return /hors de la Côte/.test(e); }); o.errNat = R.erreurs.some(function (e) { return /Béton/.test(e); });
+    var sc2 = R.sondages[0]; o.sc2 = [sc2.nature, sc2.profondeur_m, sc2.sigma_adm, sc2.nappe_m, sc2.essai, sc2.parcelle_id, sc2.date_essai]; o.avert = R.avertissements.length;
+    o.sc7 = [R.sondages[1].essai, R.sondages[1].parcelle_id];
+    var u = fonSondagesDepuisTableau([['sondage', 'x', 'y', 'zone', 'nature'], ['U1', '395120', '590210', '30', 'sable']]); o.utm = u.sondages.length ? [u.sondages[0].lat > 5 && u.sondages[0].lat < 6, u.sondages[0].nature] : u.erreurs;
+    o.sans = fonSondagesDepuisTableau([['a', 'b'], ['1', '2']]).erreurs.length; o.vide = fonSondagesDepuisTableau([]).erreurs.length;
+    return o;
+  }, { st: stub.toString() });
+  assert.equal(r.n, 2); assert.equal(r.noms, 'SC2,SC7'); assert.equal(r.err, 4); assert.ok(r.errInv && r.errPays && r.errNat);
+  assert.deepEqual(r.sc2, ['sable_dense', 5, 0.45, 2.5, 'penetro', 'p1', undefined]); assert.ok(r.avert >= 3); assert.deepEqual(r.sc7, ['spt', undefined]); assert.deepEqual(r.utm, [true, 'sable']); assert.ok(r.sans >= 1 && r.vide === 1);
+});
+
+test('import de sondages (fichier) : confirmation, écriture, références SOL-aaaa-nnn, refus si annulé', async () => {
+  const app = await ouvrirApp();
+  const r = await app.page.evaluate(async ({ st }) => {
+    new Function('(' + st + ')()')(); var o = {}; DATA.sondages_sols = []; DATA.parcelles = [];
+    var f = new File(['sondage;lat;lng;nature\nA1;5,35;-4,0;argile\nA2;5,36;-4,01;sable dense\n'], 'bet.csv', { type: 'text/csv' });
+    window.confirm = function () { return false; }; o.annule = await fonSondagesImporter({ files: [f], value: 'x' }); o.apresAnnul = DATA.sondages_sols.length;
+    window.confirm = function (m) { o.msg = m; return true; }; o.ok = await fonSondagesImporter({ files: [f], value: 'x' });
+    o.nb = DATA.sondages_sols.length; o.refs = DATA.sondages_sols.map(function (x) { return x.reference; }).join(','); o.src = DATA.sondages_sols[0].source;
+    window.confirm = function () { return true; }; o.vide = await fonSondagesImporter({ files: [new File(['a;b\n1;2\n'], 'x.csv')], value: '' });
+    return o;
+  }, { st: stub.toString() });
+  assert.equal(r.annule, false); assert.equal(r.apresAnnul, 0); assert.equal(r.ok, true); assert.equal(r.nb, 2); assert.match(r.msg, /2 sondage/); assert.match(r.refs, /^SOL-\d{4}-001,SOL-\d{4}-002$/); assert.equal(r.src, 'import'); assert.equal(r.vide, false);
+});
