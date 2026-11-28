@@ -120,6 +120,14 @@ Dans l'audit : bouton **Lancer le contrôle territorial**. La parcelle liée à 
 - Toujours indicatif : « Aucun croisement » ne vaut pas conformité ; la décision passe par l'audit pré-acquisition.
 - Correctif au passage : le tableau des parcelles échappe désormais la référence, la localisation, la commune, le n° de titre, le type de titre, le programme et le statut (ils venaient aussi d'imports Excel).
 
+## 3 quater. Risque territorial dans le rapport à la direction
+
+Le **rapport stratégique du portefeuille foncier** (Foncier › Portefeuille Foncier › « 🗺️ Rapport », aussi envoyé à la direction par la messagerie) contient maintenant :
+- une section **▸ RISQUE TERRITORIAL (indicatif)** : couches contrôlées, parcelles analysées, répartition critique / majeur / information / aucun croisement, parcelles sans contour, secteurs surveillés dont ceux à examiner ;
+- des **actions proposées**, classées avec les autres par priorité : **Lever les croisements territoriaux critiques** (96, avant les titres manquants), **Examiner les secteurs surveillés où une couche a changé** (82), **Examiner les croisements territoriaux majeurs** (75), **Charger les couches territoriales** (50, seulement s'il existe des parcelles à contour et aucune couche active).
+
+Même contrôle que l'audit et le badge 🌍 (cache partagé). Indicatif : il alerte, il n'autorise rien ; l'absence de croisement ne vaut pas conformité.
+
 ## 4. Limites connues
 
 - La surface commune est estimée par échantillonnage du contour : marge de quelques pour cent. À confirmer par le géomètre avant toute décision.
