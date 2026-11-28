@@ -128,9 +128,24 @@ Le **rapport stratégique du portefeuille foncier** (Foncier › Portefeuille Fo
 
 Même contrôle que l'audit et le badge 🌍 (cache partagé). Indicatif : il alerte, il n'autorise rien ; l'absence de croisement ne vaut pas conformité.
 
+## 3 quinquies. Calcul exact côté serveur (PostGIS)
+
+Le contrôle de l'ERP **estime** la surface commune par échantillonnage (marge de quelques pour cent). Le bouton **🎯 Calcul exact (serveur)** la **confirme** par l'intersection géométrique réelle (PostGIS, aire géodésique).
+
+| Où | Comportement |
+|---|---|
+| Audit › Contrôle territorial | compare, zone par zone, **estimé** et **exact** (écart en points, niveau estimé et niveau exact, « le niveau change »). Sur un audit **en cours**, le résultat est **enregistré** (`controle_territorial.exact`, historique de l'audit) et repris à l'impression ; sur un audit **décidé** (contrôle figé) ou sans droit d'écriture, il est **affiché sans être enregistré** |
+| Carte › Contrôle de la parcelle | même tableau dans le panneau |
+
+- Fonction `fc_territoire_croisement(contour)` (`supabase/foncier_territoire_exact.sql`) : jeton du personnel obligatoire, SECURITY INVOKER (la RLS s'applique), aucun accès anonyme ni portail, **n'enregistre rien**.
+- Mêmes règles que l'ERP : couches actives, non obsolètes, à provenance complète ; seuil max(5 m², 0,1 % de la parcelle) ; niveaux critique (inconstructible ≥ 1 %), majeur, information.
+- **Différence assumée** : pas de bande de tolérance de 0,5 m le long des bords (intersection brute) ; deux zones adjacentes peuvent donc se distinguer légèrement de l'estimation.
+- Messages clairs : fonction absente (exécuter le SQL), session du personnel requise, contour invalide, serveur injoignable, délai de 25 s.
+- Il confirme, il n'autorise rien : le géomètre fait foi.
+
 ## 4. Limites connues
 
-- La surface commune est estimée par échantillonnage du contour : marge de quelques pour cent. À confirmer par le géomètre avant toute décision.
+- La surface commune est estimée par échantillonnage du contour : marge de quelques pour cent. À confirmer par le calcul exact (§ 3 quinquies) puis par le géomètre avant toute décision.
 - Anneaux intérieurs (trous) non pris en compte.
 - Parcelle sans contour (moins de 3 bornes) : aucun contrôle possible, signalé.
 - Carte : pas de bâtiments ni de relief hors ligne ; pas d'étiquettes de texte sur la carte (noms au clic).

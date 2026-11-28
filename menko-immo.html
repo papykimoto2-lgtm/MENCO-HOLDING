@@ -118477,7 +118477,7 @@ function fonTerritoirePanneauHtml() {
   }).join('') : '<span style="color:#8aa0c8;">Aucune zone importée.</span>');
   h += '<div style="margin-top:8px;color:#8aa0c8;font-size:11px;">' + Object.keys(FON_TER_CATEGORIES).map(function (k) { return '<span style="color:' + FON_TER_COULEURS[k] + ';">■</span> ' + E(FON_TER_CATEGORIES[k]); }).join('<br>') + '</div>';
   h += '<div style="margin-top:8px;color:#8aa0c8;font-size:11px;">Parcelles après analyse : <span style="color:#ef4444;">■</span> critique <span style="color:#f59e0b;">■</span> majeur <span style="color:#3b82f6;">■</span> information <span style="color:#22c55e;">■</span> aucun croisement (≠ conforme) <span style="color:#64748b;">■</span> non analysée</div>';
-  if (FON_TER.resultat) h += '<div style="margin-top:10px;border:1px solid #2a3b5e;border-radius:8px;padding:8px;"><b>🌍 Contrôle de la parcelle</b><br><small style="color:#8aa0c8;">Indicatif : il alerte, il n\'autorise rien</small><br>' + fonTerritoireResumeHtml(FON_TER.resultat) + '</div>';
+  if (FON_TER.resultat) h += '<div style="margin-top:10px;border:1px solid #2a3b5e;border-radius:8px;padding:8px;"><b>🌍 Contrôle de la parcelle</b><br><small style="color:#8aa0c8;">Indicatif : il alerte, il n\'autorise rien</small><br>' + fonTerritoireResumeHtml(FON_TER.resultat) + (FON_TER.resultat.contour ? '<div style="margin-top:6px;"><button type="button" style="background:#16233b;color:#dbe7ff;border:1px solid #2a3b5e;border-radius:6px;padding:3px 8px;cursor:pointer;" onclick="fonTerritoireControleExact(\'' + escHtml(FON_TER.resultat.parcelle_id) + '\')">🎯 Calcul exact (serveur)</button></div>' : '') + (FON_TER.resultat.exact ? fonTerritoireExactHtml(FON_TER.resultat, FON_TER.resultat.exact) : '') + '</div>';
   return h + fonTerritoireAlertesHtml();
 }
 function fonTerritoireCarteMaj() {
@@ -118628,6 +118628,56 @@ async function fonTerritoireAnalyser() {
     if (i % 5 === 4) await new Promise(function (r) { setTimeout(r, 0); });
   }
   FON_TER.analyseLe = new Date().toISOString(); FON_TER.focus = ''; toast(n + ' parcelle(s) analysée(s).', 'success'); fonTerritoireCarteMaj();
+}
+/* ── Calcul exact (serveur, PostGIS) : confirme le contrôle de l'ERP (estimation par échantillonnage) par l'intersection géométrique réelle ──
+   Fonction serveur fc_territoire_croisement (supabase/foncier_territoire_exact.sql), jeton du personnel. Il CONFIRME, il ne remplace rien et n'autorise rien.
+   Différence assumée : pas de bande de tolérance de 0,5 m le long des bords (intersection brute). */
+FON_TER.exactTmp = {};
+async function fonTerritoireExactAppeler(p) {
+  var q = _sigParcellePath(p); if (!q || q.length < 3) throw new Error('Contour absent : 3 bornes au moins sont nécessaires.');
+  if (!SB || !SB.url) throw new Error('Serveur non configuré.');
+  var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null, tm = ctrl ? setTimeout(function () { ctrl.abort(); }, 25000) : null, r;
+  try { r = await fetch(SB.url.replace(/\/+$/, '') + '/rest/v1/rpc/fc_territoire_croisement', { method: 'POST', headers: { 'apikey': SB.key, 'Authorization': 'Bearer ' + sbAuth(), 'Content-Type': 'application/json' }, body: JSON.stringify({ p_contour: q.map(function (x) { return [x[0], x[1]]; }) }), signal: ctrl ? ctrl.signal : undefined }); }
+  catch (e) { throw new Error(e && e.name === 'AbortError' ? 'Délai dépassé (25 s) : réessayez.' : 'Serveur injoignable (hors ligne ?).'); } finally { if (tm) clearTimeout(tm); }
+  if (r.status === 404) throw new Error('Fonction serveur absente : exécuter supabase/foncier_territoire_exact.sql.');
+  if (r.status === 401 || r.status === 403) throw new Error('Session du personnel requise : reconnectez-vous.');
+  if (!r.ok) throw new Error('Calcul serveur indisponible (' + r.status + ').');
+  var v = await r.json();
+  if (v && v.erreur) throw new Error(v.erreur === 'acces_personnel_requis' ? 'Session du personnel requise : reconnectez-vous.' : v.erreur === 'contour_invalide' ? 'Contour invalide pour le calcul serveur.' : String(v.erreur));
+  if (!v || !Array.isArray(v.croisements)) throw new Error('Réponse du serveur invalide.');
+  return v;
+}
+/* Compare l'estimation de l'ERP (ct) au calcul exact (ex), zone par zone. */
+function fonTerritoireExactComparer(ct, ex) {
+  var rang = { critique: 0, majeur: 1, info: 2 }, cle = function (x) { return x.couche_id + '|' + x.zone_id; }, est = {}, exa = {}, ordre = [];
+  (ct.croisements || []).forEach(function (x) { est[cle(x)] = x; ordre.push(cle(x)); }); (ex.croisements || []).forEach(function (x) { exa[cle(x)] = x; if (!est[cle(x)]) ordre.push(cle(x)); });
+  var lignes = ordre.map(function (k) { var a = est[k], b = exa[k], ref = b || a; return { zone: ref.zone_nom, couche: ref.couche_nom, version: ref.version || '', categorie: ref.categorie, pct_est: a ? a.pct : null, pct_exact: b ? b.pct : null, m2_exact: b ? b.m2 : null, ecart: (a && b) ? Math.round((b.pct - a.pct) * 10) / 10 : null, niveau_est: a ? a.niveau : null, niveau_exact: b ? b.niveau : null }; });
+  var max = function (L, f) { var m = ''; L.forEach(function (x) { var n = x[f]; if (n && (m === '' || rang[n] < rang[m])) m = n; }); return m || 'aucun'; };
+  return { lignes: lignes, niveau_est: max(lignes, 'niveau_est'), niveau_exact: max(lignes, 'niveau_exact'), aire_est: ct.aire_m2 || 0, aire_exact: ex.aire_m2 || 0 };
+}
+function fonTerritoireExactHtml(ct, ex) {
+  if (!ct || !ex) return ''; var E = escHtml, c = fonTerritoireExactComparer(ct, ex), lib = function (n) { return FON_TER_NIV_LIB[n] || n; };
+  var h = '<div style="margin-top:6px;"><b>🎯 Calcul exact (serveur)</b> <span class="pt" style="color:#64748b;font-size:10px;">' + E(ex.calcule_par || 'PostGIS') + ' · ' + E(String(ex.le || '').slice(0, 16).replace('T', ' ')) + ' · surface ' + E(String(c.aire_exact)) + ' m² (estimée ' + E(String(c.aire_est)) + ' m²)</span>';
+  h += c.lignes.length ? '<table style="width:100%;font-size:11px;"><tr><th>Zone</th><th>Couche</th><th>Estimé</th><th>Exact</th><th>Écart</th></tr>' + c.lignes.map(function (l) {
+    return '<tr><td>' + E(l.zone) + '</td><td>' + E(l.couche) + (l.version ? ' <span class="pt">v' + E(l.version) + '</span>' : '') + '</td><td>' + (l.pct_est === null ? '—' : E(String(l.pct_est)) + ' % <span class="pt">' + E(lib(l.niveau_est)) + '</span>') + '</td><td>' + (l.pct_exact === null ? '—' : '<b>' + E(String(l.pct_exact)) + ' %</b> <span class="pt">' + E(String(l.m2_exact)) + ' m² · ' + E(lib(l.niveau_exact)) + '</span>') + '</td><td>' + (l.ecart === null ? (l.pct_exact === null ? 'non confirmé' : 'nouveau') : (l.ecart > 0 ? '+' : '') + E(String(l.ecart)) + ' pt') + '</td></tr>'; }).join('') + '</table>' : '<p>Aucun croisement confirmé par le calcul exact. <b>Cela ne vaut pas conformité.</b></p>';
+  h += '<p class="pt" style="font-size:10px;color:#64748b;">Niveau estimé : ' + E(lib(c.niveau_est)) + ' · niveau exact : <b>' + E(lib(c.niveau_exact)) + '</b>' + (c.niveau_est !== c.niveau_exact ? ' — <b>le niveau change</b>' : '') + '. Intersection brute, sans bande de tolérance le long des bords. Indicatif : le géomètre fait foi.</p></div>';
+  return h;
+}
+async function fonTerritoireAuditExact(id) {
+  var a = _fonAudit(id), ct = a && a.controle_territorial; if (!a || !ct) { toast('Lancez d\'abord le contrôle territorial.', 'error'); return; }
+  var p = (DATA.parcelles || []).find(function (x) { return x.id === a.parcelle_id; }); if (!p) { toast("Parcelle de l'audit introuvable.", 'error'); return; }
+  var ex; try { ex = await fonTerritoireExactAppeler(p); } catch (e) { toast(e.message, 'error', 8000); return; }
+  ex.le = new Date().toISOString(); ex.par = (APP.currentUser && APP.currentUser.nom) || '—';
+  var verrou = a.decision && a.decision !== 'en_attente';
+  if (!verrou && fcDroitEcriture()) { ct.exact = ex; await _fonAuditHistorique(a, 'CALCUL_EXACT_TERRITORIAL', '', ex.croisements.length + ' croisement(s) exact(s)', ex.calcule_par); if (!(await fonRuralSauver('audits', a))) return; }
+  else { FON_TER.exactTmp[id] = ex; toast(verrou ? 'Audit décidé : résultat affiché mais non enregistré (contrôle figé).' : 'Résultat affiché mais non enregistré (droit d\'écriture requis).', 'info', 6000); }
+  try { logAction('FONCIER_TERRITOIRE_EXACT', (a.reference || id) + ' : ' + ex.croisements.length + ' croisement(s) exact(s), ' + (ex.calcule_par || '')); } catch (e) {}
+  fonAuditOuvrir(id);
+}
+async function fonTerritoireControleExact(pid) {
+  var p = (DATA.parcelles || []).find(function (x) { return x.id === pid; }); if (!p) return; if (!FON_TER.resultat || FON_TER.resultat.parcelle_id !== pid) fonTerritoireControlerParcelle(pid);
+  var ex; try { ex = await fonTerritoireExactAppeler(p); } catch (e) { toast(e.message, 'error', 8000); return; }
+  ex.le = new Date().toISOString(); if (FON_TER.resultat) FON_TER.resultat.exact = ex; fonTerritoireCarteMaj();
 }
 /* ── Outils de carte : mesure de distance et de surface, échelle, export PNG avec légende ──
    Mesures géodésiques simples (haversine ; surface en projection UTM), indicatives : un levé de géomètre fait foi. */
@@ -119103,7 +119153,7 @@ function fonTerritoireControleImpression(a) {
   var E = escHtml, ct = a && a.controle_territorial, h = '<h3>Contrôle territorial</h3><div class="avert">' + E(FON_TER_AVERTISSEMENT) + '</div>';
   if (!ct) return h + '<p>Contrôle territorial <b>non lancé</b> pour cet audit. Cela ne vaut pas conformité.</p>';
   h += '<p>Contrôle du ' + E(String(ct.le || '').slice(0, 16).replace('T', ' ')) + ' par ' + E(ct.par || '—') + ' · parcelle ' + E(ct.ref || '') + ' · ' + (ct.contour ? E(String(ct.aire_m2)) + ' m²' : 'contour absent') + '</p>'
-    + '<b>Couches contrôlées</b>' + fonTerritoireCouchesTableHtml(ct.couches) + '<b>Résultat</b>' + fonTerritoireCroisementsTableHtml(ct);
+    + '<b>Couches contrôlées</b>' + fonTerritoireCouchesTableHtml(ct.couches) + '<b>Résultat</b>' + fonTerritoireCroisementsTableHtml(ct) + (ct.exact ? fonTerritoireExactHtml(ct, ct.exact) : '');
   if (a.derogation_territoriale) h += '<p><b>Dérogation territoriale :</b> ' + E(a.derogation_territoriale.motif || '') + ' (' + E(a.derogation_territoriale.par || '') + ', ' + E(a.derogation_territoriale.le || '') + ')</p>';
   return h;
 }
@@ -119210,6 +119260,7 @@ function fonTerritoireAuditHtml(a) {
   else h += '<div class="table-wrap"><table style="width:100%;font-size:11px;"><thead><tr><th></th><th>Zone</th><th>Couche</th><th>Catégorie</th><th>Part de la parcelle</th><th>Point d\'audit</th></tr></thead><tbody>' + ct.croisements.map(function (x) {
     var n = niv[x.niveau] || niv.info;
     return '<tr><td style="color:' + n[1] + ';">' + n[0] + '</td><td>' + E(x.zone_nom) + '</td><td>' + E(x.couche_nom) + ' <small>v' + E(x.version || '—') + ' · ' + E(FON_TER_STATUTS[x.statut] || x.statut || '') + '</small></td><td>' + E(FON_TER_CATEGORIES[x.categorie] || x.categorie) + '</td><td><b>' + x.pct + ' %</b> <small>(' + x.m2 + ' m²)</small></td><td>' + (x.point ? E(x.point) + (verrou ? '' : ' ' + _fonBtn('Consigner', 'fonTerritoireAuditConsigner(\'' + a.id + '\',' + ct.croisements.indexOf(x) + ')')) : '—') + '</td></tr>'; }).join('') + '</tbody></table></div>';
+  if (ct.contour) h += '<div style="margin-top:4px;">' + _fonBtn('🎯 Calcul exact (serveur)', 'fonTerritoireAuditExact(\'' + a.id + '\')') + '</div>' + fonTerritoireExactHtml(ct, ct.exact || FON_TER.exactTmp[a.id]);
   if (a.derogation_territoriale) h += '<div style="margin-top:4px;"><b>Dérogation territoriale :</b> ' + E(a.derogation_territoriale.motif) + ' (' + E(a.derogation_territoriale.par) + ', ' + E(a.derogation_territoriale.le) + ')</div>';
   return boite(h);
 }
