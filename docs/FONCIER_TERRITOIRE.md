@@ -215,3 +215,11 @@ Carte d'alertes et suivi de secteurs (Ahoué, Brofodoumé, Aghien-Télégraphe, 
 - Affiche aussi le badge territorial de la parcelle choisie.
 - **Alerte indicative** : n'autorise rien ; absence de croisement ≠ conformité. Sans couche active : « contrôle impossible ».
 - La précision GPS est rappelée ; au-delà, sortir à découvert avant de conclure.
+
+## 3 septies. Fond de carte hébergé
+
+Carte Territoire › bouton **⚙** (administrateur) : saisir l'URL des tuiles raster de l'entreprise, ex. `https://tuiles.exemple.ci/abidjan/{z}/{x}/{y}.png`.
+- Règles : **https** obligatoire, `{z}` `{x}` `{y}` requis, pas d'identifiants dans l'URL ; sinon refus.
+- Le fond « Hébergé (entreprise) » apparaît dans le sélecteur. Vide = retiré, retour au fond sombre.
+- Réglage **propre à l'appareil** (stocké dans le navigateur) ; l'action est journalisée (`FONCIER_FOND_HEBERGE`).
+- Le serveur de tuiles doit autoriser le site en CORS (`Access-Control-Allow-Origin`).
