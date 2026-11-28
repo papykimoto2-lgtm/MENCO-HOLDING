@@ -151,6 +151,12 @@ Foncier › Territoire : carte sombre en 3D (MapLibre GL 4.7.1), inclinable, ave
 - **Appareil modeste** (4 cœurs ou moins, ou 4 Go ou moins) : relief et bâtiments désactivés au départ, sans anticrénelage, sans fondu, bâtiments sans transparence (passe de rendu en moins). Bouton « ⚡ Léger » : coupe relief, bâtiments, volumes, courbes, remet la carte à plat et ramène la résolution à 1 (connexion lente ou batterie).
 - Redimensionnement automatique de la carte (plein écran, panneau, rotation d'écran).
 
+**Outils de carte**
+- **📏 Mesurer** : clic sur les points de la carte. **📏 Distance** : longueur cumulée (géodésique, en m ou km). **📐 Surface** : surface (en m², ha, km²) et périmètre, 3 points au moins. Résultat dans un cadre sur la carte, **↩ Point** pour retirer le dernier point, **✖ Fin** ou Échap pour terminer. Pendant la mesure, les clics n'ouvrent aucune fenêtre de zone ou de parcelle. Mesures **indicatives** : un levé de géomètre fait foi.
+- **Échelle** métrique en haut à droite de la carte.
+- **📸 Exporter** : image PNG avec cartouche (titre, date, auteur, fond, centre, zoom), **échelle**, **légende** des catégories, **couches contrôlées avec source, date et version**, mentions (indicatif, hauteurs symboliques) et **sources des fonds de carte**. Fichier `carte-territoire-AAAA-MM-JJ.png`. Action journalisée (`FONCIER_TERRITOIRE_EXPORT_CARTE`). Document interne : données stratégiques.
+- Mesure et dessin de secteur sont exclusifs : démarrer l'un termine l'autre.
+
 **Volumes** : les hauteurs des zones et des parcelles sont **symboliques** (lecture de la catégorie ou du niveau d'alerte). Ce ne sont pas des hauteurs réelles.
 
 **Bâtiments et relief** : bâtiments d'OpenStreetMap (service OpenFreeMap) et relief AWS Terrain Tiles, tels qu'ils existent. Ils montrent le terrain actuel, **pas un plan directeur ni des constructions futures**.
