@@ -14,12 +14,46 @@ Briques 1 et 2 de « MENKO Territorial Intelligence ». Écran : Foncier › **T
 | Couche | nom, type (SDUGA, PUd, ZAD, zone protégée / forêt classée / domaine public, utilité publique, hydrologie, infrastructure, autre), **source**, **date de la source**, **version**, **statut** (officiel, indicatif, en projet, obsolète), périmètre couvert |
 | Zone | appartient à une couche ; nom, catégorie (inconstructible, sous condition, à surveiller, information), contours WGS84 |
 | Catégorie par défaut | protégée et utilité publique → inconstructible ; ZAD et hydrologie → sous condition ; infrastructure → à surveiller ; SDUGA, PUd, autre → information. Surchargeable par la propriété `categorie` du fichier |
-| Import | fichier **GeoJSON WGS84** (Polygon, MultiPolygon, FeatureCollection). Anneau extérieur seulement ; points et lignes ignorés et comptés ; contours simplifiés à 800 points maximum ; **1 500 zones maximum** par couche |
+| Import | **GeoJSON**, **KML** ou **KMZ** (Polygon, MultiPolygon, Placemark, MultiGeometry). Anneau extérieur seulement ; points et lignes ignorés et comptés ; contours simplifiés à 800 points maximum ; **1 500 zones maximum** par couche. Voir §2 bis |
 | Ré-import | remplace les zones de la couche, après confirmation |
-| Refus | coordonnées projetées (UTM) : à reprojeter en EPSG:4326 avant import |
+| Provenance | **source, date et version obligatoires avant tout import** ; une couche sans provenance n'est jamais contrôlée |
+| Activation | une couche s'active à l'import (si non obsolète) ; **Désactiver / Activer** la retire ou la remet au contrôle |
 | Suppression | une couche ne se supprime que vide ; vider les zones : administrateur, motif de 10 caractères |
 
 Les couches **obsolètes** ou désactivées ne sont jamais contrôlées.
+
+## 2 bis. Guide d'import des couches
+
+**Couches types** : le bouton « Couches types » crée sept couches **inactives** à compléter (SDUGA, PUd, ZAD, utilité publique, zones protégées, zones humides et inondables, infrastructures). Elles ne servent au contrôle qu'une fois la provenance renseignée et un fichier importé.
+
+**Formats acceptés** : `.geojson` / `.json`, `.kml`, `.kmz`.
+
+| Vous avez | Faire |
+|---|---|
+| GeoJSON en WGS84 | importer tel quel |
+| KML ou KMZ (Google Earth, QGIS) | importer tel quel |
+| GeoJSON en coordonnées projetées (UTM) | importer : l'ERP demande la **zone UTM nord** (30 pour Abidjan et le centre, 29 pour l'ouest) et convertit |
+| Shapefile (.shp) | ouvrir dans QGIS › Exporter › GeoJSON, SCR **EPSG:4326** |
+| DWG / DXF | ouvrir dans QGIS (ou convertir en DXF), définir le SCR d'origine, exporter en GeoJSON EPSG:4326 |
+| Carte en PDF ou image | **inutilisable en l'état** : à géoréférencer par un géomètre ou un SIG avant import |
+
+**Contrôles avant import** (affichés à la confirmation) : nombre de zones et de points, zones ignorées, **zones situées hors de la Côte d'Ivoire** (signe d'un mauvais système de coordonnées ou de latitude et longitude inversées), conversion UTM appliquée, zones actuelles qui seront remplacées.
+
+**Datum** : la conversion UTM suppose le datum **WGS84**. Une source établie dans un autre système (par exemple Abidjan 87) peut décaler les contours de quelques dizaines de mètres : à **confirmer auprès de la source**, et à vérifier sur une parcelle connue avant tout usage.
+
+**Fiche de qualification d'une couche** (à remplir avant « officiel »)
+
+| Question | Réponse attendue |
+|---|---|
+| Qui l'a émise ? | organisme, service |
+| Sur quel texte repose-t-elle ? | décret, arrêté, numéro, date de publication |
+| Quelle date et quelle version ? | date de la source, numéro de version |
+| Quelle emprise couvre-t-elle ? | communes, secteurs |
+| Quelle précision ? | échelle, qualité du géoréférencement |
+| Quel statut juridique ? | officiel opposable, indicatif, en projet |
+| Qui l'a validée chez MENKO ? | nom du juriste, date |
+
+Tant que la réponse n'est pas claire, la couche reste « indicative » ou « en projet ».
 
 ## 3. Brique 2 — contrôle territorial de l'audit pré-acquisition
 
