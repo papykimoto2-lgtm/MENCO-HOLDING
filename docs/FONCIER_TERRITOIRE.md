@@ -24,7 +24,16 @@ Les couches **obsolètes** ou désactivées ne sont jamais contrôlées.
 
 ## 2 bis. Guide d'import des couches
 
-**Couches types** : le bouton « Couches types » crée sept couches **inactives** à compléter (SDUGA, PUd, ZAD, utilité publique, zones protégées, zones humides et inondables, infrastructures). Elles ne servent au contrôle qu'une fois la provenance renseignée et un fichier importé.
+**Couches types** : le bouton « Couches types » crée dix couches **inactives** à compléter : 4 couches SDUGA 2040, PUd, ZAD, utilité publique, zones protégées, zones humides et inondables, infrastructures.
+
+| Couche SDUGA 2040 | Catégorie par défaut |
+|---|---|
+| Pôles urbains (Bingerville, Anyama…) | à surveiller |
+| Transports et mobilité | à surveiller |
+| Protection environnementale (zones humides, forêts, eau) | inconstructible |
+| Maîtrise foncière (ZAD et encadrement) | sous condition |
+
+La catégorie par défaut s'applique à l'import ; la propriété `categorie` d'une zone du fichier la remplace. Aucun contour n'est fourni : chaque couche reste vide et inactive tant que le fichier officiel n'est pas importé. Elles ne servent au contrôle qu'une fois la provenance renseignée et un fichier importé.
 
 **Formats acceptés** : `.geojson` / `.json`, `.kml`, `.kmz`.
 
@@ -73,7 +82,30 @@ Dans l'audit : bouton **Lancer le contrôle territorial**. La parcelle liée à 
 - Anneaux intérieurs (trous) non pris en compte.
 - Parcelle sans contour (moins de 3 bornes) : aucun contrôle possible, signalé.
 - L'impression de l'audit ne reprend pas encore le panneau territorial.
-- Pas de carte interactive : aperçu vectoriel par couche. Une carte avec les parcelles est une suite possible.
+- Carte : pas de bâtiments ni de relief hors ligne ; pas d'étiquettes de texte sur la carte (noms au clic).
+
+## 4 bis. Carte 3D
+
+Foncier › Territoire : carte sombre en 3D (MapLibre GL 4.7.1), inclinable, avec panneau de couches à droite et barre d'outils en bas.
+
+| Élément | Détail |
+|---|---|
+| Couches | zones de chaque couche, colorées par catégorie ; cases à cocher par couche ; une couche inactive est dessinée en pointillé et signalée « non contrôlée » |
+| Parcelles | contours des parcelles de l'ERP ; clic = bouton « Contrôler cette parcelle » |
+| Contrôle | résultat dans le panneau (zone, couche, version, part de la parcelle) ; mêmes niveaux et mêmes mises en garde que dans l'audit |
+| Analyser les parcelles | contrôle de toutes les parcelles à contour : parcelles colorées par niveau (critique, majeur, information, aucun croisement, non contrôlable) et liste des parcelles en alerte. **Rien n'est enregistré** |
+| Barre d'outils | vue d'ensemble, 3D / 2D, relief, bâtiments, volumes, parcelles, fond (sombre, plan, satellite), choix d'une parcelle |
+| Depuis l'audit | bouton « 🗺 Voir sur la carte » : ouvre la carte centrée sur la parcelle de l'audit |
+
+**Volumes** : les hauteurs des zones et des parcelles sont **symboliques** (lecture de la catégorie ou du niveau d'alerte). Ce ne sont pas des hauteurs réelles.
+
+**Bâtiments et relief** : bâtiments d'OpenStreetMap (service OpenFreeMap) et relief AWS Terrain Tiles, tels qu'ils existent. Ils montrent le terrain actuel, **pas un plan directeur ni des constructions futures**.
+
+**Confidentialité** : les couches et les parcelles se dessinent dans le navigateur, elles ne quittent pas l'ERP. En revanche, le fond de carte, le relief et les bâtiments sont demandés à des serveurs publics (CARTO / OpenStreetMap / Esri, AWS, OpenFreeMap) : **ces serveurs voient la zone affichée** (adresse IP et dalles demandées). Pour un secteur sensible, utiliser le fond « Sombre » à un zoom large, ou un serveur de tuiles interne.
+
+**Test du rendu** : `npm i --no-save maplibre-gl@4.7.1` puis `node tests-caisse/foncier-territoire-carte.test.js` (rendu WebGL réel hors ligne ; ignoré si le paquet est absent). Capture : variable `CARTE_CAPTURE=chemin.png`.
+
+**Prérequis** : navigateur avec WebGL. Sinon, la carte affiche un message et les couches restent consultables dans la liste. Hors ligne : même comportement.
 
 ## 5. Sécurité et confidentialité
 

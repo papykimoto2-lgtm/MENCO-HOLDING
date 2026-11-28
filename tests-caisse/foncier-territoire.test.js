@@ -152,11 +152,28 @@ test('couches types et provenance : inactives sans source, import refusé sans p
     window.__T = []; o.refus = await fonTerritoireImporter(c.id, gj); o.msgRefus = /source, la date et la version/.test(window.__T.join(' '));
     o.controleSansProvenance = fonTerritoireCouchesActives().length;
     Object.assign(c, { source: 'Arrêté test', date_source: '2023-05-01', version: '1' });
-    o.ok = await fonTerritoireImporter(c.id, gj); o.activee = c.actif === true; o.controleApres = fonTerritoireCouchesActives().map(function (x) { return x.nom; }).length;
+    o.ok = await fonTerritoireImporter(c.id, gj); o.activee = c.actif === true; o.catSduga = (DATA.zones_territoriales[0] || {}).categorie; o.cats = DATA.couches_territoriales.filter(function (x) { return /^SDUGA 2040/.test(x.nom); }).map(function (x) { return x.categorie_defaut; }).join(','); o.controleApres = fonTerritoireCouchesActives().map(function (x) { return x.nom; }).length;
     await fonTerritoireBasculer(c.id); o.desactivee = c.actif === false; o.controleDesactivee = fonTerritoireCouchesActives().length;
     await fonTerritoireBasculer(c.id); o.reactivee = c.actif === true;
     return o;
   }, { st: stub.toString(), parc: PARC });
-  assert.equal(r.crees, 7); assert.equal(r.inactives, true); assert.equal(r.idempotent, true); assert.equal(r.refus, false); assert.equal(r.msgRefus, true); assert.equal(r.controleSansProvenance, 0);
+  assert.equal(r.crees, 10); assert.equal(r.catSduga, 'alerte'); assert.equal(r.cats, 'alerte,alerte,interdit,sous_condition'); assert.equal(r.inactives, true); assert.equal(r.idempotent, true); assert.equal(r.refus, false); assert.equal(r.msgRefus, true); assert.equal(r.controleSansProvenance, 0);
   assert.equal(r.ok, true); assert.equal(r.activee, true); assert.equal(r.controleApres, 1); assert.equal(r.desactivee, true); assert.equal(r.controleDesactivee, 0); assert.equal(r.reactivee, true);
+});
+
+test('accès au Territoire : bouton dans le cadre vide de l\'audit, dans la liste des audits et phrase dans le formulaire de création', async () => {
+  const app = await ouvrirApp();
+  const r = await app.page.evaluate(async ({ st }) => {
+    new Function('(' + st + ')()')();
+    var o = {}, cible = []; window.fonAller = function (c) { cible.push(c); return true; };
+    DATA.couches_territoriales = []; DATA.zones_territoriales = []; DATA.parcelles = []; DATA.af_operations = []; DATA.dossiers_fonciers = []; DATA.audits_fonciers = [];
+    var a = { id: 'a1', reference: 'AUD-1', parcelle_id: 'p1', zone: 'rural', points: {}, visas: {}, decision: 'en_attente', historique: [] };
+    var html = fonTerritoireAuditHtml(a); o.bouton = /Aller à Territoire/.test(html) && /fonTerritoireAller\(\)/.test(html);
+    document.body.insertAdjacentHTML('beforeend', '<div id="modal-fon-audit" class="modal-overlay open"></div><div id="fon-audit-titre"></div><div id="fon-audit-corps"></div>');
+    fonTerritoireAller(); o.cible = cible[0]; o.ferme = !document.getElementById('modal-fon-audit').classList.contains('open');
+    fonAuditNouveau(); o.phrase = /contrôle territorial/.test(document.getElementById('fon-audit-corps').innerHTML) && /fiche d'audit/.test(document.getElementById('fon-audit-corps').innerHTML);
+    document.body.insertAdjacentHTML('beforeend', '<div id="fon-rural-liste"></div><div id="fon-rural-onglets"></div>'); fonAuditRender(); o.liste = /tab:territoire/.test(document.getElementById('fon-rural-onglets').innerHTML);
+    return o;
+  }, { st: stub.toString() });
+  assert.equal(r.bouton, true); assert.equal(r.cible, 'tab:territoire'); assert.equal(r.ferme, true); assert.equal(r.phrase, true); assert.equal(r.liste, true);
 });
