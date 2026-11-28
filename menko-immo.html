@@ -10232,6 +10232,7 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
           </div>
           <div class="spacer"></div>
           <button class="btn btn-secondary btn-sm" onclick="openModal('modal-hierarchie-foncier');fhTab('schema')">📊 Schéma des flux</button>
+          <button class="btn btn-secondary btn-sm" onclick="fonReleveOuvrir()" title="Importer le relevé de bornes d'un géomètre (CSV, Excel) pour plusieurs parcelles, avec contrôles">📥 Relevé de bornes</button>
           <button class="btn btn-secondary btn-sm" onclick="ouvrirCarteFoncier()">🗺️ Géolocaliser</button>
           <button class="btn btn-secondary btn-sm" onclick="exportFoncierCSV()">⬇ Export</button>
           <button class="btn btn-secondary btn-sm" onclick="pfApercuRapport()" title="État du portefeuille, constats chiffrés et actions proposées — à transmettre à la direction">🗺️ Rapport stratégique</button>
@@ -22028,6 +22029,13 @@ body [style*="background: rgb(239, 68, 68)"] { background:#B91C1C !important; }
   <div class="modal modal-lg modal-xl">
     <div class="modal-header"><h3 id="fon-audit-titre">Audit pré-acquisition</h3><button class="btn btn-secondary btn-icon" onclick="closeModal('modal-fon-audit')">✕</button></div>
     <div class="modal-body" id="fon-audit-corps"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-releve">
+  <div class="modal modal-lg modal-xl">
+    <div class="modal-header"><h3>📥 Import de relevé de bornes (géomètre)</h3><button class="btn btn-secondary btn-icon" onclick="closeModal('modal-releve')">✕</button></div>
+    <div class="modal-body" id="releve-corps"></div>
   </div>
 </div>
 
@@ -118646,6 +118654,141 @@ async function fonTerritoireExporterCarte() {
   var a = document.createElement('a'); a.href = URL.createObjectURL(sortie); a.download = 'carte-territoire-' + today() + '.png'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { try { URL.revokeObjectURL(a.href); } catch (e) {} }, 5000);
   try { await logAction('FONCIER_TERRITOIRE_EXPORT_CARTE', 'PNG ' + cv.width + 'x' + cv.height + ' · ' + couches.length + ' couche(s) · fond ' + nomFond.l); } catch (e) {}
   toast('Carte exportée (PNG).', 'success'); return { largeur: cv.width, hauteur: cv.height };
+}
+/* ── Import de relevé de géomètre : bornes de plusieurs parcelles en CSV, TXT ou Excel ──
+   Le relevé ne CRÉE jamais de parcelle : il remplace les bornes de parcelles existantes, après contrôles et aperçu. Contrôles : coordonnées lisibles,
+   3 bornes au moins, dans la Côte d'Ivoire (x/y inversés signalés), contour non croisé, bornes en double, écart de surface, chevauchement avec les autres
+   parcelles (bloquant sauf administrateur), niveau territorial. L'ancien contour est conservé dans l'historique de la parcelle. Indicatif : le géomètre fait foi. */
+var FON_RELEVE_ALIAS = {
+  parcelle: ['parcelle', 'ref', 'reference', 'ref parcelle', 'reference parcelle', 'numero parcelle', 'n parcelle', 'parcelle ref', 'id parcelle'],
+  borne: ['borne', 'point', 'sommet', 'nom', 'nom borne', 'nom point', 'numero borne', 'n borne', 'id'],
+  x: ['x', 'e', 'est', 'easting', 'abscisse'], y: ['y', 'n', 'nord', 'northing', 'ordonnee'], z: ['z', 'altitude', 'alt', 'cote', 'elevation'],
+  lat: ['lat', 'latitude'], lng: ['lng', 'lon', 'long', 'longitude'], zone: ['zone', 'fuseau', 'zone utm', 'utm']
+};
+function _fonReleveNorm(t) { return String(t == null ? '' : t).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[°.'_\-]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+function fonReleveNombre(v) {
+  if (typeof v === 'number') return isFinite(v) ? v : NaN; var t = String(v == null ? '' : v).replace(/[\s ]/g, ''); if (t === '') return NaN;
+  if (/^-?\d{1,3}(\.\d{3})+,\d+$/.test(t)) t = t.replace(/\./g, '').replace(',', '.'); else t = t.replace(',', '.');
+  return /^-?\d+(\.\d+)?$/.test(t) ? parseFloat(t) : NaN;
+}
+function fonReleveCsv(texte) {
+  var t = String(texte || '').replace(/^﻿/, ''), prem = t.split(/\r?\n/).find(function (l) { return l.trim(); }) || '';
+  var sep = [';', '\t', ','].map(function (c) { return [c, prem.split(c).length - 1]; }).sort(function (a, b) { return b[1] - a[1]; })[0]; sep = sep[1] ? sep[0] : ';';
+  var rows = [], row = [], cur = '', q = false;
+  for (var i = 0; i < t.length; i++) {
+    var c = t[i];
+    if (q) { if (c === '"') { if (t[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; }
+    else if (c === '"') q = true; else if (c === sep) { row.push(cur); cur = ''; } else if (c === '\n' || c === '\r') { if (c === '\r' && t[i + 1] === '\n') i++; row.push(cur); if (row.some(function (x) { return String(x).trim(); })) rows.push(row); row = []; cur = ''; } else cur += c;
+  }
+  row.push(cur); if (row.some(function (x) { return String(x).trim(); })) rows.push(row); return rows;
+}
+/* rows : tableau de lignes (1re ligne = en-têtes). Renvoie { lignes, erreurs, colonnes }. */
+function fonReleveDepuisTableau(rows, zoneDefaut) {
+  var res = { lignes: [], erreurs: [], colonnes: {} }; if (!rows || rows.length < 2) { res.erreurs.push('Fichier vide : en-têtes et au moins 3 bornes attendus.'); return res; }
+  var heads = rows[0].map(_fonReleveNorm), col = {};
+  Object.keys(FON_RELEVE_ALIAS).forEach(function (k) { var i = heads.findIndex(function (h) { return FON_RELEVE_ALIAS[k].indexOf(h) !== -1; }); if (i >= 0) col[k] = i; });
+  res.colonnes = col; if (col.parcelle === undefined) res.erreurs.push('Colonne « parcelle » introuvable (en-têtes reconnus : parcelle, ref, référence…).');
+  var geo = col.lat !== undefined && col.lng !== undefined; if (!geo && (col.x === undefined || col.y === undefined)) res.erreurs.push('Coordonnées introuvables : colonnes x et y (UTM) ou lat et lng attendues.');
+  if (res.erreurs.length) return res;
+  for (var r = 1; r < rows.length; r++) {
+    var ro = rows[r], ref = String(ro[col.parcelle] == null ? '' : ro[col.parcelle]).trim(); if (!ref && !ro.some(function (x) { return String(x).trim(); })) continue;
+    var l = { ligne: r + 1, parcelle: ref, borne: col.borne !== undefined ? String(ro[col.borne] == null ? '' : ro[col.borne]).trim() : '', z: col.z !== undefined ? fonReleveNombre(ro[col.z]) : NaN, zone: col.zone !== undefined ? parseInt(fonReleveNombre(ro[col.zone]), 10) : NaN };
+    if (geo) { l.lat = fonReleveNombre(ro[col.lat]); l.lng = fonReleveNombre(ro[col.lng]); } else { l.x = fonReleveNombre(ro[col.x]); l.y = fonReleveNombre(ro[col.y]); }
+    l.zone = (l.zone === 29 || l.zone === 30) ? l.zone : (zoneDefaut === 29 ? 29 : 30); res.lignes.push(l);
+  }
+  if (!res.lignes.length) res.erreurs.push('Aucune ligne de données.'); return res;
+}
+function fonReleveParser(texte, zoneDefaut) { return fonReleveDepuisTableau(fonReleveCsv(texte), zoneDefaut); }
+function _fonReleveCroise(a, b, c, d) { var o = function (p, q, r) { return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]); }; var d1 = o(a, b, c), d2 = o(a, b, d), d3 = o(c, d, a), d4 = o(c, d, b); return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0)) && d1 !== 0 && d2 !== 0 && d3 !== 0 && d4 !== 0; }
+function fonReleveContourCroise(M) { var n = M.length; for (var i = 0; i < n; i++) for (var j = i + 1; j < n; j++) { if (j === i + 1 || (i === 0 && j === n - 1)) continue; if (_fonReleveCroise(M[i], M[(i + 1) % n], M[j], M[(j + 1) % n])) return true; } return false; }
+function fonReleveEnPays(lat, lng) { return lat >= 4.2 && lat <= 10.8 && lng >= -8.7 && lng <= -2.4; }
+function fonReleveAnalyser(lignes) {
+  var groupes = {}, ordre = []; lignes.forEach(function (l) { var k = _fonReleveNorm(l.parcelle); if (!groupes[k]) { groupes[k] = []; ordre.push(k); } groupes[k].push(l); });
+  var admin = false; try { admin = fcEstAdmin(); } catch (e) {}
+  return ordre.map(function (k) {
+    var L = groupes[k], ref = L[0].parcelle, a = { ref: ref, cle: k, erreurs: [], avertissements: [], bornes: [], path: [], aire_m2: 0, chevauchements: [], territoire: null, nb: L.length, bloque_chevauchement: false };
+    var p = (DATA.parcelles || []).find(function (x) { return _fonReleveNorm(x.ref) === k; }); a.parcelle = p || null;
+    if (!k) a.erreurs.push('Référence de parcelle vide (ligne ' + L[0].ligne + ').');
+    else if (!p) a.erreurs.push('Parcelle introuvable dans le portefeuille : le relevé ne crée pas de parcelle (créez-la d\'abord).');
+    else if (p.fusionnee_dans || p.decoupee_dans) a.erreurs.push('Parcelle fusionnée ou découpée : relevé refusé.');
+    var zone = L[0].zone, pts = [];
+    L.forEach(function (l, i) {
+      var nom = l.borne || ('B' + (i + 1)), lat, lng, x, y;
+      if (l.lat !== undefined) { lat = l.lat; lng = l.lng; if (!isFinite(lat) || !isFinite(lng)) { a.erreurs.push('Ligne ' + l.ligne + ' : latitude ou longitude illisible.'); return; } var u = latLngToUtm(lat, lng, zone); x = u.E; y = u.N; }
+      else { x = l.x; y = l.y; if (!isFinite(x) || !isFinite(y)) { a.erreurs.push('Ligne ' + l.ligne + ' : coordonnée x ou y illisible.'); return; } var ll = utm30ToLatLng(x, y, zone); lat = ll[0]; lng = ll[1]; }
+      if (!fonReleveEnPays(lat, lng)) { var sw = (l.x !== undefined) ? utm30ToLatLng(y, x, zone) : null; a.erreurs.push('Ligne ' + l.ligne + ' : point hors de la Côte d\'Ivoire (zone UTM ' + zone + ' ou coordonnées à vérifier' + (sw && fonReleveEnPays(sw[0], sw[1]) ? ' ; x et y semblent inversés' : '') + ').'); return; }
+      pts.push({ nom: nom, x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100, z: isFinite(l.z) ? l.z : undefined, lat: Math.round(lat * 1e7) / 1e7, lng: Math.round(lng * 1e7) / 1e7 });
+    });
+    if (pts.length > 1 && Math.hypot(pts[0].x - pts[pts.length - 1].x, pts[0].y - pts[pts.length - 1].y) < 0.05) { pts.pop(); a.avertissements.push('Point de fermeture identique au premier : retiré.'); }
+    var vus = {}, doublons = 0; pts.forEach(function (q) { var n = _fonReleveNorm(q.nom); if (vus[n]) doublons++; vus[n] = 1; }); if (doublons) a.avertissements.push(doublons + ' nom(s) de borne en double.');
+    var proches = 0; for (var i = 1; i < pts.length; i++) if (Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y) < 0.05) proches++; if (proches) a.avertissements.push(proches + ' borne(s) confondue(s) avec la précédente (moins de 5 cm).');
+    a.bornes = pts.map(function (q) { var b = { nom: q.nom, x: q.x, y: q.y }; if (q.z !== undefined) b.z = q.z; return b; }); a.path = pts.map(function (q) { return [q.lat, q.lng]; }); a.utm_zone = zone;
+    if (!a.erreurs.length && pts.length < 3) a.erreurs.push('3 bornes au moins sont nécessaires (' + pts.length + ' lue(s)).');
+    if (!a.erreurs.length) {
+      var M = pts.map(function (q) { return [q.x, q.y]; }); a.aire_m2 = Math.round(fonGeoAire(M));
+      if (fonReleveContourCroise(M)) a.erreurs.push('Contour croisé : vérifier l\'ordre des bornes.');
+      if (p && p.superficie > 0 && a.aire_m2 > 0) { a.ecart_pct = Math.round((a.aire_m2 - p.superficie) / p.superficie * 1000) / 10; if (Math.abs(a.ecart_pct) > 10) a.avertissements.push('Surface calculée ' + a.aire_m2 + ' m² : écart de ' + a.ecart_pct + ' % avec la surface enregistrée (' + p.superficie + ' m²).'); }
+      if (!a.erreurs.length && p) {
+        var tmp = { id: p.id, geo_polygon: a.path };
+        try { a.chevauchements = fonGeoChevauchements(tmp); } catch (e) {}
+        if (a.chevauchements.length) { var txt = a.chevauchements.map(function (c) { return c.ref + ' (' + c.aire + ' m²)'; }).join(', '); if (admin) a.avertissements.push('Chevauche ' + txt + ' : application réservée à l\'administrateur, motif demandé.'); else { a.erreurs.push('Chevauche ' + txt + ' : relevé refusé (administrateur requis).'); a.bloque_chevauchement = true; } }
+        try { a.territoire = fonTerritoireBadgeCalculer({ id: '__releve_' + p.id, geo_polygon: a.path }); } catch (e) {}
+      }
+    }
+    return a;
+  });
+}
+/* Application : remplace les bornes des parcelles sans erreur ; conserve l'ancien contour (5 versions) ; journalise. */
+async function fonReleveAppliquer(analyses, opts) {
+  opts = opts || {};
+  if (!fcDroitEcriture()) { toast('Votre profil ne permet pas de modifier le module Foncier.', 'error'); return null; }
+  try { if (typeof userPeutSurStore === 'function' && !userPeutSurStore('parcelles', 'm')) { toast('Droit « modifier » sur les parcelles requis.', 'error'); return null; } } catch (e) {}
+  var ok = analyses.filter(function (a) { return !a.erreurs.length && a.parcelle; }); if (!ok.length) { toast('Aucune parcelle applicable.', 'error'); return null; }
+  var avecChev = ok.filter(function (a) { return a.chevauchements.length; }), motif = '';
+  if (avecChev.length) { var admin = false; try { admin = fcEstAdmin(); } catch (e) {} if (!admin) { toast('Chevauchement : application réservée à un administrateur.', 'error'); return null; } motif = prompt('Motif obligatoire pour appliquer un relevé qui chevauche d\'autres parcelles (' + avecChev.map(function (a) { return a.ref; }).join(', ') + ') :'); if (!motif || motif.trim().length < 10) { if (motif !== null) toast('Motif obligatoire (10 caractères minimum).', 'error'); return null; } }
+  var qui = (APP.currentUser && APP.currentUser.nom) || '—', n = 0, sauve = [];
+  for (var i = 0; i < ok.length; i++) {
+    var a = ok[i], p = a.parcelle;
+    (p.historique_bornes = p.historique_bornes || []).unshift({ le: new Date().toISOString(), par: qui, nb: (p.bornes || []).length, bornes: p.bornes || [], geo_polygon: p.geo_polygon || null, utm_zone: p.utm_zone || 30, superficie: p.superficie || 0 }); p.historique_bornes = p.historique_bornes.slice(0, 5);
+    p.bornes = a.bornes; p.utm_zone = a.utm_zone; p.geo_polygon = a.path; p.systeme_geodesique = 'UTM' + a.utm_zone + 'N-WGS84 (relevé importé)'; if (opts.superficie && a.aire_m2 > 0) p.superficie = a.aire_m2;
+    _sigLogHist(p, 'Relevé de bornes importé', a.bornes.length + ' bornes, ' + a.aire_m2 + ' m² calculés' + (a.chevauchements.length ? ' — chevauchement accepté : ' + motif.trim() : '') + ' — par ' + qui);
+    try { await dbPut('parcelles', p); if (typeof syncToSupabase === 'function') syncToSupabase('pi_parcelles', p); n++; sauve.push(p); delete FON_TER_BADGE.cache[p.id]; } catch (e) { toast('Écriture refusée pour ' + a.ref + ' : ' + e.message, 'error'); }
+  }
+  try { await logAction('FONCIER_RELEVE_BORNES', n + ' parcelle(s) : ' + sauve.map(function (p) { return p.ref; }).slice(0, 20).join(', ') + (motif ? ' — chevauchement : ' + motif.trim() : '')); } catch (e) {}
+  try { renderParcelles(); } catch (e) {} toast(n + ' parcelle(s) mise(s) à jour par le relevé.', n ? 'success' : 'error', 6000); return { appliquees: n };
+}
+var FON_RELEVE = { analyses: null };
+function fonReleveModele() {
+  var csv = 'parcelle;borne;x;y;z\nP-001;B1;395120.50;590210.25;42.1\nP-001;B2;395180.10;590215.80;42.6\nP-001;B3;395176.40;590290.00;43.0\nP-001;B4;395118.00;590284.70;42.8\n';
+  var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv' })); a.download = 'modele-releve-bornes.csv'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { try { URL.revokeObjectURL(a.href); } catch (e) {} }, 4000);
+}
+function fonReleveOuvrir() {
+  FON_RELEVE.analyses = null; var c = document.getElementById('releve-corps'); if (!c) return;
+  c.innerHTML = '<p style="font-size:12px;color:var(--dim);margin:0 0 8px;">Importez le relevé du géomètre : colonnes <b>parcelle</b>, <b>borne</b>, <b>x</b>, <b>y</b> (UTM, mètres) ou <b>lat</b>, <b>lng</b>, et facultativement <b>z</b>, <b>zone</b>. Formats : CSV (; , ou tabulation), TXT, Excel (.xlsx, première feuille). Le relevé <b>remplace les bornes de parcelles existantes</b> ; il ne crée rien. Contrôles et aperçu avant toute écriture.</p>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;"><input type="file" id="releve-fichier" accept=".csv,.txt,.xlsx,text/csv,text/plain"> <label style="font-size:12px;">Zone UTM par défaut <select id="releve-zone" class="form-control" style="width:auto;display:inline-block;"><option value="30">30 Nord (Abidjan, centre)</option><option value="29">29 Nord (ouest)</option></select></label> <button class="btn btn-secondary btn-sm" onclick="fonReleveModele()">⬇ Modèle CSV</button></div>'
+    + '<textarea id="releve-texte" class="form-control" rows="5" placeholder="… ou collez le relevé ici (avec la ligne d\'en-têtes)"></textarea><div style="margin-top:8px;"><button class="btn btn-primary" onclick="fonReleveAnalyserUI()">🔍 Analyser</button></div><div id="releve-apercu" style="margin-top:12px;"></div>';
+  document.getElementById('modal-releve').classList.add('open');
+}
+async function fonReleveAnalyserUI() {
+  var apercu = document.getElementById('releve-apercu'), zone = parseInt((document.getElementById('releve-zone') || {}).value, 10) || 30, f = (document.getElementById('releve-fichier') || {}).files && document.getElementById('releve-fichier').files[0], res;
+  try {
+    if (f && /\.xlsx$/i.test(f.name)) { var wb = await fonXlsxLire(await f.arrayBuffer()), nom = Object.keys(wb.feuilles)[0]; if (!nom) throw new Error('Classeur vide.'); res = fonReleveDepuisTableau(wb.feuilles[nom], zone); }
+    else { var txt = f ? await f.text() : ((document.getElementById('releve-texte') || {}).value || ''); res = fonReleveParser(txt, zone); }
+  } catch (e) { apercu.innerHTML = '<div style="color:#b91c1c;">' + escHtml(e.message) + '</div>'; return; }
+  if (res.erreurs.length) { apercu.innerHTML = '<div style="color:#b91c1c;">' + res.erreurs.map(escHtml).join('<br>') + '</div>'; return; }
+  FON_RELEVE.analyses = fonReleveAnalyser(res.lignes); apercu.innerHTML = fonReleveApercuHtml(FON_RELEVE.analyses);
+}
+function fonReleveApercuHtml(an) {
+  var E = escHtml, ok = an.filter(function (a) { return !a.erreurs.length; }).length, st = FON_TER_BADGE_STYLE;
+  var h = '<div style="font-size:12px;margin-bottom:6px;"><b>' + an.length + ' parcelle(s) lue(s)</b> · ' + ok + ' applicable(s) · ' + (an.length - ok) + ' refusée(s)</div><div class="table-wrap"><table style="width:100%;font-size:12px;"><thead><tr><th>Parcelle</th><th>Bornes</th><th>Surface calculée</th><th>🌍 Territoire</th><th>Contrôles</th></tr></thead><tbody>' + an.map(function (a) {
+    var t = a.territoire ? (st[a.territoire.niveau] || st.sans) : null;
+    return '<tr' + (a.erreurs.length ? ' style="background:#fef2f2;"' : '') + '><td><b>' + E(a.ref) + '</b></td><td>' + a.nb + '</td><td>' + (a.aire_m2 ? E(String(a.aire_m2)) + ' m²' : '—') + '</td><td>' + (t ? '<span style="color:' + t[1] + ';font-weight:600;">' + t[0] + ' ' + E(t[2]) + '</span>' : '—') + '</td><td>' + (a.erreurs.length ? a.erreurs.map(function (m) { return '<span style="color:#b91c1c;">⛔ ' + E(m) + '</span>'; }).join('<br>') : '<span style="color:#16a34a;">✅ prête</span>') + (a.avertissements.length ? '<br>' + a.avertissements.map(function (m) { return '<span style="color:#b45309;">⚠ ' + E(m) + '</span>'; }).join('<br>') : '') + '</td></tr>'; }).join('') + '</tbody></table></div>';
+  if (ok) h += '<label style="display:block;margin-top:8px;font-size:12px;"><input type="checkbox" id="releve-superficie"> Mettre à jour la superficie enregistrée avec la surface calculée</label><div style="margin-top:8px;"><button class="btn btn-primary" onclick="fonReleveAppliquerUI()">✔ Appliquer à ' + ok + ' parcelle(s)</button> <span style="font-size:11px;color:var(--dim);">L\'ancien contour est conservé dans l\'historique de la parcelle. Indicatif : le géomètre fait foi.</span></div>';
+  return h;
+}
+async function fonReleveAppliquerUI() {
+  if (!FON_RELEVE.analyses) return; var sup = !!(document.getElementById('releve-superficie') || {}).checked, r = await fonReleveAppliquer(FON_RELEVE.analyses, { superficie: sup }); if (!r) return;
+  document.getElementById('releve-apercu').innerHTML = '<div style="color:#16a34a;font-weight:600;">✅ ' + r.appliquees + ' parcelle(s) mise(s) à jour.</div><div style="font-size:12px;color:var(--dim);">Le badge 🌍 Territoire du portefeuille est recalculé.</div>'; FON_RELEVE.analyses = null;
 }
 /* ── Alerte précoce : badge territorial sur chaque parcelle (liste, grille) et alerte à l'enregistrement ──
    Le contrôle est celui de l'audit (même fonction), indicatif : il alerte, il n'autorise rien ; « aucun croisement » ne vaut pas conformité.
